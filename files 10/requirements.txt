@@ -1,0 +1,14 @@
+Flask>=2.3
+Flask-SQLAlchemy
+Flask-Migrate
+Flask-JWT-Extended
+Marshmallow
+Flasgger
+APScheduler
+requests
+psycopg2-binary
+pytest
+pytest-flask
+black
+ruff
+mypy
