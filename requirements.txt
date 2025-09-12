@@ -1,14 +1,33 @@
-Flask>=2.3
-Flask-SQLAlchemy
-Flask-Migrate
-Flask-JWT-Extended
-Marshmallow
-Flasgger
-APScheduler
-requests
+fastapi
+uvicorn[standard]
+
+# Работа с базой данных
+sqlalchemy
+alembic
 psycopg2-binary
+databases
+
+# Аутентификация / JWT
+python-jose[cryptography]
+passlib[bcrypt]
+
+# Валидация и сериализация
+pydantic
+marshmallow
+
+# Планировщик задач
+apscheduler
+
+# HTTP-запросы
+requests
+httpx
+
+# Тестирование
 pytest
-pytest-flask
+pytest-asyncio
+pytest-cov
+
+# Линтеры и форматирование
 black
 ruff
 mypy

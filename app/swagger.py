@@ -1,16 +1,13 @@
-from flasgger import Swagger
+# app/swagger.py
+from fastapi import FastAPI
 
-def setup_swagger(app):
+def setup_swagger(app: FastAPI):
     """
-    Initialize Swagger (Flasgger) for SmartSell2.
+    Настройки Swagger для FastAPI.
+    В FastAPI Swagger включен по умолчанию по адресу /docs
     """
-    template = {
-        "swagger": "2.0",
-        "info": {
-            "title": "SmartSell2 API",
-            "version": "1.0.0",
-        },
-        "basePath": "/",
-        "schemes": ["http"],
-    }
-    Swagger(app, template=template)
+    app.title = "SmartSell3 API"
+    app.version = "1.0.0"
+    app.description = "API для SmartSell3"
+    # Можно добавить contact, license, terms_of_service и т.д.
+    return app
