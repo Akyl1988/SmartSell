@@ -1,7 +1,6 @@
 import pytest
-from app import create_app
+from app.main import create_app
 from app.extensions import db
-
 @pytest.fixture
 def app():
     test_app = create_app()
