@@ -1,29 +1,45 @@
+# ---------- FILE: .github/workflows/bot.yml ----------
+# GitHub Actions workflow для бота: программирование + авто-резолв конфликтов.
+# Триггеры:
+#  - Комментарий к Issue/PR с командами: "/bot apply:" или "/bot resolve"
+#  - Ручной запуск (workflow_dispatch)
+#
+# ВАЖНО: Бот НИКОГДА не пишет в main. Он пушит во временную ветку bot/… и
+#        открывает/обновляет PR. Мерж — только вручную.
+
 name: Bot
 
 on:
   issue_comment:
-    types: [created]         # реагируем на новые комментарии
-  pull_request_review_comment:
     types: [created]
-  workflow_dispatch: {}      # можно запустить вручную
+  workflow_dispatch:
 
 permissions:
   contents: write
   pull-requests: write
-  statuses: write
-  checks: read
 
 jobs:
-  apply:
-    # запускаемся только:
-    # - по ручному запуску, ИЛИ
-    # - если это комментарий в PR и он содержит "/bot apply"
+  run-bot:
     if: >
       github.event_name == 'workflow_dispatch' ||
-      (github.event_name == 'issue_comment' &&
-       github.event.issue.pull_request != '' &&
-       contains(github.event.comment.body, '/bot apply'))
+      contains(github.event.comment.body, '/bot apply:') ||
+      contains(github.event.comment.body, '/bot resolve')
     runs-on: ubuntu-latest
+    env:
+      # Каталоги "наследного бэкенда", которые при конфликте надо удалять/откатывать
+      LEGACY_BACKEND_DIRS: |
+        backend/
+        app_flask/
+        flask_app/
+        legacy_backend/
+      # Маски FastAPI-структуры, которую предпочитаем сохранить
+      FASTAPI_DIRS: |
+        app/
+        app/api/
+        app/models/
+        app/core/
+        app/schemas/
+        app/services/
 
     steps:
       - name: Checkout
@@ -36,41 +52,308 @@ jobs:
         with:
           python-version: '3.11'
 
-      - name: Run bot (apply changes)
-        env:
-          BOT_COMMENT: ${{ github.event.comment.body }}
+      - name: Install deps
         run: |
-          python3 .github/bot/apply.py
+          python -m pip install --upgrade pip
+          pip install pyyaml
 
-      - name: Commit & push changes (if any)
+      - name: Install gh
         run: |
+          sudo apt-get update -y
+          sudo apt-get install -y jq
+
+      - name: Prepare context
+        id: ctx
+        env:
+          EVNT: ${{ toJson(github.event) }}
+        run: |
+          echo "EVENT_CONTEXT=$EVNT" >> $GITHUB_OUTPUT
+          # Определим номер PR и исходную ветку PR, если запуск с комментария
+          if [ "${{ github.event_name }}" = "issue_comment" ] && [ "${{ github.event.issue.pull_request.url }}" != "" ]; then
+            PR="${{ github.event.issue.number }}"
+            echo "pr_number=$PR" >> $GITHUB_OUTPUT
+            # head ref PR
+            HEAD_REF=$(gh pr view "$PR" --json headRefName --jq .headRefName)
+            BASE_REF=$(gh pr view "$PR" --json baseRefName --jq .baseRefName)
+            echo "pr_head_ref=$HEAD_REF" >> $GITHUB_OUTPUT
+            echo "pr_base_ref=$BASE_REF" >> $GITHUB_OUTPUT
+          else
+            echo "pr_number=" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Put bot scripts
+        # Размещаем исполняемые скрипты в репо (если их нет) на время job
+        shell: bash
+        run: |
+          mkdir -p bot
+          cat > bot/resolve_conflicts.sh <<'EOF'
+          #!/usr/bin/env bash
+          set -euo pipefail
+
+          # Политика:
+          #  - Предпочитаем FastAPI-структуру (app/** и т.п.)
+          #  - Всё из legacy backend (backend/** и т.п.) удаляем/берём "ours" (т.е. остаётся текущее состояние fastapi-ветки)
+          #  - В остальных файлах — пробуем автоматический merge с -X theirs (чтобы подтянуть обновления из base)
+
+          BASE_BRANCH="$1"   # например: main
+          LEGACY_DIRS="$2"
+          FASTAPI_DIRS="$3"
+
+          echo "[resolver] Merge base '${BASE_BRANCH}' into current HEAD with -X theirs"
+          git fetch origin "${BASE_BRANCH}"
+          # Пытаемся слить автоматически, не прерываемся на конфликте
+          set +e
+          git merge --no-commit --no-ff -X theirs "origin/${BASE_BRANCH}"
+          MERGE_RC=$?
           set -e
-          if git diff --quiet && git diff --cached --quiet; then
-            echo "No changes to commit."
+
+          if [ $MERGE_RC -ne 0 ]; then
+            echo "[resolver] Merge reported conflicts. Applying policy…"
+          else
+            echo "[resolver] Merge had no conflicts."
+          fi
+
+          # Сначала устраним конфликты для legacy backend — всегда удаляем или берём 'ours'
+          while IFS= read -r d; do
+            [ -z "$d" ] && continue
+            if [ -d "$d" ] || git ls-files --error-unmatch "$d" >/dev/null 2>&1; then
+              echo "[resolver] Removing legacy dir/file: $d"
+              git rm -r --cached --ignore-unmatch "$d" || true
+              rm -rf "$d" || true
+            fi
+          done <<< "$LEGACY_DIRS"
+
+          # Для FastAPI-директорий — оставляем текущую версию (ours)
+          while IFS= read -r d; do
+            [ -z "$d" ] && continue
+            if [ -d "$d" ]; then
+              echo "[resolver] Prefer ours for fastapi dir: $d"
+              # Перебираем конфликтные файлы внутри и берём --ours
+              git ls-files -u | awk '{print $4}' | sort -u | grep "^$d" || true
+              for f in $(git ls-files -u | awk '{print $4}' | sort -u | grep "^$d" || true); do
+                git checkout --ours -- "$f" || true
+                git add "$f" || true
+              done
+            fi
+          done <<< "$FASTAPI_DIRS"
+
+          # Остаточные конфликтные файлы — забираем сторону base (theirs)
+          CONFLICTS=$(git ls-files -u | awk '{print $4}' | sort -u || true)
+          if [ -n "$CONFLICTS" ]; then
+            echo "[resolver] Remaining conflicts -> prefer theirs for:"
+            echo "$CONFLICTS"
+            for f in $CONFLICTS; do
+              git checkout --theirs -- "$f" || true
+              git add "$f" || true
+            done
+          fi
+
+          # Удалим пустые папки
+          find . -type d -empty -delete || true
+
+          # Завершаем merge
+          if git diff --staged --quiet; then
+            echo "[resolver] Nothing to commit after conflict resolution."
+          else
+            git commit -m "bot: auto-resolve conflicts (prefer FastAPI, remove legacy backend)"
+          fi
+          EOF
+          chmod +x bot/resolve_conflicts.sh
+
+          cat > bot/apply.py <<'PYEOF'
+          #!/usr/bin/env python3
+          # Облегчённая версия "программиста": читает комментарий и выполняет инструкции /bot apply:
+          # Поддерживает секции: FILE, MODE (SET|APPEND|REPLACE|PATCH), PATTERN, REPLACEMENT, FLAGS, CONTENT.
+          import re, sys, os, argparse, pathlib
+
+          BOT_CMD = r'/bot\\s+apply:\\s*'
+          SEC_RE  = r'(\\w+):\\s*(.*?)(?=\\n\\w+:|$)'
+
+          def parse(comment: str):
+            blocks = re.finditer(BOT_CMD + r'(.*?)(?=/bot\\s+apply:|$)', comment, re.S|re.I)
+            out=[]
+            for m in blocks:
+              sec={}
+              for s in re.finditer(SEC_RE, m.group(1), re.S|re.I):
+                sec[s.group(1).upper()] = s.group(2).strip()
+              if 'FILE' in sec and 'MODE' in sec:
+                out.append(sec)
+            return out
+
+          def flags_to_re(fl: str):
+            f=0
+            if not fl: return f
+            fl=fl.lower()
+            if 'i' in fl: f|=re.I
+            if 'm' in fl: f|=re.M
+            if 's' in fl: f|=re.S
+            return f
+
+          def apply_one(base: pathlib.Path, ins: dict):
+            p = (base / ins['FILE']).resolve()
+            p.parent.mkdir(parents=True, exist_ok=True)
+            mode = ins['MODE'].upper()
+            if mode=='SET':
+              with open(p,'w',encoding='utf-8') as f:
+                f.write(ins.get('CONTENT',''))
+              return True
+            if mode=='APPEND':
+              with open(p,'a',encoding='utf-8') as f:
+                c=ins.get('CONTENT','')
+                if not c.endswith('\\n'): c+='\\n'
+                f.write(c)
+              return True
+            if mode in ('REPLACE','PATCH'):
+              patt = ins.get('PATTERN')
+              repl = ins.get('REPLACEMENT','')
+              if not patt: return False
+              text=''
+              if p.exists():
+                text = p.read_text(encoding='utf-8')
+              new = re.sub(patt, repl, text, flags=flags_to_re(ins.get('FLAGS','')))
+              p.write_text(new, encoding='utf-8')
+              return True
+            return False
+
+          if __name__ == '__main__':
+            ap=argparse.ArgumentParser()
+            ap.add_argument('--comment', required=True)
+            ap.add_argument('--base', default='.')
+            a=ap.parse_args()
+            base=pathlib.Path(a.base)
+            ins = parse(a.comment)
+            ok=0; bad=0
+            for i in ins:
+              (ok if apply_one(base,i) else bad).__class__
+              if apply_one(base,i): ok+=1
+              else: bad+=1
+            print(f"apply: ok={ok} bad={bad}")
+            sys.exit(0 if bad==0 else 1)
+          PYEOF
+          chmod +x bot/apply.py
+
+      - name: Determine command
+        id: cmd
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "mode=none" >> $GITHUB_OUTPUT
             exit 0
           fi
-          ISSUE="${{ github.event.issue.number }}"
-          [ -z "$ISSUE" ] && ISSUE="${{ github.event.pull_request.number }}"
-          [ -z "$ISSUE" ] && ISSUE="manual"
-          BRANCH="bot/work/${ISSUE}"
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git checkout -B "$BRANCH"
-          git add -A
-          git commit -m "bot: apply changes for #${ISSUE}"
-          git push -f origin "$BRANCH"
 
-      - name: Open or update PR
+          BODY=$(jq -r '.comment.body' <<< '${{ steps.ctx.outputs.EVENT_CONTEXT }}')
+          if echo "$BODY" | grep -qi '^/bot resolve'; then
+            echo "mode=resolve" >> $GITHUB_OUTPUT
+            echo "comment<<EOF" >> $GITHUB_OUTPUT
+            echo "$BODY" >> $GITHUB_OUTPUT
+            echo "EOF" >> $GITHUB_OUTPUT
+          elif echo "$BODY" | grep -qi '^/bot apply:'; then
+            echo "mode=apply" >> $GITHUB_OUTPUT
+            echo "comment<<EOF" >> $GITHUB_OUTPUT
+            echo "$BODY" >> $GITHUB_OUTPUT
+            echo "EOF" >> $GITHUB_OUTPUT
+          else
+            echo "mode=none" >> $GITHUB_OUTPUT
+
+      - name: Checkout PR head (if comment in PR)
+        if: steps.cmd.outputs.mode != 'none' && steps.ctx.outputs.pr_head_ref != ''
+        run: |
+          git fetch origin "${{ steps.ctx.outputs.pr_head_ref }}"
+          git checkout -B "${{ steps.ctx.outputs.pr_head_ref }}" "origin/${{ steps.ctx.outputs.pr_head_ref }}"
+
+      # ==== РЕЖИМ: РЕШЕНИЕ КОНФЛИКТОВ ====
+      - name: Resolve conflicts (prefer FastAPI)
+        if: steps.cmd.outputs.mode == 'resolve'
         env:
-          GH_TOKEN: ${{ github.token }}
+          BASE: ${{ steps.ctx.outputs.pr_base_ref || 'main' }}
+        run: |
+          ./bot/resolve_conflicts.sh "$BASE" "${LEGACY_BACKEND_DIRS}" "${FASTAPI_DIRS}" || true
+
+      # ==== РЕЖИМ: ПРОГРАММИРОВАНИЕ ====
+      - name: Apply programming instructions
+        if: steps.cmd.outputs.mode == 'apply'
+        run: |
+          python bot/apply.py --comment "${{ steps.cmd.outputs.comment }}" --base "."
+
+      # ==== СОЗДАНИЕ / ОБНОВЛЕНИЕ ВСПОМОГАТЕЛЬНОЙ ВЕТКИ И PR ====
+      - name: Commit & push changes (if any)
+        if: steps.cmd.outputs.mode != 'none'
         run: |
           set -e
-          ISSUE="${{ github.event.issue.number }}"
-          [ -z "$ISSUE" ] && ISSUE="${{ github.event.pull_request.number }}"
-          [ -z "$ISSUE" ] && ISSUE="manual"
-          BRANCH="bot/work/${ISSUE}"
-          BASE="main"
-          # если PR уже есть — обновим, иначе создадим
-          gh pr list --head "$BRANCH" --state open --json number -q '.[0].number' >/dev/null 2>&1 \
-            && gh pr edit "$(gh pr list --head "$BRANCH" --state open --json number -q ".[0].number")" --base "$BASE" --title "Bot changes for #$ISSUE" --body "Automated changes" \
-            || gh pr create --base "$BASE" --head "$BRANCH" --title "Bot changes for #$ISSUE" --body "Automated changes"
+          BR="bot/run-${{ github.run_id }}"
+          git config user.name  "smart-bot"
+          git config user.email "bot@users.noreply.github.com"
+
+          # Если запускали из PR — остаёмся в его head-ветке, иначе создаём bot/*
+          if [ -n "${{ steps.ctx.outputs.pr_head_ref }}" ]; then
+            BR="${{ steps.ctx.outputs.pr_head_ref }}"
+          else
+            git checkout -b "$BR"
+          fi
+
+          if git diff --quiet && git diff --staged --quiet; then
+            echo "No changes to commit"
+          else
+            git add -A
+            git commit -m "bot: automated changes (${ { steps.cmd.outputs.mode }})"
+            git push origin "$BR" --force
+          fi
+
+      - name: Open or update PR (never merge automatically)
+        if: steps.cmd.outputs.mode != 'none'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -e
+          # Если у нас уже есть номер PR (комментарий в PR) — просто оставляем PR как есть
+          if [ -n "${{ steps.ctx.outputs.pr_number }}" ]; then
+            echo "PR #${{ steps.ctx.outputs.pr_number }} updated"
+            exit 0
+          fi
+
+          BR="bot/run-${{ github.run_id }}"
+          # Создаём PR из bot/run-* в main, если запускаем не из существующего PR
+          if ! gh pr list --head "$BR" --json number --jq '.[0].number' >/dev/null 2>&1; then
+            gh pr create \
+              --head "$BR" \
+              --base "main" \
+              --title "Bot patch: ${{ steps.cmd.outputs.mode }}" \
+              --body "Automated change by bot. Please review and merge manually."
+          fi
+
+# ---------- END FILE ----------
+
+
+
+# ---------- FILE: .github/ISSUE_TEMPLATE/BOT_USAGE.md ----------
+# (Не обязателен, но полезно иметь в репо как шпаргалку)
+# Команды боту (пишите в комментариях к PR):
+#
+# 1) Решение конфликтов в пользу FastAPI/удаления legacy backend:
+#    /bot resolve
+#
+# 2) Программирование (можно несколько блоков подряд):
+#    /bot apply:
+#    FILE: app/api/v1/users.py
+#    MODE: SET
+#    CONTENT:
+#    from fastapi import APIRouter
+#    router = APIRouter()
+#    @router.get("/ping")
+#    def ping():
+#        return {"ok": True}
+#
+#    /bot apply:
+#    FILE: README.md
+#    MODE: APPEND
+#    CONTENT:
+#    ## Added by bot
+#    This section was appended automatically.
+#
+#    /bot apply:
+#    FILE: app/core/config.py
+#    MODE: REPLACE
+#    PATTERN: (?m)^DEBUG\\s*=\\s*True
+#    REPLACEMENT: DEBUG=False
+#    FLAGS: im
+
+# ---------- END FILE ----------
