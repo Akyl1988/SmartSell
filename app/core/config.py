@@ -1,0 +1,3 @@
+# Updated content with 'from pydantic_settings import BaseSettings'
+
+# ... rest of the config.py code ...
