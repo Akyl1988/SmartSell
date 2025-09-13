@@ -1,20 +1,24 @@
-name: bot
+name: Bot
 
 on:
   issue_comment:
-    types: [created]
-  pull_request_review_comment:
-    types: [created]
+    types: [created]         # реагируем на новые комментарии
+  workflow_dispatch: {}      # можно запустить вручную
 
 permissions:
   contents: write
   pull-requests: write
-  statuses: write
-  checks: read
 
 jobs:
   apply:
-    if: contains(github.event.comment.body, '/bot apply:')
+    # запускаемся только:
+    # - по ручному запуску, ИЛИ
+    # - если это комментарий в PR и он содержит "/bot apply"
+    if: >
+      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'issue_comment' &&
+       github.event.issue.pull_request != '' &&
+       contains(github.event.comment.body, '/bot apply'))
     runs-on: ubuntu-latest
 
     steps:
@@ -28,47 +32,41 @@ jobs:
         with:
           python-version: '3.11'
 
-      - name: Install bot dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install pyyaml black ruff
-
       - name: Run bot (apply changes)
         env:
-          GIT_AUTHOR_NAME: smart-bot
-          GIT_AUTHOR_EMAIL: bot@users.noreply.github.com
-          GIT_COMMITTER_NAME: smart-bot
-          GIT_COMMITTER_EMAIL: bot@users.noreply.github.com
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          BOT_COMMENT: ${{ github.event.comment.body }}
         run: |
-          mkdir -p .github/bot
-          python .github/bot/apply.py <<'EOF'
-          ${{ github.event.comment.body }}
-          EOF
+          python3 .github/bot/apply.py
 
-      - name: Format & Lint (best effort)
+      - name: Commit & push changes (if any)
         run: |
-          ruff check . --fix || true
-          black . || true
-
-      - name: Create work branch and commit
-        run: |
-          ISSUE_REF="${{ github.event.issue.number || github.event.pull_request.number || github.run_number }}"
-          BRANCH="bot/work/${ISSUE_REF}"
+          set -e
+          if git diff --quiet && git diff --cached --quiet; then
+            echo "No changes to commit."
+            exit 0
+          fi
+          ISSUE="${{ github.event.issue.number }}"
+          [ -z "$ISSUE" ] && ISSUE="${{ github.event.pull_request.number }}"
+          [ -z "$ISSUE" ] && ISSUE="manual"
+          BRANCH="bot/work/${ISSUE}"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git checkout -B "$BRANCH"
           git add -A
-          git diff --cached --quiet || git commit -m "bot: apply changes for #${ISSUE_REF}"
+          git commit -m "bot: apply changes for #${ISSUE}"
           git push -f origin "$BRANCH"
 
       - name: Open or update PR
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
-          ISSUE_REF="${{ github.event.issue.number || github.event.pull_request.number || github.run_number }}"
-          BRANCH="bot/work/${ISSUE_REF}"
-          BASE_BRANCH="${{ github.event.repository.default_branch || 'main' }}"
-          # пытаемся создать PR; если уже есть — обновляем его
-          gh pr create --base "$BASE_BRANCH" --head "$BRANCH" \
-            --title "Bot patch for #${ISSUE_REF}" \
-            --body "Automated changes by bot for #${ISSUE_REF}" \
-            || gh pr edit $(gh pr list --head "$BRANCH" --json number -q '.[0].number') \
-                 --title "Bot patch for #${ISSUE_REF}" \
-                 --body "Updated automated changes by bot for #${ISSUE_REF}"
+          set -e
+          ISSUE="${{ github.event.issue.number }}"
+          [ -z "$ISSUE" ] && ISSUE="${{ github.event.pull_request.number }}"
+          [ -z "$ISSUE" ] && ISSUE="manual"
+          BRANCH="bot/work/${ISSUE}"
+          BASE="main"
+          # если PR уже есть — обновим, иначе создадим
+          gh pr list --head "$BRANCH" --state open --json number -q '.[0].number' >/dev/null 2>&1 \
+            && gh pr edit "$(gh pr list --head "$BRANCH" --state open --json number -q ".[0].number")" --base "$BASE" --title "Bot changes for #$ISSUE" --body "Automated changes" \
+            || gh pr create --base "$BASE" --head "$BRANCH" --title "Bot changes for #$ISSUE" --body "Automated changes"
