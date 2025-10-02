@@ -1,12 +1,16 @@
-# Byte-compiled / optimized / DLL files
+# =========================
+#        Python core
+# =========================
 __pycache__/
 *.py[cod]
-*$py.class
-
-# C extensions
+*.pyo
+*.pyd
+*.sqlite3
 *.so
 
-# Distribution / packaging
+# =========================
+#  Packaging / build out
+# =========================
 .Python
 build/
 develop-eggs/
@@ -27,15 +31,21 @@ share/python-wheels/
 *.egg
 MANIFEST
 
-# PyInstaller
+# =========================
+#       PyInstaller
+# =========================
 *.manifest
 *.spec
 
-# Installer logs
+# =========================
+#     Installer logs
+# =========================
 pip-log.txt
 pip-delete-this-directory.txt
 
-# Unit test / coverage reports
+# =========================
+#  Tests / Coverage / QA
+# =========================
 htmlcov/
 .tox/
 .nox/
@@ -44,30 +54,138 @@ htmlcov/
 .cache
 nosetests.xml
 coverage.xml
+coverage/
 *.cover
-*.py,cover
-.hypothesis/
 .pytest_cache/
+hypothesis/
+.mypy_cache/
+.ruff_cache/
+.pytype/
+.pyre/
+.benchmarks/
 
-# Environments
+# =========================
+#     Virtual envs
+# =========================
 .env
-.venv
-env/
+.env.*
+.venv/
 venv/
 ENV/
 env.bak/
 venv.bak/
+.python-version
+.envrc
 
-# IDE
+# =========================
+#         IDE
+# =========================
 .vscode/
 .idea/
 *.swp
 *.swo
-*~
+*.code-workspace
+.fleet/
 
-# OS
+# =========================
+#       OS-specific
+# =========================
 .DS_Store
 Thumbs.db
+ehthumbs.db
+Desktop.ini
+.Spotlight-V100
+.Trashes
 
-# Logs
+# =========================
+#   Logs & local DB files
+# =========================
+logs/
 *.log
+*.log.*
+*.db
+*.sqlite
+test.db
+
+# Dockerized DB volumes / caches
+pgdata/
+postgres-data/
+db_data/
+docker/**/data/
+dump.rdb        # Redis dump
+
+# =========================
+#        Frontend
+# =========================
+# глобально игнорим любые node_modules / dist и артефакты сборки
+**/node_modules/
+node_modules/
+**/dist/
+**/.parcel-cache/
+**/.cache/
+
+# фреймворки
+**/.next/
+**/.nuxt/
+**/.vercel/
+**/.svelte-kit/
+**/.turbo/
+
+# конкретно для папки frontend (как было у тебя)
+frontend/node_modules/
+frontend/dist/
+frontend/.env.local
+frontend/.env.development.local
+frontend/.env.test.local
+frontend/.env.production.local
+frontend/npm-debug.log*
+frontend/yarn-debug.log*
+frontend/yarn-error.log*
+frontend/package-lock.json   # при желании репродьюс билдов — лучше КОММИТИТЬ этот файл
+
+# =========================
+#     Project specific
+# =========================
+uploads/
+media/
+storage/
+data/
+local/
+local2/
+
+# =========================
+#         Docker
+# =========================
+docker-compose.override.yml
+docker/.env
+docker/.env.*
+
+# =========================
+#      DB dumps / backups
+# =========================
+*.sql
+*.dump
+*.tar
+*.bak
+*.backup
+
+# =========================
+#     Temporary files
+# =========================
+*.tmp
+*.temp
+temp/
+tmp/
+
+# =========================
+#     SSL certificates
+# =========================
+*.pem
+*.crt
+*.key
+
+# =========================
+#       Jupyter etc
+# =========================
+.ipynb_checkpoints/
+.profile
