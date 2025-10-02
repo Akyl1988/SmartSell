@@ -1,0 +1,242 @@
+version: '3.8'
+
+# ---------------------------
+# Общие расширения/шаблоны
+# ---------------------------
+x-common-env: &common-env
+  DEBUG: "${DEBUG:-True}"
+  SECRET_KEY: "${SECRET_KEY:-dev-secret-key-change-in-production}"
+  ENVIRONMENT: "${ENVIRONMENT:-development}"
+  DATABASE_URL: "${DATABASE_URL:-postgresql://postgres:password@db:5432/smartsell}"
+  REDIS_URL: "${REDIS_URL:-redis://redis:6379}"
+  API_V1_STR: "${API_V1_STR:-/api/v1}"
+  HOST: "${HOST:-0.0.0.0}"
+  PORT: "${PORT:-8000}"
+  TZ: "${TIMEZONE:-UTC}"
+
+x-celery-env: &celery-env
+  <<: *common-env
+  CELERY_BROKER_URL: "${CELERY_BROKER_URL:-redis://redis:6379/0}"
+  CELERY_RESULT_BACKEND: "${CELERY_RESULT_BACKEND:-redis://redis:6379/0}"
+  SCHEDULER_TIMEZONE: "${SCHEDULER_TIMEZONE:-UTC}"
+
+x-logging: &default-logging
+  driver: "json-file"
+  options:
+    max-size: "10m"
+    max-file: "5"
+
+x-restart: &default-restart
+  restart: unless-stopped
+
+# ---------------------------
+# Сервисы
+# ---------------------------
+services:
+  app:
+    build:
+      context: .
+      target: development
+    env_file:
+      - ./.env
+    environment:
+      <<: *common-env
+    ports:
+      - "8000:8000"
+    volumes:
+      - .:/app
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    command: >
+      uvicorn app.main:app
+      --host 0.0.0.0
+      --port 8000
+      --reload
+    healthcheck:
+      # если есть /health, замените на curl -fsS http://localhost:8000/health || exit 1
+      test: ["CMD-SHELL", "python -c 'import socket,s;import sys; s=socket.socket(); import time; addr=(\"127.0.0.1\",8000); \nimport socket as so; s=so.socket(); \nimport time; \ntry:\n s.connect(addr); s.close(); sys.exit(0)\nexcept Exception:\n sys.exit(1)'"]
+      interval: 30s
+      timeout: 3s
+      retries: 5
+      start_period: 10s
+    ulimits:
+      nofile:
+        soft: 65535
+        hard: 65535
+    <<: *default-restart
+    logging: *default-logging
+
+  db:
+    image: postgres:15
+    env_file:
+      - ./.env
+    environment:
+      POSTGRES_DB: "${DB_NAME:-smartsell}"
+      POSTGRES_USER: "${DB_USER:-postgres}"
+      POSTGRES_PASSWORD: "${DB_PASSWORD:-password}"
+      TZ: "${TIMEZONE:-UTC}"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-postgres} -d ${DB_NAME:-smartsell} -h 127.0.0.1"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 10s
+    <<: *default-restart
+    logging: *default-logging
+
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redis_data:/data
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 5s
+    <<: *default-restart
+    logging: *default-logging
+
+  celery:
+    build:
+      context: .
+      target: development
+    env_file:
+      - ./.env
+    environment:
+      <<: *celery-env
+    volumes:
+      - .:/app
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    command: >
+      celery -A app.services.background_tasks:celery_app
+      worker
+      --loglevel=${CELERY_LOGLEVEL:-info}
+      --concurrency=${CELERY_WORKER_CONCURRENCY:-2}
+      --max-tasks-per-child=${CELERY_WORKER_MAX_TASKS_PER_CHILD:-100}
+    <<: *default-restart
+    logging: *default-logging
+
+  celery-beat:
+    build:
+      context: .
+      target: development
+    env_file:
+      - ./.env
+    environment:
+      <<: *celery-env
+    volumes:
+      - .:/app
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    command: >
+      celery -A app.services.background_tasks:celery_app
+      beat
+      --loglevel=${CELERY_LOGLEVEL:-info}
+    <<: *default-restart
+    logging: *default-logging
+
+  # ---------------------------
+  # Дополнительно: миграции Alembic (ручной запуск профилем "ops")
+  # Пример запуска: docker compose --profile ops up alembic -d
+  # ---------------------------
+  alembic:
+    profiles: ["ops"]
+    build:
+      context: .
+      target: development
+    env_file:
+      - ./.env
+    environment:
+      <<: *common-env
+    depends_on:
+      db:
+        condition: service_healthy
+    command: >
+      sh -c "
+      alembic upgrade head
+      "
+    volumes:
+      - .:/app
+    logging: *default-logging
+    <<: *default-restart
+
+  # ---------------------------
+  # Дополнительно: Flower для мониторинга Celery (ручной запуск профилем "ops")
+  # URL: http://localhost:5555
+  # ---------------------------
+  flower:
+    profiles: ["ops"]
+    build:
+      context: .
+      target: development
+    env_file:
+      - ./.env
+    environment:
+      <<: *celery-env
+    depends_on:
+      redis:
+        condition: service_healthy
+    command: >
+      celery -A app.services.background_tasks:celery_app
+      flower
+      --port=5555
+      --url_prefix=/
+    ports:
+      - "5555:5555"
+    logging: *default-logging
+    <<: *default-restart
+
+  # ---------------------------
+  # Дополнительно: pgAdmin (ручной запуск профилем "ops")
+  # URL: http://localhost:5050
+  # ---------------------------
+  pgadmin:
+    profiles: ["ops"]
+    image: dpage/pgadmin4:8
+    environment:
+      PGADMIN_DEFAULT_EMAIL: "${PGADMIN_DEFAULT_EMAIL:-admin@local}"
+      PGADMIN_DEFAULT_PASSWORD: "${PGADMIN_DEFAULT_PASSWORD:-admin}"
+      PGADMIN_CONFIG_SERVER_MODE: "False"
+    ports:
+      - "5050:80"
+    depends_on:
+      db:
+        condition: service_started
+    volumes:
+      - pgadmin_data:/var/lib/pgadmin
+    logging: *default-logging
+    <<: *default-restart
+
+# ---------------------------
+# Тома
+# ---------------------------
+volumes:
+  postgres_data:
+  redis_data:
+  pgadmin_data:
+
+# ---------------------------
+# Сети (по умолчанию — одна сеть «default»)
+# Если нужно разделение — раскомментируйте и назначьте сетки сервисам.
+# ---------------------------
+# networks:
+#   backend:
+#   frontend:
