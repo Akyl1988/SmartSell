@@ -189,3 +189,22 @@ tmp/
 # =========================
 .ipynb_checkpoints/
 .profile
+
+# --- extra ignores (project hardening) ---
+# any virtualenvs with version suffixes
+venv*/
+**/venv*/
+**/.venv*/
+**/Scripts/
+# local sqlite/db files anywhere
+**/*.db
+**/*.sqlite
+**/*.sqlite3
+# local dev databases by name
+smartsell.db
+test.db
+# OS/PowerShell artifacts
+*.ps1
+*.bat
+*.cmd
+
