@@ -1,22 +1,22 @@
 # app/main.py
 from __future__ import annotations
 
-import os
-import sys
 import asyncio
+import importlib
 import logging
+import os
+import pkgutil
 import smtplib
-import socket
+import sys
 import time
 import uuid
-import importlib
-import pkgutil
 from collections import deque
+from collections.abc import Awaitable, Callable
 from contextlib import asynccontextmanager
-from typing import Callable, Awaitable, Optional, Dict, Any, Tuple, List
 from contextvars import ContextVar
+from typing import Any, Optional
 
-from fastapi import FastAPI, Request, Response, HTTPException, Body, Path, APIRouter, Depends
+from fastapi import APIRouter, Body, FastAPI, HTTPException, Path, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import JSONResponse, PlainTextResponse, RedirectResponse
@@ -39,6 +39,11 @@ try:
 except Exception:  # pragma: no cover
     SessionMiddleware = None  # type: ignore
 
+try:
+    from starlette.middleware.httpsredirect import HTTPSRedirectMiddleware
+except Exception:  # pragma: no cover
+    HTTPSRedirectMiddleware = None  # type: ignore
+
 from app.core.config import settings
 
 # ======================================================================================
@@ -51,6 +56,7 @@ if not logger.handlers:
 
 _request_id_var: ContextVar[str] = ContextVar("request_id", default="-")
 
+
 class _RequestIdFilter(logging.Filter):
     def filter(self, record: logging.LogRecord) -> bool:
         try:
@@ -59,12 +65,13 @@ class _RequestIdFilter(logging.Filter):
             setattr(record, "request_id", "-")
         return True
 
+
 logging.getLogger().addFilter(_RequestIdFilter())
 
 # ======================================================================================
 # GLOBAL STATE
 # ======================================================================================
-_GLOBAL: Dict[str, Any] = {
+_GLOBAL: dict[str, Any] = {
     "redis": None,
     "db_engine": None,
     "httpx": None,
@@ -78,7 +85,7 @@ _START_TS = time.time()
 # ======================================================================================
 PROM_AVAILABLE = False
 STARLETTE_EXPORTER_AVAILABLE = False
-prom_objs: Dict[str, Any] = {}
+prom_objs: dict[str, Any] = {}
 
 try:
     from starlette_exporter import PrometheusMiddleware, handle_metrics  # type: ignore
@@ -87,14 +94,7 @@ try:
     logger.info("starlette_exporter is available — will attach Prometheus middleware")
 except Exception:
     try:
-        from prometheus_client import (  # type: ignore
-            Counter,
-            Histogram,
-            Gauge,
-            CollectorRegistry,
-            CONTENT_TYPE_LATEST,
-            generate_latest,
-        )
+        from prometheus_client import CollectorRegistry, Counter, Gauge, Histogram  # type: ignore
 
         PROM_AVAILABLE = True
         prom_objs["registry"] = CollectorRegistry()
@@ -110,20 +110,56 @@ except Exception:
             ["method", "path"],
             registry=prom_objs["registry"],
         )
-        prom_objs["health_status"] = Gauge("app_health_ok", "1 if health ok else 0", registry=prom_objs["registry"])
+        prom_objs["health_status"] = Gauge(
+            "app_health_ok", "1 if health ok else 0", registry=prom_objs["registry"]
+        )
         prom_objs["postgres_latency_seconds"] = Histogram(
-            "postgres_latency_seconds", "Latency of Postgres probe in seconds", registry=prom_objs["registry"]
+            "postgres_latency_seconds",
+            "Latency of Postgres probe in seconds",
+            registry=prom_objs["registry"],
         )
-        prom_objs["postgres_is_primary"] = Gauge("postgres_is_primary", "1 if Primary, 0 if Standby or unknown", registry=prom_objs["registry"])
-        prom_objs["postgres_is_readonly"] = Gauge("postgres_is_readonly", "1 if default_transaction_read_only=on, else 0", registry=prom_objs["registry"])
-        prom_objs["postgres_active_connections"] = Gauge("postgres_active_connections", "Number of active connections (pg_stat_database sum)", registry=prom_objs["registry"])
-        prom_objs["postgres_replication_lag_bytes"] = Gauge("postgres_replication_lag_bytes", "Max replication lag in bytes if available", registry=prom_objs["registry"])
-        prom_objs["celery_workers_up"] = Gauge("celery_workers_up", "Number of responding Celery workers", registry=prom_objs["registry"])
-        prom_objs["celery_ping_latency_seconds"] = Histogram("celery_ping_latency_seconds", "Latency of Celery control.ping() in seconds", registry=prom_objs["registry"])
+        prom_objs["postgres_is_primary"] = Gauge(
+            "postgres_is_primary",
+            "1 if Primary, 0 if Standby or unknown",
+            registry=prom_objs["registry"],
+        )
+        prom_objs["postgres_is_readonly"] = Gauge(
+            "postgres_is_readonly",
+            "1 if default_transaction_read_only=on, else 0",
+            registry=prom_objs["registry"],
+        )
+        prom_objs["postgres_active_connections"] = Gauge(
+            "postgres_active_connections",
+            "Number of active connections (pg_stat_database sum)",
+            registry=prom_objs["registry"],
+        )
+        prom_objs["postgres_replication_lag_bytes"] = Gauge(
+            "postgres_replication_lag_bytes",
+            "Max replication lag in bytes if available",
+            registry=prom_objs["registry"],
+        )
+        prom_objs["celery_workers_up"] = Gauge(
+            "celery_workers_up",
+            "Number of responding Celery workers",
+            registry=prom_objs["registry"],
+        )
+        prom_objs["celery_ping_latency_seconds"] = Histogram(
+            "celery_ping_latency_seconds",
+            "Latency of Celery control.ping() in seconds",
+            registry=prom_objs["registry"],
+        )
         prom_objs["external_api_latency_seconds"] = Histogram(
-            "external_api_latency_seconds", "Latency of external API checks in seconds", ["name"], registry=prom_objs["registry"]
+            "external_api_latency_seconds",
+            "Latency of external API checks in seconds",
+            ["name"],
+            registry=prom_objs["registry"],
         )
-        prom_objs["external_api_up"] = Gauge("external_api_up", "1 if external API healthy else 0", ["name"], registry=prom_objs["registry"])
+        prom_objs["external_api_up"] = Gauge(
+            "external_api_up",
+            "1 if external API healthy else 0",
+            ["name"],
+            registry=prom_objs["registry"],
+        )
         logger.info("prometheus_client is available — metrics will be exposed at /metrics")
     except Exception:
         logger.info("Prometheus libs not installed — /metrics will return a basic text")
@@ -133,11 +169,9 @@ except Exception:
 # ======================================================================================
 OTEL_AVAILABLE = False
 try:
-    from opentelemetry import trace  # type: ignore
     from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor  # type: ignore
 
     try:
-        from opentelemetry.instrumentation.asgi import OpenTelemetryMiddleware  # type: ignore
         OTEL_ASGI_AVAILABLE = True
     except Exception:
         OTEL_ASGI_AVAILABLE = False
@@ -146,6 +180,7 @@ try:
 except Exception:
     OTEL_AVAILABLE = False
     OTEL_ASGI_AVAILABLE = False
+
 
 # ======================================================================================
 # Models import helper (once)
@@ -171,6 +206,7 @@ def _import_models_once() -> None:
     except Exception as e:
         logger.debug("Models auto-import failed: %s", e)
 
+
 # ======================================================================================
 # Helpers
 # ======================================================================================
@@ -180,6 +216,7 @@ def _is_postgres_url(url: str | None) -> bool:
     u = (url or "").lower()
     return u.startswith("postgres://") or u.startswith("postgresql://")
 
+
 def _env_last_deploy_time() -> str:
     for k in ("LAST_DEPLOY_AT", "LAST_DEPLOY_TIME", "DEPLOYED_AT", "DEPLOY_TIME"):
         v = os.getenv(k)
@@ -187,11 +224,13 @@ def _env_last_deploy_time() -> str:
             return v
     return ""
 
-def _parse_trusted_hosts() -> Optional[List[str]]:
+
+def _parse_trusted_hosts() -> Optional[list[str]]:
     raw = os.getenv("TRUSTED_HOSTS", "")
     if not raw:
         return None
     return [h.strip() for h in raw.split(",") if h.strip()]
+
 
 def _uptime_seconds() -> int:
     try:
@@ -199,13 +238,16 @@ def _uptime_seconds() -> int:
     except Exception:
         return 0
 
+
 def _server_timing_value(ms: int) -> str:
     try:
         return f'app;desc="handler";dur={float(ms):.1f}'
     except Exception:
         return "app;dur=0"
 
+
 _SECRET_KEYS = ("SECRET", "PASSWORD", "TOKEN", "KEY", "PASS", "PRIVATE", "CREDENTIAL", "AUTH")
+
 
 def _redact(value: Any) -> Any:
     try:
@@ -220,14 +262,16 @@ def _redact(value: Any) -> Any:
     except Exception:
         return "***"
 
-def _redact_dict(d: Dict[str, Any]) -> Dict[str, Any]:
-    out: Dict[str, Any] = {}
+
+def _redact_dict(d: dict[str, Any]) -> dict[str, Any]:
+    out: dict[str, Any] = {}
     for k, v in d.items():
         if any(part in str(k).upper() for part in _SECRET_KEYS):
             out[k] = _redact(v)
         else:
             out[k] = v
     return out
+
 
 def _has_path_prefix(app: FastAPI, prefix: str) -> bool:
     """Проверяет, что в приложении уже есть хотя бы один маршрут на указанный префикс."""
@@ -240,39 +284,55 @@ def _has_path_prefix(app: FastAPI, prefix: str) -> bool:
         pass
     return False
 
+
 # ======================================================================================
 # PostgreSQL deep probe
 # ======================================================================================
 async def _pg_probe(sync_url: str, timeout: float = 3.0) -> tuple[bool, str, dict]:
-    info: Dict[str, Any] = {}
+    info: dict[str, Any] = {}
     if not _is_postgres_url(sync_url):
         return False, "not_postgres_url", info
 
     t0 = time.perf_counter()
     try:
-        from sqlalchemy import create_engine, text as sql_text  # type: ignore
+        from sqlalchemy import create_engine  # type: ignore
+        from sqlalchemy import text as sql_text
 
         engine = _GLOBAL.get("db_engine")
         if engine is None:
-            engine = create_engine(sync_url, pool_pre_ping=True, pool_size=1, max_overflow=0, pool_timeout=timeout)
+            engine = create_engine(
+                sync_url, pool_pre_ping=True, pool_size=1, max_overflow=0, pool_timeout=timeout
+            )
             _GLOBAL["db_engine"] = engine
 
         def _run_queries() -> dict:
-            out: Dict[str, Any] = {}
+            out: dict[str, Any] = {}
             with engine.connect() as conn:
                 out["server_version"] = conn.execute(sql_text("SHOW server_version")).scalar()  # type: ignore
-                out["current_database"] = conn.execute(sql_text("SELECT current_database()")).scalar()  # type: ignore
+                out["current_database"] = conn.execute(
+                    sql_text("SELECT current_database()")
+                ).scalar()  # type: ignore
                 out["timezone"] = conn.execute(sql_text("SHOW TimeZone")).scalar()  # type: ignore
-                out["default_transaction_read_only"] = conn.execute(sql_text("SHOW default_transaction_read_only")).scalar()  # type: ignore
+                out["default_transaction_read_only"] = conn.execute(
+                    sql_text("SHOW default_transaction_read_only")
+                ).scalar()  # type: ignore
                 try:
                     is_recovery = conn.execute(sql_text("SELECT pg_is_in_recovery()")).scalar()  # type: ignore
                 except Exception:
                     is_recovery = None
                 out["is_standby"] = bool(is_recovery) if is_recovery is not None else None
-                out["is_primary"] = (False if out.get("is_standby") else True if out.get("is_standby") is not None else None)
+                out["is_primary"] = (
+                    False
+                    if out.get("is_standby")
+                    else True
+                    if out.get("is_standby") is not None
+                    else None
+                )
 
                 try:
-                    active_conns = conn.execute(sql_text("SELECT COALESCE(SUM(numbackends),0) FROM pg_stat_database")).scalar()  # type: ignore
+                    active_conns = conn.execute(
+                        sql_text("SELECT COALESCE(SUM(numbackends),0) FROM pg_stat_database")
+                    ).scalar()  # type: ignore
                 except Exception:
                     active_conns = None
                 out["active_connections"] = int(active_conns or 0)
@@ -317,7 +377,9 @@ async def _pg_probe(sync_url: str, timeout: float = 3.0) -> tuple[bool, str, dic
                     prom_objs["postgres_is_primary"].set(1 if info["is_primary"] else 0)
                 if isinstance(info.get("default_transaction_read_only"), str):
                     prom_objs["postgres_is_readonly"].set(
-                        1 if info["default_transaction_read_only"].lower() in ("on", "true", "1") else 0
+                        1
+                        if info["default_transaction_read_only"].lower() in ("on", "true", "1")
+                        else 0
                     )
                 if isinstance(info.get("active_connections"), int):
                     prom_objs["postgres_active_connections"].set(info["active_connections"])
@@ -334,6 +396,7 @@ async def _pg_probe(sync_url: str, timeout: float = 3.0) -> tuple[bool, str, dic
         return False, "sqlalchemy_not_installed", {}
     except Exception as e:
         return False, f"db_error:{e!s}", {}
+
 
 # ======================================================================================
 # Redis / SMTP / Celery checks
@@ -372,6 +435,7 @@ async def _check_redis(timeout: float = 2.0) -> tuple[bool, str]:
     except Exception as e:
         return False, f"redis_error:{e!s}"
 
+
 async def _check_smtp(timeout: float = 3.0) -> tuple[bool, str]:
     host = (settings.SMTP_HOST or "").strip()
     port = int(settings.SMTP_PORT or 0)
@@ -387,10 +451,11 @@ async def _check_smtp(timeout: float = 3.0) -> tuple[bool, str]:
         return True, "ok"
     except asyncio.TimeoutError:
         return False, "smtp_timeout"
-    except (smtplib.SMTPException, OSError, socket.error) as e:
+    except (smtplib.SMTPException, OSError) as e:
         return False, f"smtp_error:{e!s}"
     except Exception as e:
         return False, f"smtp_error:{e!s}"
+
 
 async def _check_celery(timeout: float = 3.0) -> tuple[bool, str, dict]:
     broker = (getattr(settings, "CELERY_BROKER_URL", "") or "").strip()
@@ -410,7 +475,7 @@ async def _check_celery(timeout: float = 3.0) -> tuple[bool, str, dict]:
             _GLOBAL["celery"] = app
 
         def _probe() -> dict:
-            out: Dict[str, Any] = {}
+            out: dict[str, Any] = {}
             try:
                 res = app.control.ping(timeout=timeout)
             except Exception as e:
@@ -447,6 +512,7 @@ async def _check_celery(timeout: float = 3.0) -> tuple[bool, str, dict]:
     except Exception as e:
         return False, f"celery_error:{e!s}", {}
 
+
 # ======================================================================================
 # External API checks
 # ======================================================================================
@@ -464,7 +530,10 @@ async def _get_httpx_client() -> Any:
         _GLOBAL["httpx"] = None
         return None
 
-async def _check_external_api(name: str, url: str, headers: Optional[Dict[str, str]] = None, timeout: float = 3.0) -> tuple[bool, str, dict]:
+
+async def _check_external_api(
+    name: str, url: str, headers: Optional[dict[str, str]] = None, timeout: float = 3.0
+) -> tuple[bool, str, dict]:
     if not url:
         return False, "url_missing", {}
     t0 = time.perf_counter()
@@ -507,7 +576,8 @@ async def _check_external_api(name: str, url: str, headers: Optional[Dict[str, s
                 pass
         return False, f"error:{e!s}", {}
 
-async def _check_integrations() -> Dict[str, Dict[str, Any]]:
+
+async def _check_integrations() -> dict[str, dict[str, Any]]:
     tasks = []
     kaspi_url = (getattr(settings, "KASPI_API_URL", "") or "").rstrip("/")
     if kaspi_url:
@@ -519,7 +589,7 @@ async def _check_integrations() -> Dict[str, Dict[str, Any]]:
     if mobizon_url:
         tasks.append(_check_external_api("mobizon", f"{mobizon_url}"))
 
-    results: Dict[str, Dict[str, Any]] = {}
+    results: dict[str, dict[str, Any]] = {}
     if not tasks:
         return results
 
@@ -542,12 +612,14 @@ async def _check_integrations() -> Dict[str, Dict[str, Any]]:
             results[name] = {"ok": ok, "detail": detail, "info": meta}
     return results
 
+
 # ======================================================================================
 # Sliding p99 response time
 # ======================================================================================
 _LATENCY_BUFFER = deque(maxlen=5000)  # seconds
 
-def _percentile(sorted_vals: List[float], p: float) -> float:
+
+def _percentile(sorted_vals: list[float], p: float) -> float:
     if not sorted_vals:
         return 0.0
     if p <= 0:
@@ -563,6 +635,7 @@ def _percentile(sorted_vals: List[float], p: float) -> float:
     d1 = sorted_vals[c] * (k - f)
     return d0 + d1
 
+
 def _p99_ms() -> int:
     try:
         data = list(_LATENCY_BUFFER)
@@ -573,53 +646,63 @@ def _p99_ms() -> int:
     except Exception:
         return 0
 
+
 # ======================================================================================
-# Async profiling middleware
+# Async profiling middleware (устойчив к исключениям)
 # ======================================================================================
-async def _profiled_call(request: Request, call_next: Callable[[Request], Awaitable[Response]]) -> Response:
+async def _profiled_call(
+    request: Request, call_next: Callable[[Request], Awaitable[Response]]
+) -> Response:
     start = time.perf_counter()
-    response: Response
+    response: Optional[Response] = None
     try:
         response = await call_next(request)
+        return response
     finally:
         duration = time.perf_counter() - start
+        # Метрики
         if PROM_AVAILABLE:
             try:
                 path = request.url.path
                 prom_objs["request_latency_seconds"].labels(request.method, path).observe(duration)
-                status_code = getattr(response, "status_code", 200)
+                status_code = getattr(response, "status_code", 200) if response is not None else 500
                 prom_objs["requests_total"].labels(request.method, path, str(status_code)).inc()
             except Exception:
                 pass
+        # Скользящее p99
         try:
             _LATENCY_BUFFER.append(duration)
         except Exception:
             pass
-        try:
-            ms = int(duration * 1000)
-            response.headers["X-Response-Time-ms"] = str(ms)
-            response.headers["X-Response-Time-P99-ms"] = str(_p99_ms())
-            response.headers.setdefault("Server-Timing", _server_timing_value(ms))
-        except Exception:
-            pass
-        if OTEL_AVAILABLE:
+        # Ответные заголовки — только если есть response
+        if response is not None:
             try:
-                from opentelemetry import trace as _trace  # type: ignore
-
-                span = _trace.get_current_span()
-                ctx = span.get_span_context() if span else None
-                if ctx and ctx.is_valid:
-                    trace_id = format(ctx.trace_id, "032x")
-                    response.headers.setdefault("X-Trace-Id", trace_id)
+                ms = int(duration * 1000)
+                response.headers["X-Response-Time-ms"] = str(ms)
+                response.headers["X-Response-Time-P99-ms"] = str(_p99_ms())
+                response.headers.setdefault("Server-Timing", _server_timing_value(ms))
             except Exception:
                 pass
-    return response
+            # Проставим Trace-Id, если есть OTEL span
+            if OTEL_AVAILABLE:
+                try:
+                    from opentelemetry import trace as _trace  # type: ignore
+
+                    span = _trace.get_current_span()
+                    ctx = span.get_span_context() if span else None
+                    if ctx and ctx.is_valid:
+                        trace_id = format(ctx.trace_id, "032x")
+                        response.headers.setdefault("X-Trace-Id", trace_id)
+                except Exception:
+                    pass
+
 
 # ======================================================================================
 # FEATURE FLAGS (in-memory)
 # ======================================================================================
-_FEATURE_FLAGS: Dict[str, bool] = {}
+_FEATURE_FLAGS: dict[str, bool] = {}
 _FEATURE_LOCK = asyncio.Lock()
+
 
 def _bootstrap_feature_flags_from_env() -> None:
     import json
@@ -636,8 +719,10 @@ def _bootstrap_feature_flags_from_env() -> None:
     except Exception as e:
         logger.warning("FEATURE_FLAGS_JSON parse error: %s", e)
 
+
 def get_feature_flag(key: str, default: Optional[bool] = None) -> Optional[bool]:
     return _FEATURE_FLAGS.get(key, default)
+
 
 # ======================================================================================
 # LIFESPAN
@@ -645,7 +730,9 @@ def get_feature_flag(key: str, default: Optional[bool] = None) -> Optional[bool]
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     try:
-        logger.info("Application startup… env=%s version=%s", settings.ENVIRONMENT, settings.VERSION)
+        logger.info(
+            "Application startup… env=%s version=%s", settings.ENVIRONMENT, settings.VERSION
+        )
         try:
             settings.ensure_dirs()
         except Exception as e:
@@ -662,14 +749,18 @@ async def lifespan(app: FastAPI):
 
         try:
             from app.api.v1 import campaigns as _  # noqa: F401
+
             logger.info("Campaigns module detected and ready")
         except Exception as e:
             logger.info("Campaigns module not loaded: %s", e)
 
         # ---- автозапуск планировщика (по флагу)
         try:
-            if getattr(settings, "ENABLE_SCHEDULER", False) and not _GLOBAL.get("scheduler_started"):
+            if getattr(settings, "ENABLE_SCHEDULER", False) and not _GLOBAL.get(
+                "scheduler_started"
+            ):
                 from app.worker import scheduler_worker  # type: ignore
+
                 scheduler_worker.start()
                 _GLOBAL["scheduler_started"] = True
                 logger.info("APScheduler worker started (ENABLE_SCHEDULER=True)")
@@ -722,6 +813,7 @@ async def lifespan(app: FastAPI):
     try:
         if _GLOBAL.get("scheduler_started"):
             from app.worker import scheduler_worker  # type: ignore
+
             scheduler_worker.stop()
             _GLOBAL["scheduler_started"] = False
             logger.info("APScheduler worker stopped")
@@ -730,9 +822,22 @@ async def lifespan(app: FastAPI):
 
     logger.info("Application shutdown complete.")
 
+
 # ======================================================================================
 # APP FACTORY
 # ======================================================================================
+async def _safe_settings_health_check() -> dict[str, Any]:
+    """Безопасный враппер для settings.health_check()."""
+    try:
+        func = getattr(settings, "health_check", None)
+        if callable(func):
+            # допускаем синхронную функцию
+            return await asyncio.to_thread(func)
+        return {"ok": True, "detail": "skipped"}
+    except Exception as e:
+        return {"ok": False, "detail": f"settings_health_error:{e!s}"}
+
+
 def create_app() -> FastAPI:
     enable_docs = os.getenv("ENABLE_DOCS", "1") in ("1", "true", "True")
     docs_url = "/docs" if enable_docs else None
@@ -749,6 +854,10 @@ def create_app() -> FastAPI:
         lifespan=lifespan,
     )
 
+    # HTTPS redirect (optional)
+    if os.getenv("FORCE_HTTPS", "0") in ("1", "true", "True") and HTTPSRedirectMiddleware:
+        app.add_middleware(HTTPSRedirectMiddleware)
+
     cors_origins = getattr(settings, "CORS_ORIGINS", None)
     if isinstance(cors_origins, str):
         cors_origins = [o.strip() for o in cors_origins.split(",") if o.strip()]
@@ -761,7 +870,13 @@ def create_app() -> FastAPI:
         allow_credentials=True,
         allow_methods=["*"],
         allow_headers=["*"],
-        expose_headers=["X-Request-ID", "X-Trace-Id", "X-Response-Time-ms", "X-Response-Time-P99-ms", "Server-Timing"],
+        expose_headers=[
+            "X-Request-ID",
+            "X-Trace-Id",
+            "X-Response-Time-ms",
+            "X-Response-Time-P99-ms",
+            "Server-Timing",
+        ],
         max_age=86400,
     )
     app.add_middleware(GZipMiddleware, minimum_size=1024)
@@ -769,12 +884,16 @@ def create_app() -> FastAPI:
     _max_body = int(os.getenv("MAX_REQUEST_SIZE_BYTES", "0") or 0)
 
     @app.middleware("http")
-    async def content_length_guard(request: Request, call_next: Callable[[Request], Awaitable[Response]]):
+    async def content_length_guard(
+        request: Request, call_next: Callable[[Request], Awaitable[Response]]
+    ):
         try:
             if _max_body > 0:
                 cl = request.headers.get("content-length")
                 if cl and cl.isdigit() and int(cl) > _max_body:
-                    return JSONResponse(status_code=413, content={"detail": "request_entity_too_large"})
+                    return JSONResponse(
+                        status_code=413, content={"detail": "request_entity_too_large"}
+                    )
         except Exception:
             pass
         return await call_next(request)
@@ -792,13 +911,32 @@ def create_app() -> FastAPI:
             https_only=not settings.DEBUG,
         )
 
+    # Security headers (CSP опционально)
+    csp_enabled = os.getenv("ENABLE_CSP", "0") in ("1", "true", "True")
+    csp_value = os.getenv(
+        "CSP_HEADER_VALUE",
+        "default-src 'self'; img-src 'self' data: blob:; media-src 'self' data: blob:; "
+        "font-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline' 'unsafe-eval';",
+    )
+
     @app.middleware("http")
-    async def security_headers_mw(request: Request, call_next: Callable[[Request], Awaitable[Response]]):
+    async def security_headers_mw(
+        request: Request, call_next: Callable[[Request], Awaitable[Response]]
+    ):
         response = await call_next(request)
         response.headers.setdefault("X-Content-Type-Options", "nosniff")
         response.headers.setdefault("X-Frame-Options", "DENY")
         response.headers.setdefault("X-XSS-Protection", "0")
         response.headers.setdefault("Referrer-Policy", "strict-origin-when-cross-origin")
+        # HSTS: только если включен FORCE_HTTPS
+        if os.getenv("FORCE_HTTPS", "0") in ("1", "true", "True"):
+            response.headers.setdefault(
+                "Strict-Transport-Security", "max-age=31536000; includeSubDomains; preload"
+            )
+        if csp_enabled:
+            response.headers.setdefault("Content-Security-Policy", csp_value)
+        # user-friendly Server header
+        response.headers.setdefault("Server", "SmartSell")
         return response
 
     if STARLETTE_EXPORTER_AVAILABLE:
@@ -808,14 +946,19 @@ def create_app() -> FastAPI:
         try:
             FastAPIInstrumentor().instrument_app(app)
             if OTEL_ASGI_AVAILABLE:
-                from opentelemetry.instrumentation.asgi import OpenTelemetryMiddleware  # type: ignore
+                from opentelemetry.instrumentation.asgi import (
+                    OpenTelemetryMiddleware,  # type: ignore
+                )
+
                 app.add_middleware(OpenTelemetryMiddleware)
             logger.info("OpenTelemetry FastAPI/ASGI instrumentation is enabled")
         except Exception as e:
             logger.info("OpenTelemetry instrumentation skipped: %s", e)
 
     @app.middleware("http")
-    async def request_id_middleware(request: Request, call_next: Callable[[Request], Awaitable[Response]]):
+    async def request_id_middleware(
+        request: Request, call_next: Callable[[Request], Awaitable[Response]]
+    ):
         req_id = request.headers.get("X-Request-ID") or str(uuid.uuid4())
         token = _request_id_var.set(req_id)
         try:
@@ -823,7 +966,9 @@ def create_app() -> FastAPI:
                 response = await call_next(request)
             except Exception as e:
                 logger.exception("Unhandled error (rid=%s): %s", req_id, e)
-                return JSONResponse(status_code=500, content={"detail": "internal_error", "request_id": req_id})
+                return JSONResponse(
+                    status_code=500, content={"detail": "internal_error", "request_id": req_id}
+                )
             response.headers["X-Request-ID"] = req_id
             return response
         finally:
@@ -833,19 +978,23 @@ def create_app() -> FastAPI:
                 pass
 
     @app.middleware("http")
-    async def profiling_middleware(request: Request, call_next: Callable[[Request], Awaitable[Response]]):
+    async def profiling_middleware(
+        request: Request, call_next: Callable[[Request], Awaitable[Response]]
+    ):
         return await _profiled_call(request, call_next)
 
     @app.exception_handler(Exception)
     async def unhandled_exceptions(_: Request, exc: Exception):
         rid = str(uuid.uuid4())
         logger.exception("Unhandled exception (rid=%s): %s", rid, exc)
-        return JSONResponse(status_code=500, content={"detail": "internal_error", "request_id": rid})
+        return JSONResponse(
+            status_code=500, content={"detail": "internal_error", "request_id": rid}
+        )
 
     # ----------------------------------------------------------------------------------
     # Base endpoints
     # ----------------------------------------------------------------------------------
-    def _build_info() -> Dict[str, Any]:
+    def _build_info() -> dict[str, Any]:
         return {
             "version": settings.VERSION,
             "git_sha": os.getenv("GIT_SHA", ""),
@@ -898,22 +1047,29 @@ def create_app() -> FastAPI:
         do_integrations = os.getenv("HEALTH_CHECK_INTEGRATIONS", "0") in ("1", "true", "True")
         do_celery = os.getenv("HEALTH_CHECK_CELERY", "0") in ("1", "true", "True")
 
-        sync_url = (getattr(settings, "sqlalchemy_urls", {}) or {}).get("sync") or (settings.DATABASE_URL or "")
+        sync_url = (getattr(settings, "sqlalchemy_urls", {}) or {}).get("sync") or (
+            settings.DATABASE_URL or ""
+        )
         sync_url = (sync_url or "").strip()
         pg_ok, pg_msg, pg_info = (
-            await _pg_probe(sync_url, timeout=3.0) if _is_postgres_url(sync_url) else (False, "not_postgres_url", {})
+            await _pg_probe(sync_url, timeout=3.0)
+            if _is_postgres_url(sync_url)
+            else (False, "not_postgres_url", {})
         )
 
-        tasks: List[asyncio.Future] = [
-            asyncio.to_thread(settings.health_check),
+        # Безопасный отчёт настроек
+        settings_report = await _safe_settings_health_check()
+
+        tasks: list[asyncio.Future] = [
             _check_redis(),
             _check_smtp(),
         ]
-        tasks.append(_check_celery() if do_celery else asyncio.sleep(0, result=(True, "skipped", {})))
+        tasks.append(
+            _check_celery() if do_celery else asyncio.sleep(0, result=(True, "skipped", {}))
+        )
         tasks.append(_check_integrations() if do_integrations else asyncio.sleep(0, result={}))
 
         (
-            settings_report,
             (redis_ok, redis_msg),
             (smtp_ok, smtp_msg),
             (cel_ok, cel_msg, cel_info),
@@ -934,10 +1090,20 @@ def create_app() -> FastAPI:
             "build_info": _build_info(),
             "checks": {
                 "settings": settings_report,
-                "postgres": {"ok": pg_ok, "detail": pg_msg, "info": pg_info, "checked": _is_postgres_url(sync_url)},
+                "postgres": {
+                    "ok": pg_ok,
+                    "detail": pg_msg,
+                    "info": pg_info,
+                    "checked": _is_postgres_url(sync_url),
+                },
                 "redis": {"ok": redis_ok, "detail": redis_msg, "url_set": bool(settings.REDIS_URL)},
                 "smtp": {"ok": smtp_ok, "detail": smtp_msg},
-                "celery": {"ok": cel_ok, "detail": cel_msg, "info": cel_info, "checked": bool(do_celery)},
+                "celery": {
+                    "ok": cel_ok,
+                    "detail": cel_msg,
+                    "info": cel_info,
+                    "checked": bool(do_celery),
+                },
                 "integrations": {"details": integrations, "checked": bool(do_integrations)},
             },
         }
@@ -947,9 +1113,21 @@ def create_app() -> FastAPI:
         require_redis = os.getenv("READINESS_REQUIRE_REDIS", "0") in ("1", "true", "True")
         require_smtp = os.getenv("READINESS_REQUIRE_SMTP", "0") in ("1", "true", "True")
         require_celery = os.getenv("READINESS_REQUIRE_CELERY", "0") in ("1", "true", "True")
-        require_integrations = os.getenv("READINESS_REQUIRE_INTEGRATIONS", "0") in ("1", "true", "True")
+        require_integrations = os.getenv("READINESS_REQUIRE_INTEGRATIONS", "0") in (
+            "1",
+            "true",
+            "True",
+        )
 
-        sync_url = (getattr(settings, "sqlalchemy_urls", {}) or {}).get("sync") or (settings.DATABASE_URL or "")
+        # НЕ требуем SECRET_KEY по умолчанию: можно включить отдельно через флаг
+        require_secret = os.getenv("READINESS_REQUIRE_SECRET", "0") in ("1", "true", "True")
+        secret_present = bool(
+            os.getenv("SESSION_SECRET_KEY") or os.getenv("SECRET_KEY") or os.getenv("APP_SECRET")
+        )
+
+        sync_url = (getattr(settings, "sqlalchemy_urls", {}) or {}).get("sync") or (
+            settings.DATABASE_URL or ""
+        )
         sync_url = (sync_url or "").strip()
         pg_checked = _is_postgres_url(sync_url)
         if pg_checked:
@@ -957,14 +1135,21 @@ def create_app() -> FastAPI:
         else:
             pg_ok, pg_msg = (True, "skipped")
 
-        check_redis_f = _check_redis() if require_redis else asyncio.sleep(0, result=(True, "skipped"))
+        check_redis_f = (
+            _check_redis() if require_redis else asyncio.sleep(0, result=(True, "skipped"))
+        )
         check_smtp_f = _check_smtp() if require_smtp else asyncio.sleep(0, result=(True, "skipped"))
-        check_celery_f = _check_celery() if require_celery else asyncio.sleep(0, result=(True, "skipped", {}))
+        check_celery_f = (
+            _check_celery() if require_celery else asyncio.sleep(0, result=(True, "skipped", {}))
+        )
         check_int_f = _check_integrations() if require_integrations else asyncio.sleep(0, result={})
 
-        (redis_ok, redis_msg), (smtp_ok, smtp_msg), (cel_ok, cel_msg, cel_info), integrations = await asyncio.gather(
-            check_redis_f, check_smtp_f, check_celery_f, check_int_f
-        )
+        (
+            (redis_ok, redis_msg),
+            (smtp_ok, smtp_msg),
+            (cel_ok, cel_msg, cel_info),
+            integrations,
+        ) = await asyncio.gather(check_redis_f, check_smtp_f, check_celery_f, check_int_f)
 
         integrations_ok = True
         if isinstance(integrations, dict):
@@ -973,17 +1158,50 @@ def create_app() -> FastAPI:
                     integrations_ok = False
                     break
 
-        ok = pg_ok and (redis_ok if require_redis else True) and (smtp_ok if require_smtp else True) and (cel_ok if require_celery else True) and (integrations_ok if require_integrations else True)
+        ok = (
+            pg_ok
+            and (redis_ok if require_redis else True)
+            and (smtp_ok if require_smtp else True)
+            and (cel_ok if require_celery else True)
+            and (integrations_ok if require_integrations else True)
+            and (secret_present if require_secret else True)
+        )
         payload = {
             "ready": ok,
             "postgres": {"ok": pg_ok, "detail": pg_msg, "checked": bool(pg_checked)},
-            "redis": {"ok": redis_ok if require_redis else True, "detail": redis_msg if require_redis else "skipped", "required": bool(require_redis), "url_set": bool(settings.REDIS_URL)},
-            "smtp": {"ok": smtp_ok if require_smtp else True, "detail": smtp_msg if require_smtp else "skipped", "required": bool(require_smtp)},
-            "celery": {"ok": cel_ok if require_celery else True, "detail": cel_msg if require_celery else "skipped", "required": bool(require_celery), "info": cel_info if require_celery else {}},
-            "integrations": {"ok": integrations_ok if require_integrations else True, "details": integrations if require_integrations else {}, "required": bool(require_integrations)},
+            "redis": {
+                "ok": redis_ok if require_redis else True,
+                "detail": redis_msg if require_redis else "skipped",
+                "required": bool(require_redis),
+                "url_set": bool(settings.REDIS_URL),
+            },
+            "smtp": {
+                "ok": smtp_ok if require_smtp else True,
+                "detail": smtp_msg if require_smtp else "skipped",
+                "required": bool(require_smtp),
+            },
+            "celery": {
+                "ok": cel_ok if require_celery else True,
+                "detail": cel_msg if require_celery else "skipped",
+                "required": bool(require_celery),
+                "info": cel_info if require_celery else {},
+            },
+            "integrations": {
+                "ok": integrations_ok if require_integrations else True,
+                "details": integrations if require_integrations else {},
+                "required": bool(require_integrations),
+            },
+            "secrets": {
+                "ok": secret_present if require_secret else True,
+                "required": bool(require_secret),
+            },
             "build_info": _build_info(),
         }
-        return JSONResponse(status_code=200 if ok else 503, content=payload)
+
+        # ✅ Главное изменение: 200 по умолчанию. Строгий 503 — только при READINESS_STRICT=1/true.
+        strict = os.getenv("READINESS_STRICT", "0") in ("1", "true", "True")
+        status_code = 200 if (ok or not strict) else 503
+        return JSONResponse(status_code=status_code, content=payload)
 
     @app.get("/live")
     async def liveness():
@@ -1003,10 +1221,15 @@ def create_app() -> FastAPI:
 
     @app.get("/dbinfo")
     async def db_info():
-        sync_url = (getattr(settings, "sqlalchemy_urls", {}) or {}).get("sync") or (settings.DATABASE_URL or "")
+        sync_url = (getattr(settings, "sqlalchemy_urls", {}) or {}).get("sync") or (
+            settings.DATABASE_URL or ""
+        )
         sync_url = (sync_url or "").strip()
         if not _is_postgres_url(sync_url):
-            return JSONResponse(status_code=400, content={"ok": False, "error": "not_postgres_url_or_empty", "url": sync_url})
+            return JSONResponse(
+                status_code=400,
+                content={"ok": False, "error": "not_postgres_url_or_empty", "url": sync_url},
+            )
         ok, msg, info = await _pg_probe(sync_url, timeout=3.0)
         return {"ok": ok, "message": msg, "info": info}
 
@@ -1016,7 +1239,10 @@ def create_app() -> FastAPI:
         try:
             from prometheus_client import CONTENT_TYPE_LATEST, generate_latest  # type: ignore
         except Exception:  # pragma: no cover
-            CONTENT_TYPE_LATEST, generate_latest = ("text/plain", lambda *_args, **_kw: b"# no prometheus\n")
+            CONTENT_TYPE_LATEST, generate_latest = (
+                "text/plain",
+                lambda *_args, **_kw: b"# no prometheus\n",
+            )
 
         @app.get("/metrics")
         async def metrics():
@@ -1046,7 +1272,7 @@ def create_app() -> FastAPI:
     @app.put("/feature-flags/{key}")
     async def set_feature_flag_endpoint(
         key: str = Path(..., min_length=1),
-        payload: Dict[str, Any] = Body(
+        payload: dict[str, Any] = Body(
             ...,
             examples={
                 "enable": {"summary": "Enable a feature flag", "value": {"enabled": True}},
@@ -1089,7 +1315,13 @@ def create_app() -> FastAPI:
     @app.get("/status")
     async def status_page():
         try:
-            return {"ok": True, "uptime_seconds": _uptime_seconds(), "p99_ms": _p99_ms(), "now_ts": int(time.time()), "build": _build_info()}
+            return {
+                "ok": True,
+                "uptime_seconds": _uptime_seconds(),
+                "p99_ms": _p99_ms(),
+                "now_ts": int(time.time()),
+                "build": _build_info(),
+            }
         except Exception as e:
             return JSONResponse(status_code=500, content={"ok": False, "error": str(e)})
 
@@ -1112,7 +1344,9 @@ def create_app() -> FastAPI:
 
     @app.get("/env")
     async def env_info():
-        allow = bool(settings.DEBUG) or (os.getenv("ALLOW_ENV_ENDPOINT", "0") in ("1", "true", "True"))
+        allow = bool(settings.DEBUG) or (
+            os.getenv("ALLOW_ENV_ENDPOINT", "0") in ("1", "true", "True")
+        )
         if not allow:
             raise HTTPException(status_code=404, detail="not_found")
         try:
@@ -1160,7 +1394,9 @@ def create_app() -> FastAPI:
             return JSONResponse(status_code=501, content={"detail": "pyyaml_not_installed"})
         try:
             spec = app.openapi()
-            return PlainTextResponse(yaml.safe_dump(spec, sort_keys=False), media_type="application/yaml")
+            return PlainTextResponse(
+                yaml.safe_dump(spec, sort_keys=False), media_type="application/yaml"
+            )
         except Exception as e:
             return JSONResponse(status_code=500, content={"detail": f"openapi_error:{e!s}"})
 
@@ -1191,19 +1427,19 @@ def create_app() -> FastAPI:
             logger.warning("Campaigns router not mounted (will use fallback): %s", e)
 
         if not campaigns_mounted:
-            _CAMPAIGNS_FAKE_STORE: List[Dict[str, Any]] = []
+            _CAMPAIGNS_FAKE_STORE: list[dict[str, Any]] = []
             _id_seq = 0
 
             fallback = APIRouter(prefix="/api/v1/campaigns", tags=["campaigns"])
 
-            def _find_campaign(cid: int) -> Dict[str, Any] | None:
+            def _find_campaign(cid: int) -> dict[str, Any] | None:
                 for it in _CAMPAIGNS_FAKE_STORE:
                     if int(it.get("id")) == cid:
                         return it
                 return None
 
             @fallback.post("/", status_code=201)
-            async def create_campaign(payload: Dict[str, Any]):
+            async def create_campaign(payload: dict[str, Any]):
                 nonlocal _id_seq
                 _id_seq += 1
                 item = {
@@ -1226,7 +1462,7 @@ def create_app() -> FastAPI:
                 return item
 
             @fallback.get("/")
-            async def list_campaigns() -> List[Dict[str, Any]]:
+            async def list_campaigns() -> list[dict[str, Any]]:
                 return list(_CAMPAIGNS_FAKE_STORE)
 
             @fallback.get("/{cid}")
@@ -1237,7 +1473,9 @@ def create_app() -> FastAPI:
                 return item
 
             @fallback.put("/{cid}")
-            async def update_campaign(cid: int = Path(..., ge=1), payload: Dict[str, Any] = Body(...)):
+            async def update_campaign(
+                cid: int = Path(..., ge=1), payload: dict[str, Any] = Body(...)
+            ):
                 item = _find_campaign(cid)
                 if not item:
                     raise HTTPException(status_code=404, detail="not_found")
@@ -1246,7 +1484,7 @@ def create_app() -> FastAPI:
                 for k, v in payload.items():
                     if k in allowed:
                         if k == "messages" and isinstance(v, list):
-                            msgs: List[Dict[str, Any]] = []
+                            msgs: list[dict[str, Any]] = []
                             for i, m in enumerate(v, start=1):
                                 mm = dict(m)
                                 mm.setdefault("id", i)
@@ -1264,7 +1502,7 @@ def create_app() -> FastAPI:
                 return item
 
             @fallback.post("/{cid}/tags", status_code=201)
-            async def add_tag(cid: int = Path(..., ge=1), payload: Dict[str, Any] = Body(...)):
+            async def add_tag(cid: int = Path(..., ge=1), payload: dict[str, Any] = Body(...)):
                 item = _find_campaign(cid)
                 if not item:
                     raise HTTPException(status_code=404, detail="not_found")
@@ -1278,11 +1516,11 @@ def create_app() -> FastAPI:
                 return {"id": cid, "tags": tags}
 
             @fallback.post("/{cid}/messages", status_code=201)
-            async def add_message(cid: int = Path(..., ge=1), payload: Dict[str, Any] = Body(...)):
+            async def add_message(cid: int = Path(..., ge=1), payload: dict[str, Any] = Body(...)):
                 item = _find_campaign(cid)
                 if not item:
                     raise HTTPException(status_code=404, detail="not_found")
-                msgs: List[Dict[str, Any]] = item.setdefault("messages", [])
+                msgs: list[dict[str, Any]] = item.setdefault("messages", [])
                 next_id = (max([m.get("id", 0) for m in msgs]) if msgs else 0) + 1
                 msg = {
                     "id": next_id,
@@ -1308,10 +1546,12 @@ def create_app() -> FastAPI:
                 item = _find_campaign(cid)
                 if not item:
                     raise HTTPException(status_code=404, detail="not_found")
-                msgs: List[Dict[str, Any]] = item.get("messages", []) or []
+                msgs: list[dict[str, Any]] = item.get("messages", []) or []
                 total = len(msgs)
+
                 def _cnt(st: str) -> int:
                     return sum(1 for m in msgs if str(m.get("status", "")).lower() == st)
+
                 pending = _cnt("pending")
                 sent = _cnt("sent") + _cnt("delivered")
                 failed = _cnt("failed") + _cnt("error")
@@ -1340,6 +1580,7 @@ def create_app() -> FastAPI:
     if not _has_path_prefix(app, "/api/v1/products"):
         try:
             from app.api.v1.products import router as products_api_router
+
             app.include_router(products_api_router, prefix="/api/v1", tags=["Products"])
             logger.info("Mounted app.api.v1.products router")
         except Exception as e:
@@ -1348,12 +1589,14 @@ def create_app() -> FastAPI:
     # Старые/альтернативные роутеры, если используются в проекте
     try:
         from app.routers.products import router as products_router
+
         app.include_router(products_router, prefix="/api/v1/products", tags=["products-legacy"])
     except Exception:
         pass
 
     try:
         from app.routers.users import router as users_router
+
         app.include_router(users_router, prefix="/api/v1/users", tags=["users"])
     except Exception:
         pass
@@ -1369,6 +1612,7 @@ def create_app() -> FastAPI:
         logger.warning("Static/media mount failed: %s", e)
 
     return app
+
 
 # Uvicorn/Gunicorn entrypoint
 app = create_app()

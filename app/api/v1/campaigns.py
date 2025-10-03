@@ -2,21 +2,13 @@
 from __future__ import annotations
 
 import logging
-import time
 import threading
-from datetime import datetime, timezone
+import time
+from datetime import UTC, datetime
 from enum import Enum
-from typing import Any, Dict, List, Literal, Optional, Tuple
+from typing import Any, Literal, Optional
 
-from fastapi import (
-    APIRouter,
-    Body,
-    Depends,
-    HTTPException,
-    Path,
-    Query,
-    status,
-)
+from fastapi import APIRouter, Body, Depends, HTTPException, Path, Query, status
 from pydantic import BaseModel, Field, ValidationError, field_validator
 
 __all__ = ["router"]
@@ -30,11 +22,12 @@ if not logger.handlers:
         level=logging.INFO, format="%(asctime)s %(levelname)s [%(name)s] %(message)s"
     )
 
+
 # ------------------------------------------------------------------------------
 # ВСПОМОГАТЕЛЬНОЕ ВРЕМЯ
 # ------------------------------------------------------------------------------
 def _utcnow() -> datetime:
-    return datetime.now(timezone.utc)
+    return datetime.now(UTC)
 
 
 def _now_iso() -> str:
@@ -47,12 +40,12 @@ def _parse_dt(value: str) -> datetime:
         v = v[:-1] + "+00:00"
     dt = datetime.fromisoformat(v)
     if dt.tzinfo is None:
-        dt = dt.replace(tzinfo=timezone.utc)
-    return dt.astimezone(timezone.utc)
+        dt = dt.replace(tzinfo=UTC)
+    return dt.astimezone(UTC)
 
 
-def _normalize_tags(tags: List[str] | None) -> List[str]:
-    norm: List[str] = []
+def _normalize_tags(tags: list[str] | None) -> list[str]:
+    norm: list[str] = []
     seen = set()
     for t in tags or []:
         tt = (t or "").strip().lower()
@@ -67,11 +60,11 @@ def _normalize_tags(tags: List[str] | None) -> List[str]:
 # ------------------------------------------------------------------------------
 # АУДИТ (in-memory, с обрезкой)
 # ------------------------------------------------------------------------------
-_AUDIT: List[Dict[str, Any]] = []
+_AUDIT: list[dict[str, Any]] = []
 AUDIT_MAX_RECORDS = 10_000
 
 
-def _audit(action: str, meta: Dict[str, Any] | None = None) -> None:
+def _audit(action: str, meta: dict[str, Any] | None = None) -> None:
     rec = {"ts": _now_iso(), "action": action, "meta": meta or {}}
     _AUDIT.append(rec)
     if len(_AUDIT) > AUDIT_MAX_RECORDS:
@@ -89,8 +82,8 @@ class InMemoryStorage:
     """
 
     def __init__(self) -> None:
-        self._db: Dict[str, Dict[int, Any]] = {"campaigns": {}, "messages": {}}
-        self._seq: Dict[str, int] = {"campaigns": 0, "messages": 0}
+        self._db: dict[str, dict[int, Any]] = {"campaigns": {}, "messages": {}}
+        self._seq: dict[str, int] = {"campaigns": 0, "messages": 0}
         self._lock = threading.RLock()
         self._seed_once()
 
@@ -101,19 +94,19 @@ class InMemoryStorage:
             return self._seq[kind]
 
     # ---- кампании
-    def get_campaign(self, cid: int) -> Optional[Dict[str, Any]]:
+    def get_campaign(self, cid: int) -> Optional[dict[str, Any]]:
         with self._lock:
             c = self._db["campaigns"].get(cid)
             return dict(c) if c else None
 
-    def save_campaign(self, data: Dict[str, Any]) -> None:
+    def save_campaign(self, data: dict[str, Any]) -> None:
         with self._lock:
             data = dict(data)
             cid = int(data["id"])
             data["tags"] = _normalize_tags(data.get("tags"))
             # Сообщения в кампании — список «сырых» dict (для простоты сериализации)
             msgs = []
-            for m in (data.get("messages") or []):
+            for m in data.get("messages") or []:
                 if isinstance(m, dict):
                     msgs.append(dict(m))
                 else:
@@ -130,7 +123,7 @@ class InMemoryStorage:
                 mid = int(m.get("id")) if isinstance(m, dict) else int(getattr(m, "id", 0))
                 self._db["messages"].pop(mid, None)
 
-    def list_campaigns(self) -> List[Dict[str, Any]]:
+    def list_campaigns(self) -> list[dict[str, Any]]:
         with self._lock:
             return [dict(v) for v in self._db["campaigns"].values()]
 
@@ -146,16 +139,16 @@ class InMemoryStorage:
         return False
 
     # ---- сообщения
-    def get_message(self, mid: int) -> Optional[Dict[str, Any]]:
+    def get_message(self, mid: int) -> Optional[dict[str, Any]]:
         with self._lock:
             m = self._db["messages"].get(mid)
             return dict(m) if m else None
 
-    def list_messages(self) -> List[Dict[str, Any]]:
+    def list_messages(self) -> list[dict[str, Any]]:
         with self._lock:
             return [dict(v) for v in self._db["messages"].values()]
 
-    def save_message(self, mid: int, payload: Dict[str, Any]) -> None:
+    def save_message(self, mid: int, payload: dict[str, Any]) -> None:
         with self._lock:
             self._db["messages"][mid] = dict(payload)
 
@@ -232,15 +225,35 @@ except Exception as _e:  # noqa: N816
 
 
 # ------------------------------------------------------------------------------
+# ВСПОМОГАТЕЛЬНЫЙ СЕЙВЕР ДЛЯ СООБЩЕНИЙ С ГАРАНТИЕЙ campaign_id
+# ------------------------------------------------------------------------------
+def _save_message_with_cid(mid: int, payload: dict[str, Any], campaign_id: int) -> None:
+    """
+    Унифицированное сохранение сообщений:
+    - гарантированно проставляет campaign_id в payload;
+    - совместимо с InMemoryStorage (проглотит поле);
+    - совместимо с SQL-стораджем (поле NOT NULL).
+    """
+    data = dict(payload)
+    data["campaign_id"] = int(campaign_id)
+    try:
+        # Новая сигнатура SQL стораджа (save_message(mid, payload, *, campaign_id=None))
+        storage.save_message(mid, data, campaign_id=campaign_id)  # type: ignore[arg-type]
+    except TypeError:
+        # Старые/плоские реализации принимают только (mid, payload)
+        storage.save_message(mid, data)  # type: ignore[arg-type]
+
+
+# ------------------------------------------------------------------------------
 # RATE LIMIT / DEBOUNCE (простая in-memory реализация)
 # ------------------------------------------------------------------------------
 class RateLimiter:
     def __init__(self) -> None:
-        self._hits: Dict[Tuple[str, str], List[float]] = {}
-        self._debounce: Dict[Tuple[str, str], float] = {}
+        self._hits: dict[tuple[str, str], list[float]] = {}
+        self._debounce: dict[tuple[str, str], float] = {}
         self._lock = threading.RLock()
 
-    def check_limit(self, key: Tuple[str, str], limit: int, window_sec: int) -> None:
+    def check_limit(self, key: tuple[str, str], limit: int, window_sec: int) -> None:
         now = time.time()
         with self._lock:
             arr = self._hits.get(key, [])
@@ -250,7 +263,7 @@ class RateLimiter:
             arr.append(now)
             self._hits[key] = arr
 
-    def check_debounce(self, key: Tuple[str, str], seconds: int) -> None:
+    def check_debounce(self, key: tuple[str, str], seconds: int) -> None:
         now = time.time()
         with self._lock:
             last = self._debounce.get(key, 0.0)
@@ -260,6 +273,7 @@ class RateLimiter:
 
 
 rate_limiter = RateLimiter()
+
 
 # user context (заглушка)
 class UserCtx(BaseModel):
@@ -347,7 +361,7 @@ def _maybe_init_rq() -> None:
         _RQ_QUEUE = None
 
 
-def _send_campaign_job(campaign_id: int) -> Dict[str, Any]:
+def _send_campaign_job(campaign_id: int) -> dict[str, Any]:
     data = storage.get_campaign(campaign_id)
     if not data:
         return {"status": "not_found", "campaign_id": campaign_id}
@@ -369,7 +383,7 @@ def _send_campaign_job(campaign_id: int) -> Dict[str, Any]:
     return {"status": "done", "changed": changed, "campaign_id": campaign_id}
 
 
-def enqueue_send_campaign(campaign_id: int) -> Dict[str, Any]:
+def enqueue_send_campaign(campaign_id: int) -> dict[str, Any]:
     _maybe_init_celery()
     if _CELERY_APP:
         try:
@@ -432,8 +446,8 @@ class Campaign(BaseModel):
     description: Optional[str] = None
     active: bool = True
     archived: bool = False
-    tags: List[str] = Field(default_factory=list)
-    messages: List[Message] = Field(default_factory=list)
+    tags: list[str] = Field(default_factory=list)
+    messages: list[Message] = Field(default_factory=list)
     created_at: Optional[str] = None
     updated_at: Optional[str] = None
     schedule: Optional[str] = None  # ISO datetime (UTC)
@@ -474,7 +488,7 @@ class AddTagRequest(BaseModel):
 
 
 class SetTagsRequest(BaseModel):
-    tags: List[str] = Field(default_factory=list)
+    tags: list[str] = Field(default_factory=list)
 
 
 class PageMeta(BaseModel):
@@ -484,7 +498,7 @@ class PageMeta(BaseModel):
 
 
 class CampaignListResponse(BaseModel):
-    items: List[Campaign]
+    items: list[Campaign]
     meta: PageMeta
 
 
@@ -497,7 +511,7 @@ class RestoreRequest(BaseModel):
 
 
 class BulkDeleteRequest(BaseModel):
-    ids: List[int] = Field(default_factory=list)
+    ids: list[int] = Field(default_factory=list)
 
 
 class UpsertMessageRequest(BaseModel):
@@ -514,7 +528,7 @@ class UpdateMessageStatusRequest(BaseModel):
 
 class BulkStatusUpdateRequest(BaseModel):
     status: MessageStatus
-    ids: List[int] = Field(default_factory=list)
+    ids: list[int] = Field(default_factory=list)
 
 
 class CampaignExportFormat(str, Enum):
@@ -523,11 +537,11 @@ class CampaignExportFormat(str, Enum):
 
 
 class BulkMessageAddRequest(BaseModel):
-    messages: List[UpsertMessageRequest]
+    messages: list[UpsertMessageRequest]
 
 
 class BulkUpsertMessageRequest(BaseModel):
-    items: List[UpsertMessageRequest] = Field(default_factory=list)
+    items: list[UpsertMessageRequest] = Field(default_factory=list)
 
 
 # ------------------------------------------------------------------------------
@@ -550,7 +564,7 @@ def _title_exists(title: str, exclude_id: Optional[int] = None) -> bool:
     return storage.title_exists(title, exclude_id)
 
 
-def _find_message_in_campaign(camp: Campaign, message_id: int) -> Tuple[int, Optional[Message]]:
+def _find_message_in_campaign(camp: Campaign, message_id: int) -> tuple[int, Optional[Message]]:
     for idx, m in enumerate(camp.messages):
         if m.id == message_id:
             return idx, m
@@ -599,6 +613,7 @@ def _restore_campaign(campaign_id: int, reason: Optional[str] = None) -> Campaig
 # ------------------------------------------------------------------------------
 router = APIRouter(prefix="/api/v1/campaigns", tags=["campaigns"])
 
+
 # ---- BASE CREATE/LIST (статические пути) -------------------------------------
 @router.post(
     "/",
@@ -624,8 +639,8 @@ async def create_campaign(
     payload.setdefault("active", True)
     payload.setdefault("schedule", None)
 
-    # если переданы сообщения — присвоим им ID и сохраним в message store
-    msgs: List[Message] = []
+    # если переданы сообщения — присвоим им ID и сохраним в message store (с campaign_id)
+    msgs: list[Message] = []
     seen = set()
     for m in payload.get("messages") or []:
         msg = Message(**m) if isinstance(m, dict) else m
@@ -633,8 +648,9 @@ async def create_campaign(
         if key in seen:
             continue
         mid = storage.next_id("messages")
-        md = Message(id=mid, **msg.model_dump())
-        storage.save_message(mid, md.model_dump())
+        data = msg.model_dump(exclude={"id"})
+        md = Message(id=mid, **data)
+        _save_message_with_cid(mid, md.model_dump(), new_id)
         msgs.append(md)
         seen.add(key)
 
@@ -701,7 +717,7 @@ async def debug_backends():
     }
 
 
-@router.get("/_debug/audit", response_model=List[Dict[str, Any]])
+@router.get("/_debug/audit", response_model=list[dict[str, Any]])
 async def get_audit_tail(limit: int = Query(200, ge=1, le=2000)):
     return _AUDIT[-limit:]
 
@@ -732,18 +748,18 @@ async def search_campaigns(
     return CampaignListResponse(items=page_items, meta=PageMeta(page=page, size=size, total=total))
 
 
-@router.get("/recipients", response_model=List[str])
+@router.get("/recipients", response_model=list[str])
 async def list_all_recipients():
     recs = set()
     for c in storage.list_campaigns():
         for m in c.get("messages", []) or []:
-            r = (m.get("recipient") if isinstance(m, dict) else getattr(m, "recipient", None))
+            r = m.get("recipient") if isinstance(m, dict) else getattr(m, "recipient", None)
             if r:
                 recs.add((r or "").strip())
     return sorted(recs)
 
 
-@router.get("/search_tags", response_model=List[str])
+@router.get("/search_tags", response_model=list[str])
 async def search_tags(q: str = Query("", min_length=0)):
     found = set()
     qs = (q or "").strip().lower()
@@ -755,13 +771,13 @@ async def search_tags(q: str = Query("", min_length=0)):
     return sorted(found)
 
 
-@router.post("/validate", response_model=Dict[str, Any])
+@router.post("/validate", response_model=dict[str, Any])
 async def validate_campaign(campaign: Campaign = Body(...)):
     try:
         Campaign(**campaign.model_dump())
     except ValidationError as e:
         return {"valid": False, "error": str(e)}
-    errors: List[str] = []
+    errors: list[str] = []
     if not campaign.title or not campaign.title.strip():
         errors.append("Title is required")
     if campaign.archived:
@@ -777,12 +793,12 @@ async def validate_campaign(campaign: Campaign = Body(...)):
     return {"valid": len(errors) == 0, "errors": errors}
 
 
-@router.get("/export", response_model=List[Campaign])
+@router.get("/export", response_model=list[Campaign])
 async def export_campaigns():
     return [Campaign(**c) for c in storage.list_campaigns()]
 
 
-@router.get("/export_format", response_model=List[str])
+@router.get("/export_format", response_model=list[str])
 async def get_export_formats():
     return [f.value for f in CampaignExportFormat]
 
@@ -822,17 +838,17 @@ async def export_campaigns_fmt(fmt: CampaignExportFormat = Path(...)):
 
 @router.post(
     "/import",
-    response_model=Dict[str, Any],
+    response_model=dict[str, Any],
     dependencies=[
         Depends(require_role("admin", "manager")),
         Depends(limit_dep("bulk-import", 10, 60)),
     ],
 )
 async def import_campaigns_bulk(
-    payload: List[Campaign] = Body(...), user: UserCtx = Depends(get_current_user)
+    payload: list[Campaign] = Body(...), user: UserCtx = Depends(get_current_user)
 ):
     imported = 0
-    errors: List[Dict[str, Any]] = []
+    errors: list[dict[str, Any]] = []
     for idx, campaign in enumerate(payload):
         try:
             if _title_exists(campaign.title):
@@ -847,9 +863,9 @@ async def import_campaigns_bulk(
             cdict["owner"] = cdict.get("owner") or user.username
             cdict.setdefault("archived", False)
             cdict.setdefault("active", True)
-            msgs: List[Message] = []
+            msgs: list[Message] = []
             seen = set()
-            dup_msgs: List[Dict[str, Any]] = []
+            dup_msgs: list[dict[str, Any]] = []
             for midx, m in enumerate(cdict.get("messages") or []):
                 msg = Message(**m) if isinstance(m, dict) else m
                 key = (msg.recipient.strip().lower(), str(msg.channel))
@@ -864,7 +880,7 @@ async def import_campaigns_bulk(
                     continue
                 new_mid = storage.next_id("messages")
                 md = Message(id=new_mid, **msg.model_dump())
-                storage.save_message(new_mid, md.model_dump())
+                _save_message_with_cid(new_mid, md.model_dump(), new_id)
                 msgs.append(md)
                 seen.add(key)
             cdict["messages"] = [Message(**mm.model_dump()) for mm in msgs]
@@ -910,7 +926,7 @@ async def save_campaign_draft(
     payload.setdefault("schedule", None)
 
     # ID для сообщений, если пришли
-    msgs: List[Message] = []
+    msgs: list[Message] = []
     seen = set()
     for m in payload.get("messages") or []:
         msg = Message(**m) if isinstance(m, dict) else m
@@ -919,7 +935,7 @@ async def save_campaign_draft(
             continue
         mid = storage.next_id("messages")
         md = Message(id=mid, **msg.model_dump())
-        storage.save_message(mid, md.model_dump())
+        _save_message_with_cid(mid, md.model_dump(), new_id)
         msgs.append(md)
         seen.add(key)
     payload["messages"] = [mm.model_dump() for mm in msgs]
@@ -986,21 +1002,21 @@ async def update_campaign(
     # сообщения: если в payload пришли — синхронизируем стор
     if "messages" in campaign.model_fields_set:
         # очистим все старые message ids из стора и создадим заново
-        old_msgs: List[Dict[str, Any]] = current.get("messages") or []
+        old_msgs: list[dict[str, Any]] = current.get("messages") or []
         for m in old_msgs:
             mid = int(m.get("id")) if isinstance(m, dict) else int(getattr(m, "id", 0))
             if mid:
                 storage.delete_message(mid)
-        msgs_out: List[Dict[str, Any]] = []
+        msgs_out: list[dict[str, Any]] = []
         seen = set()
-        for m in (updated.get("messages") or []):
+        for m in updated.get("messages") or []:
             msg = Message(**m) if isinstance(m, dict) else m
             key = (msg.recipient.strip().lower(), str(msg.channel))
             if key in seen:
                 continue
             new_mid = storage.next_id("messages")
             md = Message(id=new_mid, **msg.model_dump())
-            storage.save_message(new_mid, md.model_dump())
+            _save_message_with_cid(new_mid, md.model_dump(), campaign_id)
             msgs_out.append(md.model_dump())
             seen.add(key)
         updated["messages"] = msgs_out
@@ -1049,7 +1065,7 @@ async def add_message_to_campaign(
     new_id = storage.next_id("messages")
     payload = message.model_dump()
     payload["id"] = new_id
-    storage.save_message(new_id, payload)
+    _save_message_with_cid(new_id, payload, campaign_id)
     camp.messages.append(Message(**payload))
     camp.updated_at = _now_iso()
     _save_campaign(camp)
@@ -1058,7 +1074,7 @@ async def add_message_to_campaign(
     return Message(**payload)
 
 
-@router.get("/{campaign_id}/messages", response_model=List[Message])
+@router.get("/{campaign_id}/messages", response_model=list[Message])
 async def list_campaign_messages(campaign_id: int):
     camp = _get_campaign_or_404(campaign_id)
     return camp.messages
@@ -1096,7 +1112,7 @@ async def update_campaign_message(
     if not current:
         raise HTTPException(status_code=404, detail="Message not found")
     updated = {**current, **message.model_dump(exclude_unset=True), "id": message_id}
-    storage.save_message(message_id, updated)
+    _save_message_with_cid(message_id, updated, campaign_id)
     camp.messages[idx] = Message(**updated)
     camp.updated_at = _now_iso()
     _save_campaign(camp)
@@ -1142,7 +1158,7 @@ async def upsert_message_by_recipient(
             m.status = req.status
             camp.updated_at = _now_iso()
             _save_campaign(camp)
-            storage.save_message(int(m.id), m.model_dump())
+            _save_message_with_cid(int(m.id), m.model_dump(), campaign_id)
             _audit("upsert_message_update", {"campaign_id": campaign_id, "message_id": m.id})
             logger.info("Message upsert(update): campaign=%s message=%s", campaign_id, m.id)
             return m
@@ -1151,7 +1167,7 @@ async def upsert_message_by_recipient(
     camp.messages.append(msg)
     camp.updated_at = _now_iso()
     _save_campaign(camp)
-    storage.save_message(new_id, msg.model_dump())
+    _save_message_with_cid(new_id, msg.model_dump(), campaign_id)
     _audit("upsert_message_insert", {"campaign_id": campaign_id, "message_id": new_id})
     logger.info("Message upsert(insert): campaign=%s message=%s", campaign_id, new_id)
     return msg
@@ -1178,7 +1194,7 @@ async def set_message_status(
     camp.messages[idx] = msg
     camp.updated_at = _now_iso()
     _save_campaign(camp)
-    storage.save_message(message_id, msg.model_dump())
+    _save_message_with_cid(message_id, msg.model_dump(), campaign_id)
     _audit(
         "set_message_status",
         {"campaign_id": campaign_id, "message_id": message_id, "status": str(payload.status)},
@@ -1210,7 +1226,7 @@ async def reset_message_to_pending(
     camp.messages[idx] = msg
     camp.updated_at = _now_iso()
     _save_campaign(camp)
-    storage.save_message(message_id, msg.model_dump())
+    _save_message_with_cid(message_id, msg.model_dump(), campaign_id)
     _audit("reset_to_pending", {"campaign_id": campaign_id, "message_id": message_id})
     logger.info("Message reset to pending: campaign=%s message=%s", campaign_id, message_id)
     return msg
@@ -1218,7 +1234,7 @@ async def reset_message_to_pending(
 
 @router.post(
     "/{campaign_id}/messages/clear_failed",
-    response_model=Dict[str, int],
+    response_model=dict[str, int],
     dependencies=[
         Depends(require_role("admin", "manager")),
         Depends(limit_dep("clear-failed", 30, 60)),
@@ -1242,7 +1258,7 @@ async def clear_failed_messages(campaign_id: int, user: UserCtx = Depends(get_cu
 
 @router.post(
     "/{campaign_id}/messages/mark_all_sent",
-    response_model=Dict[str, int],
+    response_model=dict[str, int],
     dependencies=[
         Depends(require_role("admin", "manager")),
         Depends(limit_dep("mark-sent", 60, 60)),
@@ -1257,7 +1273,7 @@ async def mark_all_sent(campaign_id: int, user: UserCtx = Depends(get_current_us
             m.status = MessageStatus.sent
             m.error = None
             camp.messages[i] = m
-            storage.save_message(int(m.id), m.model_dump())
+            _save_message_with_cid(int(m.id), m.model_dump(), campaign_id)
             changed += 1
     if changed:
         camp.updated_at = _now_iso()
@@ -1269,7 +1285,7 @@ async def mark_all_sent(campaign_id: int, user: UserCtx = Depends(get_current_us
 
 @router.post(
     "/{campaign_id}/messages/bulk_status_update",
-    response_model=Dict[str, Any],
+    response_model=dict[str, Any],
     dependencies=[
         Depends(require_role("admin", "manager")),
         Depends(limit_dep("bulk-status", 60, 60)),
@@ -1285,7 +1301,7 @@ async def bulk_update_message_status(
         if m.id in req.ids:
             m.status = req.status
             camp.messages[i] = m
-            storage.save_message(int(m.id), m.model_dump())
+            _save_message_with_cid(int(m.id), m.model_dump(), campaign_id)
             updated += 1
     if updated:
         camp.updated_at = _now_iso()
@@ -1297,7 +1313,7 @@ async def bulk_update_message_status(
 
 @router.post(
     "/{campaign_id}/messages/bulk_delete",
-    response_model=Dict[str, Any],
+    response_model=dict[str, Any],
     dependencies=[
         Depends(require_role("admin", "manager")),
         Depends(limit_dep("bulk-delete-msg", 30, 60)),
@@ -1323,7 +1339,7 @@ async def bulk_delete_messages(
 
 @router.post(
     "/{campaign_id}/messages/bulk_add",
-    response_model=Dict[str, Any],
+    response_model=dict[str, Any],
     dependencies=[
         Depends(require_role("admin", "manager")),
         Depends(limit_dep("bulk-add-msg", 30, 60)),
@@ -1335,7 +1351,7 @@ async def bulk_add_messages(
     camp = _get_campaign_or_404(campaign_id)
     ensure_owner_or_admin(camp.owner, user)
     added = 0
-    dup_errors: List[Dict[str, Any]] = []
+    dup_errors: list[dict[str, Any]] = []
     existing = {(m.recipient.strip().lower(), str(m.channel)) for m in camp.messages}
     for idx, msg_req in enumerate(req.messages):
         key = (msg_req.recipient.strip().lower(), str(msg_req.channel))
@@ -1352,7 +1368,7 @@ async def bulk_add_messages(
         new_id = storage.next_id("messages")
         msg = Message(id=new_id, **msg_req.model_dump())
         camp.messages.append(msg)
-        storage.save_message(new_id, msg.model_dump())
+        _save_message_with_cid(new_id, msg.model_dump(), campaign_id)
         existing.add(key)
         added += 1
     camp.updated_at = _now_iso()
@@ -1369,7 +1385,7 @@ async def bulk_add_messages(
 
 @router.post(
     "/{campaign_id}/messages/bulk_upsert",
-    response_model=Dict[str, Any],
+    response_model=dict[str, Any],
     dependencies=[
         Depends(require_role("admin", "manager")),
         Depends(limit_dep("bulk-upsert-msg", 30, 60)),
@@ -1383,7 +1399,9 @@ async def bulk_upsert_messages(
 
     updated = 0
     inserted = 0
-    index_by_key = {(m.recipient.strip().lower(), str(m.channel)): i for i, m in enumerate(camp.messages)}
+    index_by_key = {
+        (m.recipient.strip().lower(), str(m.channel)): i for i, m in enumerate(camp.messages)
+    }
 
     for item in req.items:
         key = (item.recipient.strip().lower(), str(item.channel))
@@ -1392,13 +1410,13 @@ async def bulk_upsert_messages(
             m = camp.messages[i]
             m.content = item.content
             m.status = item.status
-            storage.save_message(int(m.id), m.model_dump())
+            _save_message_with_cid(int(m.id), m.model_dump(), campaign_id)
             updated += 1
         else:
             new_id = storage.next_id("messages")
             msg = Message(id=new_id, **item.model_dump())
             camp.messages.append(msg)
-            storage.save_message(new_id, msg.model_dump())
+            _save_message_with_cid(new_id, msg.model_dump(), campaign_id)
             index_by_key[key] = len(camp.messages) - 1
             inserted += 1
 
@@ -1443,7 +1461,7 @@ async def get_campaign_stats(campaign_id: int):
 
 @router.post(
     "/{campaign_id}/send",
-    response_model=Dict[str, Any],
+    response_model=dict[str, Any],
     dependencies=[Depends(require_role("admin", "manager")), Depends(debounce_dep("send", 3))],
 )
 async def send_campaign(campaign_id: int, user: UserCtx = Depends(get_current_user)):
@@ -1457,7 +1475,7 @@ async def send_campaign(campaign_id: int, user: UserCtx = Depends(get_current_us
 
 @router.post(
     "/{campaign_id}/send_async",
-    response_model=Dict[str, Any],
+    response_model=dict[str, Any],
     dependencies=[
         Depends(require_role("admin", "manager")),
         Depends(debounce_dep("send-async", 3)),
@@ -1477,7 +1495,7 @@ async def send_campaign_async(campaign_id: int, user: UserCtx = Depends(get_curr
 
 @router.post(
     "/{campaign_id}/schedule",
-    response_model=Dict[str, Any],
+    response_model=dict[str, Any],
     dependencies=[Depends(require_role("admin", "manager")), Depends(debounce_dep("schedule", 3))],
 )
 async def schedule_campaign(
@@ -1493,7 +1511,7 @@ async def schedule_campaign(
         if m.status == MessageStatus.pending:
             m.status = MessageStatus.scheduled
             camp.messages[i] = m
-            storage.save_message(int(m.id), m.model_dump())
+            _save_message_with_cid(int(m.id), m.model_dump(), campaign_id)
             changed += 1
     camp.updated_at = _now_iso()
     _save_campaign(camp)
@@ -1530,8 +1548,8 @@ async def cancel_campaign_schedule(campaign_id: int, user: UserCtx = Depends(get
     return camp
 
 
-@router.post("/{campaign_id}/preview_send", response_model=Dict[str, Any])
-async def preview_send(campaign_id: int, recipients: List[str] = Body(default_factory=list)):
+@router.post("/{campaign_id}/preview_send", response_model=dict[str, Any])
+async def preview_send(campaign_id: int, recipients: list[str] = Body(default_factory=list)):
     camp = _get_campaign_or_404(campaign_id)
     recs = [r for r in recipients if isinstance(r, str) and r.strip()]
     if not recs:
@@ -1546,7 +1564,7 @@ async def preview_send(campaign_id: int, recipients: List[str] = Body(default_fa
 
 @router.post(
     "/{campaign_id}/resend_failed",
-    response_model=Dict[str, Any],
+    response_model=dict[str, Any],
     dependencies=[
         Depends(require_role("admin", "manager")),
         Depends(limit_dep("resend-failed", 30, 60)),
@@ -1561,7 +1579,7 @@ async def resend_failed(campaign_id: int, user: UserCtx = Depends(get_current_us
             m.status = MessageStatus.pending
             m.error = None
             camp.messages[i] = m
-            storage.save_message(int(m.id), m.model_dump())
+            _save_message_with_cid(int(m.id), m.model_dump(), campaign_id)
             count += 1
     if count:
         camp.updated_at = _now_iso()
@@ -1572,7 +1590,7 @@ async def resend_failed(campaign_id: int, user: UserCtx = Depends(get_current_us
 
 
 # ---- Tags & Archive/Restore ---------------------------------------------------
-@router.get("/{campaign_id}/tags", response_model=List[str])
+@router.get("/{campaign_id}/tags", response_model=list[str])
 async def get_campaign_tags(campaign_id: int):
     camp = _get_campaign_or_404(campaign_id)
     return _normalize_tags(camp.tags)
@@ -1667,9 +1685,8 @@ async def restore_campaign(
 # ---- Bulk archive/restore/delete ---------------------------------------------
 @router.post(
     "/bulk_archive",
-    response_model=Dict[str, Any],
-    dependencies=[
-        Depends(require_role("admin", "manager"))],
+    response_model=dict[str, Any],
+    dependencies=[Depends(require_role("admin", "manager"))],
 )
 async def bulk_archive_campaigns(req: BulkDeleteRequest, user: UserCtx = Depends(get_current_user)):
     archived = 0
@@ -1686,9 +1703,8 @@ async def bulk_archive_campaigns(req: BulkDeleteRequest, user: UserCtx = Depends
 
 @router.post(
     "/bulk_restore",
-    response_model=Dict[str, Any],
-    dependencies=[
-        Depends(require_role("admin", "manager"))],
+    response_model=dict[str, Any],
+    dependencies=[Depends(require_role("admin", "manager"))],
 )
 async def bulk_restore_campaigns(req: BulkDeleteRequest, user: UserCtx = Depends(get_current_user)):
     restored = 0
@@ -1705,9 +1721,8 @@ async def bulk_restore_campaigns(req: BulkDeleteRequest, user: UserCtx = Depends
 
 @router.post(
     "/bulk_delete",
-    response_model=Dict[str, Any],
-    dependencies=[
-        Depends(require_role("admin", "manager"))],
+    response_model=dict[str, Any],
+    dependencies=[Depends(require_role("admin", "manager"))],
 )
 async def bulk_delete_campaigns(req: BulkDeleteRequest, user: UserCtx = Depends(get_current_user)):
     deleted = 0
@@ -1724,10 +1739,10 @@ async def bulk_delete_campaigns(req: BulkDeleteRequest, user: UserCtx = Depends(
 
 
 # ---- Analytics / Diagnostics / Errors ----------------------------------------
-@router.get("/{campaign_id}/advanced_stats", response_model=Dict[str, Any])
+@router.get("/{campaign_id}/advanced_stats", response_model=dict[str, Any])
 async def advanced_campaign_stats(campaign_id: int):
     camp = _get_campaign_or_404(campaign_id)
-    msg_by_channel: Dict[str, List[Message]] = {}
+    msg_by_channel: dict[str, list[Message]] = {}
     for m in camp.messages:
         key = str(m.channel)
         msg_by_channel.setdefault(key, []).append(m)
