@@ -8,6 +8,14 @@ __pycache__/
 *.sqlite3
 *.so
 
+# extra python cache/temp
+*.rej
+*.orig
+*.patch
+*.pyc
+*.pyd
+*.pdb
+
 # =========================
 #  Packaging / build out
 # =========================
@@ -87,6 +95,16 @@ venv.bak/
 *.code-workspace
 .fleet/
 
+# IntelliJ/IDEA specifics (дополнительно, без удаления твоего блока)
+.idea/**/workspace.xml
+.idea/**/tasks.xml
+.idea/**/usage.statistics.xml
+.idea/**/dictionaries
+.idea/**/shelf
+.idea/**/httpRequests
+.idea/**/dataSources/
+.idea/**/dataSources.local.xml
+
 # =========================
 #       OS-specific
 # =========================
@@ -105,6 +123,9 @@ logs/
 *.log.*
 *.db
 *.sqlite
+*.sqlite3
+*.sqlite-wal
+*.sqlite-shm
 test.db
 
 # Dockerized DB volumes / caches
@@ -130,6 +151,14 @@ node_modules/
 **/.vercel/
 **/.svelte-kit/
 **/.turbo/
+**/.angular/
+**/.output/
+**/.vite/
+
+# lock-файлы (сохраняем твоё решение не коммитить package-lock в frontend)
+pnpm-lock.yaml
+yarn.lock
+# при желании можно убрать эти строки и начать фиксировать lock-файлы для репродьюс билда
 
 # конкретно для папки frontend (как было у тебя)
 frontend/node_modules/
@@ -196,15 +225,30 @@ venv*/
 **/venv*/
 **/.venv*/
 **/Scripts/
+
 # local sqlite/db files anywhere
 **/*.db
 **/*.sqlite
 **/*.sqlite3
+**/*.sqlite-wal
+**/*.sqlite-shm
+
 # local dev databases by name
 smartsell.db
 test.db
+
 # OS/PowerShell artifacts
 *.ps1
 *.bat
 *.cmd
 
+# Alembic bytecode cache (версии сами коммитим!)
+alembic/versions/__pycache__/
+
+# pytest junit xml (на случай CI)
+junit.xml
+
+# celery / rq (если появится)
+celerybeat-schedule
+*.pid
+*.pid.lock

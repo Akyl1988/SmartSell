@@ -12,7 +12,7 @@ asyncpg==0.30.0
 # Data validation and settings
 pydantic==2.8.2
 pydantic-settings==2.1.0
-email-validator==2.1.0
+email-validator>=2.3.0,<3.0.0
 
 # Security
 python-jose[cryptography]==3.3.0
