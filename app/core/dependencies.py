@@ -176,11 +176,8 @@ except Exception:  # pragma: no cover
 # ------------------------------------------------------------------------------
 _HAS_ADV_SECURITY = False
 try:
-    from app.core.security import (
-        decode_access_token,  # -> dict payload {sub, scp, role, jti, exp, kid, ...}
-    )
-    from app.core.security import (  # type: ignore; noqa: F401 (may be unused here)
-        get_refresh_from_cookie,
+    from app.core.security import (  # type: ignore; noqa: F401 (may be unused here); -> dict payload {sub, scp, role, jti, exp, kid, ...}
+        decode_access_token,
     )
 
     _HAS_ADV_SECURITY = True
