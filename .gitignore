@@ -1,6 +1,4 @@
-# =========================
-#        Python core
-# =========================
+# Python core
 __pycache__/
 *.py[cod]
 *.pyo
@@ -12,48 +10,26 @@ __pycache__/
 *.rej
 *.orig
 *.patch
-*.pyc
-*.pyd
 *.pdb
 
-# =========================
-#  Packaging / build out
-# =========================
+# Packaging / build out
 .Python
 build/
-develop-eggs/
 dist/
-downloads/
-eggs/
 .eggs/
-lib/
-lib64/
-parts/
-sdist/
-var/
-wheels/
-pip-wheel-metadata/
-share/python-wheels/
 *.egg-info/
-.installed.cfg
 *.egg
 MANIFEST
 
-# =========================
-#       PyInstaller
-# =========================
+# PyInstaller
 *.manifest
 *.spec
 
-# =========================
-#     Installer logs
-# =========================
+# Installer logs
 pip-log.txt
 pip-delete-this-directory.txt
 
-# =========================
-#  Tests / Coverage / QA
-# =========================
+# Tests / Coverage / QA
 htmlcov/
 .tox/
 .nox/
@@ -71,10 +47,9 @@ hypothesis/
 .pytype/
 .pyre/
 .benchmarks/
+junit.xml
 
-# =========================
-#     Virtual envs
-# =========================
+# Virtual envs
 .env
 .env.*
 .venv/
@@ -85,17 +60,13 @@ venv.bak/
 .python-version
 .envrc
 
-# =========================
-#         IDE
-# =========================
+# IDE
 .vscode/
 .idea/
 *.swp
 *.swo
 *.code-workspace
 .fleet/
-
-# IntelliJ/IDEA specifics (дополнительно, без удаления твоего блока)
 .idea/**/workspace.xml
 .idea/**/tasks.xml
 .idea/**/usage.statistics.xml
@@ -105,9 +76,7 @@ venv.bak/
 .idea/**/dataSources/
 .idea/**/dataSources.local.xml
 
-# =========================
-#       OS-specific
-# =========================
+# OS
 .DS_Store
 Thumbs.db
 ehthumbs.db
@@ -115,17 +84,13 @@ Desktop.ini
 .Spotlight-V100
 .Trashes
 
-# =========================
-#   Logs & local DB files
-# =========================
+# Logs & local DB files
 logs/
 *.log
 *.log.*
-*.db
-*.sqlite
-*.sqlite3
-*.sqlite-wal
-*.sqlite-shm
+**/*.db
+**/*.sqlite*
+smartsell.db
 test.db
 
 # Dockerized DB volumes / caches
@@ -133,19 +98,13 @@ pgdata/
 postgres-data/
 db_data/
 docker/**/data/
-dump.rdb        # Redis dump
+dump.rdb
 
-# =========================
-#        Frontend
-# =========================
-# глобально игнорим любые node_modules / dist и артефакты сборки
+# Frontend
 **/node_modules/
-node_modules/
 **/dist/
 **/.parcel-cache/
 **/.cache/
-
-# фреймворки
 **/.next/
 **/.nuxt/
 **/.vercel/
@@ -155,12 +114,10 @@ node_modules/
 **/.output/
 **/.vite/
 
-# lock-файлы (сохраняем твоё решение не коммитить package-lock в frontend)
+# Lock files (реши: игнорить или коммитить)
 pnpm-lock.yaml
 yarn.lock
-# при желании можно убрать эти строки и начать фиксировать lock-файлы для репродьюс билда
-
-# конкретно для папки frontend (как было у тебя)
+# frontend/package-lock.json   # убери комментарий, если хочешь игнорить
 frontend/node_modules/
 frontend/dist/
 frontend/.env.local
@@ -170,11 +127,8 @@ frontend/.env.production.local
 frontend/npm-debug.log*
 frontend/yarn-debug.log*
 frontend/yarn-error.log*
-frontend/package-lock.json   # при желании репродьюс билдов — лучше КОММИТИТЬ этот файл
 
-# =========================
-#     Project specific
-# =========================
+# Project specific
 uploads/
 media/
 storage/
@@ -182,73 +136,31 @@ data/
 local/
 local2/
 
-# =========================
-#         Docker
-# =========================
+# Docker
 docker-compose.override.yml
 docker/.env
 docker/.env.*
 
-# =========================
-#      DB dumps / backups
-# =========================
-*.sql
+# DB dumps / backups (если нужны — сузить правила, иначе можно оставить)
 *.dump
 *.tar
 *.bak
 *.backup
 
-# =========================
-#     Temporary files
-# =========================
+# Temporary files
 *.tmp
 *.temp
 temp/
 tmp/
 
-# =========================
-#     SSL certificates
-# =========================
+# SSL certificates
 *.pem
 *.crt
 *.key
 
-# =========================
-#       Jupyter etc
-# =========================
+# Jupyter etc
 .ipynb_checkpoints/
 .profile
 
-# --- extra ignores (project hardening) ---
-# any virtualenvs with version suffixes
-venv*/
-**/venv*/
-**/.venv*/
-**/Scripts/
-
-# local sqlite/db files anywhere
-**/*.db
-**/*.sqlite
-**/*.sqlite3
-**/*.sqlite-wal
-**/*.sqlite-shm
-
-# local dev databases by name
-smartsell.db
-test.db
-
-# OS/PowerShell artifacts
-*.ps1
-*.bat
-*.cmd
-
-# Alembic bytecode cache (версии сами коммитим!)
+# Alembic bytecode cache
 alembic/versions/__pycache__/
-
-# pytest junit xml (на случай CI)
-junit.xml
-
-# celery / rq (если появится)
-celerybeat-schedule
-*.pid
-*.pid.lock
