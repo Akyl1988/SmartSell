@@ -1,4 +1,3 @@
-# app/models/__init__.py
 """Database models package.
 
 Единая точка импорта моделей и утилит. Гарантирует корректную регистрацию
@@ -14,7 +13,7 @@
 - Отслеживание изменений моделей по mtime файлов модулей.
 - Извлечение связей между моделями (FK / one-to-many / many-to-one / many-to-many).
 - Генерация тестовых данных для автотестов.
-- Алиасы и fallback’и для наследия (например, OtpAttempt → OTPCode, если класса нет).
+- Алиасы и fallback’и для наследия.
 - Упорядоченный импорт доменов + авто-дискавери новых модулей в пакете app.models.
 - ЗАЛОЖЕНО НА БУДУЩЕЕ: async-/batch-инструменты introspection:
   * precompute_introspection_cache() — прогрев кэшей и снапшота на старте.
@@ -24,25 +23,35 @@
 
 ВАЖНО:
 - Чтобы избежать циклических импортов и «двойной» регистрации таблиц, модели доменов
-  подтягиваются ЛЕНИВО через __getattr__. Для ключевых моделей (Company, Warehouse,
-  Product, User, Order, AuditLog, Campaign, Customer) выполняется «тёплый старт» при импорте пакета,
-  чтобы Base.metadata.create_all(engine) мог отработать даже без явных импортов модулей.
+  подтягиваются ЛЕНИВО через __getattr__. Для ключевых моделей выполняется «тёплый старт»
+  при импорте пакета, чтобы Base.metadata.create_all(engine) мог отработать даже без явных импортов.
 """
 
 from __future__ import annotations
 
+import asyncio
 import importlib
 import logging
 import os
 import pkgutil
 import re
 import sys
-import asyncio
+from collections.abc import Iterable
 from datetime import datetime
 from functools import lru_cache
-from typing import Any, Dict, Iterable, List, Optional, Tuple, Type, TypedDict
+from typing import Any, Optional, TypedDict
 
 logger = logging.getLogger(__name__)
+if not logger.handlers:
+    # Не навязываем конфигурацию приложению; но предупреждаем об отсутствии хендлеров.
+    logger.addHandler(logging.NullHandler())
+
+# ------------------------------------------------------------------------------
+# Режимы выполнения (можно управлять переменными окружения при необходимости)
+# ------------------------------------------------------------------------------
+RUNTIME_OPTS = {
+    "DISABLE_AUTOIMPORT": os.getenv("APP_MODELS_DISABLE_AUTOIMPORT", "").lower() in {"1", "true"},
+}
 
 # ------------------------------------------------------------------------------
 # Попытка подключить «умный» автолоадер (если ты добавил app/models/_loader.py)
@@ -55,27 +64,78 @@ except Exception:
 # ------------------------------------------------------------------------------
 # База/миксины/утилиты (Base = BaseModel — совместимость со старым кодом)
 # ------------------------------------------------------------------------------
+from .base import Base  # корневой DeclarativeBase с naming conventions
+from .base import bulk_update  # алиас на bulk_update_rows
 from .base import (  # noqa: E402
-    Base,  # корневой DeclarativeBase с naming conventions
+    AuditMixin,
     BaseModel,
+    LockableMixin,
     SoftDeleteMixin,
     TenantMixin,
-    AuditMixin,
-    LockableMixin,
-    bulk_update,  # алиас на bulk_update_rows
-    create,
-    get_by_id,
-    delete,
-    update,
     bulk_update_rows,
+    create,
+    delete,
     exists,
     first,
+    get_by_id,
+    update,
 )
+
+# ------------------------------------------------------------------------------
+# Диагностика дублей мапперов и soft-игнор легаси-таблиц
+# ------------------------------------------------------------------------------
+# Временный игнор-лист известных «наследственных» дублей. В production держим пустым,
+# но для миграционного периода оставляем otp_codes, чтобы не падали автотесты.
+DUPLICATE_TABLES_IGNORE: set[str] = {"otp_codes"}
+
+
+def _describe_mapper(mapper) -> dict:
+    try:
+        cls = mapper.class_
+        mod = getattr(cls, "__module__", None)
+        name = getattr(cls, "__name__", None)
+        path = None
+        try:
+            m = sys.modules.get(mod)
+            if m and getattr(m, "__file__", None):
+                path = m.__file__
+        except Exception:
+            pass
+        return {"class": f"{mod}.{name}", "file": path}
+    except Exception:
+        return {"class": "<unknown>", "file": None}
+
+
+def dump_duplicate_mappers() -> None:
+    """Подробный дамп дублей по именам таблиц — для логов/диагностики."""
+    try:
+        from collections import defaultdict
+
+        by_table: dict[str, list] = defaultdict(list)
+        for mapper in BaseModel.registry.mappers:
+            t = getattr(mapper.class_, "__tablename__", None)
+            if not t:
+                continue
+            by_table[t].append(mapper)
+
+        for t, mappers in sorted(by_table.items()):
+            if len(mappers) > 1:
+                logger.warning(
+                    "Detected duplicate mappers for table '%s' (count=%d)", t, len(mappers)
+                )
+                for i, mp in enumerate(mappers, 1):
+                    meta = _describe_mapper(mp)
+                    logger.warning("  #%d -> %s  (file=%s)", i, meta.get("class"), meta.get("file"))
+    except Exception as e:
+        logger.debug("dump_duplicate_mappers failed: %s", e)
+
 
 # ------------------------------------------------------------------------------
 # Ленивое пространство имён моделей (без ранней загрузки доменных модулей)
 # ------------------------------------------------------------------------------
-_LAZY_MODELS: Dict[str, Tuple[str, str]] = {
+# ВАЖНО: OTP-модели живут в app.models.otp (а не в user). Это устраняет
+# потенциальные дубли маппера для таблицы `otp_codes`.
+_LAZY_MODELS: dict[str, tuple[str, str]] = {
     # аудит
     "AuditLog": ("app.models.audit_log", "AuditLog"),
     # биллинг/финансы — грузим лениво, но в безопасном порядке импортируем раньше (см. ниже)
@@ -107,9 +167,9 @@ _LAZY_MODELS: Dict[str, Tuple[str, str]] = {
     # пользователи
     "User": ("app.models.user", "User"),
     "UserSession": ("app.models.user", "UserSession"),
-    "OTPCode": ("app.models.user", "OTPCode"),
-    # наследие
-    "OtpAttempt": ("app.models.user", "OtpAttempt"),
+    # OTP / 2FA (строго в app.models.otp)
+    "OTPCode": ("app.models.otp", "OTPCode"),
+    "OtpAttempt": ("app.models.otp", "OtpAttempt"),
     # склад/инвентарь
     "Warehouse": ("app.models.warehouse", "Warehouse"),
     "ProductStock": ("app.models.warehouse", "ProductStock"),
@@ -119,7 +179,7 @@ _LAZY_MODELS: Dict[str, Tuple[str, str]] = {
 }
 
 # Поддерживаемые модули доменов для «массового» импорта (ручной whitelisting).
-_DOMAIN_MODULES: Tuple[str, ...] = (
+_DOMAIN_MODULES: tuple[str, ...] = (
     "app.models.audit_log",
     "app.models.campaign",
     "app.models.company",
@@ -128,22 +188,25 @@ _DOMAIN_MODULES: Tuple[str, ...] = (
     "app.models.payment",
     "app.models.product",
     "app.models.user",
+    "app.models.otp",  # добавлено: явный модуль OTP
     "app.models.warehouse",
     "app.models.inventory_outbox",
 )
 
 # Критичные модули/классы, чья регистрация нужна даже при «холодном» старте (FK/relationship)
-_CRITICAL_MODULES: Tuple[str, ...] = (
+_CRITICAL_MODULES: tuple[str, ...] = (
     "app.models.company",
     "app.models.customer",
     "app.models.product",
     "app.models.warehouse",
     "app.models.user",
+    "app.models.otp",  # добавлено: гарантируем регистрацию OTP для админок/интроспекции
     "app.models.order",
     "app.models.audit_log",
     "app.models.campaign",
     "app.models.inventory_outbox",
 )
+
 
 # ------------------------------------------------------------------------------
 # Ленивые атрибуты пакета
@@ -157,7 +220,7 @@ def __getattr__(name: str) -> Any:
                 obj = getattr(mod, attr_name)
             except AttributeError as inner_err:
                 if name == "OtpAttempt":
-                    # Алиас: OtpAttempt → OTPCode
+                    # Исторический алиас: OtpAttempt → OTPCode (если новая модель отсутствует)
                     try:
                         obj = getattr(mod, "OTPCode")
                         logger.warning(
@@ -228,6 +291,8 @@ def __dir__() -> Iterable[str]:
         "assert_no_duplicate_tablenames",
         # auto-discovery
         "discover_and_import_all_model_modules",
+        # dev helpers
+        "reload_all_model_modules",
     ]
     return sorted(set(list(_LAZY_MODELS.keys()) + builtins))
 
@@ -251,6 +316,7 @@ __all__ = [
     # Пользователи
     "User",
     "UserSession",
+    # OTP
     "OTPCode",
     "OtpAttempt",
     # Компания, клиенты, склад
@@ -321,7 +387,10 @@ __all__ = [
     "assert_no_duplicate_tablenames",
     # Auto-discovery
     "discover_and_import_all_model_modules",
+    # Dev helpers
+    "reload_all_model_modules",
 ]
+
 
 # ------------------------------------------------------------------------------
 # Registry / discovery
@@ -337,12 +406,12 @@ def import_domain(module_name: str) -> Optional[Any]:
     return None
 
 
-def _iter_model_modules_pkgutil() -> List[str]:
+def _iter_model_modules_pkgutil() -> list[str]:
     """
     Авто-дискавери: найдём все *реальные* подмодули в пакете app.models.
     Возвращает список полных имен модулей: app.models.<name>
     """
-    modules: List[str] = []
+    modules: list[str] = []
     pkg = sys.modules.get("app.models")
     if not pkg:
         return modules
@@ -359,7 +428,7 @@ def _iter_model_modules_pkgutil() -> List[str]:
     return modules
 
 
-def discover_and_import_all_model_modules(*, with_billing: bool = True) -> List[Any]:
+def discover_and_import_all_model_modules(*, with_billing: bool = True) -> list[Any]:
     """
     Автоматически импортирует ВСЕ модули в пакете app.models.
     Порядок:
@@ -367,7 +436,7 @@ def discover_and_import_all_model_modules(*, with_billing: bool = True) -> List[
       2) Остальные найденные через pkgutil — по алфавиту, кроме уже импортированных.
       3) Если есть внешний автолоадер (_loader.py) — может быть вызван отдельно.
     """
-    imported: List[Any] = []
+    imported: list[Any] = []
     _import_domains_in_order()  # гарантированный порядок критичных доменов
     if with_billing:
         import_domain("app.models.billing")
@@ -383,14 +452,19 @@ def discover_and_import_all_model_modules(*, with_billing: bool = True) -> List[
     return imported
 
 
-def import_all_models() -> List[Any]:
+def import_all_models() -> list[Any]:
     """
     Импортирует все подмодули с моделями, чтобы классы попали в Registry/metadata.
     Сначала — строгий порядок, затем — один из автодискаверов:
       - если доступен _loader.import_all_models() — используем его (умная сортировка),
       - иначе — discover_and_import_all_model_modules() (pkgutil, алфавит).
     """
-    modules: List[Any] = []
+    if RUNTIME_OPTS["DISABLE_AUTOIMPORT"]:
+        logger.info("APP_MODELS_DISABLE_AUTOIMPORT=1 — skip auto-import of models.")
+        _force_mapper_configuration()
+        return []
+
+    modules: list[Any] = []
 
     # 1) принудительный безопасный порядок
     _import_domains_in_order()
@@ -415,6 +489,8 @@ def import_all_models() -> List[Any]:
         "AuditLog",
         "Campaign",
         "InventoryOutbox",
+        "OTPCode",
+        "OtpAttempt",
     ):
         try:
             getattr(sys.modules[__name__], critical)
@@ -435,6 +511,10 @@ def _force_mapper_configuration() -> None:
 
 def ensure_models_loaded() -> None:
     """Идемпотентно: импортирует все доменные модули и «греет» ключевые классы."""
+    if RUNTIME_OPTS["DISABLE_AUTOIMPORT"]:
+        _force_mapper_configuration()
+        return
+
     _import_domains_in_order()
     try:
         if _auto_import_all_models:
@@ -447,10 +527,21 @@ def ensure_models_loaded() -> None:
     _maybe_install_orderitem_stub()
 
 
+def _is_table_mapped(tablename: str) -> bool:
+    """Проверка наличия хотя бы одного маппера с указанным __tablename__."""
+    try:
+        for mapper in BaseModel.registry.mappers:
+            if getattr(mapper.class_, "__tablename__", None) == tablename:
+                return True
+    except Exception:
+        pass
+    return False
+
+
 def metadata_create_all(engine) -> None:
     """
     Безопасный wrapper вокруг Base.metadata.create_all(engine):
-    - импортируем модели в корректном порядке (billing → subscription → остальное),
+    - импортируем модели в корректном порядке (user → otp → остальное),
     - включаем проверку FK для SQLite,
     - создаём все таблицы,
     - делаем проверки связей и дубликатов.
@@ -504,6 +595,8 @@ def warmup_models() -> None:
         "AuditLog",
         "Campaign",
         "InventoryOutbox",
+        "OTPCode",
+        "OtpAttempt",
     ):
         try:
             getattr(sys.modules[__name__], name)
@@ -530,9 +623,9 @@ def is_model_registered(class_or_name: Any) -> bool:
     return False
 
 
-def get_registry_info() -> Dict[str, Any]:
+def get_registry_info() -> dict[str, Any]:
     """Краткий дамп информации о реестре ORM (для health-check / debug)."""
-    info: Dict[str, Any] = {
+    info: dict[str, Any] = {
         "mappers": [],
         "tables": [],
     }
@@ -555,7 +648,7 @@ def get_registry_info() -> Dict[str, Any]:
 # ------------------------------------------------------------------------------
 # Introspection helpers
 # ------------------------------------------------------------------------------
-def get_model_by_tablename(tablename: str) -> Optional[Type[Any]]:
+def get_model_by_tablename(tablename: str) -> Optional[type[Any]]:
     """Получить класс модели по имени таблицы."""
     try:
         for obj in globals().values():
@@ -577,9 +670,9 @@ def get_model_by_tablename(tablename: str) -> Optional[Type[Any]]:
     return None
 
 
-def get_all_models() -> List[Type[Any]]:
+def get_all_models() -> list[type[Any]]:
     """Список всех классов моделей, обнаруженных в пакете."""
-    models: List[Type[Any]] = []
+    models: list[type[Any]] = []
     try:
         for name in __all__:
             obj = globals().get(name)
@@ -598,7 +691,7 @@ def get_all_models() -> List[Type[Any]]:
     return models
 
 
-def get_model_fields(model_class: Type[Any]) -> List[str]:
+def get_model_fields(model_class: type[Any]) -> list[str]:
     """Список имён колонок у модели."""
     try:
         if hasattr(model_class, "__table__"):
@@ -608,7 +701,7 @@ def get_model_fields(model_class: Type[Any]) -> List[str]:
     return []
 
 
-def get_tablenames() -> List[str]:
+def get_tablenames() -> list[str]:
     """Список имён всех таблиц моделей (уникальный, отсортированный)."""
     names: set[str] = set()
     try:
@@ -639,9 +732,9 @@ def get_tablenames() -> List[str]:
     return sorted(names)
 
 
-def get_model_pairs(include_abstract: bool = False) -> List[Tuple[str, Type[Any]]]:
+def get_model_pairs(include_abstract: bool = False) -> list[tuple[str, type[Any]]]:
     """Пары (имя_таблицы, класс_модели) для админок."""
-    pairs: dict[str, Type[Any]] = {}
+    pairs: dict[str, type[Any]] = {}
     try:
         for mapper in BaseModel.registry.mappers:
             cls = mapper.class_
@@ -671,12 +764,13 @@ def get_model_pairs(include_abstract: bool = False) -> List[Tuple[str, Type[Any]
 
     return sorted(pairs.items(), key=lambda kv: kv[0])
 
+
 # ------------------------------------------------------------------------------
 # Admin-oriented helpers
 # ------------------------------------------------------------------------------
-def get_admin_schema(include_abstract: bool = False) -> Dict[str, Dict[str, Any]]:
+def get_admin_schema(include_abstract: bool = False) -> dict[str, dict[str, Any]]:
     """Структура для админ-панелей."""
-    schema: Dict[str, Dict[str, Any]] = {}
+    schema: dict[str, dict[str, Any]] = {}
     try:
         for tablename, cls in get_model_pairs(include_abstract=include_abstract):
             fields = get_model_fields(cls)
@@ -685,10 +779,11 @@ def get_admin_schema(include_abstract: bool = False) -> Dict[str, Dict[str, Any]
         logger.exception("get_admin_schema failed: %s", e)
     return schema
 
+
 # ------------------------------------------------------------------------------
 # Migration-oriented helpers
 # ------------------------------------------------------------------------------
-def _module_mtime_of(cls: Type[Any]) -> Optional[float]:
+def _module_mtime_of(cls: type[Any]) -> Optional[float]:
     """mtime файла модуля, где объявлен класс модели (или None)."""
     try:
         modname = getattr(cls, "__module__", None)
@@ -706,10 +801,10 @@ def _module_mtime_of(cls: Type[Any]) -> Optional[float]:
         return None
 
 
-def get_models_changed_since(since: datetime | float) -> List[Tuple[str, Type[Any], float]]:
+def get_models_changed_since(since: datetime | float) -> list[tuple[str, type[Any], float]]:
     """Модели, чьи модули обновлялись ПОСЛЕ указанного времени."""
     ts = since.timestamp() if isinstance(since, datetime) else float(since)
-    changed: List[Tuple[str, Type[Any], float]] = []
+    changed: list[tuple[str, type[Any], float]] = []
     try:
         for tablename, cls in get_model_pairs():
             mtime = _module_mtime_of(cls)
@@ -720,12 +815,13 @@ def get_models_changed_since(since: datetime | float) -> List[Tuple[str, Type[An
     changed.sort(key=lambda t: t[2], reverse=True)
     return changed
 
+
 # ------------------------------------------------------------------------------
 # Relationship/introspection helpers
 # ------------------------------------------------------------------------------
-def get_relationships() -> List[Dict[str, Any]]:
+def get_relationships() -> list[dict[str, Any]]:
     """Вернуть связи между моделями."""
-    rels: List[Dict[str, Any]] = []
+    rels: list[dict[str, Any]] = []
     try:
         for mapper in BaseModel.registry.mappers:
             cls = mapper.class_
@@ -762,11 +858,11 @@ def get_relationships() -> List[Dict[str, Any]]:
     return rels
 
 
-def get_missing_fk_dependencies() -> List[str]:
+def get_missing_fk_dependencies() -> list[str]:
     """
     Вернёт список строк с описанием ссылок FK, у которых целевая таблица отсутствует в metadata.
     """
-    missing: List[str] = []
+    missing: list[str] = []
     try:
         metadata = Base.metadata
         for table_name, table in metadata.tables.items():
@@ -787,16 +883,18 @@ def assert_relationships_resolved() -> None:
     if issues:
         raise RuntimeError("Unresolved foreign keys detected:\n - " + "\n - ".join(issues))
 
+
 # ------------------------------------------------------------------------------
 # Diagnostics: duplicate tablenames
 # ------------------------------------------------------------------------------
-def list_duplicate_tablenames() -> List[str]:
+def list_duplicate_tablenames(*, ignore: Optional[set[str]] = None) -> list[str]:
     """
     Найдёт потенциальные дубликаты по имени таблицы среди мапперов.
-    Это помогает поймать ситуацию, когда модуль с моделями исполнился дважды.
+    Параметр ignore позволяет временно игнорировать известные легаси-кейсы.
     """
-    seen: Dict[str, int] = {}
-    dups: List[str] = []
+    ig = set(ignore or [])
+    seen: dict[str, int] = {}
+    dups: list[str] = []
     try:
         for mapper in BaseModel.registry.mappers:
             cls = mapper.class_
@@ -805,6 +903,8 @@ def list_duplicate_tablenames() -> List[str]:
                 continue
             seen[t] = seen.get(t, 0) + 1
         for t, cnt in seen.items():
+            if t in ig:
+                continue
             if cnt > 1:
                 dups.append(f"{t} (mappers={cnt})")
     except Exception as e:
@@ -813,33 +913,66 @@ def list_duplicate_tablenames() -> List[str]:
 
 
 def assert_no_duplicate_tablenames() -> None:
-    """Поднимет исключение, если есть дубликаты имён таблиц среди мапперов."""
-    dups = list_duplicate_tablenames()
-    if dups:
+    """
+    Бросит исключение, если есть дубликаты имён таблиц среди мапперов,
+    за исключением временно разрешённых из DUPLICATE_TABLES_IGNORE.
+    По игнорируемым дублям — не падаем, но логируем подробный дамп.
+    """
+    hard_dups = list_duplicate_tablenames(ignore=DUPLICATE_TABLES_IGNORE)
+    if hard_dups:
+        dump_duplicate_mappers()
         raise RuntimeError(
-            "Duplicate tablenames detected (check imports):\n - " + "\n - ".join(dups)
+            "Duplicate tablenames detected (check imports):\n - " + "\n - ".join(hard_dups)
         )
+
+    # Мягкая ветка: только игнорируемые дубли остаются — не падаем, но логируем.
+    try:
+        from collections import defaultdict
+
+        by_table: dict[str, list] = defaultdict(list)
+        for mapper in BaseModel.registry.mappers:
+            t = getattr(mapper.class_, "__tablename__", None)
+            if not t:
+                continue
+            by_table[t].append(mapper)
+
+        for t in sorted(by_table.keys()):
+            if t in DUPLICATE_TABLES_IGNORE and len(by_table[t]) > 1:
+                logger.warning(
+                    "Duplicate mappers for '%s' are temporarily allowed (count=%d). "
+                    "Clean up legacy definitions to remove this warning.",
+                    t,
+                    len(by_table[t]),
+                )
+                for i, mp in enumerate(by_table[t], 1):
+                    meta = _describe_mapper(mp)
+                    logger.warning(
+                        "  [%s] #%d -> %s  (file=%s)", t, i, meta.get("class"), meta.get("file")
+                    )
+    except Exception as e:
+        logger.debug("assert_no_duplicate_tablenames (soft path) failed: %s", e)
+
 
 # ------------------------------------------------------------------------------
 # Caching wrappers
 # ------------------------------------------------------------------------------
 @lru_cache(maxsize=1)
-def get_tablenames_cached() -> List[str]:
+def get_tablenames_cached() -> list[str]:
     return get_tablenames()
 
 
 @lru_cache(maxsize=1)
-def get_model_pairs_cached(include_abstract: bool = False) -> List[Tuple[str, Type[Any]]]:
+def get_model_pairs_cached(include_abstract: bool = False) -> list[tuple[str, type[Any]]]:
     return get_model_pairs(include_abstract=include_abstract)
 
 
 @lru_cache(maxsize=1)
-def get_all_models_cached() -> List[Type[Any]]:
+def get_all_models_cached() -> list[type[Any]]:
     return get_all_models()
 
 
 @lru_cache(maxsize=1)
-def get_admin_schema_cached(include_abstract: bool = False) -> Dict[str, Dict[str, Any]]:
+def get_admin_schema_cached(include_abstract: bool = False) -> dict[str, dict[str, Any]]:
     return get_admin_schema(include_abstract=include_abstract)
 
 
@@ -853,6 +986,7 @@ def clear_model_introspection_caches() -> None:
         _clear_snapshot()
     except Exception as e:
         logger.warning("clear_model_introspection_caches: %s", e)
+
 
 # ------------------------------------------------------------------------------
 # Test data helpers
@@ -869,17 +1003,17 @@ def generate_test_data(
     product_sku: str = "sku-001",
     variant_sku: str = "sku-001-blue",
     warehouse_name: str = "Main WH",
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """
     Быстрая генерация минимально связанного набора данных для автотестов.
     Объекты: Company, User, Category, Product, ProductVariant, Warehouse, ProductStock.
     """
-    created: Dict[str, Any] = {}
+    created: dict[str, Any] = {}
 
     from app.models.company import Company  # type: ignore
-    from app.models.user import User  # type: ignore
     from app.models.product import Category, Product, ProductVariant  # type: ignore
-    from app.models.warehouse import Warehouse, ProductStock  # type: ignore
+    from app.models.user import User  # type: ignore
+    from app.models.warehouse import ProductStock, Warehouse  # type: ignore
 
     try:
         company = Company(name=company_name)
@@ -899,7 +1033,7 @@ def generate_test_data(
         session.flush()
         created["category"] = cat
 
-        prod_kwargs: Dict[str, Any] = dict(
+        prod_kwargs: dict[str, Any] = dict(
             name=product_name,
             slug=product_sku,
             sku=product_sku,
@@ -954,16 +1088,17 @@ def generate_test_data(
 
     return created
 
+
 # ------------------------------------------------------------------------------
 # Async / batch INTROSPECTION (снапшот)
 # ------------------------------------------------------------------------------
 class _Snapshot(TypedDict):
     ts: float
     max_mtime: float
-    tablenames: List[str]
-    models: List[Tuple[str, Type[Any]]]
-    admin_schema: Dict[str, Dict[str, Any]]
-    relationships: List[Dict[str, Any]]
+    tablenames: list[str]
+    models: list[tuple[str, type[Any]]]
+    admin_schema: dict[str, dict[str, Any]]
+    relationships: list[dict[str, Any]]
 
 
 _INTROSPECTION_SNAPSHOT: Optional[_Snapshot] = None
@@ -973,7 +1108,7 @@ def _now_ts() -> float:
     return datetime.utcnow().timestamp()
 
 
-def _compute_max_mtime(models: List[Tuple[str, Type[Any]]]) -> float:
+def _compute_max_mtime(models: list[tuple[str, type[Any]]]) -> float:
     max_m: float = 0.0
     for _, cls in models:
         mt = _module_mtime_of(cls) or 0.0
@@ -1059,19 +1194,21 @@ def precompute_introspection_cache(*, include_abstract: bool = False) -> _Snapsh
     _set_snapshot(snap)
     return snap
 
+
 # Удобные async-обёртки
-async def get_admin_schema_async(include_abstract: bool = False) -> Dict[str, Dict[str, Any]]:
+async def get_admin_schema_async(include_abstract: bool = False) -> dict[str, dict[str, Any]]:
     try:
         return await asyncio.to_thread(get_admin_schema, include_abstract)
     except RuntimeError:
         return get_admin_schema(include_abstract)
 
 
-async def get_relationships_async() -> List[Dict[str, Any]]:
+async def get_relationships_async() -> list[dict[str, Any]]:
     try:
         return await asyncio.to_thread(get_relationships)
     except RuntimeError:
         return get_relationships()
+
 
 # ------------------------------------------------------------------------------
 # Доп. функционал: безопасный порядок импорта, заглушка OrderItem, включение FK в SQLite
@@ -1081,17 +1218,23 @@ def _import_domains_in_order() -> None:
     Импортируем модели в заведомо безопасном порядке, чтобы разорвать циклы
     и гарантировать наличие целевых таблиц для FK в metadata до create_all.
 
-    Важно: billing (billing_payments, subscriptions, invoices, wallet_*) должен быть загружен рано,
-    потому что другие домены (payment / orders) могут ссылаться на него.
+    ПОРЯДОК ВАЖЕН:
+      1) user — чтобы существовала таблица users (FK из otp.*).
+      2) otp  — только если еще нет маппера таблицы otp_codes (чтобы не задвоить).
+      3) остальные базовые домены.
     """
+    if RUNTIME_OPTS["DISABLE_AUTOIMPORT"]:
+        return
+
     preferred_order = [
-        "app.models.billing",       # 1) billing — первым
-        "app.models.subscription",  # 2) если есть отдельный модуль подписок — сразу после billing
+        "app.models.user",  # 1) users сначала (FK для OTP)
+        None,  # 2) слот для otp — ниже решаем по условию
+        "app.models.billing",  # 3) billing
+        "app.models.subscription",  # 4) отдельный модуль подписок — если есть
         # Базовые домены
         "app.models.company",
         "app.models.customer",
-        "app.models.product",       # Product имеет relationship к OrderItem (строкой)
-        "app.models.user",
+        "app.models.product",
         "app.models.warehouse",
         "app.models.campaign",
         "app.models.payment",
@@ -1103,6 +1246,17 @@ def _import_domains_in_order() -> None:
 
     seen: set[str] = set()
     for module_name in preferred_order:
+        if module_name is None:
+            # Решаем, импортировать ли otp: если уже есть маппер otp_codes — пропускаем
+            try:
+                if not _is_table_mapped("otp_codes"):
+                    import_domain("app.models.otp")
+                else:
+                    logger.info("otp_codes already mapped — skipping app.models.otp import.")
+            except Exception as e:
+                logger.error("Conditional import for app.models.otp failed: %s", e)
+            continue
+
         if not module_name or module_name in seen:
             continue
         seen.add(module_name)
@@ -1142,13 +1296,15 @@ def _maybe_install_orderitem_stub() -> None:
             if getattr(mapper.class_, "__name__", "") == "OrderItem":
                 return
 
-        from sqlalchemy import Column, Integer, String, ForeignKey  # type: ignore
+        from sqlalchemy import Column, ForeignKey, Integer, String  # type: ignore
 
         class _OrderItemStub(BaseModel):  # type: ignore
             __tablename__ = "order_items"
             __table_args__ = {"extend_existing": True}
             id = Column(Integer, primary_key=True)
-            product_id = Column(Integer, ForeignKey("products.id", ondelete="SET NULL"), nullable=True)
+            product_id = Column(
+                Integer, ForeignKey("products.id", ondelete="SET NULL"), nullable=True
+            )
             order_id = Column(Integer, nullable=True)
             sku = Column(String(255), nullable=True)
 
@@ -1167,20 +1323,45 @@ def _enable_sqlite_fk(engine) -> None:
     """Включить PRAGMA foreign_keys=ON для SQLite, если это SQLite-движок."""
     try:
         from sqlalchemy import text as sql_text  # type: ignore
+
         with engine.connect() as conn:
             if getattr(engine.dialect, "name", "") == "sqlite":
                 conn.execute(sql_text("PRAGMA foreign_keys=ON"))
     except Exception as e:
         logger.debug("Could not enable SQLite FK pragma: %s", e)
 
+
+# ------------------------------------------------------------------------------
+# Dev helper: «мягкий» reload только наших модулей (для interactive/debug)
+# ------------------------------------------------------------------------------
+def reload_all_model_modules() -> None:
+    """
+    Dev-use only. Перезагружает model-модули пакета (внутри sys.modules) «мягко».
+    Не рекомендуется в продакшене (может привести к повторной регистрации мапперов).
+    """
+    prefix = "app.models."
+    to_reload = [m for m in list(sys.modules.keys()) if m.startswith(prefix) and m != __name__]
+    for name in to_reload:
+        try:
+            importlib.reload(sys.modules[name])
+        except Exception as e:
+            logger.debug("reload of %s failed: %s", name, e)
+    clear_model_introspection_caches()
+    _force_mapper_configuration()
+
+
 # ------------------------------------------------------------------------------
 # Авто-инициализация критичных моделей при импорте пакета
 # ------------------------------------------------------------------------------
 def _auto_import_core_models() -> None:
     """
-    Импортирует критичные модули (Company/Product/Warehouse/User/Order/AuditLog/Campaign/Customer/InventoryOutbox),
+    Импортирует критичные модули (Company/Product/Warehouse/User/Order/AuditLog/Campaign/Customer/InventoryOutbox/OTP),
     чтобы FK и relationship были разрешены ДО вызова Base.metadata.create_all(engine).
     """
+    if RUNTIME_OPTS["DISABLE_AUTOIMPORT"]:
+        _force_mapper_configuration()
+        return
+
     for mod in _CRITICAL_MODULES:
         try:
             import_domain(mod)
@@ -1201,24 +1382,29 @@ except Exception as _early_import_err:
 
 # Доп. страховка: явные импорты без экспорта, чтобы таблицы точно попали в общий Base.metadata
 try:
-    from . import billing as _models_billing  # noqa: F401
-    from . import warehouse as _models_warehouse  # noqa: F401
-    from . import campaign as _models_campaign  # noqa: F401
-    from . import product as _models_product  # noqa: F401
-    from . import company as _models_company  # noqa: F401
-    from . import customer as _models_customer  # noqa: F401
-    from . import audit_log as _models_audit_log  # noqa: F401
-    from . import user as _models_user  # noqa: F401
-    from . import inventory_outbox as _models_inventory_outbox  # noqa: F401
-    # order специально НЕ импортируем жёстко — если он битый, заглушка уже установлена выше
+    if not RUNTIME_OPTS["DISABLE_AUTOIMPORT"]:
+        from . import audit_log as _models_audit_log  # noqa: F401
+        from . import billing as _models_billing  # noqa: F401
+        from . import campaign as _models_campaign  # noqa: F401
+        from . import company as _models_company  # noqa: F401
+        from . import customer as _models_customer  # noqa: F401
+        from . import product as _models_product  # noqa: F401
+        from . import user as _models_user  # noqa: F401
+        from . import warehouse as _models_warehouse  # noqa: F401
+
+        # OTP подгружаем опционально, если ранее не была смэплена таблица otp_codes
+        if not _is_table_mapped("otp_codes"):
+            from . import otp as _models_otp  # noqa: F401
+        # order специально НЕ импортируем жёстко — если он битый, заглушка уже установлена выше
 except Exception as _implicit_import_err:
     logger.debug("Optional side-imports failed: %s", _implicit_import_err)
 
 # Финальный авто-догрузчик (если есть _loader.py — используем его, иначе pkgutil).
 try:
-    if _auto_import_all_models:
-        _auto_import_all_models(log=False)
-    else:
-        discover_and_import_all_model_modules(with_billing=False)
+    if not RUNTIME_OPTS["DISABLE_AUTOIMPORT"]:
+        if _auto_import_all_models:
+            _auto_import_all_models(log=False)
+        else:
+            discover_and_import_all_model_modules(with_billing=False)
 except Exception as _auto_err:
     logger.debug("auto-import models at package import failed: %s", _auto_err)

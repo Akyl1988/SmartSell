@@ -18,9 +18,9 @@ from __future__ import annotations
 """
 
 import logging
-from typing import List, Tuple, Optional, Dict, Any, Union
+from typing import Any, Optional, Union
 
-from fastapi import FastAPI, APIRouter
+from fastapi import APIRouter, FastAPI
 
 logger = logging.getLogger(__name__)
 if not logger.handlers:
@@ -44,30 +44,39 @@ def _try_import(path: str) -> Optional[Any]:
 # ------------------------------------------------------------------------------
 # Базовые v1-модули (считаем обязательными в проекте)
 # ------------------------------------------------------------------------------
-auth_mod      = _try_import("app.api.v1.auth")
-users_mod     = _try_import("app.api.v1.users")
-products_mod  = _try_import("app.api.v1.products")
+auth_mod = _try_import("app.api.v1.auth")
+users_mod = _try_import("app.api.v1.users")
+products_mod = _try_import("app.api.v1.products")
 campaigns_mod = _try_import("app.api.v1.campaigns")
 
 # Опциональные
-wallet   = _try_import("app.api.v1.wallet")
+wallet = _try_import("app.api.v1.wallet")
 payments = _try_import("app.api.v1.payments")
 
 # Переэкспорт удобных имён/алиасов (для внешнего кода)
-auth     = auth_mod
-users    = users_mod
+auth = auth_mod
+users = users_mod
 products = products_mod
 campaigns = campaigns_mod
-billing  = campaigns_mod  # исторический алиас
+billing = campaigns_mod  # исторический алиас
 
 __all__ = [
-    "auth", "users", "products", "campaigns", "billing",
-    "wallet", "payments",
+    "auth",
+    "users",
+    "products",
+    "campaigns",
+    "billing",
+    "wallet",
+    "payments",
     "V1_ROUTERS",
-    "register_v1_router", "register_optional_v1_router",
+    "register_v1_router",
+    "register_optional_v1_router",
     "include_router_smart",
-    "mount_v1", "mount_all", "mount_into_router",
-    "get_v1_registry", "diagnose_v1",
+    "mount_v1",
+    "mount_all",
+    "mount_into_router",
+    "get_v1_registry",
+    "diagnose_v1",
 ]
 
 
@@ -84,9 +93,10 @@ def _router_or_none(mod: Any) -> Optional[APIRouter]:
     except Exception:
         return None
 
-V1_ROUTERS: List[Tuple[str, APIRouter, bool]] = []
+
+V1_ROUTERS: list[tuple[str, APIRouter, bool]] = []
 if auth_mod and _router_or_none(auth_mod):
-    V1_ROUTERS.append(("auth", auth_mod.router, False))       # noqa: E305
+    V1_ROUTERS.append(("auth", auth_mod.router, False))  # noqa: E305
 if users_mod and _router_or_none(users_mod):
     V1_ROUTERS.append(("users", users_mod.router, False))
 if products_mod and _router_or_none(products_mod):
@@ -118,7 +128,9 @@ def register_v1_router(name: str, router: APIRouter, is_absolute: bool = False) 
         logger.info("Registered v1 router: %s (absolute=%s)", name, is_absolute)
 
 
-def register_optional_v1_router(name: str, import_path: str, is_absolute_hint: Optional[bool] = None) -> bool:
+def register_optional_v1_router(
+    name: str, import_path: str, is_absolute_hint: Optional[bool] = None
+) -> bool:
     """
     Опциональная регистрация роутера по строке импорта.
     Возвращает True, если модуль зарегистрирован; False — если отсутствует.
@@ -130,7 +142,9 @@ def register_optional_v1_router(name: str, import_path: str, is_absolute_hint: O
 
     abs_flag = bool(is_absolute_hint) or _router_prefix_startswith(r, "/api/v1")
     register_v1_router(name, r, abs_flag)
-    logger.info("Optional v1 router registered: %s from %s (absolute=%s)", name, import_path, abs_flag)
+    logger.info(
+        "Optional v1 router registered: %s from %s (absolute=%s)", name, import_path, abs_flag
+    )
     return True
 
 
@@ -176,6 +190,7 @@ def _looks_absolute_under_base(router: APIRouter, base_prefix: str) -> bool:
 
 Target = Union[FastAPI, APIRouter]
 
+
 def _get_or_init_mounted_set(target: Target) -> set:
     """
     Ведём набор уже смонтированных APIRouter по id(router),
@@ -189,7 +204,7 @@ def _get_or_init_mounted_set(target: Target) -> set:
     if state is not None:
         if not hasattr(state, "_mounted_router_ids"):
             state._mounted_router_ids = set()  # type: ignore[attr-defined]
-        return state._mounted_router_ids      # type: ignore[attr-defined]
+        return state._mounted_router_ids  # type: ignore[attr-defined]
 
     # Фоллбэк: навешиваем атрибут на сам объект
     if not hasattr(target, "_mounted_router_ids"):
@@ -197,7 +212,9 @@ def _get_or_init_mounted_set(target: Target) -> set:
     return getattr(target, "_mounted_router_ids")
 
 
-def _mount_once(target: Target, router: APIRouter, base_prefix: str, is_absolute_flag: Optional[bool]) -> str:
+def _mount_once(
+    target: Target, router: APIRouter, base_prefix: str, is_absolute_flag: Optional[bool]
+) -> str:
     """
     Подключает роутер один раз. Если уже подключали — возвращает пояснение и пропускает.
     """
@@ -212,11 +229,11 @@ def _mount_once(target: Target, router: APIRouter, base_prefix: str, is_absolute
     # Определяем абсолютность
     is_abs = bool(is_absolute_flag) or _looks_absolute_under_base(router, base_prefix)
     if is_abs:
-        target.include_router(router)                     # type: ignore[arg-type]
+        target.include_router(router)  # type: ignore[arg-type]
         fp = _router_first_path(router) or (_router_prefix(router) or "<unknown>")
         note = f"Included router as-is (absolute prefix): {fp}"
     else:
-        target.include_router(router, prefix=base_prefix) # type: ignore[arg-type]
+        target.include_router(router, prefix=base_prefix)  # type: ignore[arg-type]
         fp = _router_first_path(router) or "<root>"
         note = f"Included router with base prefix '{base_prefix}': {fp}"
 
@@ -246,8 +263,7 @@ def mount_v1(target: Target, base_prefix: str = "/api/v1") -> None:
             logger.exception("Failed to include router '%s': %s", name, e)
 
     logger.info(
-        "API v1 routers mounted. Aliases: billing -> campaigns; "
-        "wallet: %s; payments: %s",
+        "API v1 routers mounted. Aliases: billing -> campaigns; " "wallet: %s; payments: %s",
         "present" if wallet and _router_or_none(wallet) else "absent",
         "present" if payments and _router_or_none(payments) else "absent",
     )
@@ -269,23 +285,25 @@ def mount_into_router(parent: APIRouter, base_prefix: str = "/api/v1") -> None:
 # ------------------------------------------------------------------------------
 # Диагностика и инспекция реестра
 # ------------------------------------------------------------------------------
-def get_v1_registry() -> List[Dict[str, Any]]:
+def get_v1_registry() -> list[dict[str, Any]]:
     """
     Возвращает срез по реестру: имя, абсолютность, объявленный префикс и первый путь.
     Удобно для health-страниц/логов/тестов.
     """
-    out: List[Dict[str, Any]] = []
+    out: list[dict[str, Any]] = []
     for name, router, is_abs in V1_ROUTERS:
-        out.append({
-            "name": name,
-            "is_absolute": is_abs,
-            "declared_prefix": _router_prefix(router),
-            "first_path": _router_first_path(router),
-        })
+        out.append(
+            {
+                "name": name,
+                "is_absolute": is_abs,
+                "declared_prefix": _router_prefix(router),
+                "first_path": _router_first_path(router),
+            }
+        )
     return out
 
 
-def diagnose_v1(target: Target) -> Dict[str, Any]:
+def diagnose_v1(target: Target) -> dict[str, Any]:
     """
     Лёгкая диагностика подключения v1-роутеров.
     Возвращает список зарегистрированных, а также информацию о том, что уже примонтировано.

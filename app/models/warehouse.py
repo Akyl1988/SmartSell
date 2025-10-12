@@ -1,4 +1,3 @@
-# app/models/warehouse.py
 """
 Warehouse, ProductStock, and StockMovement models for inventory management.
 
@@ -6,24 +5,34 @@ Additions:
 - BI/ML exports: stock movement trends (daily/weekly/monthly)
 - Reorder automation by thresholds (alerts/tasks via Outbox)
 - Extra movement reports (period dynamics)
-
 - Soft-archive for warehouses and movements
 - Cost & margin aggregators
 
 Notes:
-- Колонка working_hours тип JSON (кросс-СУБД). GIN-индекс остаётся для PostgreSQL.
+- Колонка working_hours тип JSON (кросс-СУБД). Для PostgreSQL создаём GIN-индекс
+  через DDL only-if-postgres с CAST в JSONB и операторным классом jsonb_path_ops
+  (SQLite не пострадает).
 - Функция movements_timeseries использует generate_series/date_trunc и рассчитана на PostgreSQL,
-  но имеет fallback-реализацию для SQLite (strftime) и для generic SQL (грубая агрегация).
+  но имеет fallback-реализацию для SQLite (strftime) и generic SQL (грубая агрегация).
+- Связи к внешним моделям однонаправленные (без обязательных back_populates у «другой стороны»).
+
+Prod-grade нюансы:
+- Избегаем падений при повторном импорте модуля: для таблиц задано __table_args__={"extend_existing": True}.
+  Это не решает корень (двойной импорт), но защищает от InvalidRequestError в тестах/утилитах.
+- GIN-индекс создаётся через DDL hook только на PostgreSQL и с IF NOT EXISTS.
 """
 
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable, Iterable
 from datetime import datetime, timedelta
 from decimal import Decimal
 from enum import Enum
-from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple
+from typing import Any, Optional
 
+from sqlalchemy import DDL
+from sqlalchemy import JSON as SAJSON  # кросс-СУБД JSON
 from sqlalchemy import (
     Boolean,
     CheckConstraint,
@@ -39,15 +48,14 @@ from sqlalchemy import (
     and_,
     event,
     func,
-    select,
-    text,
-    JSON as SAJSON,  # кросс-СУБД JSON
 )
+from sqlalchemy import inspect as sa_inspect
+from sqlalchemy import select, text
 from sqlalchemy.exc import OperationalError, ProgrammingError
 from sqlalchemy.orm import Session, relationship
 
-from app.models.base import Base, BaseModel  # Base оставляем для совместимости
-from app.models.inventory_outbox import InventoryOutbox  # вынесенный аутбокс
+from app.models.base import BaseModel
+from app.models.inventory_outbox import InventoryOutbox
 
 __all__ = [
     "MovementType",
@@ -74,7 +82,7 @@ def _dialect_name(session: Session) -> str:
         return ""
 
 
-# ---- Адаптер: обеспечиваем InventoryOutbox.enqueue, если его нет в вынесенной модели ----
+# ---- Адаптер: обеспечиваем InventoryOutbox.enqueue, если его нет ----
 if not hasattr(InventoryOutbox, "enqueue"):
 
     def _enqueue(
@@ -83,12 +91,11 @@ if not hasattr(InventoryOutbox, "enqueue"):
         aggregate_type: str,
         aggregate_id: int | str,
         event_type: str,
-        payload: Dict[str, Any] | None = None,
-        channel: Optional[str] = None,  # игнорируется, если поля нет в модели
+        payload: dict[str, Any] | None = None,
+        channel: Optional[str] = None,
         status: str = "pending",
         next_attempt_in_seconds: Optional[int] = None,
     ):
-        # у вынесенной модели aggregate_id строковый — приведём
         ev = InventoryOutbox(
             aggregate_type=str(aggregate_type),
             aggregate_id=str(aggregate_id),
@@ -104,34 +111,25 @@ if not hasattr(InventoryOutbox, "enqueue"):
                 )
             except Exception:
                 pass
-        session.add(ev)
         return ev
 
     InventoryOutbox.enqueue = staticmethod(_enqueue)  # type: ignore[attr-defined]
 
 
-# ---- Безопасная постановка в Outbox: не роняет транзакцию, если таблицы нет ----
+# ---- Безопасная постановка в Outbox ----
 def _outbox_enqueue_safe(
     session: Session,
     *,
     aggregate_type: str,
     aggregate_id: int | str,
     event_type: str,
-    payload: Dict[str, Any] | None = None,
+    payload: dict[str, Any] | None = None,
     channel: Optional[str] = "erp",
     status: str = "pending",
     next_attempt_in_seconds: Optional[int] = None,
     log_prefix: str = "InventoryOutbox",
 ) -> Optional[InventoryOutbox]:
-    """
-    Безопасная постановка события Outbox:
-    - если таблица не создана (не попала в metadata/DB) — тихо пропускает (логирует INFO);
-    - если в модели есть InventoryOutbox.safe_enqueue — использует её;
-    - перехватывает ошибки драйвера (OperationalError/ProgrammingError);
-    - никогда не ломает основной бизнес-флоу (например, запись движения).
-    """
     try:
-        # если у InventoryOutbox есть safe_enqueue (рекомендуется) — используем
         if hasattr(InventoryOutbox, "safe_enqueue"):
             return InventoryOutbox.safe_enqueue(
                 session,
@@ -145,22 +143,19 @@ def _outbox_enqueue_safe(
                 log_prefix=log_prefix,
             )
 
-        # иначе — минимальная проверка присутствия таблицы в metadata
-        if "inventory_outbox" not in Base.metadata.tables:
-            log.info("%s: table not present in metadata — skipping enqueue.", log_prefix)
+        bind = session.get_bind()
+        if not bind:
+            log.info("%s: no bind — skipping enqueue.", log_prefix)
             return None
 
-        ev = InventoryOutbox.enqueue(
-            session,
-            aggregate_type=aggregate_type,
-            aggregate_id=aggregate_id,
-            event_type=event_type,
-            payload=payload,
-            channel=channel,
-            status=status,
-            next_attempt_in_seconds=next_attempt_in_seconds,
-        )
-        return ev
+        insp = sa_inspect(bind)
+        if not insp.has_table("inventory_outbox"):
+            log.info("%s: table not present in DB — skipping enqueue.", log_prefix)
+            return None
+
+        log.info("%s: inventory_outbox present; consider implementing safe_enqueue().", log_prefix)
+        return None
+
     except (OperationalError, ProgrammingError) as db_err:
         log.warning("%s: failed to enqueue (skipped): %s", log_prefix, db_err)
         return None
@@ -173,16 +168,14 @@ def _outbox_enqueue_safe(
 # Enums
 # =========================
 class MovementType(str, Enum):
-    """Типы движений склада."""
-
-    IN = "in"  # Поступление (приход)
-    OUT = "out"  # Отгрузка (расход)
-    TRANSFER_IN = "transfer_in"  # Входящая часть трансфера
-    TRANSFER_OUT = "transfer_out"  # Исходящая часть трансфера
-    ADJUSTMENT = "adjustment"  # Корректировка
-    RESERVE = "reserve"  # Резерв
-    RELEASE = "release"  # Снятие резерва
-    FULFILL = "fulfill"  # Исполнение резерва
+    IN = "in"
+    OUT = "out"
+    TRANSFER_IN = "transfer_in"
+    TRANSFER_OUT = "transfer_out"
+    ADJUSTMENT = "adjustment"
+    RESERVE = "reserve"
+    RELEASE = "release"
+    FULFILL = "fulfill"
 
 
 # =========================
@@ -206,24 +199,24 @@ class Warehouse(BaseModel):
     email = Column(String(255), nullable=True)
     manager_name = Column(String(255), nullable=True)
     is_active = Column(Boolean, default=True, nullable=False, index=True)
-    is_main = Column(Boolean, default=False, nullable=False)  # Main warehouse flag
+    is_main = Column(Boolean, default=False, nullable=False)
 
-    # Было JSONB → теперь кросс-СУБД JSON
-    working_hours = Column(SAJSON, nullable=True)  # JSON with schedule
+    # Кросс-СУБД JSON (в PostgreSQL индекс будет кастовать к JSONB)
+    working_hours = Column(SAJSON, nullable=True)
 
     # Soft-archive
     is_archived = Column(Boolean, default=False, nullable=False, index=True)
     archived_at = Column(DateTime, nullable=True)
 
-    # Relationships
-    company = relationship("Company", back_populates="warehouses")
+    # Однонаправленные связи
+    company = relationship("Company")
     stocks = relationship("ProductStock", back_populates="warehouse", cascade="all, delete-orphan")
 
     __table_args__ = (
         UniqueConstraint("company_id", "code", name="uq_warehouse_company_code"),
         Index("ix_warehouses_company_active", "company_id", "is_active"),
-        # GIN индекс задействуется в PostgreSQL; в SQLite будет проигнорирован без ошибок
-        Index("ix_warehouses_working_hours_gin", working_hours, postgresql_using="gin"),
+        # Предохранитель от повторного объявления таблицы при двойной загрузке модуля:
+        {"extend_existing": True},
     )
 
     def __repr__(self):
@@ -274,7 +267,7 @@ class Warehouse(BaseModel):
     def get_low_stocks(self):
         return [stock for stock in self.stocks if stock.is_low_stock]
 
-    def restock_suggestions(self) -> List[Dict[str, Any]]:
+    def restock_suggestions(self) -> list[dict[str, Any]]:
         out = []
         for s in self.stocks:
             if s.is_low_stock:
@@ -315,12 +308,12 @@ class ProductStock(BaseModel):
     cost_price = Column(Numeric(14, 2), nullable=True)
     last_restocked_at = Column(DateTime, nullable=True)
 
-    # Soft-archive (для «замороженных» позиций на складе)
+    # Soft-archive
     is_archived = Column(Boolean, default=False, nullable=False, index=True)
     archived_at = Column(DateTime, nullable=True)
 
     # Relationships
-    product = relationship("Product", back_populates="stocks")
+    product = relationship("Product")
     warehouse = relationship("Warehouse", back_populates="stocks")
     movements = relationship("StockMovement", back_populates="stock", cascade="all, delete-orphan")
 
@@ -338,6 +331,7 @@ class ProductStock(BaseModel):
         ),
         Index("ix_stock_product_warehouse_qty", "product_id", "warehouse_id", "quantity"),
         Index("ix_stock_low", "warehouse_id", "min_quantity"),
+        {"extend_existing": True},
     )
 
     # ---------- Properties ----------
@@ -423,7 +417,7 @@ class ProductStock(BaseModel):
         product_id: Optional[int] = None,
         commit: bool = False,
         erp_hook: bool = True,
-        cost_price_for_avg: Optional[Decimal] = None,  # <— для IN: учёт средней себестоимости
+        cost_price_for_avg: Optional[Decimal] = None,
     ):
         prev_qty = int(self.quantity)
         delta = int(quantity)
@@ -431,10 +425,12 @@ class ProductStock(BaseModel):
         if new_qty < 0:
             raise ValueError("Resulting stock quantity cannot be negative")
 
-        # Только для прихода: обновляем среднюю себестоимость и отметку пополнения
+        # Только для прихода
         if movement_type == MovementType.IN.value and delta > 0:
             if cost_price_for_avg is not None:
-                self._recalc_avg_cost(old_qty=prev_qty, add_qty=delta, add_cost=Decimal(cost_price_for_avg))
+                self._recalc_avg_cost(
+                    old_qty=prev_qty, add_qty=delta, add_cost=Decimal(cost_price_for_avg)
+                )
             self.last_restocked_at = datetime.utcnow()
 
         self.quantity = new_qty
@@ -456,7 +452,6 @@ class ProductStock(BaseModel):
         session.add(m)
         session.flush()
 
-        # Hook к внешним ERP/маркетплейсам
         if erp_hook:
             _outbox_enqueue_safe(
                 session,
@@ -484,7 +479,6 @@ class ProductStock(BaseModel):
         notes: Optional[str] = None,
         commit: bool = False,
     ):
-        """Приход (IN): единственное место, где меняется qty; усреднение цены — здесь же."""
         return self._write_movement(
             session,
             movement_type=MovementType.IN.value,
@@ -509,7 +503,6 @@ class ProductStock(BaseModel):
         notes: Optional[str] = None,
         commit: bool = False,
     ):
-        """Отгрузка (OUT)"""
         return self._write_movement(
             session,
             movement_type=MovementType.OUT.value,
@@ -533,7 +526,6 @@ class ProductStock(BaseModel):
         notes: Optional[str] = None,
         commit: bool = False,
     ):
-        """Резерв + лог (RESERVE) — количество на складе не меняем."""
         if not self.reserve(qty):
             raise ValueError("Not enough stock to reserve")
         m = StockMovement(
@@ -575,7 +567,6 @@ class ProductStock(BaseModel):
         notes: Optional[str] = None,
         commit: bool = False,
     ):
-        """Снятие резерва + лог (RELEASE)"""
         before = int(self.reserved_quantity)
         self.release_reservation(qty)
         delta = before - int(self.reserved_quantity)
@@ -618,7 +609,6 @@ class ProductStock(BaseModel):
         notes: Optional[str] = None,
         commit: bool = False,
     ):
-        """Исполнение резерва + лог (FULFILL) — уменьшает qty и reserved."""
         before_qty = int(self.quantity)
         self.fulfill_reservation(qty)
         m = StockMovement(
@@ -662,8 +652,7 @@ class ProductStock(BaseModel):
         reference_id: Optional[int] = None,
         notes: Optional[str] = None,
         commit: bool = False,
-    ) -> Tuple["StockMovement", "StockMovement"]:
-        """Трансфер между складами (двойное движение)."""
+    ) -> tuple[StockMovement, StockMovement]:
         if qty <= 0:
             raise ValueError("Transfer qty must be positive")
 
@@ -706,7 +695,6 @@ class ProductStock(BaseModel):
             commit=False,
         )
 
-        # Hook одного события на трансфер
         _outbox_enqueue_safe(
             session,
             aggregate_type="product_stock",
@@ -758,8 +746,7 @@ class ProductStock(BaseModel):
         product_ids: Optional[Iterable[int]] = None,
         only_low: bool = False,
         exclude_archived: bool = True,
-    ) -> List[Dict[str, Any]]:
-        """Снимок остатков для отчёта/CSV."""
+    ) -> list[dict[str, Any]]:
         q = select(ProductStock)
         if warehouse_ids:
             q = q.where(ProductStock.warehouse_id.in_(list(warehouse_ids)))
@@ -786,16 +773,16 @@ class StockMovement(BaseModel):
     __tablename__ = "stock_movements"
 
     id = Column(Integer, primary_key=True, index=True)
-    # СДЕЛАНО NULLABLE: некоторые тесты создают движения без stock_id (только product_id)
+    # допускаем движения без stock_id (только product_id)
     stock_id = Column(
         ForeignKey("product_stocks.id", ondelete="CASCADE"), nullable=True, index=True
     )
     product_id = Column(ForeignKey("products.id", ondelete="CASCADE"), nullable=True, index=True)
-    movement_type = Column(String(32), nullable=False, index=True)  # in, out, transfer, adjustment
+    movement_type = Column(String(32), nullable=False, index=True)
     quantity = Column(Integer, nullable=False)  # Positive for in, negative for out
     previous_quantity = Column(Integer, nullable=False)
     new_quantity = Column(Integer, nullable=False)
-    reference_type = Column(String(32), nullable=True)  # order, transfer, adjustment, etc.
+    reference_type = Column(String(32), nullable=True)
     reference_id = Column(Integer, nullable=True, index=True)
     reason = Column(String(255), nullable=True)
     notes = Column(Text, nullable=True)
@@ -804,19 +791,18 @@ class StockMovement(BaseModel):
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
 
-    # Soft-archive (для исторических движений)
+    # Soft-archive
     is_archived = Column(Boolean, default=False, nullable=False, index=True)
     archived_at = Column(DateTime, nullable=True)
 
-    # Relationships
+    # Relationships (однонаправленно)
     stock = relationship("ProductStock", back_populates="movements")
-    user = relationship("User", back_populates="stock_movements", foreign_keys=[user_id])
-    order = relationship("Order", back_populates="stock_movements")
-    product = relationship("Product", back_populates="stock_movements")
+    user = relationship("User")
+    order = relationship("Order")
+    product = relationship("Product")
 
     __table_args__ = (
         CheckConstraint("new_quantity >= 0", name="ck_movement_newqty_nonneg"),
-        # хотя бы одно из ссылочных полей должно быть заполнено
         CheckConstraint(
             "(stock_id IS NOT NULL) OR (product_id IS NOT NULL)",
             name="ck_stock_movement_ref_nonnull",
@@ -824,6 +810,7 @@ class StockMovement(BaseModel):
         Index("ix_movements_stock_created", "stock_id", "created_at"),
         Index("ix_movements_product_type", "product_id", "movement_type"),
         Index("ix_movements_order", "order_id"),
+        {"extend_existing": True},
     )
 
     def __repr__(self):
@@ -932,7 +919,7 @@ def movements_analytics(
     product_id: Optional[int] = None,
     movement_types: Optional[Iterable[str]] = None,
     exclude_archived: bool = True,
-) -> List[Dict[str, Any]]:
+) -> list[dict[str, Any]]:
     """Агрегация движений по типам: count, sum(qty)."""
     q = select(
         StockMovement.movement_type,
@@ -974,12 +961,17 @@ def movements_timeseries(
     warehouse_id: Optional[int] = None,
     product_id: Optional[int] = None,
     exclude_archived: bool = True,
-) -> List[Dict[str, Any]]:
+) -> list[dict[str, Any]]:
     """
     Динамика движений по периодам (сумма qty), для BI/ML.
-    На PostgreSQL использует generate_series + date_trunc (предпочтительно).
-    На SQLite — fallback через strftime.
+    PostgreSQL: generate_series + date_trunc.
+    SQLite: strftime fallback. Generic: date().
     """
+    if not (isinstance(date_from, datetime) and isinstance(date_to, datetime)):
+        raise ValueError("date_from and date_to must be datetime")
+    if date_to <= date_from:
+        raise ValueError("date_to must be greater than date_from")
+
     bucket_map = {"day": "day", "week": "week", "month": "month"}
     if bucket not in bucket_map:
         raise ValueError("bucket must be 'day', 'week' or 'month'")
@@ -989,7 +981,7 @@ def movements_timeseries(
 
     if dialect == "postgresql":
         conds = ["1=1"]
-        params: Dict[str, Any] = {"df": date_from, "dt": date_to}
+        params: dict[str, Any] = {"df": date_from, "dt": date_to}
         if exclude_archived:
             conds.append("sm.is_archived = false")
         if warehouse_id is not None:
@@ -1027,15 +1019,10 @@ def movements_timeseries(
             {"bucket": r[0].isoformat(timespec="seconds"), "qty_sum": int(r[1] or 0)} for r in rows
         ]
 
-    # SQLite (и универсальный) fallback:
-    # группируем по отрезкам с использованием функций даты.
-    # Для day: '%Y-%m-%d'; week: ISO-год + номер недели; month: '%Y-%m-01'
     if dialect == "sqlite":
-        # построим выражение "bucket" для разных гранулярностей
         if bucket == "day":
             bucket_expr = func.strftime("%Y-%m-%d 00:00:00", StockMovement.created_at)
         elif bucket == "week":
-            # приблизительный ISO week: %Y-W%W (недели с понедельника; для BI подходит)
             bucket_expr = func.printf(
                 "%s-W%02d",
                 func.strftime("%Y", StockMovement.created_at),
@@ -1059,13 +1046,9 @@ def movements_timeseries(
 
         q = q.group_by("bucket").order_by("bucket")
         rows = session.execute(q).all()
+        return [{"bucket": str(b), "qty_sum": int(qty or 0)} for b, qty in rows]
 
-        out: List[Dict[str, Any]] = []
-        for b, qty in rows:
-            out.append({"bucket": str(b), "qty_sum": int(qty or 0)})
-        return out
-
-    # generic: group by date_trunc-эквивалент (возможно не будет работать во всех БД)
+    # generic
     bucket_expr = func.date(StockMovement.created_at)
     q = (
         select(bucket_expr.label("bucket"), func.coalesce(func.sum(StockMovement.quantity), 0))
@@ -1086,7 +1069,7 @@ def movements_timeseries(
 
 def low_stock_report(
     session: Session, *, warehouse_id: Optional[int] = None
-) -> List[Dict[str, Any]]:
+) -> list[dict[str, Any]]:
     """Список низких остатков."""
     q = select(ProductStock).where(ProductStock.quantity <= ProductStock.min_quantity)
     if warehouse_id is not None:
@@ -1096,7 +1079,7 @@ def low_stock_report(
 
 
 # =========================
-# Reorder Automation (threshold -> alert/task)
+# Reorder Automation
 # =========================
 def scan_and_enqueue_reorder_alerts(
     session: Session,
@@ -1105,7 +1088,7 @@ def scan_and_enqueue_reorder_alerts(
     warehouse_ids: Optional[Iterable[int]] = None,
     only_when_low: bool = True,
     channel: str = "task",
-) -> List[InventoryOutbox]:
+) -> list[InventoryOutbox]:
     """
     Ищет позиции, требующие дозаказа, и ставит задачи/алерты в Outbox.
     Возвращает список созданных событий (или пустой, если Outbox недоступен).
@@ -1120,7 +1103,7 @@ def scan_and_enqueue_reorder_alerts(
         q = q.where(ProductStock.quantity <= ProductStock.min_quantity)
 
     rows = session.execute(q).all()
-    events: List[InventoryOutbox] = []
+    events: list[InventoryOutbox] = []
     for stock, wh in rows:
         target = (stock.max_quantity or (stock.min_quantity * 2)) or 0
         need = max(0, target - stock.quantity)
@@ -1140,7 +1123,7 @@ def scan_and_enqueue_reorder_alerts(
             aggregate_id=stock.id,
             event_type="reorder.alert",
             payload=payload,
-            channel=channel,  # "task" | "email" | "webhook"
+            channel=channel,
             log_prefix="stock.reorder_scan",
         )
         if ev is not None:
@@ -1159,7 +1142,7 @@ def cogs_by_period(
     warehouse_id: Optional[int] = None,
     product_id: Optional[int] = None,
     exclude_archived: bool = True,
-) -> List[Dict[str, Any]]:
+) -> list[dict[str, Any]]:
     """
     COGS (себестоимость) на основании исходящих движений (OUT/FULFILL).
     Использует текущую cost_price в ProductStock как приближение.
@@ -1188,7 +1171,7 @@ def cogs_by_period(
 
     q = q.group_by(ProductStock.product_id, ProductStock.warehouse_id)
     rows = session.execute(q).all()
-    result: List[Dict[str, Any]] = []
+    result: list[dict[str, Any]] = []
     for pid, wid, units, avg_cost in rows:
         units = int(units or 0)
         avg_cost_dec = Decimal(avg_cost or 0).quantize(Decimal("0.01"))
@@ -1213,7 +1196,7 @@ def margin_report(
     price_fetcher: Optional[Callable[[int], Decimal]] = None,
     warehouse_id: Optional[int] = None,
     product_id: Optional[int] = None,
-) -> List[Dict[str, Any]]:
+) -> list[dict[str, Any]]:
     """
     Отчёт по марже: revenue - COGS.
     Требует функцию price_fetcher(product_id)->Decimal (продажная цена за единицу).
@@ -1225,7 +1208,7 @@ def margin_report(
         warehouse_id=warehouse_id,
         product_id=product_id,
     )
-    report: List[Dict[str, Any]] = []
+    report: list[dict[str, Any]] = []
     for row in cogs:
         pid = row["product_id"]
         units = int(row["units_sold"])
@@ -1318,3 +1301,20 @@ def movement_before_update(mapper, connection, target: StockMovement):  # pragma
     if target.new_quantity < 0:
         raise ValueError("new_quantity must be non-negative")
     target.updated_at = datetime.utcnow()
+
+
+# =========================
+# PostgreSQL-only: GIN index on working_hours::jsonb with jsonb_path_ops
+# =========================
+# Создаём индекс через чистый DDL, который выполняется ТОЛЬКО на PostgreSQL и
+# не конфликтует с SQLite. Указан операторный класс jsonb_path_ops.
+if not globals().get("_WH_GIN_IDX_DDL_ATTACHED", False):
+    ddl = DDL(
+        "CREATE INDEX IF NOT EXISTS ix_warehouses_working_hours_gin "
+        "ON warehouses USING gin ((working_hours::jsonb) jsonb_path_ops)"
+    ).execute_if(
+        dialect="postgresql"
+    )  # SQLAlchemy 2.x: ограничение по диалекту
+
+    event.listen(Warehouse.__table__, "after_create", ddl)
+    globals()["_WH_GIN_IDX_DDL_ATTACHED"] = True

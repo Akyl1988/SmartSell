@@ -38,18 +38,19 @@ import logging
 import logging.config
 import os
 import sys
+import threading
 import time
 import uuid
-import threading
 from contextlib import contextmanager
 from contextvars import ContextVar, Token
 from datetime import datetime
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Optional
 
 # ---------- Safe settings import ----------
 try:
     from app.core.config import settings  # type: ignore
 except Exception:  # pragma: no cover
+
     class _Stub:
         ENVIRONMENT = os.getenv("ENVIRONMENT", "development")
         DEBUG = os.getenv("DEBUG", "0") in ("1", "true", "True")
@@ -72,6 +73,7 @@ except Exception:  # pragma: no cover
 # ---------- Optional libs best-effort ----------
 try:
     import structlog
+
     _HAS_STRUCTLOG = True
 except Exception:  # pragma: no cover
     structlog = None  # type: ignore
@@ -79,12 +81,14 @@ except Exception:  # pragma: no cover
 
 try:
     from prometheus_client import Counter, Histogram
+
     _HAS_PROM = True
 except Exception:
     _HAS_PROM = False
 
 try:
     from statsd import StatsClient
+
     _HAS_STATSD = True
 except Exception:
     _HAS_STATSD = False
@@ -116,7 +120,7 @@ def _mask_secret_value(v: Any) -> Any:
 
 def redact_secrets(data: Any) -> Any:
     if isinstance(data, dict):
-        out: Dict[str, Any] = {}
+        out: dict[str, Any] = {}
         for k, v in data.items():
             lk = str(k).lower()
             if any(x in lk for x in _SECRET_KEYS) and "public" not in lk:
@@ -135,11 +139,12 @@ def redact_secrets(data: Any) -> Any:
 def _otel_trace_injector(_, __, event_dict):
     try:
         from opentelemetry import trace  # type: ignore
+
         span = trace.get_current_span()
         ctx = span.get_span_context() if span else None
         if ctx and getattr(ctx, "is_valid", lambda: False)():
-            trace_id = "{:032x}".format(ctx.trace_id)
-            span_id = "{:016x}".format(ctx.span_id)
+            trace_id = f"{ctx.trace_id:032x}"
+            span_id = f"{ctx.span_id:016x}"
             event_dict["trace_id"] = trace_id
             event_dict["span_id"] = span_id
     except Exception:
@@ -286,23 +291,29 @@ class CriticalAlertHandler(logging.Handler):
                     if _ALERT_WEBHOOK_URL:
                         try:
                             import requests
+
                             requests.post(_ALERT_WEBHOOK_URL, json=payload, timeout=3)
                         except Exception:
                             pass
                     if _TELEGRAM_BOT_TOKEN and _TELEGRAM_CHAT_ID:
                         try:
                             import requests
+
                             text = f"🚨 *CRITICAL* `{payload['app']}` `{payload['env']}`\n```\n{msg}\n```"
                             requests.post(
                                 f"https://api.telegram.org/bot{_TELEGRAM_BOT_TOKEN}/sendMessage",
-                                data={"chat_id": _TELEGRAM_CHAT_ID, "text": text, "parse_mode": "Markdown"},
+                                data={
+                                    "chat_id": _TELEGRAM_CHAT_ID,
+                                    "text": text,
+                                    "parse_mode": "Markdown",
+                                },
                                 timeout=3,
                             )
                         except Exception:
                             pass
                     break
                 except Exception:
-                    time.sleep(0.5 * (2 ** i))
+                    time.sleep(0.5 * (2**i))
 
         threading.Thread(target=_send, daemon=True).start()
 
@@ -316,7 +327,9 @@ def _build_stdlib_dict_config(logs_dir: str) -> dict:
         if getattr(settings, "ENVIRONMENT", "development") != "production"
         else "%(asctime)s [%(levelname)s] %(name)s:%(lineno)d - %(message)s"
     )
-    fmt_file = "%(asctime)s [%(levelname)s] %(name)s:%(filename)s:%(funcName)s:%(lineno)d - %(message)s"
+    fmt_file = (
+        "%(asctime)s [%(levelname)s] %(name)s:%(filename)s:%(funcName)s:%(lineno)d - %(message)s"
+    )
 
     # Weekly rotate app log on Monday (W0), keep 5 backups.
     app_log_handler = {
@@ -356,7 +369,12 @@ def _build_stdlib_dict_config(logs_dir: str) -> dict:
             "file_detailed": {"format": fmt_file, "datefmt": "%Y-%m-%d %H:%M:%S"},
         },
         "handlers": {
-            "console": {"level": level, "class": "logging.StreamHandler", "formatter": "console", "stream": "ext://sys.stdout"},
+            "console": {
+                "level": level,
+                "class": "logging.StreamHandler",
+                "formatter": "console",
+                "stream": "ext://sys.stdout",
+            },
             "file": app_log_handler,
             "error_file": error_log_handler,
             "critical_alerts": critical_alert_handler,
@@ -368,8 +386,16 @@ def _build_stdlib_dict_config(logs_dir: str) -> dict:
                 "propagate": False,
             },
             "uvicorn": {"handlers": ["console", "file"], "level": "INFO", "propagate": False},
-            "uvicorn.error": {"handlers": ["console", "file", "error_file"], "level": "INFO", "propagate": False},
-            "uvicorn.access": {"handlers": ["console", "file"], "level": "INFO", "propagate": False},
+            "uvicorn.error": {
+                "handlers": ["console", "file", "error_file"],
+                "level": "INFO",
+                "propagate": False,
+            },
+            "uvicorn.access": {
+                "handlers": ["console", "file"],
+                "level": "INFO",
+                "propagate": False,
+            },
         },
     }
     return config
@@ -419,7 +445,9 @@ def _try_init_cloudwatch_logging() -> None:
 
         group = os.getenv("CLOUDWATCH_LOG_GROUP", "smartsell3")
         region = os.getenv("CLOUDWATCH_REGION", None)
-        handler = watchtower.CloudWatchLogHandler(log_group=group, create_log_group=True, region_name=region)
+        handler = watchtower.CloudWatchLogHandler(
+            log_group=group, create_log_group=True, region_name=region
+        )
         root = logging.getLogger()
         root.addHandler(handler)
         logging.getLogger(__name__).info("AWS CloudWatch logging integrated (group=%s)", group)
@@ -584,7 +612,7 @@ def bound_context(
     trace_id: Optional[str] = None,
     span_id: Optional[str] = None,
 ):
-    tokens: list[Tuple[ContextVar[str], Token]] = []
+    tokens: list[tuple[ContextVar[str], Token]] = []
     if request_id is not None:
         tokens.append((_ctx_request_id, _ctx_request_id.set(request_id)))
     if user_id is not None:
@@ -607,7 +635,7 @@ def bound_context(
 
 
 # ---------- Request enrichment ----------
-def _parse_traceparent(header: str) -> Tuple[Optional[str], Optional[str]]:
+def _parse_traceparent(header: str) -> tuple[Optional[str], Optional[str]]:
     """
     Parse W3C traceparent header: '00-<trace_id>-<span_id>-<flags>'
     """
@@ -627,6 +655,7 @@ def enrich_from_request(request: Any) -> None:
     """
     try:
         headers = getattr(request, "headers", {}) or {}
+
         # Starlette Headers is case-insensitive mapping
         def _h(name: str) -> Optional[str]:
             try:
@@ -684,7 +713,9 @@ class AuditLogger:
         self.logger = get_logger("audit")
 
     def log_auth_success(self, user_id: int | str, ip_address: str, user_agent: str) -> None:
-        self.logger.info("auth_success", user_id=user_id, ip_address=ip_address, user_agent=user_agent)
+        self.logger.info(
+            "auth_success", user_id=user_id, ip_address=ip_address, user_agent=user_agent
+        )
 
     def log_auth_failure(self, username: str, ip_address: str, reason: str) -> None:
         self.logger.warning("auth_failure", username=username, ip_address=ip_address, reason=reason)
@@ -757,7 +788,9 @@ class LoggingContextMiddleware:
             return await self.app(scope, receive, send)
 
         headers = {k.decode().lower(): v.decode() for k, v in scope.get("headers", [])}
-        request_id = headers.get("x-request-id") or headers.get("x-correlation-id") or str(uuid.uuid4())
+        request_id = (
+            headers.get("x-request-id") or headers.get("x-correlation-id") or str(uuid.uuid4())
+        )
         client = scope.get("client") or ("", 0)
         client_ip = client[0] if isinstance(client, (list, tuple)) and client else ""
         user_agent = headers.get("user-agent", "")
@@ -814,7 +847,9 @@ def _attach_metrics_handler() -> None:
 
 
 # ---------- Slow SQL tracer for SQLAlchemy ----------
-def enable_sqlalchemy_slow_query_logging(engine_or_sync_engine, threshold_ms: Optional[int] = None) -> None:
+def enable_sqlalchemy_slow_query_logging(
+    engine_or_sync_engine, threshold_ms: Optional[int] = None
+) -> None:
     """
     Подключает обработчики событий SQLAlchemy для логирования/метрик «медленных» запросов.
     Аргументы:
@@ -824,7 +859,9 @@ def enable_sqlalchemy_slow_query_logging(engine_or_sync_engine, threshold_ms: Op
     try:
         from sqlalchemy import event  # type: ignore
     except Exception:
-        logging.getLogger(__name__).warning("SQLAlchemy not available; slow query logging is disabled.")
+        logging.getLogger(__name__).warning(
+            "SQLAlchemy not available; slow query logging is disabled."
+        )
         return
 
     sync_engine = getattr(engine_or_sync_engine, "sync_engine", engine_or_sync_engine)
@@ -856,6 +893,7 @@ def enable_sqlalchemy_slow_query_logging(engine_or_sync_engine, threshold_ms: Op
 def get_query_stats_bridge() -> dict:
     try:
         from app.core.db import get_query_stats  # type: ignore
+
         return get_query_stats()
     except Exception:
         return {}
@@ -898,8 +936,8 @@ __all__ = [
     "configure_logging",  # alias
     "setup_logging_fullstack",
     "get_logger",
-    "bind_context",       # functional setter
-    "bound_context",      # contextmanager
+    "bind_context",  # functional setter
+    "bound_context",  # contextmanager
     "clear_context",
     "enrich_from_request",
     "set_level_for",

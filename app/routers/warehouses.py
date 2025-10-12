@@ -13,11 +13,11 @@ Warehouses router (enterprise-grade):
 
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
+from fastapi import APIRouter, Depends, Request, Response, status
 from sqlalchemy import and_, func, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import selectinload, joinedload
+from sqlalchemy.orm import joinedload, selectinload
 
 # --- core deps / db / security / logging ---
 try:
@@ -26,16 +26,17 @@ except Exception:  # pragma: no cover
     from app.core.db import get_db  # fallback
 
 from app.core.deps import (
+    Pagination,
     api_rate_limit_dep,
     ensure_idempotency,
-    set_idempotency_result,
-    get_pagination,
-    Pagination,
     get_client_info,
-    # если используете скоупы — раскомментируйте и добавьте к dependencies роутов
-    # require_scopes,
+    get_pagination,
+    set_idempotency_result,
 )
-from app.core.exceptions import bad_request, not_found, conflict
+
+# если используете скоупы — раскомментируйте и добавьте к dependencies роутов
+# require_scopes,
+from app.core.exceptions import bad_request, conflict, not_found
 from app.core.logging import audit_logger
 from app.core.security import get_current_user, require_storekeeper  # ваш существующий чек
 
@@ -93,9 +94,7 @@ async def _ensure_product_belongs(
     db: AsyncSession, product_id: int, company_id: int
 ) -> Product | None:
     res = await db.execute(
-        select(Product).where(
-            and_(Product.id == product_id, Product.company_id == company_id)
-        )
+        select(Product).where(and_(Product.id == product_id, Product.company_id == company_id))
     )
     return res.scalar_one_or_none()
 
@@ -103,6 +102,7 @@ async def _ensure_product_belongs(
 # ---------------------------------------------------------------------
 # Routes
 # ---------------------------------------------------------------------
+
 
 @router.get(
     "",
@@ -515,7 +515,11 @@ async def transfer_stock(
 
         # Защита от отрицательного остатка
         # (если у вас есть reserved/allocated — замените на available_quantity)
-        if (source_stock.available_quantity if hasattr(source_stock, "available_quantity") else source_stock.quantity) < transfer_data.quantity:
+        if (
+            source_stock.available_quantity
+            if hasattr(source_stock, "available_quantity")
+            else source_stock.quantity
+        ) < transfer_data.quantity:
             raise bad_request("Insufficient stock for transfer")
 
         # Создаём запись назначения, если нет

@@ -1,11 +1,11 @@
 # app/routers/orders.py
 from __future__ import annotations
+
 """
 Orders router for order management (enterprise-grade).
 """
 
-from datetime import datetime
-from typing import Iterable, Literal, Optional
+from typing import Optional
 
 from fastapi import APIRouter, Depends, status
 from sqlalchemy import and_, func, select
@@ -20,7 +20,7 @@ except Exception:
     from app.core.db import get_db  # fallback
 
 from app.core.deps import api_rate_limit_dep, ensure_idempotency
-from app.core.errors import bad_request, not_found, conflict, server_error
+from app.core.errors import bad_request, conflict, not_found, server_error
 from app.core.logging import audit_logger
 from app.core.security import get_current_user, require_manager
 from app.models import Order, OrderItem, Product, ProductStock, User
@@ -57,11 +57,14 @@ _ALLOWED_STATUS_TRANSITIONS: dict[str, set[str]] = {
     "paid": {"confirmed", "packing", "cancelled"},  # если оплата идёт раньше подтверждения
 }
 
+
 def _company_scope(company_id: int):
     return and_(Order.company_id == company_id, Order.is_deleted.is_(False))
 
+
 def _product_company_scope(company_id: int):
     return and_(Product.company_id == company_id, Product.is_deleted.is_(False))
+
 
 def _ensure_transition(old: str, new: str) -> None:
     if old is None:
@@ -70,6 +73,7 @@ def _ensure_transition(old: str, new: str) -> None:
     allowed = _ALLOWED_STATUS_TRANSITIONS.get(old, set())
     if new not in allowed:
         raise conflict(f"Illegal status transition: {old} → {new}")
+
 
 async def _load_order(
     db: AsyncSession, company_id: int, order_id: int, with_items: bool = True
@@ -82,6 +86,7 @@ async def _load_order(
     if with_items:
         stmt = stmt.options(selectinload(Order.items))
     return (await db.execute(stmt)).scalar_one_or_none()
+
 
 async def _reserve_product_stock(
     db: AsyncSession,
@@ -96,12 +101,16 @@ async def _reserve_product_stock(
     remaining = quantity
     # Загружаем склады по этому товару с блокировкой
     stocks = (
-        await db.execute(
-            select(ProductStock)
-            .where(ProductStock.product_id == product_id)
-            .with_for_update(skip_locked=True)
+        (
+            await db.execute(
+                select(ProductStock)
+                .where(ProductStock.product_id == product_id)
+                .with_for_update(skip_locked=True)
+            )
         )
-    ).scalars().all()
+        .scalars()
+        .all()
+    )
 
     for stock in stocks:
         if remaining <= 0:
@@ -116,6 +125,7 @@ async def _reserve_product_stock(
     if remaining > 0:
         raise bad_request(f"Insufficient stock for product ID {product_id}")
 
+
 async def _release_product_stock(
     db: AsyncSession,
     product_id: int,
@@ -127,12 +137,16 @@ async def _release_product_stock(
     """
     remaining = quantity
     stocks = (
-        await db.execute(
-            select(ProductStock)
-            .where(ProductStock.product_id == product_id)
-            .with_for_update(skip_locked=True)
+        (
+            await db.execute(
+                select(ProductStock)
+                .where(ProductStock.product_id == product_id)
+                .with_for_update(skip_locked=True)
+            )
         )
-    ).scalars().all()
+        .scalars()
+        .all()
+    )
 
     for stock in stocks:
         if remaining <= 0:
@@ -144,9 +158,11 @@ async def _release_product_stock(
         stock.release(to_release)  # предполагается метод модели, уменьшающий reserved_quantity
         remaining -= to_release
 
+
 # -------------------------------------------------------------------
 # GET /orders
 # -------------------------------------------------------------------
+
 
 @router.get("/", response_model=list[OrderResponse], summary="Список заказов")
 async def get_orders(
@@ -197,9 +213,11 @@ async def get_orders(
     orders = (await db.execute(query)).scalars().all()
     return orders
 
+
 # -------------------------------------------------------------------
 # POST /orders (idempotent)
 # -------------------------------------------------------------------
+
 
 @router.post(
     "/",
@@ -215,6 +233,7 @@ async def create_order(
 ):
     # Генерим номер заказа
     import uuid
+
     order_number = f"ORD-{uuid.uuid4().hex[:8].upper()}"
 
     # Создание заказа + резерв склада в транзакции
@@ -284,13 +303,18 @@ async def create_order(
         action="order_create",
         resource_type="order",
         resource_id=str(order.id),
-        changes={"order_number": order.order_number, "total_amount": float(order.total_amount or 0)},
+        changes={
+            "order_number": order.order_number,
+            "total_amount": float(order.total_amount or 0),
+        },
     )
     return order
+
 
 # -------------------------------------------------------------------
 # GET /orders/{id}
 # -------------------------------------------------------------------
+
 
 @router.get("/{order_id}", response_model=OrderResponse, summary="Получить заказ")
 async def get_order(
@@ -303,9 +327,11 @@ async def get_order(
         raise not_found("Order not found")
     return order
 
+
 # -------------------------------------------------------------------
 # PUT /orders/{id}
 # -------------------------------------------------------------------
+
 
 @router.put(
     "/{order_id}",
@@ -346,9 +372,11 @@ async def update_order(
     )
     return order
 
+
 # -------------------------------------------------------------------
 # PATCH /orders/{id}/status
 # -------------------------------------------------------------------
+
 
 @router.patch(
     "/{order_id}/status",
@@ -377,10 +405,10 @@ async def update_order_status(
         # Освобождение резерва при отмене
         if new_status == "cancelled":
             items = (
-                await db.execute(
-                    select(OrderItem).where(OrderItem.order_id == order.id)
-                )
-            ).scalars().all()
+                (await db.execute(select(OrderItem).where(OrderItem.order_id == order.id)))
+                .scalars()
+                .all()
+            )
             for item in items:
                 if item.product_id and item.quantity:
                     await _release_product_stock(db, item.product_id, item.quantity)
@@ -394,9 +422,11 @@ async def update_order_status(
     )
     return {"message": "Order status updated successfully"}
 
+
 # -------------------------------------------------------------------
 # POST /orders/{id}/invoice
 # -------------------------------------------------------------------
+
 
 @router.post(
     "/{order_id}/invoice",
@@ -418,9 +448,11 @@ async def generate_invoice(
     except Exception as e:
         raise server_error(f"Failed to generate invoice: {e!s}")
 
+
 # -------------------------------------------------------------------
 # POST /orders/{id}/send-email
 # -------------------------------------------------------------------
+
 
 @router.post(
     "/{order_id}/send-email",
@@ -448,9 +480,11 @@ async def send_order_email(
     except Exception as e:
         raise server_error(f"Failed to send email: {e!s}")
 
+
 # -------------------------------------------------------------------
 # POST /orders/sync-kaspi
 # -------------------------------------------------------------------
+
 
 @router.post(
     "/sync-kaspi",

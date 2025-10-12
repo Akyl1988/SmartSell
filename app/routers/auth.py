@@ -1,11 +1,11 @@
 # app/routers/auth.py
 from __future__ import annotations
+
 """
 Authentication router for user registration, login, and token management (enterprise-grade).
 """
 
 from datetime import timedelta
-from typing import Optional
 
 from fastapi import APIRouter, Depends, Request, Response, status
 from sqlalchemy import and_, select
@@ -17,8 +17,11 @@ try:
 except Exception:
     from app.core.db import get_db  # fallback
 
+# Опциональные расширения безопасности (не обязательны — используем if getattr)
+from app.core import security as sec
+from app.core.config import settings
 from app.core.deps import auth_rate_limit_dep, ensure_idempotency
-from app.core.errors import bad_request, not_found, unauthorized, server_error
+from app.core.errors import bad_request, not_found, server_error, unauthorized
 from app.core.logging import audit_logger
 from app.core.security import (
     create_access_token,
@@ -28,10 +31,6 @@ from app.core.security import (
     verify_password,
     verify_token,
 )
-# Опциональные расширения безопасности (не обязательны — используем if getattr)
-from app.core import security as sec
-
-from app.core.config import settings
 from app.models import Company, OtpAttempt, User
 from app.schemas.user import (
     PasswordChange,
@@ -57,6 +56,7 @@ router = APIRouter(
 _ACCESS_EXPIRES = timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES)
 _REFRESH_EXPIRES = timedelta(days=settings.REFRESH_TOKEN_EXPIRE_DAYS)
 
+
 def _set_refresh_cookie(resp: Response, token: str) -> None:
     """
     Опционально выставляет refresh-токен в HttpOnly cookie (двойная защита).
@@ -74,6 +74,7 @@ def _set_refresh_cookie(resp: Response, token: str) -> None:
         path="/auth",
     )
 
+
 async def _revoke_refresh_jti_if_supported(payload: dict) -> None:
     """
     Если в security реализована denylist для JTI — пометим JTI как отозванный.
@@ -90,6 +91,7 @@ async def _revoke_refresh_jti_if_supported(payload: dict) -> None:
             # Не валим поток аутентификации
             pass
 
+
 async def _validate_password_strength_if_supported(password: str) -> None:
     """Если есть строгая политика паролей — применим её."""
     validator = getattr(sec, "validate_password_strength", None)
@@ -98,9 +100,11 @@ async def _validate_password_strength_if_supported(password: str) -> None:
         if msg:  # предполагаем, что возвратит None/"" если ок, иначе текст ошибки
             raise bad_request(msg)
 
+
 # ---------------------------------------------------------------------
 # Register
 # ---------------------------------------------------------------------
+
 
 @router.post(
     "/register",
@@ -108,7 +112,12 @@ async def _validate_password_strength_if_supported(password: str) -> None:
     status_code=status.HTTP_201_CREATED,
     dependencies=[Depends(auth_rate_limit_dep), Depends(ensure_idempotency)],
 )
-async def register(user_data: UserRegister, db: AsyncSession = Depends(get_db), request: Request = None, response: Response = None):
+async def register(
+    user_data: UserRegister,
+    db: AsyncSession = Depends(get_db),
+    request: Request = None,
+    response: Response = None,
+):
     """Register new user and company (идемпотентно)."""
 
     # Политика паролей (если доступна)
@@ -170,16 +179,23 @@ async def register(user_data: UserRegister, db: AsyncSession = Depends(get_db), 
         expires_in=int(_ACCESS_EXPIRES.total_seconds()),
     )
 
+
 # ---------------------------------------------------------------------
 # Login
 # ---------------------------------------------------------------------
+
 
 @router.post(
     "/login",
     response_model=TokenResponse,
     dependencies=[Depends(auth_rate_limit_dep)],
 )
-async def login(user_data: UserLogin, db: AsyncSession = Depends(get_db), request: Request = None, response: Response = None):
+async def login(
+    user_data: UserLogin,
+    db: AsyncSession = Depends(get_db),
+    request: Request = None,
+    response: Response = None,
+):
     """Login user with password or OTP."""
     ip = request.client.host if request else "unknown"
     ua = request.headers.get("user-agent", "unknown") if request else "unknown"
@@ -187,11 +203,15 @@ async def login(user_data: UserLogin, db: AsyncSession = Depends(get_db), reques
     result = await db.execute(select(User).where(User.phone == user_data.phone))
     user = result.scalar_one_or_none()
     if not user:
-        audit_logger.log_auth_failure(username=user_data.phone, ip_address=ip, reason="user_not_found")
+        audit_logger.log_auth_failure(
+            username=user_data.phone, ip_address=ip, reason="user_not_found"
+        )
         raise unauthorized("Invalid credentials")
 
     if not user.is_active:
-        audit_logger.log_security_event("user_login_blocked", {"user_id": user.id, "reason": "inactive"})
+        audit_logger.log_security_event(
+            "user_login_blocked", {"user_id": user.id, "reason": "inactive"}
+        )
         raise bad_request("User account is disabled")
 
     # Проверка: пароль или OTP
@@ -221,16 +241,23 @@ async def login(user_data: UserLogin, db: AsyncSession = Depends(get_db), reques
         expires_in=int(_ACCESS_EXPIRES.total_seconds()),
     )
 
+
 # ---------------------------------------------------------------------
 # Refresh
 # ---------------------------------------------------------------------
+
 
 @router.post(
     "/token/refresh",
     response_model=TokenResponse,
     dependencies=[Depends(auth_rate_limit_dep)],
 )
-async def refresh_token(token_data: RefreshToken, db: AsyncSession = Depends(get_db), request: Request = None, response: Response = None):
+async def refresh_token(
+    token_data: RefreshToken,
+    db: AsyncSession = Depends(get_db),
+    request: Request = None,
+    response: Response = None,
+):
     """Refresh access token (rotation; deny old if supported)."""
 
     # Если настроены куки — разрешаем брать refresh из cookie, если тело пустое
@@ -267,9 +294,11 @@ async def refresh_token(token_data: RefreshToken, db: AsyncSession = Depends(get
         expires_in=int(_ACCESS_EXPIRES.total_seconds()),
     )
 
+
 # ---------------------------------------------------------------------
 # Revoke refresh (опционально реализован denylist)
 # ---------------------------------------------------------------------
+
 
 @router.post(
     "/token/revoke",
@@ -289,9 +318,11 @@ async def revoke_refresh(token_data: RefreshToken, request: Request = None):
     await _revoke_refresh_jti_if_supported(payload)
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
+
 # ---------------------------------------------------------------------
 # Send OTP
 # ---------------------------------------------------------------------
+
 
 @router.post(
     "/send-otp",
@@ -315,9 +346,11 @@ async def send_otp(phone: str, purpose: str = "login", db: AsyncSession = Depend
 
     return {"message": "OTP sent successfully"}
 
+
 # ---------------------------------------------------------------------
 # Change password (авторизованный)
 # ---------------------------------------------------------------------
+
 
 @router.post(
     "/change-password",
@@ -346,9 +379,11 @@ async def change_password(
     )
     return {"message": "Password changed successfully"}
 
+
 # ---------------------------------------------------------------------
 # Reset password (OTP)
 # ---------------------------------------------------------------------
+
 
 @router.post(
     "/reset-password",
@@ -360,7 +395,9 @@ async def reset_password(reset_data: PasswordReset, db: AsyncSession = Depends(g
     if not ok:
         raise bad_request("Invalid or expired OTP code")
 
-    user = (await db.execute(select(User).where(User.phone == reset_data.phone))).scalar_one_or_none()
+    user = (
+        await db.execute(select(User).where(User.phone == reset_data.phone))
+    ).scalar_one_or_none()
     if not user:
         raise not_found("User not found")
 
@@ -375,21 +412,29 @@ async def reset_password(reset_data: PasswordReset, db: AsyncSession = Depends(g
     )
     return {"message": "Password reset successfully"}
 
+
 # ---------------------------------------------------------------------
 # Me
 # ---------------------------------------------------------------------
+
 
 @router.get("/me", response_model=UserResponse)
 async def get_current_user_info(current_user: User = Depends(get_current_user)):
     """Get current user information."""
     return current_user
 
+
 # ---------------------------------------------------------------------
 # Logout (статлесс)
 # ---------------------------------------------------------------------
 
+
 @router.post("/logout")
-async def logout(current_user: User = Depends(get_current_user), response: Response = None, request: Request = None):
+async def logout(
+    current_user: User = Depends(get_current_user),
+    response: Response = None,
+    request: Request = None,
+):
     """
     Logout user:
     - клиент должен забыть access;

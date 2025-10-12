@@ -15,7 +15,8 @@ Unified exceptions & handlers for SmartSell3 (enterprise-grade).
 """
 
 import re
-from typing import Any, Dict, Optional, Tuple, Mapping
+from collections.abc import Mapping
+from typing import Any, Optional
 
 from fastapi import FastAPI, HTTPException, Request, status
 from fastapi.responses import JSONResponse
@@ -23,14 +24,14 @@ from pydantic import ValidationError
 
 try:
     # SQLAlchemy is optional at import time
-    from sqlalchemy.exc import IntegrityError, SQLAlchemyError, OperationalError  # type: ignore
+    from sqlalchemy.exc import IntegrityError, OperationalError, SQLAlchemyError  # type: ignore
 except Exception:  # pragma: no cover
     IntegrityError = type("IntegrityError", (Exception,), {})  # type: ignore
     SQLAlchemyError = type("SQLAlchemyError", (Exception,), {})  # type: ignore
     OperationalError = type("OperationalError", (Exception,), {})  # type: ignore
 
 # Logging (structlog-aware)
-from app.core.logging import get_logger, bind_context
+from app.core.logging import bind_context, get_logger
 
 logger = get_logger(__name__)
 
@@ -38,15 +39,17 @@ logger = get_logger(__name__)
 # Custom domain exceptions
 # -----------------------------------------------------------------------------
 
+
 class SmartSellException(Exception):
     """Base domain exception."""
+
     def __init__(
         self,
         message: str,
         code: Optional[str] = None,
         *,
-        extra: Optional[Dict[str, Any]] = None,
-        headers: Optional[Dict[str, str]] = None,
+        extra: Optional[dict[str, Any]] = None,
+        headers: Optional[dict[str, str]] = None,
         http_status: Optional[int] = None,
     ):
         self.message = message
@@ -56,72 +59,93 @@ class SmartSellException(Exception):
         self.http_status = http_status  # позволяет насильно указать статус
         super().__init__(self.message)
 
+
 class AuthenticationError(SmartSellException):
     """Authentication related errors."""
+
 
 class AuthorizationError(SmartSellException):
     """Authorization related errors."""
 
+
 class ForbiddenError(AuthorizationError):
     """Explicit '403 Forbidden' (kept for backward-compat)."""
+
 
 class SmartSellValidationError(SmartSellException):
     """Validation related errors."""
 
+
 class NotFoundError(SmartSellException):
     """Resource not found errors."""
+
 
 class ConflictError(SmartSellException):
     """Resource conflict errors."""
 
+
 class RateLimitError(SmartSellException):
     """Rate limiting errors."""
 
+
 class ExternalServiceError(SmartSellException):
     """External service errors."""
+
 
 # -----------------------------------------------------------------------------
 # HTTP shortcuts (factory style, single point of truth)
 # -----------------------------------------------------------------------------
 
+
 def http_error(
     status_code: int,
     detail: str,
-    headers: Optional[Dict[str, str]] = None,
+    headers: Optional[dict[str, str]] = None,
 ) -> HTTPException:
     """Single factory for HTTP errors (consistent style project-wide)."""
     return HTTPException(status_code=status_code, detail=detail, headers=headers)
 
+
 def bad_request(detail: str) -> HTTPException:
     return http_error(status.HTTP_400_BAD_REQUEST, detail)
 
-def unauthorized(detail: str = "Unauthorized", *, www_authenticate: str | None = 'Bearer realm="api"') -> HTTPException:
+
+def unauthorized(
+    detail: str = "Unauthorized", *, www_authenticate: str | None = 'Bearer realm="api"'
+) -> HTTPException:
     headers = {"WWW-Authenticate": www_authenticate} if www_authenticate else None
     return http_error(status.HTTP_401_UNAUTHORIZED, detail, headers=headers)
+
 
 def forbidden(detail: str = "Forbidden") -> HTTPException:
     return http_error(status.HTTP_403_FORBIDDEN, detail)
 
+
 def not_found(detail: str = "Not found") -> HTTPException:
     return http_error(status.HTTP_404_NOT_FOUND, detail)
+
 
 def conflict(detail: str = "Conflict") -> HTTPException:
     return http_error(status.HTTP_409_CONFLICT, detail)
 
+
 def too_many_requests(
     detail: str = "Too Many Requests",
-    headers: Optional[Dict[str, str]] = None,
+    headers: Optional[dict[str, str]] = None,
 ) -> HTTPException:
     return http_error(status.HTTP_429_TOO_MANY_REQUESTS, detail, headers=headers)
 
+
 def server_error(detail: str = "Internal Server Error") -> HTTPException:
     return http_error(status.HTTP_500_INTERNAL_SERVER_ERROR, detail)
+
 
 # -----------------------------------------------------------------------------
 # Helpers
 # -----------------------------------------------------------------------------
 
 _SECRET_KEYS = ("secret", "password", "token", "api_key", "api_secret", "access_key", "dsn", "key")
+
 
 def _mask_secret_value(v: Any) -> Any:
     try:
@@ -132,9 +156,10 @@ def _mask_secret_value(v: Any) -> Any:
         return "***"
     return s[:3] + "***" + s[-3:]
 
+
 def _redact(obj: Any) -> Any:
     if isinstance(obj, Mapping):
-        out: Dict[str, Any] = {}
+        out: dict[str, Any] = {}
         for k, v in obj.items():
             lk = str(k).lower()
             if any(x in lk for x in _SECRET_KEYS) and "public" not in lk:
@@ -147,24 +172,25 @@ def _redact(obj: Any) -> Any:
         return tp(_redact(i) for i in obj)
     return obj
 
+
 def _problem_json(
     title: str,
     detail: str,
     status_code: int,
     code: Optional[str] = None,
     instance: Optional[str] = None,
-    extras: Optional[Dict[str, Any]] = None,
-) -> Dict[str, Any]:
+    extras: Optional[dict[str, Any]] = None,
+) -> dict[str, Any]:
     """
     RFC 7807 inspired body (application/problem+json compatible).
     Kept keys also compatible with former response shape.
     """
-    body: Dict[str, Any] = {
+    body: dict[str, Any] = {
         "type": f"https://httpstatuses.com/{status_code}",
         "title": title,
         "status": status_code,
         "detail": detail,
-        "error": title,          # backward-compat field
+        "error": title,  # backward-compat field
         "code": code,
     }
     if instance:
@@ -174,19 +200,27 @@ def _problem_json(
     # remove None
     return {k: v for k, v in body.items() if v is not None}
 
+
 def _extract_request_id(headers: Mapping[str, str]) -> str:
     for k in ("x-request-id", "x-correlation-id", "x-amzn-trace-id"):
         if k in headers:
             return headers.get(k, "")
     return ""
 
+
 def _json_problem_response(
     status_code: int,
-    content: Dict[str, Any],
-    headers: Optional[Dict[str, str]] = None,
+    content: dict[str, Any],
+    headers: Optional[dict[str, str]] = None,
 ) -> JSONResponse:
     # Явно выставляем media_type для совместимости с RFC7807
-    return JSONResponse(status_code=status_code, content=content, headers=headers or {}, media_type="application/problem+json")
+    return JSONResponse(
+        status_code=status_code,
+        content=content,
+        headers=headers or {},
+        media_type="application/problem+json",
+    )
+
 
 # -----------------------------------------------------------------------------
 # IntegrityError parsing (Postgres/SQLite common patterns)
@@ -197,7 +231,8 @@ _FK_RE = re.compile(r"foreign key", re.IGNORECASE)
 _NOTNULL_RE = re.compile(r"not null", re.IGNORECASE)
 _CHECK_RE = re.compile(r"check constraint|violates check constraint", re.IGNORECASE)
 
-def _parse_integrity_error(exc: IntegrityError) -> Tuple[str, str]:
+
+def _parse_integrity_error(exc: IntegrityError) -> tuple[str, str]:
     """
     Returns (message, code) for user-friendly error mapping.
     """
@@ -212,9 +247,11 @@ def _parse_integrity_error(exc: IntegrityError) -> Tuple[str, str]:
         return ("Invalid value provided", "INVALID_VALUE")
     return ("A database constraint was violated", "INTEGRITY_ERROR")
 
+
 # -----------------------------------------------------------------------------
 # Exception Handlers (FastAPI)
 # -----------------------------------------------------------------------------
+
 
 async def global_exception_handler(request: Request, exc: Exception) -> JSONResponse:
     """
@@ -238,6 +275,7 @@ async def global_exception_handler(request: Request, exc: Exception) -> JSONResp
     )
     return _json_problem_response(status.HTTP_500_INTERNAL_SERVER_ERROR, body)
 
+
 async def smartsell_exception_handler(request: Request, exc: SmartSellException) -> JSONResponse:
     """
     Handler for our domain exceptions. Maps to appropriate HTTP status codes.
@@ -253,7 +291,11 @@ async def smartsell_exception_handler(request: Request, exc: SmartSellException)
         exc.headers.setdefault("WWW-Authenticate", 'Bearer realm="api"')
     elif isinstance(exc, (AuthorizationError, ForbiddenError)):
         sc = exc.http_status or status.HTTP_403_FORBIDDEN
-        title = "Authorization error" if isinstance(exc, AuthorizationError) and not isinstance(exc, ForbiddenError) else "Forbidden"
+        title = (
+            "Authorization error"
+            if isinstance(exc, AuthorizationError) and not isinstance(exc, ForbiddenError)
+            else "Forbidden"
+        )
     elif isinstance(exc, NotFoundError):
         sc = exc.http_status or status.HTTP_404_NOT_FOUND
         title = "Resource not found"
@@ -292,6 +334,7 @@ async def smartsell_exception_handler(request: Request, exc: SmartSellException)
     )
     return _json_problem_response(sc, body, headers=exc.headers)
 
+
 async def integrity_error_handler(request: Request, exc: IntegrityError) -> JSONResponse:
     """
     Handler for DB integrity errors (duplicate, FK, not null, check).
@@ -316,6 +359,7 @@ async def integrity_error_handler(request: Request, exc: IntegrityError) -> JSON
         instance=str(request.url),
     )
     return _json_problem_response(status.HTTP_409_CONFLICT, body)
+
 
 async def validation_exception_handler(request: Request, exc: ValidationError) -> JSONResponse:
     """
@@ -342,15 +386,18 @@ async def validation_exception_handler(request: Request, exc: ValidationError) -
     )
     return _json_problem_response(status.HTTP_422_UNPROCESSABLE_ENTITY, body)
 
+
 async def request_validation_exception_handler(request: Request, exc) -> JSONResponse:
     """
     Handler for FastAPI RequestValidationError (body/query/path validation).
     """
     try:
-        from fastapi.exceptions import RequestValidationError  # local import to avoid hard dependency
+        pass
     except Exception:  # pragma: no cover
         # если тип не доступен — передадим в общий валидатор
-        return await validation_exception_handler(request, ValidationError.from_exception_data("RequestValidation", []))  # type: ignore
+        return await validation_exception_handler(
+            request, ValidationError.from_exception_data("RequestValidation", [])
+        )  # type: ignore
 
     # тип-safe проверка
     if hasattr(exc, "errors"):
@@ -377,6 +424,7 @@ async def request_validation_exception_handler(request: Request, exc) -> JSONRes
     )
     return _json_problem_response(status.HTTP_422_UNPROCESSABLE_ENTITY, body)
 
+
 async def http_exception_handler(request: Request, exc: HTTPException) -> JSONResponse:
     """
     Handler for FastAPI HTTP exceptions (raised via http_error/shortcuts).
@@ -402,6 +450,7 @@ async def http_exception_handler(request: Request, exc: HTTPException) -> JSONRe
     )
     return _json_problem_response(exc.status_code, body, headers=headers)
 
+
 async def sqlalchemy_exception_handler(request: Request, exc: SQLAlchemyError) -> JSONResponse:
     """
     Generic SQLAlchemy errors (not integrity).
@@ -423,6 +472,7 @@ async def sqlalchemy_exception_handler(request: Request, exc: SQLAlchemyError) -
         instance=str(request.url),
     )
     return _json_problem_response(status.HTTP_500_INTERNAL_SERVER_ERROR, body)
+
 
 async def operational_error_handler(request: Request, exc: OperationalError) -> JSONResponse:
     """
@@ -446,9 +496,11 @@ async def operational_error_handler(request: Request, exc: OperationalError) -> 
     )
     return _json_problem_response(status.HTTP_503_SERVICE_UNAVAILABLE, body)
 
+
 # -----------------------------------------------------------------------------
 # Registration
 # -----------------------------------------------------------------------------
+
 
 def register_exception_handlers(app: FastAPI) -> None:
     """
@@ -462,17 +514,19 @@ def register_exception_handlers(app: FastAPI) -> None:
     app.add_exception_handler(ValidationError, validation_exception_handler)
     try:
         from fastapi.exceptions import RequestValidationError  # type: ignore
+
         app.add_exception_handler(RequestValidationError, request_validation_exception_handler)  # type: ignore
     except Exception:  # pragma: no cover
         pass
 
     # SQLAlchemy
-    app.add_exception_handler(IntegrityError, integrity_error_handler)          # 409
-    app.add_exception_handler(OperationalError, operational_error_handler)      # 503
-    app.add_exception_handler(SQLAlchemyError, sqlalchemy_exception_handler)    # 500
+    app.add_exception_handler(IntegrityError, integrity_error_handler)  # 409
+    app.add_exception_handler(OperationalError, operational_error_handler)  # 503
+    app.add_exception_handler(SQLAlchemyError, sqlalchemy_exception_handler)  # 500
 
     # Fallback
     app.add_exception_handler(Exception, global_exception_handler)
+
 
 # -----------------------------------------------------------------------------
 # Public exports

@@ -1,6 +1,8 @@
-﻿from sqlalchemy import create_engine, inspect
-from app.models import Base  # важно: app/models/__init__.py должен импортировать все модели
 import traceback
+
+from sqlalchemy import create_engine, inspect
+
+from app.models import Base  # важно: app/models/__init__.py должен импортировать все модели
 
 
 def print_header(title: str):
@@ -13,7 +15,7 @@ def main():
     # Пытаемся создать все таблицы — если есть проблема с FK/маппером, увидим её явно
     try:
         Base.metadata.create_all(engine)
-    except Exception as e:
+    except Exception:
         print_header("CREATE_ALL FAILED")
         traceback.print_exc()
 

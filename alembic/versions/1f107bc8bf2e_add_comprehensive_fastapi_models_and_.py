@@ -7,9 +7,10 @@ Create Date: 2025-09-15 14:11:25.485134
 
 from __future__ import annotations
 
-from typing import Sequence, Union, Iterable
-
 import os
+from collections.abc import Iterable, Sequence
+from typing import Union
+
 import sqlalchemy as sa
 from sqlalchemy import inspect, text
 
@@ -43,6 +44,7 @@ def _norm_schema(schema: str | None) -> str:
 # ---------------------------
 # Helpers (idempotent & safe)
 # ---------------------------
+
 
 def table_exists(table_name: str, schema: str | None = None) -> bool:
     schema = _norm_schema(schema)
@@ -122,7 +124,11 @@ def fk_exists(table_name: str, fk_name: str, schema: str | None = None) -> bool:
 
 
 def create_index_safe(
-    index_name: str, table_name: str, columns: list[str], unique: bool = False, schema: str | None = None
+    index_name: str,
+    table_name: str,
+    columns: list[str],
+    unique: bool = False,
+    schema: str | None = None,
 ) -> None:
     """
     Создаёт индекс, только если:
@@ -131,7 +137,11 @@ def create_index_safe(
       - индекс с таким именем ещё не существует.
     """
     schema = _norm_schema(schema)
-    if table_exists(table_name, schema) and _all_columns_exist(table_name, columns, schema) and not index_exists(table_name, index_name, schema):
+    if (
+        table_exists(table_name, schema)
+        and _all_columns_exist(table_name, columns, schema)
+        and not index_exists(table_name, index_name, schema)
+    ):
         op.create_index(index_name, table_name, columns, unique=unique)
 
 
@@ -147,13 +157,19 @@ def add_column_safe(table_name: str, column: sa.Column, schema: str | None = Non
         op.add_column(table_name, column)
 
 
-def drop_constraint_if_exists(table_name: str, constraint_name: str, type_: str, schema: str | None = None) -> None:
+def drop_constraint_if_exists(
+    table_name: str, constraint_name: str, type_: str, schema: str | None = None
+) -> None:
     schema = _norm_schema(schema)
-    if table_exists(table_name, schema) and unique_constraint_exists(table_name, constraint_name, schema):
+    if table_exists(table_name, schema) and unique_constraint_exists(
+        table_name, constraint_name, schema
+    ):
         op.drop_constraint(constraint_name, table_name, type_=type_)
 
 
-def drop_unique_on_column_if_any(table_name: str, column_name: str, schema: str | None = None) -> None:
+def drop_unique_on_column_if_any(
+    table_name: str, column_name: str, schema: str | None = None
+) -> None:
     """Снимает любые unique (constraint или index) на один столбец, если совпадает набор колонок."""
     schema = _norm_schema(schema)
     if not table_exists(table_name, schema):
@@ -171,7 +187,9 @@ def drop_unique_on_column_if_any(table_name: str, column_name: str, schema: str 
             op.drop_index(ix["name"], table_name=table_name)
 
 
-def create_unique_constraint_safe(name: str, table_name: str, columns: list[str], schema: str | None = None) -> None:
+def create_unique_constraint_safe(
+    name: str, table_name: str, columns: list[str], schema: str | None = None
+) -> None:
     schema = _norm_schema(schema)
     if not table_exists(table_name, schema):
         return
@@ -225,6 +243,7 @@ def validate_fk_safe(table_name: str, fk_name: str, schema: str | None = None) -
 # ============================================================
 #                    Upgrade / Downgrade
 # ============================================================
+
 
 def upgrade() -> None:
     """Add comprehensive FastAPI models and relationships (idempotent & safe)."""
@@ -309,11 +328,15 @@ def upgrade() -> None:
         drop_index_if_exists("uq_product_slug", "products", SCHEMA)
 
         # Создаём составные уникальные (company_id, sku) и (company_id, slug)
-        if column_exists("products", "company_id", SCHEMA) and column_exists("products", "sku", SCHEMA):
+        if column_exists("products", "company_id", SCHEMA) and column_exists(
+            "products", "sku", SCHEMA
+        ):
             create_unique_constraint_safe(
                 "uq_product_company_sku", "products", ["company_id", "sku"], SCHEMA
             )
-        if column_exists("products", "company_id", SCHEMA) and column_exists("products", "slug", SCHEMA):
+        if column_exists("products", "company_id", SCHEMA) and column_exists(
+            "products", "slug", SCHEMA
+        ):
             create_unique_constraint_safe(
                 "uq_product_company_slug", "products", ["company_id", "slug"], SCHEMA
             )
@@ -370,9 +393,7 @@ def upgrade() -> None:
     create_index_safe("ix_subscriptions_company_id", "subscriptions", ["company_id"], schema=SCHEMA)
     create_index_safe("ix_subscriptions_plan", "subscriptions", ["plan"], schema=SCHEMA)
     create_index_safe("ix_subscriptions_status", "subscriptions", ["status"], schema=SCHEMA)
-    create_index_safe(
-        "ix_subscriptions_expires_at", "subscriptions", ["expires_at"], schema=SCHEMA
-    )
+    create_index_safe("ix_subscriptions_expires_at", "subscriptions", ["expires_at"], schema=SCHEMA)
     create_index_safe(
         "ix_subscriptions_next_billing_date",
         "subscriptions",
@@ -403,7 +424,9 @@ def upgrade() -> None:
             sa.Column("amount", sa.Numeric(10, 2), nullable=False),
             sa.Column("currency", sa.String(8), nullable=False, server_default=sa.text("'KZT'")),
             sa.Column("payment_type", sa.String(32), nullable=False),
-            sa.Column("provider", sa.String(32), nullable=False, server_default=sa.text("'tiptop'")),
+            sa.Column(
+                "provider", sa.String(32), nullable=False, server_default=sa.text("'tiptop'")
+            ),
             sa.Column("provider_invoice_id", sa.String(128), nullable=False),
             sa.Column("provider_transaction_id", sa.String(128)),
             sa.Column("status", sa.String(32), nullable=False),
@@ -474,7 +497,9 @@ def upgrade() -> None:
     validate_fk_safe("billing_payments", "fk_billing_payments_subscription_id", SCHEMA)
 
     # Back-ref: subscriptions.last_payment_id → billing_payments.id
-    if table_exists("subscriptions", SCHEMA) and column_exists("subscriptions", "last_payment_id", SCHEMA):
+    if table_exists("subscriptions", SCHEMA) and column_exists(
+        "subscriptions", "last_payment_id", SCHEMA
+    ):
         create_fk_not_valid_safe(
             "fk_subscriptions_last_payment_id",
             "subscriptions",
@@ -748,7 +773,9 @@ def downgrade() -> None:
     # --- Wallet ---
     if table_exists("wallet_transactions", SCHEMA):
         if fk_exists("wallet_transactions", "fk_wallet_transactions_wallet_id", SCHEMA):
-            op.drop_constraint("fk_wallet_transactions_wallet_id", "wallet_transactions", type_="foreignkey")
+            op.drop_constraint(
+                "fk_wallet_transactions_wallet_id", "wallet_transactions", type_="foreignkey"
+            )
         for name in [
             "ix_wallet_transactions_reference_id",
             "ix_wallet_transactions_transaction_type",
@@ -760,7 +787,9 @@ def downgrade() -> None:
 
     if table_exists("wallet_balances", SCHEMA):
         if fk_exists("wallet_balances", "fk_wallet_balances_company_id", SCHEMA):
-            op.drop_constraint("fk_wallet_balances_company_id", "wallet_balances", type_="foreignkey")
+            op.drop_constraint(
+                "fk_wallet_balances_company_id", "wallet_balances", type_="foreignkey"
+            )
         for name in [
             "ix_wallet_balances_company_id",
             "ix_wallet_balances_id",
@@ -788,9 +817,13 @@ def downgrade() -> None:
     # --- Billing payments & subscriptions ---
     if table_exists("billing_payments", SCHEMA):
         if fk_exists("billing_payments", "fk_billing_payments_company_id", SCHEMA):
-            op.drop_constraint("fk_billing_payments_company_id", "billing_payments", type_="foreignkey")
+            op.drop_constraint(
+                "fk_billing_payments_company_id", "billing_payments", type_="foreignkey"
+            )
         if fk_exists("billing_payments", "fk_billing_payments_subscription_id", SCHEMA):
-            op.drop_constraint("fk_billing_payments_subscription_id", "billing_payments", type_="foreignkey")
+            op.drop_constraint(
+                "fk_billing_payments_subscription_id", "billing_payments", type_="foreignkey"
+            )
         for name in [
             "ix_billing_payments_status",
             "ix_billing_payments_provider_invoice_id",
@@ -804,7 +837,9 @@ def downgrade() -> None:
 
     if table_exists("subscriptions", SCHEMA):
         if fk_exists("subscriptions", "fk_subscriptions_last_payment_id", SCHEMA):
-            op.drop_constraint("fk_subscriptions_last_payment_id", "subscriptions", type_="foreignkey")
+            op.drop_constraint(
+                "fk_subscriptions_last_payment_id", "subscriptions", type_="foreignkey"
+            )
         if fk_exists("subscriptions", "fk_subscriptions_company_id", SCHEMA):
             op.drop_constraint("fk_subscriptions_company_id", "subscriptions", type_="foreignkey")
         for name in [
@@ -852,9 +887,13 @@ def downgrade() -> None:
                 op.drop_column("products", col)
 
         # Восстанавливаем одиночные уникальности (если поля существуют)
-        if column_exists("products", "sku", SCHEMA) and not has_unique_on_columns("products", ["sku"], SCHEMA):
+        if column_exists("products", "sku", SCHEMA) and not has_unique_on_columns(
+            "products", ["sku"], SCHEMA
+        ):
             create_unique_constraint_safe("uq_product_sku", "products", ["sku"], SCHEMA)
-        if column_exists("products", "slug", SCHEMA) and not has_unique_on_columns("products", ["slug"], SCHEMA):
+        if column_exists("products", "slug", SCHEMA) and not has_unique_on_columns(
+            "products", ["slug"], SCHEMA
+        ):
             create_unique_constraint_safe("uq_product_slug", "products", ["slug"], SCHEMA)
 
     # --- Users: убираем наши FK/индекс/колонки ---

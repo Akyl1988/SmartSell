@@ -1,6 +1,7 @@
-# app/models/user.py
 """
-User, UserSession, OTPCode models for authentication, user management, and business logic.
+User, UserSession models for authentication, user management, and business logic.
+(OTPCode реализован в app.models.otp и ре-экспортируется здесь — без повторной
+регистрации маппера, чтобы исключить дубли `otp_codes`.)
 
 Production-minded details:
 - Multi-tenant, audit, soft-delete, lockable mixins
@@ -17,7 +18,7 @@ Production-minded details:
 - Массовые операции (bulk_soft_delete, bulk_unlock, bulk_verify, bulk_deactivate, bulk_activate)
 - Защита от конфликтов логинов (ensure_unique_identifiers)
 - Методы ротации пароля и сброса блокировки
-- Очистка устаревших OTP и ограничение попыток
+- Очистка устаревших OTP и ограничение попыток (в app.models.otp)
 - Безопасная сериализация to_public_dict / to_private_dict
 - Валидация дат из строк (_parse_dt) сохранена
 
@@ -25,23 +26,20 @@ Production-minded details:
 - get_stock_movements: сортировка без жёсткого импорта моделей (лениво через mapper)
 - ensure_has_any_identifier: проверка наличия хотя бы одного идентификатора
 - to_public_dict / to_private_dict: can_login, last_login_at_iso
-- OTP.cleanup_expired: удаляет просроченные И давние использованные коды
-- bulk_deactivate: не отключает суперадминов
+- UserSession: безопасный дефолт expires_at (+30 дней) и принудительное выставление слушателями
+- seconds_left и защитные утилиты по сессиям
 - ВАЖНО: связь с Company настроена с явным foreign_keys, чтобы избежать AmbiguousForeignKeysError
 - Highload: блокировки (SELECT FOR UPDATE / advisory), async CRUD/поиск/батчи
 - Test factories: удобные .factory() для быстрого поднятия фикстур
 - Event hooks: мягкая нормализация username/phone/email и auto-verify для корпоративных доменов (опционально)
-
-Доп. правки (надежность прод):
-- UserSession.expires_at получает безопасный дефолт (+30 дней) и форсируется слушателями даже если в коде пришёл None.
-- Добавлен seconds_left и защитные утилиты по сессиям.
 """
 
 from __future__ import annotations
 
 import re
+from collections.abc import Iterable
 from datetime import datetime, timedelta
-from typing import Any, Dict, Iterable, List, Optional, Tuple, Union, TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, Optional, Union
 
 from sqlalchemy import (
     Boolean,
@@ -52,15 +50,14 @@ from sqlalchemy import (
     Index,
     Integer,
     String,
-    UniqueConstraint,
-    func,
-    text,
-    or_,
     and_,
     event,
+    func,
+    or_,
     select,
+    text,
 )
-from sqlalchemy.orm import declarative_mixin, relationship, validates, Session
+from sqlalchemy.orm import Session, declarative_mixin, relationship, validates
 
 
 # -----------------------------------------------------------------------------
@@ -115,25 +112,27 @@ if not TYPE_CHECKING:
     except Exception:
         pass
 
-from app.models.base import (
+# ВАЖНО: ре-экспорт реальной модели OTPCode из app.models.otp (без дублирования маппера)
+try:
+    from app.models.otp import OTPCode as OTPCode  # noqa: F401
+except Exception:  # pragma: no cover
+    # Фоллбэк-плейсхолдер для ранних импортов/линтеров; не является маппером
+    class OTPCode:  # type: ignore
+        """Placeholder; реальная модель находится в app.models.otp"""
+
+        __doc__ = "Runtime alias placeholder for OTPCode (mapping lives in app.models.otp)"
+
+
+from app.models.base import (  # async helpers (опциональны, но аннотации оставляем); highload-lock helpers
+    AuditMixin,
     BaseModel,
+    LockableMixin,
     SoftDeleteMixin,
     TenantMixin,
-    AuditMixin,
-    LockableMixin,
-    # highload-lock helpers
-    for_update_by_id,
-    pg_advisory_xact_lock,
-    # async helpers (опциональны, но аннотации оставляем)
-    aexists,
-    afirst,
-    aget_by_id,
-    acreate,
-    aupdate,
-    adelete,
-    abulk_update_rows,
     afor_update_by_id,
     apg_advisory_xact_lock,
+    for_update_by_id,
+    pg_advisory_xact_lock,
 )
 
 # ======================================================================================
@@ -146,10 +145,6 @@ PHONE_REGEX = re.compile(r"^\+?\d{10,15}$")
 MAX_FAILED_LOGIN_ATTEMPTS = 5
 LOCK_MINUTES = 15
 PASSWORD_MAX_AGE_DAYS = 365
-
-OTP_MAX_ATTEMPTS = 5
-OTP_LENGTH = 6
-OTP_EXPIRY_MINUTES = 10
 
 # Корпоративные домены, которым можно доверять для auto-verify (по желанию)
 TRUSTED_EMAIL_DOMAINS: tuple[str, ...] = ("@corp.local", "@company.com")
@@ -235,9 +230,7 @@ class User(
     deleted_at = Column(DateTime, nullable=True, index=True)
 
     # Timestamps
-    created_at = Column(
-        DateTime, nullable=False, default=utc_now, server_default=func.now()
-    )
+    created_at = Column(DateTime, nullable=False, default=utc_now, server_default=func.now())
     updated_at = Column(DateTime, nullable=False, default=utc_now, onupdate=utc_now)
 
     # Relationships
@@ -268,6 +261,7 @@ class User(
         foreign_keys="StockMovement.user_id",
         lazy="dynamic",
     )
+    # OTP-связь остаётся, но класс живёт в app.models.otp
     otp_codes = relationship(
         "OTPCode", back_populates="user", cascade="all, delete-orphan", lazy="dynamic"
     )
@@ -462,7 +456,7 @@ class User(
     def is_analyst(self) -> bool:
         return self.role == "analyst"
 
-    def can_manage_user(self, other: "User") -> bool:
+    def can_manage_user(self, other: User) -> bool:
         """
         Админ может всех; менеджер — только в своей компании и не админов; остальные — никто.
         """
@@ -477,13 +471,13 @@ class User(
         return False
 
     # ---------------- Utilities / Serialization ----------------
-    def to_dict(self, exclude_sensitive: bool = False) -> Dict[str, Any]:
+    def to_dict(self, exclude_sensitive: bool = False) -> dict[str, Any]:
         data = {col.name: getattr(self, col.name) for col in self.__table__.columns}
         if exclude_sensitive:
             data.pop("hashed_password", None)
         return data
 
-    def to_public_dict(self) -> Dict[str, Any]:
+    def to_public_dict(self) -> dict[str, Any]:
         d = self.to_dict(exclude_sensitive=True)
         d["display_name"] = self.display_name()
         d["is_archived"] = self.is_archived
@@ -493,7 +487,7 @@ class User(
         )
         return d
 
-    def to_private_dict(self) -> Dict[str, Any]:
+    def to_private_dict(self) -> dict[str, Any]:
         d = self.to_dict(exclude_sensitive=False)
         d["display_name"] = self.display_name()
         d["is_archived"] = self.is_archived
@@ -503,7 +497,7 @@ class User(
         )
         return d
 
-    def anonymized_dict(self) -> Dict[str, Any]:
+    def anonymized_dict(self) -> dict[str, Any]:
         d = self.to_dict(exclude_sensitive=True)
         email = d.get("email")
         if email:
@@ -514,7 +508,7 @@ class User(
             d["phone"] = "***" + phone[-3:] if len(phone) > 3 else "***"
         return d
 
-    def get_login_methods(self) -> List[str]:
+    def get_login_methods(self) -> list[str]:
         methods = []
         if self.username:
             methods.append("username")
@@ -569,14 +563,14 @@ class User(
             ).desc()
         ).first()
 
-    def get_active_sessions(self) -> List["UserSession"]:
+    def get_active_sessions(self) -> list[UserSession]:
         return [s for s in self.sessions if s.is_active and not s.is_expired()]
 
-    def get_current_otp(self, purpose: str = "login") -> Optional["OTPCode"]:
+    def get_current_otp(self, purpose: str = "login") -> Optional[OTPCode]:
         valid_codes = [c for c in self.otp_codes if c.purpose == purpose and c.can_be_used()]
         return valid_codes[-1] if valid_codes else None
 
-    def get_stock_movements(self, limit: int = 10) -> List["StockMovement"]:
+    def get_stock_movements(self, limit: int = 10) -> list[StockMovement]:
         # без прямого импорта модели: берём класс из mapper связки
         mapper_cls = self.stock_movements.property.mapper.class_
         order_col = getattr(mapper_cls, "created_at", None) or getattr(
@@ -587,9 +581,9 @@ class User(
             q = q.order_by(order_col.desc())
         return q.limit(limit).all()
 
-    def audit(self, action: str, meta: Optional[Dict] = None) -> None:
+    def audit(self, action: str, meta: Optional[dict] = None) -> None:
         # лениво создаём запись не импортируя класс
-        payload: Dict[str, Any] = {
+        payload: dict[str, Any] = {
             "user_id": self.id,
             "action": action,
             "created_at": utc_now(),
@@ -608,7 +602,7 @@ class User(
 
     # ---------------- Highload locks ----------------
     @classmethod
-    def locked_by_id(cls, session: Session, user_id: int) -> Optional["User"]:
+    def locked_by_id(cls, session: Session, user_id: int) -> Optional[User]:
         """SELECT ... FOR UPDATE по id — для безопасных мутаций балансов/флагов."""
         return for_update_by_id(session, cls, user_id)
 
@@ -619,7 +613,7 @@ class User(
 
     # ---------------- Query helpers (sync) ----------------
     @classmethod
-    def find_by_identifier(cls, session: Session, identifier: str) -> Optional["User"]:
+    def find_by_identifier(cls, session: Session, identifier: str) -> Optional[User]:
         if not identifier:
             return None
         ident = identifier.strip()
@@ -633,11 +627,11 @@ class User(
         return q.first()
 
     @classmethod
-    def find_by_username(cls, session: Session, username: str) -> Optional["User"]:
+    def find_by_username(cls, session: Session, username: str) -> Optional[User]:
         return session.query(cls).filter(cls.username == (username or "").strip()).first()
 
     @classmethod
-    def find_by_email(cls, session: Session, email: str) -> Optional["User"]:
+    def find_by_email(cls, session: Session, email: str) -> Optional[User]:
         return (
             session.query(cls)
             .filter(func.lower(cls.email) == (email or "").strip().lower())
@@ -645,13 +639,13 @@ class User(
         )
 
     @classmethod
-    def find_by_phone(cls, session: Session, phone: str) -> Optional["User"]:
+    def find_by_phone(cls, session: Session, phone: str) -> Optional[User]:
         return session.query(cls).filter(cls.phone == (phone or "").strip()).first()
 
     @classmethod
     def search(
         cls, session: Session, q: str, company_id: Optional[int] = None, limit: int = 50
-    ) -> List["User"]:
+    ) -> list[User]:
         query = session.query(cls).filter(cls.deleted_at.is_(None))
         if company_id is not None:
             query = query.filter(cls.company_id == company_id)
@@ -675,8 +669,8 @@ class User(
         username: Optional[str] = None,
         email: Optional[str] = None,
         phone: Optional[str] = None,
-        defaults: Optional[Dict[str, Any]] = None,
-    ) -> Tuple["User", bool]:
+        defaults: Optional[dict[str, Any]] = None,
+    ) -> tuple[User, bool]:
         user = None
         if username:
             user = session.query(cls).filter_by(username=username.strip()).first()
@@ -784,7 +778,7 @@ class User(
 
     # ---------------- Async helpers (опционально) ----------------
     @classmethod
-    async def a_find_by_identifier(cls, session, identifier: str) -> Optional["User"]:
+    async def a_find_by_identifier(cls, session, identifier: str) -> Optional[User]:
         if not identifier:
             return None
         ident = identifier.strip()
@@ -805,7 +799,7 @@ class User(
     @classmethod
     async def a_search(
         cls, session, q: str, company_id: Optional[int] = None, limit: int = 50
-    ) -> List["User"]:
+    ) -> list[User]:
         filters = [cls.deleted_at.is_(None)]
         if company_id is not None:
             filters.append(cls.company_id == company_id)
@@ -831,9 +825,9 @@ class User(
         username: Optional[str] = None,
         email: Optional[str] = None,
         phone: Optional[str] = None,
-        defaults: Optional[Dict[str, Any]] = None,
-    ) -> Tuple["User", bool]:
-        user: Optional["User"] = None
+        defaults: Optional[dict[str, Any]] = None,
+    ) -> tuple[User, bool]:
+        user: Optional[User] = None
         if username:
             res = await session.execute(
                 select(cls).where(cls.username == username.strip()).limit(1)
@@ -873,7 +867,7 @@ class User(
         return count
 
     @classmethod
-    async def a_locked_by_id(cls, session, user_id: int) -> Optional["User"]:
+    async def a_locked_by_id(cls, session, user_id: int) -> Optional[User]:
         return await afor_update_by_id(session, cls, user_id)
 
     @classmethod
@@ -893,7 +887,7 @@ class User(
         is_verified: bool = False,
         company_id: Optional[int] = None,
         full_name: Optional[str] = "Test User",
-    ) -> "User":
+    ) -> User:
         return cls(
             username=username,
             email=email.lower() if email else None,
@@ -911,6 +905,7 @@ class User(
 # UserSession
 # ======================================================================================
 DEFAULT_SESSION_TTL_MIN = 60 * 24 * 30  # 30 days
+
 
 class UserSession(LenientInitMixin, BaseModel, SoftDeleteMixin):
     __tablename__ = "user_sessions"
@@ -975,7 +970,7 @@ class UserSession(LenientInitMixin, BaseModel, SoftDeleteMixin):
     @classmethod
     def start_new(
         cls, user_id: int, refresh_token: str, ttl_minutes: int = 60 * 24 * 7
-    ) -> "UserSession":
+    ) -> UserSession:
         return cls(
             user_id=user_id,
             refresh_token=refresh_token,
@@ -1012,7 +1007,7 @@ class UserSession(LenientInitMixin, BaseModel, SoftDeleteMixin):
         ttl_minutes: int = 60 * 24 * 7,
         ip: str = "127.0.0.1",
         ua: str = "pytest",
-    ) -> "UserSession":
+    ) -> UserSession:
         return cls(
             user_id=user_id,
             refresh_token=f"rt-{user_id}-{int(utc_now().timestamp())}",
@@ -1072,189 +1067,6 @@ if not event.contains(UserSession, "before_insert", _usersession_before_insert_f
     event.listen(UserSession, "before_insert", _usersession_before_insert_fn, propagate=True)
 if not event.contains(UserSession, "before_update", _usersession_before_update_fn):
     event.listen(UserSession, "before_update", _usersession_before_update_fn, propagate=True)
-
-
-# ======================================================================================
-# OTPCode
-# ======================================================================================
-class OTPCode(LenientInitMixin, BaseModel):
-    __tablename__ = "otp_codes"
-    __allow_unmapped__ = True
-
-    id = Column(Integer, primary_key=True, index=True)
-    phone = Column(String(20), nullable=False, index=True)
-    code = Column(String(6), nullable=False)
-    purpose = Column(String(50), nullable=False)  # 'registration', 'login', 'reset'
-    expires_at = Column(DateTime, nullable=False)
-    is_used = Column(Boolean, nullable=False, default=False, server_default=text("false"))
-    attempts = Column(Integer, nullable=False, default=0, server_default=text("0"))
-    user_id = Column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True)
-    created_at = Column(DateTime, nullable=False, default=utc_now, server_default=func.now())
-    verified_at = Column(DateTime, nullable=True)
-
-    user = relationship("User", back_populates="otp_codes", foreign_keys=[user_id], lazy="joined")
-
-    __table_args__ = (
-        Index("ix_otp_phone_purpose", "phone", "purpose"),
-        Index("ix_otp_user_purpose", "user_id", "purpose"),
-        CheckConstraint("attempts >= 0", name="ck_otp_attempts_nonneg"),
-        UniqueConstraint("code", "phone", "purpose", name="uq_otp_code_phone_purpose"),
-    )
-
-    @validates("phone")
-    def _validate_phone(self, _key, value: str):
-        v = value.strip() if isinstance(value, str) else value
-        if v and not PHONE_REGEX.match(v):
-            raise ValueError("Invalid phone format")
-        return v
-
-    @validates("code")
-    def _digits_code(self, _key, value: str):
-        v = value.strip() if isinstance(value, str) else value
-        if not v or len(v) != OTP_LENGTH or not v.isdigit():
-            raise ValueError(f"OTP code must be exactly {OTP_LENGTH} digits")
-        return v
-
-    @validates("expires_at", "created_at", "verified_at")
-    def _coerce_dt(self, _key, value):
-        return _parse_dt(value)
-
-    def __repr__(self) -> str:
-        return f"<OTPCode(id={self.id}, phone={self.phone}, used={self.is_used}, attempts={self.attempts})>"
-
-    # ----- State mutations -----
-    def mark_as_used(self) -> None:
-        self.is_used = True
-        self.verified_at = utc_now()
-
-    def increment_attempts(self) -> None:
-        self.attempts += 1
-
-    # ----- Derived state -----
-    def is_expired(self) -> bool:
-        return utc_now() > self.expires_at
-
-    def seconds_to_expiry(self) -> Optional[int]:
-        if self.expires_at is None:
-            return None
-        delta = self.expires_at - utc_now()
-        return max(int(delta.total_seconds()), 0)
-
-    def can_be_used(self) -> bool:
-        return not self.is_used and not self.is_expired() and self.attempts < OTP_MAX_ATTEMPTS
-
-    # ----- Convenience -----
-    def get_user(self) -> Optional[User]:
-        return self.user
-
-    def to_dict(self) -> dict:
-        return {col.name: getattr(self, col.name) for col in self.__table__.columns}
-
-    def otp_status(self) -> str:
-        if self.is_used:
-            return "used"
-        if self.is_expired():
-            return "expired"
-        return "valid"
-
-    def attempts_left(self, max_attempts: int = OTP_MAX_ATTEMPTS) -> int:
-        return max(0, max_attempts - self.attempts)
-
-    def is_for_login(self) -> bool:
-        return self.purpose == "login"
-
-    def is_for_registration(self) -> bool:
-        return self.purpose == "registration"
-
-    def is_for_reset(self) -> bool:
-        return self.purpose == "reset"
-
-    @classmethod
-    def cleanup_expired(cls, session: Session, older_than_minutes: int = OTP_EXPIRY_MINUTES) -> int:
-        """
-        Удаление просроченных кодов, а также давно использованных (старше older_than_minutes).
-        Возвращает количество удалённых записей.
-        """
-        threshold = utc_now() - timedelta(minutes=older_than_minutes)
-        q = session.query(cls).filter(
-            or_(
-                cls.expires_at < threshold,
-                and_(cls.is_used.is_(True), cls.created_at < threshold),
-            )
-        )
-        rows = q.all()
-        for row in rows:
-            session.delete(row)
-        session.flush()
-        return len(rows)
-
-    @classmethod
-    def generate_code(cls, phone: str, purpose: str, user_id: Optional[int] = None) -> "OTPCode":
-        from random import randint
-
-        code = str(randint(10 ** (OTP_LENGTH - 1), 10**OTP_LENGTH - 1)).zfill(OTP_LENGTH)
-        expires_at = utc_now() + timedelta(minutes=OTP_EXPIRY_MINUTES)
-        return cls(
-            phone=phone,
-            code=code,
-            purpose=purpose,
-            expires_at=expires_at,
-            is_used=False,
-            attempts=0,
-            user_id=user_id,
-            created_at=utc_now(),
-        )
-
-    def validate_for_use(self, phone: str, code: str, purpose: str) -> bool:
-        if self.phone != phone or self.code != code or self.purpose != purpose:
-            return False
-        if self.is_expired() or self.is_used or self.attempts >= OTP_MAX_ATTEMPTS:
-            return False
-        return True
-
-    def use_attempt(self) -> bool:
-        self.increment_attempts()
-        if self.can_be_used():
-            self.mark_as_used()
-            return True
-        return False
-
-    # ----- External integrations (stubs) -----
-    def send_sms(self) -> None:
-        # TODO: integrate with SMS provider
-        pass
-
-    def send_email(self) -> None:
-        # TODO: integrate with Email provider
-        pass
-
-    def notify_user(self) -> None:
-        # TODO: Implement notification logic (SMS or email)
-        pass
-
-    # Test factory
-    @classmethod
-    def factory(
-        cls,
-        *,
-        phone: str = "+70000000001",
-        purpose: str = "login",
-        user_id: Optional[int] = None,
-        expires_in_minutes: int = OTP_EXPIRY_MINUTES,
-    ) -> "OTPCode":
-        from random import randint
-
-        code = str(randint(10 ** (OTP_LENGTH - 1), 10**OTP_LENGTH - 1)).zfill(OTP_LENGTH)
-        return cls(
-            phone=phone,
-            code=code,
-            purpose=purpose,
-            expires_at=utc_now() + timedelta(minutes=expires_in_minutes),
-            is_used=False,
-            attempts=0,
-            user_id=user_id,
-            created_at=utc_now(),
-        )
 
 
 # ======================================================================================

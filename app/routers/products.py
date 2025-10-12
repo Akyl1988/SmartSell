@@ -1,5 +1,6 @@
 # app/api/v1/products.py
 from __future__ import annotations
+
 """
 Products router (enterprise-grade) for catalog management.
 
@@ -27,11 +28,11 @@ from fastapi import (
     UploadFile,
     status,
 )
-from sqlalchemy import and_, or_, select, func
+from pydantic import BaseModel, Field, field_validator
+from sqlalchemy import and_, func, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
-from pydantic import BaseModel, Field, field_validator
 
 # --- core deps / db / security / logging / errors ---
 try:
@@ -39,18 +40,12 @@ try:
 except Exception:  # pragma: no cover
     from app.core.db import get_db  # fallback
 
-from app.core.deps import (
-    api_rate_limit_dep,
-    ensure_idempotency,
-    set_idempotency_result,
-    get_pagination,
-    Pagination,
-    get_client_info,
-    # require_scopes,  # при необходимости подключите скоупы
-)
-from app.core.security import get_current_user, require_manager
+from app.core.deps import api_rate_limit_dep, ensure_idempotency, set_idempotency_result
 from app.core.exceptions import bad_request, conflict, not_found, server_error
 from app.core.logging import audit_logger
+
+# require_scopes,  # при необходимости подключите скоупы
+from app.core.security import get_current_user, require_manager
 
 # --- models & schemas ---
 from app.models import Product, ProductStock, User
@@ -59,7 +54,6 @@ from app.schemas import ProductCreate, ProductResponse, ProductUpdate
 # --- services & utils ---
 from app.services.cloudinary_service import CloudinaryService
 from app.utils.excel import export_products_to_excel, import_products_from_excel
-
 
 router = APIRouter(
     prefix="/products",
@@ -99,8 +93,9 @@ class ProductFilter(BaseModel):
 
 class SortParams(BaseModel):
     """Простая сортировка по разрешённым полям."""
+
     sort_by: str | None = Field(default=None)  # name|price|created_at
-    order: str | None = Field(default="asc")   # asc|desc
+    order: str | None = Field(default="asc")  # asc|desc
 
     def apply(self, stmt, model: type[Product]):
         if not self.sort_by:
@@ -576,9 +571,7 @@ async def get_product_stock(
         raise not_found("Product not found")
 
     # Берём остатки
-    res = await db.execute(
-        select(ProductStock).where(ProductStock.product_id == product_id)
-    )
+    res = await db.execute(select(ProductStock).where(ProductStock.product_id == product_id))
     stocks = res.scalars().all()
 
     return {

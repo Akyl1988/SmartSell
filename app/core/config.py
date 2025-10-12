@@ -1,21 +1,22 @@
 from __future__ import annotations
 
-import os
-import sys
 import json
-import time
 import logging
+import os
 import platform
-from logging.handlers import RotatingFileHandler
+import sys
+import time
 from functools import lru_cache
-from typing import Optional, List, Tuple, Dict, Any, cast
+from logging.handlers import RotatingFileHandler
 from pathlib import Path, PurePosixPath
-from urllib.parse import urlparse, urlunparse, urlencode, parse_qs, quote
+from typing import Any, Optional, cast
+from urllib.parse import parse_qs, quote, urlencode, urlparse, urlunparse
 
-from pydantic import Field, EmailStr, AnyHttpUrl, field_validator
+from pydantic import AnyHttpUrl, EmailStr, Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 _LOGGING_CONFIGURED = False
+
 
 # ================================
 # ВСПОМОГАТЕЛЬНЫЕ ХЕЛПЕРЫ
@@ -71,7 +72,7 @@ def _mask_nested(obj: Any, key_hint: Optional[str] = None) -> Any:
     Рекурсивная маскировка секретов в dict/list/tuple.
     """
     if isinstance(obj, dict):
-        out: Dict[str, Any] = {}
+        out: dict[str, Any] = {}
         for k, v in obj.items():
             if isinstance(k, str) and _is_secret_key_name(k):
                 if isinstance(v, (dict, list, tuple)):
@@ -133,7 +134,9 @@ class Settings(BaseSettings):
     HOST: str = Field(default="127.0.0.1", description="Server host", env="HOST")
     PORT: int = Field(default=8000, description="Server port", env="PORT")
     SCHEME: str = Field(default="http", description="Public scheme", env="SCHEME")
-    PUBLIC_URL: Optional[AnyHttpUrl] = Field(default=None, description="Public API URL", env="PUBLIC_URL")
+    PUBLIC_URL: Optional[AnyHttpUrl] = Field(
+        default=None, description="Public API URL", env="PUBLIC_URL"
+    )
 
     # ---- security/JWT
     SECRET_KEY: str = Field(default="changeme", description="JWT secret key", env="SECRET_KEY")
@@ -144,21 +147,37 @@ class Settings(BaseSettings):
     PASSWORD_MIN_LENGTH: int = Field(default=8, description="Password min length")
 
     # ---- БД
-    DATABASE_URL: Optional[str] = Field(default=None, description="Database URL", env="DATABASE_URL")
-    DATABASE_TEST_URL: Optional[str] = Field(default=None, description="Test database URL (legacy)", env="DATABASE_TEST_URL")
-    TEST_DATABASE_URL: Optional[str] = Field(default=None, description="Test database URL", env="TEST_DATABASE_URL")
+    DATABASE_URL: Optional[str] = Field(
+        default=None, description="Database URL", env="DATABASE_URL"
+    )
+    DATABASE_TEST_URL: Optional[str] = Field(
+        default=None, description="Test database URL (legacy)", env="DATABASE_TEST_URL"
+    )
+    TEST_DATABASE_URL: Optional[str] = Field(
+        default=None, description="Test database URL", env="TEST_DATABASE_URL"
+    )
     SQLALCHEMY_POOL_SIZE: int = Field(default=10, description="Pool size")
     SQLALCHEMY_MAX_OVERFLOW: int = Field(default=20, description="Max overflow")
     SQLALCHEMY_POOL_TIMEOUT: int = Field(default=30, description="Pool timeout (s)")
     SQLALCHEMY_POOL_RECYCLE: int = Field(default=1800, description="Pool recycle (s)")
 
     # ---- Redis/Celery
-    REDIS_URL: str = Field(default="redis://localhost:6379", description="Redis URL", env="REDIS_URL")
-    REDIS_PASSWORD: Optional[str] = Field(default=None, description="Redis password", env="REDIS_PASSWORD")
+    REDIS_URL: str = Field(
+        default="redis://localhost:6379", description="Redis URL", env="REDIS_URL"
+    )
+    REDIS_PASSWORD: Optional[str] = Field(
+        default=None, description="Redis password", env="REDIS_PASSWORD"
+    )
     REDIS_DB: int = Field(default=0, description="Redis db index", env="REDIS_DB")
 
-    CELERY_BROKER_URL: str = Field(default="redis://localhost:6379/0", description="Celery broker URL", env="CELERY_BROKER_URL")
-    CELERY_RESULT_BACKEND: str = Field(default="redis://localhost:6379/0", description="Celery result backend", env="CELERY_RESULT_BACKEND")
+    CELERY_BROKER_URL: str = Field(
+        default="redis://localhost:6379/0", description="Celery broker URL", env="CELERY_BROKER_URL"
+    )
+    CELERY_RESULT_BACKEND: str = Field(
+        default="redis://localhost:6379/0",
+        description="Celery result backend",
+        env="CELERY_RESULT_BACKEND",
+    )
     SCHEDULER_TIMEZONE: str = Field(default="UTC", description="Scheduler timezone")
     EAGER_SIDE_EFFECTS: bool = Field(default=True, env="EAGER_SIDE_EFFECTS")
 
@@ -168,9 +187,11 @@ class Settings(BaseSettings):
     RATE_LIMIT_BURST: int = Field(default=100, description="Rate limit burst")
 
     # ---- CORS/hosts
-    ALLOWED_HOSTS: List[str] = Field(default=["*"], description="Allowed hosts", env="ALLOWED_HOSTS")
-    CORS_ORIGINS: List[str] = Field(default=["*"], description="CORS origins", env="CORS_ORIGINS")
-    BACKEND_CORS_ORIGINS: List[str] = Field(
+    ALLOWED_HOSTS: list[str] = Field(
+        default=["*"], description="Allowed hosts", env="ALLOWED_HOSTS"
+    )
+    CORS_ORIGINS: list[str] = Field(default=["*"], description="CORS origins", env="CORS_ORIGINS")
+    BACKEND_CORS_ORIGINS: list[str] = Field(
         default=["http://localhost", "http://localhost:3000"],
         description="Backend CORS origins",
         env="BACKEND_CORS_ORIGINS",
@@ -183,27 +204,51 @@ class Settings(BaseSettings):
     MAX_UPLOAD_SIZE: int = Field(default=10 * 1024 * 1024, description="Max upload size")
     LOG_PATH: str = Field(default="logs/app.log", description="Log file path", env="LOG_PATH")
     LOG_LEVEL: str = Field(default="INFO", description="Logging level", env="LOG_LEVEL")
-    LOG_FORMAT: str = Field(default="json", description="Logging format (json|text)", env="LOG_FORMAT")
+    LOG_FORMAT: str = Field(
+        default="json", description="Logging format (json|text)", env="LOG_FORMAT"
+    )
 
     # ---- Frontend
-    FRONTEND_URL: AnyHttpUrl | str = Field(default="http://localhost:3000", description="Frontend URL", env="FRONTEND_URL")
+    FRONTEND_URL: AnyHttpUrl | str = Field(
+        default="http://localhost:3000", description="Frontend URL", env="FRONTEND_URL"
+    )
 
     # ---- Провайдеры
-    MOBIZON_API_KEY: Optional[str] = Field(default=None, description="Mobizon API key", env="MOBIZON_API_KEY")
+    MOBIZON_API_KEY: Optional[str] = Field(
+        default=None, description="Mobizon API key", env="MOBIZON_API_KEY"
+    )
     MOBIZON_API_URL: str = Field(default="https://api.mobizon.kz", description="Mobizon API URL")
 
-    CLOUDINARY_CLOUD_NAME: Optional[str] = Field(default=None, description="Cloudinary cloud name", env="CLOUDINARY_CLOUD_NAME")
-    CLOUDINARY_API_KEY: Optional[str] = Field(default=None, description="Cloudinary API key", env="CLOUDINARY_API_KEY")
-    CLOUDINARY_API_SECRET: Optional[str] = Field(default=None, description="Cloudinary API secret", env="CLOUDINARY_API_SECRET")
+    CLOUDINARY_CLOUD_NAME: Optional[str] = Field(
+        default=None, description="Cloudinary cloud name", env="CLOUDINARY_CLOUD_NAME"
+    )
+    CLOUDINARY_API_KEY: Optional[str] = Field(
+        default=None, description="Cloudinary API key", env="CLOUDINARY_API_KEY"
+    )
+    CLOUDINARY_API_SECRET: Optional[str] = Field(
+        default=None, description="Cloudinary API secret", env="CLOUDINARY_API_SECRET"
+    )
 
-    KASPI_MERCHANT_ID: Optional[str] = Field(default=None, description="Kaspi merchant ID", env="KASPI_MERCHANT_ID")
-    KASPI_API_KEY: Optional[str] = Field(default=None, description="Kaspi API key", env="KASPI_API_KEY")
+    KASPI_MERCHANT_ID: Optional[str] = Field(
+        default=None, description="Kaspi merchant ID", env="KASPI_MERCHANT_ID"
+    )
+    KASPI_API_KEY: Optional[str] = Field(
+        default=None, description="Kaspi API key", env="KASPI_API_KEY"
+    )
     KASPI_API_URL: str = Field(default="https://api.kaspi.kz", description="Kaspi API URL")
 
-    TIPTOP_PAY_PUBLIC_KEY: Optional[str] = Field(default=None, description="TipTop Pay public key", env="TIPTOP_PAY_PUBLIC_KEY")
-    TIPTOP_PAY_SECRET_KEY: Optional[str] = Field(default=None, description="TipTop Pay secret key", env="TIPTOP_PAY_SECRET_KEY")
-    TIPTOP_API_KEY: Optional[str] = Field(default=None, description="TipTop API key", env="TIPTOP_API_KEY")
-    TIPTOP_API_SECRET: Optional[str] = Field(default=None, description="TipTop API secret", env="TIPTOP_API_SECRET")
+    TIPTOP_PAY_PUBLIC_KEY: Optional[str] = Field(
+        default=None, description="TipTop Pay public key", env="TIPTOP_PAY_PUBLIC_KEY"
+    )
+    TIPTOP_PAY_SECRET_KEY: Optional[str] = Field(
+        default=None, description="TipTop Pay secret key", env="TIPTOP_PAY_SECRET_KEY"
+    )
+    TIPTOP_API_KEY: Optional[str] = Field(
+        default=None, description="TipTop API key", env="TIPTOP_API_KEY"
+    )
+    TIPTOP_API_SECRET: Optional[str] = Field(
+        default=None, description="TipTop API secret", env="TIPTOP_API_SECRET"
+    )
     TIPTOP_API_URL: str = Field(default="https://api.tippy.kz", description="TipTop API URL")
 
     # ---- SMTP
@@ -211,32 +256,56 @@ class Settings(BaseSettings):
     SMTP_PORT: int = Field(default=587, description="SMTP port", env="SMTP_PORT")
     SMTP_USER: str = Field(default="", description="SMTP user", env="SMTP_USER")
     SMTP_PASSWORD: str = Field(default="", description="SMTP password", env="SMTP_PASSWORD")
-    SMTP_FROM_EMAIL: EmailStr | None = Field(default=None, description="Sender email", env="SMTP_FROM_EMAIL")
+    SMTP_FROM_EMAIL: EmailStr | None = Field(
+        default=None, description="Sender email", env="SMTP_FROM_EMAIL"
+    )
     SMTP_TLS: bool = Field(default=True, description="Use STARTTLS", env="SMTP_TLS")
     SMTP_SSL: bool = Field(default=False, description="Use SSL", env="SMTP_SSL")
 
     # ---- OAuth
-    GOOGLE_CLIENT_ID: str | None = Field(default="", description="Google client id", env="GOOGLE_CLIENT_ID")
-    GOOGLE_CLIENT_SECRET: str | None = Field(default="", description="Google client secret", env="GOOGLE_CLIENT_SECRET")
-    FACEBOOK_CLIENT_ID: str | None = Field(default="", description="Facebook client id", env="FACEBOOK_CLIENT_ID")
-    FACEBOOK_CLIENT_SECRET: str | None = Field(default="", description="Facebook client secret", env="FACEBOOK_CLIENT_SECRET")
+    GOOGLE_CLIENT_ID: str | None = Field(
+        default="", description="Google client id", env="GOOGLE_CLIENT_ID"
+    )
+    GOOGLE_CLIENT_SECRET: str | None = Field(
+        default="", description="Google client secret", env="GOOGLE_CLIENT_SECRET"
+    )
+    FACEBOOK_CLIENT_ID: str | None = Field(
+        default="", description="Facebook client id", env="FACEBOOK_CLIENT_ID"
+    )
+    FACEBOOK_CLIENT_SECRET: str | None = Field(
+        default="", description="Facebook client secret", env="FACEBOOK_CLIENT_SECRET"
+    )
 
     # ---- Observability/Runtime
     SENTRY_DSN: Optional[str] = Field(default=None, description="Sentry DSN", env="SENTRY_DSN")
-    OTEL_EXPORTER_OTLP_ENDPOINT: Optional[str] = Field(default=None, description="OTLP endpoint", env="OTEL_EXPORTER_OTLP_ENDPOINT")
-    OTEL_SERVICE_NAME: Optional[str] = Field(default=None, description="OTEL service name", env="OTEL_SERVICE_NAME")
-    UVICORN_WORKERS: int = Field(default=1, description="Uvicorn workers count", env="UVICORN_WORKERS")
-    ROOT_PATH: str = Field(default="", description="ASGI root_path for reverse proxy", env="ROOT_PATH")
+    OTEL_EXPORTER_OTLP_ENDPOINT: Optional[str] = Field(
+        default=None, description="OTLP endpoint", env="OTEL_EXPORTER_OTLP_ENDPOINT"
+    )
+    OTEL_SERVICE_NAME: Optional[str] = Field(
+        default=None, description="OTEL service name", env="OTEL_SERVICE_NAME"
+    )
+    UVICORN_WORKERS: int = Field(
+        default=1, description="Uvicorn workers count", env="UVICORN_WORKERS"
+    )
+    ROOT_PATH: str = Field(
+        default="", description="ASGI root_path for reverse proxy", env="ROOT_PATH"
+    )
 
     # ---- PostgreSQL доп-настройки
-    POSTGRES_STATEMENT_TIMEOUT_MS: Optional[int] = Field(default=None, env="POSTGRES_STATEMENT_TIMEOUT_MS")
+    POSTGRES_STATEMENT_TIMEOUT_MS: Optional[int] = Field(
+        default=None, env="POSTGRES_STATEMENT_TIMEOUT_MS"
+    )
     POSTGRES_SSLMODE: Optional[str] = Field(default=None, env="POSTGRES_SSLMODE")
     POSTGRES_SET_TIMEOUT_DIRECT: bool = Field(default=False, env="POSTGRES_SET_TIMEOUT_DIRECT")
 
     # ---- Release metadata
-    GIT_COMMIT_SHA: Optional[str] = Field(default=None, description="Git commit SHA", env="GIT_COMMIT")
+    GIT_COMMIT_SHA: Optional[str] = Field(
+        default=None, description="Git commit SHA", env="GIT_COMMIT"
+    )
     GIT_BRANCH: Optional[str] = Field(default=None, description="Git branch name", env="GIT_BRANCH")
-    BUILD_TIMESTAMP: Optional[str] = Field(default=None, description="Build timestamp", env="BUILD_TIMESTAMP")
+    BUILD_TIMESTAMP: Optional[str] = Field(
+        default=None, description="Build timestamp", env="BUILD_TIMESTAMP"
+    )
 
     # --------- валидаторы ---------
     @field_validator("CORS_ORIGINS", mode="before")
@@ -347,7 +416,11 @@ class Settings(BaseSettings):
 
     def check_secret_key(self) -> None:
         if self.is_production:
-            if not self.SECRET_KEY or self.SECRET_KEY.strip().lower() in {"changeme", "secret", "password"}:
+            if not self.SECRET_KEY or self.SECRET_KEY.strip().lower() in {
+                "changeme",
+                "secret",
+                "password",
+            }:
                 raise ValueError("Set a secure SECRET_KEY in .env for production!")
 
     def _is_postgres_url(self, url: str) -> bool:
@@ -566,7 +639,11 @@ class Settings(BaseSettings):
 
     @property
     def kaspi_settings(self) -> dict:
-        return {"merchant_id": self.KASPI_MERCHANT_ID, "api_key": self.KASPI_API_KEY, "api_url": self.KASPI_API_URL}
+        return {
+            "merchant_id": self.KASPI_MERCHANT_ID,
+            "api_key": self.KASPI_API_KEY,
+            "api_url": self.KASPI_API_URL,
+        }
 
     @property
     def tiptop_settings(self) -> dict:
@@ -597,12 +674,12 @@ class Settings(BaseSettings):
         }
 
     # --------- PostgreSQL DSN/engine helpers ---------
-    def pg_extra_query_params(self) -> Dict[str, str]:
+    def pg_extra_query_params(self) -> dict[str, str]:
         """
         Дополнительные query-параметры для PostgreSQL DSN.
         По умолчанию в проде добавим sslmode=require (если не задан).
         """
-        q: Dict[str, str] = {}
+        q: dict[str, str] = {}
         if self.POSTGRES_STATEMENT_TIMEOUT_MS:
             if self.POSTGRES_SET_TIMEOUT_DIRECT:
                 q["statement_timeout"] = str(int(self.POSTGRES_STATEMENT_TIMEOUT_MS))
@@ -614,7 +691,9 @@ class Settings(BaseSettings):
             q["sslmode"] = "require"
         return q
 
-    def _coerce_sqlalchemy_urls(self, url: Optional[str]) -> Tuple[Optional[str], Optional[str], Optional[str]]:
+    def _coerce_sqlalchemy_urls(
+        self, url: Optional[str]
+    ) -> tuple[Optional[str], Optional[str], Optional[str]]:
         # Для реальности: в тестах/проде отсутствие URL — ошибка (дев — SQLite fallback)
         if not url:
             if self.is_production or self.is_testing:
@@ -666,7 +745,7 @@ class Settings(BaseSettings):
         return url, url, None
 
     @property
-    def sqlalchemy_urls(self) -> Dict[str, Optional[str]]:
+    def sqlalchemy_urls(self) -> dict[str, Optional[str]]:
         a, s, d = self._coerce_sqlalchemy_urls(self.DATABASE_URL)
         return {"async": a, "sync": s, "driver": d}
 
@@ -681,7 +760,7 @@ class Settings(BaseSettings):
         return cast(Optional[str], self.sqlalchemy_urls["sync"])
 
     @property
-    def sqlalchemy_engine_options(self) -> Dict[str, Any]:
+    def sqlalchemy_engine_options(self) -> dict[str, Any]:
         return {
             "pool_size": self.SQLALCHEMY_POOL_SIZE,
             "max_overflow": self.SQLALCHEMY_MAX_OVERFLOW,
@@ -691,13 +770,13 @@ class Settings(BaseSettings):
         }
 
     @property
-    def sqlalchemy_connect_args(self) -> Dict[str, Any]:
+    def sqlalchemy_connect_args(self) -> dict[str, Any]:
         driver = self.sqlalchemy_urls["driver"]
         if driver == "sqlite":
             return {"check_same_thread": False}
         return {}
 
-    def sqlalchemy_engine_options_effective(self, async_engine: bool = True) -> Dict[str, Any]:
+    def sqlalchemy_engine_options_effective(self, async_engine: bool = True) -> dict[str, Any]:
         opts = dict(self.sqlalchemy_engine_options)
         if self.sqlalchemy_urls["driver"] == "sqlite":
             for k in ("pool_size", "max_overflow", "pool_timeout", "pool_recycle"):
@@ -726,11 +805,19 @@ class Settings(BaseSettings):
                     errors.append(f"Missing directory: {p}")
                 if not _writable(p if p.is_dir() else p.parent):
                     errors.append(f"Not writable: {p}")
-        if not self.SECRET_KEY or self.SECRET_KEY.strip().lower() in {"changeme", "secret", "password"}:
+        if not self.SECRET_KEY or self.SECRET_KEY.strip().lower() in {
+            "changeme",
+            "secret",
+            "password",
+        }:
             errors.append("Insecure SECRET_KEY")
         if self.is_production and not self.DATABASE_URL:
             errors.append("Missing DATABASE_URL in production")
-        if self.DATABASE_URL and not self._is_postgres_url(self.DATABASE_URL) and (self.is_production or self.is_testing):
+        if (
+            self.DATABASE_URL
+            and not self._is_postgres_url(self.DATABASE_URL)
+            and (self.is_production or self.is_testing)
+        ):
             errors.append("Non-PostgreSQL DATABASE_URL in production/tests")
 
         ok = not errors
@@ -746,6 +833,7 @@ class Settings(BaseSettings):
 
     def dump_settings(self) -> None:
         import pprint
+
         pprint.pprint(self.model_dump())
 
     def dump_settings_safe(self) -> dict:
@@ -807,7 +895,9 @@ class Settings(BaseSettings):
                 }
             )
             provider = TracerProvider(resource=resource)
-            processor = BatchSpanProcessor(OTLPSpanExporter(endpoint=self.OTEL_EXPORTER_OTLP_ENDPOINT))
+            processor = BatchSpanProcessor(
+                OTLPSpanExporter(endpoint=self.OTEL_EXPORTER_OTLP_ENDPOINT)
+            )
             provider.add_span_processor(processor)
             trace.set_tracer_provider(provider)
             logging.getLogger(__name__).info("OpenTelemetry initialized")
@@ -863,7 +953,9 @@ def get_settings() -> Settings:
             host = p.hostname or "localhost"
             port = p.port or 6379
             username = p.username or ""
-            password = s.REDIS_PASSWORD if s.REDIS_PASSWORD not in (None, "") else (p.password or "")
+            password = (
+                s.REDIS_PASSWORD if s.REDIS_PASSWORD not in (None, "") else (p.password or "")
+            )
             username_q = quote(username, safe="") if username else ""
             password_q = quote(password, safe="") if password else ""
             if username_q and password_q:
@@ -877,7 +969,9 @@ def get_settings() -> Settings:
             current_db = p.path.lstrip("/") if p.path else "0"
             path_db = str(s.REDIS_DB) if s.REDIS_DB is not None else current_db
             path = f"/{path_db}"
-            new_url = urlunparse((scheme, f"{auth}{host}:{port}", path, p.params, p.query, p.fragment))
+            new_url = urlunparse(
+                (scheme, f"{auth}{host}:{port}", path, p.params, p.query, p.fragment)
+            )
             object.__setattr__(s, "REDIS_URL", new_url)
         except Exception:
             pass

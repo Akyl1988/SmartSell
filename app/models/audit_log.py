@@ -13,13 +13,14 @@ Production best practices:
 
 from __future__ import annotations
 
+from collections.abc import Callable, Generator, Iterable
 from datetime import datetime
-from typing import Optional, Dict, Any, List, Generator, Iterable, Callable
+from typing import Any, Optional
 
-from sqlalchemy import JSON, Integer, String, Text, Index, ForeignKey, func
-from sqlalchemy.orm import Session, Mapped, mapped_column, relationship
+from sqlalchemy import JSON, ForeignKey, Index, Integer, String, Text
+from sqlalchemy.orm import Mapped, Session, mapped_column, relationship
 
-from app.models.base import BaseModel, TenantMixin, AuditMixin
+from app.models.base import AuditMixin, BaseModel, TenantMixin
 
 # ---------------------------------------------------------------------
 # Тип для пользовательских маскировщиков PII (выполняются в on_pre_commit)
@@ -79,8 +80,8 @@ class AuditLog(BaseModel, TenantMixin, AuditMixin):
     entity_id: Mapped[Optional[int]] = mapped_column(Integer, index=True)
 
     # Снапшоты изменений (PII маскируются)
-    old_values: Mapped[Optional[Dict[str, Any]]] = mapped_column(JSON)
-    new_values: Mapped[Optional[Dict[str, Any]]] = mapped_column(JSON)
+    old_values: Mapped[Optional[dict[str, Any]]] = mapped_column(JSON)
+    new_values: Mapped[Optional[dict[str, Any]]] = mapped_column(JSON)
 
     # Запрос/сессия (маскируется в публичной выдаче)
     ip_address: Mapped[Optional[str]] = mapped_column(String(45))
@@ -90,7 +91,7 @@ class AuditLog(BaseModel, TenantMixin, AuditMixin):
     source: Mapped[Optional[str]] = mapped_column(String(64), index=True)  # api/worker/webhook…
 
     # Произвольные детали/расширения (например, статусы внешних интеграций)
-    details: Mapped[Optional[Dict[str, Any]]] = mapped_column(JSON)
+    details: Mapped[Optional[dict[str, Any]]] = mapped_column(JSON)
 
     # -------------------- ORM relationships --------------------
     # ВАЖНО: back_populates должен совпадать с тем, что задано в User.audit_logs
@@ -118,7 +119,7 @@ class AuditLog(BaseModel, TenantMixin, AuditMixin):
     )
 
     # --------------------- Реестр маскировщиков ---------------------
-    MASKERS: List[Masker] = []
+    MASKERS: list[Masker] = []
 
     @classmethod
     def register_masker(cls, fn: Masker) -> None:
@@ -147,17 +148,17 @@ class AuditLog(BaseModel, TenantMixin, AuditMixin):
         payment_id: Optional[int] = None,
         entity_type: Optional[str] = None,
         entity_id: Optional[int] = None,
-        old_values: Optional[Dict[str, Any]] = None,
-        new_values: Optional[Dict[str, Any]] = None,
+        old_values: Optional[dict[str, Any]] = None,
+        new_values: Optional[dict[str, Any]] = None,
         ip_address: Optional[str] = None,
         user_agent: Optional[str] = None,
         request_id: Optional[str] = None,
         correlation_id: Optional[str] = None,
         source: Optional[str] = None,
-        details: Optional[Dict[str, Any]] = None,
+        details: Optional[dict[str, Any]] = None,
         last_modified_by: Optional[int] = None,
         commit: bool = True,
-    ) -> "AuditLog":
+    ) -> AuditLog:
         if not action or not action.strip():
             raise ValueError("action cannot be empty")
         obj = cls(
@@ -200,12 +201,12 @@ class AuditLog(BaseModel, TenantMixin, AuditMixin):
         return obj
 
     @classmethod
-    def log_action(cls, session: Session, action: str, **kwargs) -> "AuditLog":
+    def log_action(cls, session: Session, action: str, **kwargs) -> AuditLog:
         """Короткий алиас — создание с требуемым session."""
         return cls.create_log(action=action, session=session, **kwargs)
 
     @classmethod
-    def safe_log(cls, session: Optional[Session], action: str, **kwargs) -> Optional["AuditLog"]:
+    def safe_log(cls, session: Optional[Session], action: str, **kwargs) -> Optional[AuditLog]:
         """Безопасный лог — не бросает исключений, откатывает транзакцию при ошибке."""
         try:
             return cls.create_log(action=action, session=session, **kwargs)
@@ -219,7 +220,7 @@ class AuditLog(BaseModel, TenantMixin, AuditMixin):
 
     @classmethod
     def bulk_insert(
-        cls, session: Session, logs: Iterable[Dict[str, Any]], commit: bool = True
+        cls, session: Session, logs: Iterable[dict[str, Any]], commit: bool = True
     ) -> int:
         """Простая пакетная вставка через add (макс. совместимость)."""
         cnt = 0
@@ -240,7 +241,7 @@ class AuditLog(BaseModel, TenantMixin, AuditMixin):
     def batch_insert_fast(
         cls,
         session: Session,
-        logs: Iterable[Dict[str, Any]],
+        logs: Iterable[dict[str, Any]],
         *,
         return_defaults: bool = False,
         preserve_order: bool = True,
@@ -276,17 +277,17 @@ class AuditLog(BaseModel, TenantMixin, AuditMixin):
 
     # --------------------- Поиски/фильтры ---------------------
     @classmethod
-    def get_by_id(cls, session: Session, log_id: int) -> Optional["AuditLog"]:
+    def get_by_id(cls, session: Session, log_id: int) -> Optional[AuditLog]:
         return session.query(cls).filter_by(id=log_id).first()
 
     @classmethod
-    def get_all(cls, session: Session, limit: int = 100) -> List["AuditLog"]:
+    def get_all(cls, session: Session, limit: int = 100) -> list[AuditLog]:
         return session.query(cls).order_by(cls.created_at.desc()).limit(limit).all()
 
     @classmethod
     def find_by_entity(
         cls, session: Session, entity_type: str, entity_id: int, limit: int = 100
-    ) -> List["AuditLog"]:
+    ) -> list[AuditLog]:
         return (
             session.query(cls)
             .filter_by(entity_type=entity_type.strip().lower(), entity_id=entity_id)
@@ -296,7 +297,7 @@ class AuditLog(BaseModel, TenantMixin, AuditMixin):
         )
 
     @classmethod
-    def find_by_action(cls, session: Session, action: str, limit: int = 100) -> List["AuditLog"]:
+    def find_by_action(cls, session: Session, action: str, limit: int = 100) -> list[AuditLog]:
         return (
             session.query(cls)
             .filter_by(action=action.strip()[:100])
@@ -306,7 +307,7 @@ class AuditLog(BaseModel, TenantMixin, AuditMixin):
         )
 
     @classmethod
-    def find_by_user(cls, session: Session, user_id: int, limit: int = 100) -> List["AuditLog"]:
+    def find_by_user(cls, session: Session, user_id: int, limit: int = 100) -> list[AuditLog]:
         return (
             session.query(cls)
             .filter_by(user_id=user_id)
@@ -318,7 +319,7 @@ class AuditLog(BaseModel, TenantMixin, AuditMixin):
     @classmethod
     def filter_by_period(
         cls, session: Session, start: datetime, end: datetime, limit: int = 100
-    ) -> List["AuditLog"]:
+    ) -> list[AuditLog]:
         return (
             session.query(cls)
             .filter(cls.created_at >= start, cls.created_at <= end)
@@ -338,7 +339,7 @@ class AuditLog(BaseModel, TenantMixin, AuditMixin):
         order_id: Optional[int] = None,
         payment_id: Optional[int] = None,
         limit: int = 100,
-    ) -> List["AuditLog"]:
+    ) -> list[AuditLog]:
         q = session.query(cls)
         if company_id is not None:
             q = q.filter_by(company_id=company_id)
@@ -355,7 +356,7 @@ class AuditLog(BaseModel, TenantMixin, AuditMixin):
     @classmethod
     def batch_export(
         cls, session: Session, limit: int = 1000
-    ) -> Generator[Dict[str, Any], None, None]:
+    ) -> Generator[dict[str, Any], None, None]:
         """Экспорт логов (маскируем PII в публичной части)."""
         for obj in session.query(cls).order_by(cls.created_at.desc()).limit(limit).yield_per(200):
             yield obj.to_public_dict()
@@ -374,7 +375,7 @@ class AuditLog(BaseModel, TenantMixin, AuditMixin):
     def set_modified_by(self, user_id: int) -> None:
         self.last_modified_by = user_id
 
-    def to_dict(self, hide_sensitive: bool = True) -> Dict[str, Any]:
+    def to_dict(self, hide_sensitive: bool = True) -> dict[str, Any]:
         """Полная сериализация (при hide_sensitive убираем PII)."""
         data = {c.name: getattr(self, c.name) for c in self.__table__.columns}
         if hide_sensitive:
@@ -382,7 +383,7 @@ class AuditLog(BaseModel, TenantMixin, AuditMixin):
             data.pop("user_agent", None)
         return data
 
-    def to_public_dict(self) -> Dict[str, Any]:
+    def to_public_dict(self) -> dict[str, Any]:
         """Безопасная выдача наружу (API/экспорт)."""
         return {
             "id": self.id,
@@ -405,7 +406,7 @@ class AuditLog(BaseModel, TenantMixin, AuditMixin):
             "created_at": self.created_at,
         }
 
-    def as_summary(self) -> Dict[str, Any]:
+    def as_summary(self) -> dict[str, Any]:
         """Короткое представление для UI/списков."""
         return {
             "id": self.id,
@@ -417,9 +418,9 @@ class AuditLog(BaseModel, TenantMixin, AuditMixin):
             "description": self.description,
         }
 
-    def get_changes(self) -> Dict[str, Dict[str, Any]]:
+    def get_changes(self) -> dict[str, dict[str, Any]]:
         """Возвратить только отличающиеся поля между old/new."""
-        changes: Dict[str, Dict[str, Any]] = {}
+        changes: dict[str, dict[str, Any]] = {}
         if self.old_values and self.new_values:
             for k, new_val in self.new_values.items():
                 old_val = self.old_values.get(k)
@@ -472,7 +473,7 @@ class AuditLog(BaseModel, TenantMixin, AuditMixin):
         pass
 
     # --------------------- Утилиты для алёртинга/SIEM ---------------------
-    def to_alert(self) -> Dict[str, Any]:
+    def to_alert(self) -> dict[str, Any]:
         """Минимальный payload для алёртинга/SIEM/Kafka/Sentry/ELK."""
         return {
             "id": self.id,
@@ -543,7 +544,7 @@ class AuditAction:
     # Extra: Custom audit actions
     CUSTOM = "custom"
 
-    ACTION_DOCS: Dict[str, str] = {
+    ACTION_DOCS: dict[str, str] = {
         USER_LOGIN: "User successfully logged in.",
         USER_LOGOUT: "User logged out.",
         USER_REGISTER: "New user registration.",
@@ -577,7 +578,7 @@ class AuditAction:
         return cls.ACTION_DOCS.get(action)
 
     @classmethod
-    def all_action_docs(cls) -> Dict[str, str]:
+    def all_action_docs(cls) -> dict[str, str]:
         return dict(cls.ACTION_DOCS)
 
 

@@ -1,7 +1,8 @@
 # tests/test_e2e_platform.py
 import json
-import pytest
 from decimal import Decimal
+
+import pytest
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
@@ -10,14 +11,14 @@ import app.models  # важно: прогревает маппинги
 from app.models import metadata_create_all
 from app.models.base import BaseModel
 from app.models.company import Company
-from app.models.user import User, UserSession, OTPCode
 from app.models.product import Product
+from app.models.user import OTPCode, User, UserSession
 from app.models.warehouse import (
-    Warehouse,
     ProductStock,
     StockMovement,
-    movements_analytics,
+    Warehouse,
     margin_report,
+    movements_analytics,
 )
 
 

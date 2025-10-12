@@ -27,9 +27,10 @@ import io
 import json
 import logging
 import os
+from collections.abc import Callable, Iterable
 from datetime import datetime, timedelta
 from decimal import Decimal
-from typing import Any, Callable, ClassVar, Dict, Iterable, List, Optional, Tuple, TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, ClassVar, Optional
 
 from sqlalchemy import (
     Boolean,
@@ -64,6 +65,7 @@ from sqlalchemy.orm import (
 try:
     from app.models.base import LenientInitMixin  # type: ignore
 except Exception:  # pragma: no cover
+
     class LenientInitMixin:  # type: ignore
         def __init__(self, **kwargs):
             try:
@@ -76,10 +78,12 @@ except Exception:  # pragma: no cover
                 except Exception:
                     pass
 
+
 from app.models.base import BaseModel
 
 if TYPE_CHECKING:
     from app.models.warehouse import ProductStock, StockMovement  # pragma: no cover
+
     try:
         from app.models.audit import AuditLog  # pragma: no cover
     except Exception:  # pragma: no cover
@@ -123,6 +127,7 @@ def _get_bulk_logger() -> logging.Logger:
 # JSON / Serialization utils
 # =============================================================================
 
+
 def _jsonify_value(v: Any) -> Any:
     if isinstance(v, Decimal):
         return format(v, "f")
@@ -131,14 +136,14 @@ def _jsonify_value(v: Any) -> Any:
     return v
 
 
-def _row_to_dict(obj: Any, json_safe: bool = False) -> Dict[str, Any]:
+def _row_to_dict(obj: Any, json_safe: bool = False) -> dict[str, Any]:
     data = {c.name: getattr(obj, c.name) for c in obj.__table__.columns}
     if json_safe:
         data = {k: _jsonify_value(v) for k, v in data.items()}
     return data
 
 
-def _ensure_json_dict(v: Any, *, allow_none: bool = True) -> Dict[str, Any]:
+def _ensure_json_dict(v: Any, *, allow_none: bool = True) -> dict[str, Any]:
     if v is None and allow_none:
         return {}
     if isinstance(v, dict):
@@ -154,7 +159,7 @@ def _ensure_json_dict(v: Any, *, allow_none: bool = True) -> Dict[str, Any]:
     raise ValueError("Value must be dict or JSON string of object")
 
 
-def _ensure_json_list_of_str(v: Any, *, allow_none: bool = True) -> List[str]:
+def _ensure_json_list_of_str(v: Any, *, allow_none: bool = True) -> list[str]:
     if v is None and allow_none:
         return []
     if isinstance(v, list) and all(isinstance(i, str) for i in v):
@@ -174,7 +179,9 @@ def _ensure_json_list_of_str(v: Any, *, allow_none: bool = True) -> List[str]:
 # =============================================================================
 @declarative_mixin
 class VersionedMixin:
-    version: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default=text("0"))
+    version: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default=text("0")
+    )
     __mapper_args__ = {"version_id_col": version}
 
 
@@ -194,17 +201,29 @@ class Category(LenientInitMixin, BaseModel):
         ForeignKey("categories.id", ondelete="SET NULL"), index=True
     )
 
-    is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True, server_default=text("true"))
-    sort_order: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default=text("0"))
+    is_active: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=True, server_default=text("true")
+    )
+    sort_order: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default=text("0")
+    )
 
     deleted_at: Mapped[Optional[datetime]] = mapped_column(DateTime, index=True)
 
-    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow, server_default=func.now())
-    updated_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, default=datetime.utcnow, server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow
+    )
 
-    parent: Mapped[Optional["Category"]] = relationship("Category", remote_side="Category.id", back_populates="children")
-    children: Mapped[List["Category"]] = relationship("Category", back_populates="parent", cascade="save-update, merge", single_parent=True)
-    products: Mapped[List["Product"]] = relationship("Product", back_populates="category")
+    parent: Mapped[Optional[Category]] = relationship(
+        "Category", remote_side="Category.id", back_populates="children"
+    )
+    children: Mapped[list[Category]] = relationship(
+        "Category", back_populates="parent", cascade="save-update, merge", single_parent=True
+    )
+    products: Mapped[list[Product]] = relationship("Product", back_populates="category")
 
     __table_args__ = (
         Index("ix_category_parent_active", "parent_id", "is_active"),
@@ -237,7 +256,7 @@ class Category(LenientInitMixin, BaseModel):
     def __repr__(self) -> str:
         return f"<Category(id={self.id}, name='{self.name}')>"
 
-    def to_dict(self, with_products: bool = False, json_safe: bool = False) -> Dict[str, Any]:
+    def to_dict(self, with_products: bool = False, json_safe: bool = False) -> dict[str, Any]:
         data = _row_to_dict(self, json_safe=json_safe)
         if with_products:
             data["products"] = [p.to_dict(json_safe=json_safe) for p in self.products]
@@ -248,17 +267,17 @@ class Category(LenientInitMixin, BaseModel):
         return self.parent_id is None
 
     def get_full_path(self) -> str:
-        path: List[str] = []
-        cur: Optional["Category"] = self
+        path: list[str] = []
+        cur: Optional[Category] = self
         while cur:
             path.append(cur.slug)
             cur = cur.parent
         return "/".join(reversed(path))
 
-    def get_active_children(self) -> List["Category"]:
+    def get_active_children(self) -> list[Category]:
         return [child for child in self.children if child.is_active and not child.deleted_at]
 
-    def get_all_nested_products(self) -> List["Product"]:
+    def get_all_nested_products(self) -> list[Product]:
         products = [p for p in self.products if not p.deleted_at]
         for child in self.get_active_children():
             products.extend(child.get_all_nested_products())
@@ -284,7 +303,7 @@ class Category(LenientInitMixin, BaseModel):
         if new_parent_id == self.id:
             raise ValueError("Category cannot be parent of itself")
 
-        def _is_descendant(candidate_id: int, current: "Category") -> bool:
+        def _is_descendant(candidate_id: int, current: Category) -> bool:
             for ch in current.children:
                 if ch.id == candidate_id or _is_descendant(candidate_id, ch):
                     return True
@@ -297,21 +316,21 @@ class Category(LenientInitMixin, BaseModel):
         session.flush()
 
     @classmethod
-    def create(cls, session: Session, name: str, slug: str, **kwargs) -> "Category":
+    def create(cls, session: Session, name: str, slug: str, **kwargs) -> Category:
         obj = cls(name=name, slug=slug, **kwargs)
         session.add(obj)
         session.commit()
         return obj
 
     @classmethod
-    def get_by_slug(cls, session: Session, slug: str) -> Optional["Category"]:
+    def get_by_slug(cls, session: Session, slug: str) -> Optional[Category]:
         return session.query(cls).filter_by(slug=slug).first()
 
     @classmethod
-    def get_all(cls, session: Session) -> List["Category"]:
+    def get_all(cls, session: Session) -> list[Category]:
         return session.query(cls).all()
 
-    def update(self, session: Session, **fields) -> "Category":
+    def update(self, session: Session, **fields) -> Category:
         for k, v in fields.items():
             setattr(self, k, v)
         session.commit()
@@ -329,10 +348,14 @@ class Product(LenientInitMixin, VersionedMixin, BaseModel):
     __tablename__ = "products"
     __allow_unmapped__ = True
 
-    emit_audit_async_hook: ClassVar[Optional[Callable[[Optional[Session], Any, str, Dict[str, Any]], None]]] = None
+    emit_audit_async_hook: ClassVar[
+        Optional[Callable[[Optional[Session], Any, str, dict[str, Any]], None]]
+    ] = None
 
     id: Mapped[int] = mapped_column(primary_key=True, index=True)
-    company_id: Mapped[Optional[int]] = mapped_column(ForeignKey("companies.id", ondelete="CASCADE"), nullable=True, index=True)
+    company_id: Mapped[Optional[int]] = mapped_column(
+        ForeignKey("companies.id", ondelete="CASCADE"), nullable=True, index=True
+    )
     name: Mapped[Optional[str]] = mapped_column(String(255), nullable=True, index=True)
     slug: Mapped[Optional[str]] = mapped_column(String(255), nullable=True, index=True)
     sku: Mapped[Optional[str]] = mapped_column(String(100), nullable=True, index=True)
@@ -346,31 +369,51 @@ class Product(LenientInitMixin, VersionedMixin, BaseModel):
     cost_price: Mapped[Optional[Decimal]] = mapped_column(Numeric(14, 2))
     sale_price: Mapped[Optional[Decimal]] = mapped_column(Numeric(14, 2))
 
-    stock_quantity: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default=text("0"))
-    reserved_quantity: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default=text("0"))
+    stock_quantity: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default=text("0")
+    )
+    reserved_quantity: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default=text("0")
+    )
 
-    min_stock_level: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default=text("0"))
+    min_stock_level: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default=text("0")
+    )
     max_stock_level: Mapped[Optional[int]] = mapped_column(Integer)
 
-    is_active: Mapped[bool] = mapped_column(Boolean, default=True, server_default=text("true"), index=True)
-    is_featured: Mapped[bool] = mapped_column(Boolean, default=False, server_default=text("false"), index=True)
+    is_active: Mapped[bool] = mapped_column(
+        Boolean, default=True, server_default=text("true"), index=True
+    )
+    is_featured: Mapped[bool] = mapped_column(
+        Boolean, default=False, server_default=text("false"), index=True
+    )
 
     # --- Предзаказы ---
-    is_preorder_enabled: Mapped[bool] = mapped_column(Boolean, default=False, server_default=text("false"))
+    is_preorder_enabled: Mapped[bool] = mapped_column(
+        Boolean, default=False, server_default=text("false")
+    )
     preorder_until: Mapped[Optional[int]] = mapped_column(Integer)  # epoch seconds, если задано
     preorder_deposit: Mapped[Optional[Decimal]] = mapped_column(Numeric(14, 2))
     preorder_note: Mapped[Optional[str]] = mapped_column(String(500))
     preorder_lead_days: Mapped[Optional[int]] = mapped_column(Integer)  # N дней до поставки
-    preorder_show_zero_stock: Mapped[bool] = mapped_column(Boolean, default=True, server_default=text("true"))
+    preorder_show_zero_stock: Mapped[bool] = mapped_column(
+        Boolean, default=True, server_default=text("true")
+    )
 
     # --- Демпинг / Рынок ---
-    enable_price_dumping: Mapped[bool] = mapped_column(Boolean, default=False, server_default=text("false"))
-    exclude_friendly_stores: Mapped[bool] = mapped_column(Boolean, default=True, server_default=text("true"))
+    enable_price_dumping: Mapped[bool] = mapped_column(
+        Boolean, default=False, server_default=text("false")
+    )
+    exclude_friendly_stores: Mapped[bool] = mapped_column(
+        Boolean, default=True, server_default=text("true")
+    )
     repriced_at: Mapped[Optional[datetime]] = mapped_column(DateTime, index=True)
     price_updated_at: Mapped[Optional[datetime]] = mapped_column(DateTime, index=True)
 
     # --- Мета/медиа/категории ---
-    category_id: Mapped[Optional[int]] = mapped_column(ForeignKey("categories.id", ondelete="SET NULL"), index=True)
+    category_id: Mapped[Optional[int]] = mapped_column(
+        ForeignKey("categories.id", ondelete="SET NULL"), index=True
+    )
     image_url: Mapped[Optional[str]] = mapped_column(String(500))
     image_public_id: Mapped[Optional[str]] = mapped_column(String(255))
     gallery_urls: Mapped[Optional[str]] = mapped_column(Text)  # JSON array (text)
@@ -388,29 +431,47 @@ class Product(LenientInitMixin, VersionedMixin, BaseModel):
 
     deleted_at: Mapped[Optional[datetime]] = mapped_column(DateTime, index=True)
 
-    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow, server_default=func.now())
-    updated_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, default=datetime.utcnow, server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow
+    )
 
     # relationships
     company: Mapped[Optional[Any]] = relationship("Company", back_populates="products")
-    category: Mapped[Optional["Category"]] = relationship("Category", back_populates="products")
-    variants: Mapped[List["ProductVariant"]] = relationship("ProductVariant", back_populates="product", cascade="all, delete-orphan")
-    stocks: Mapped[List["ProductStock"]] = relationship("ProductStock", back_populates="product", cascade="all, delete-orphan")
-    stock_movements: Mapped[List["StockMovement"]] = relationship("StockMovement", back_populates="product", cascade="all, delete-orphan")
-    audit_logs: Mapped[List["AuditLog"]] = relationship(
+    category: Mapped[Optional[Category]] = relationship("Category", back_populates="products")
+    variants: Mapped[list[ProductVariant]] = relationship(
+        "ProductVariant", back_populates="product", cascade="all, delete-orphan"
+    )
+    stocks: Mapped[list[ProductStock]] = relationship(
+        "ProductStock", back_populates="product", cascade="all, delete-orphan"
+    )
+    stock_movements: Mapped[list[StockMovement]] = relationship(
+        "StockMovement", back_populates="product", cascade="all, delete-orphan"
+    )
+    audit_logs: Mapped[list[AuditLog]] = relationship(
         "AuditLog",
         back_populates="product",
         cascade="all, delete-orphan",
         foreign_keys="AuditLog.product_id",
         lazy="selectin",
     )
-    order_items: Mapped[List[Any]] = relationship("OrderItem", back_populates="product", cascade="all, delete-orphan")
+    order_items: Mapped[list[Any]] = relationship(
+        "OrderItem", back_populates="product", cascade="all, delete-orphan"
+    )
 
     __table_args__ = (
         UniqueConstraint("company_id", "sku", name="uq_product_company_sku"),
         UniqueConstraint("company_id", "slug", name="uq_product_company_slug"),
         Index("ix_product_company_active", "company_id", "is_active"),
-        Index("ix_product_company_category_active_del", "company_id", "category_id", "is_active", "deleted_at"),
+        Index(
+            "ix_product_company_category_active_del",
+            "company_id",
+            "category_id",
+            "is_active",
+            "deleted_at",
+        ),
         Index("ix_product_company_featured", "company_id", "is_featured"),
         Index("ix_product_price_active", "company_id", "price", "is_active"),
         Index("ix_product_search_name", "company_id", "name"),
@@ -419,20 +480,49 @@ class Product(LenientInitMixin, VersionedMixin, BaseModel):
         CheckConstraint("(price IS NULL OR price >= 0)", name="ck_prod_price_nonneg"),
         CheckConstraint("(min_price IS NULL OR min_price >= 0)", name="ck_prod_min_price_nonneg"),
         CheckConstraint("(max_price IS NULL OR max_price >= 0)", name="ck_prod_max_price_nonneg"),
-        CheckConstraint("(sale_price IS NULL OR sale_price >= 0)", name="ck_prod_sale_price_nonneg"),
+        CheckConstraint(
+            "(sale_price IS NULL OR sale_price >= 0)", name="ck_prod_sale_price_nonneg"
+        ),
         CheckConstraint("stock_quantity >= 0", name="ck_prod_stock_nonneg"),
         CheckConstraint("reserved_quantity >= 0", name="ck_prod_reserved_nonneg"),
         CheckConstraint("min_stock_level >= 0", name="ck_prod_min_stock_nonneg"),
-        CheckConstraint("(max_stock_level IS NULL OR max_stock_level >= min_stock_level)", name="ck_prod_stock_bounds"),
-        CheckConstraint("(min_price IS NULL OR price IS NULL OR price >= min_price)", name="ck_prod_price_ge_min"),
-        CheckConstraint("(max_price IS NULL OR price IS NULL OR price <= max_price)", name="ck_prod_price_le_max"),
-        CheckConstraint("(sale_price IS NULL OR price IS NULL OR sale_price <= price)", name="ck_prod_sale_le_price"),
-        CheckConstraint("(sale_price IS NULL OR min_price IS NULL OR sale_price >= min_price)", name="ck_prod_sale_ge_min"),
-        CheckConstraint("(preorder_deposit IS NULL OR price IS NULL OR preorder_deposit <= price)", name="ck_prod_preorder_deposit_le_price"),
-        CheckConstraint("(enable_price_dumping OR cost_price IS NULL OR price IS NULL OR price >= cost_price)", name="ck_prod_price_ge_cost_when_not_dumping"),
-        CheckConstraint("((NOT is_preorder_enabled) OR (preorder_until IS NULL OR preorder_until >= 0))", name="ck_prod_preorder_until_nonneg"),
+        CheckConstraint(
+            "(max_stock_level IS NULL OR max_stock_level >= min_stock_level)",
+            name="ck_prod_stock_bounds",
+        ),
+        CheckConstraint(
+            "(min_price IS NULL OR price IS NULL OR price >= min_price)",
+            name="ck_prod_price_ge_min",
+        ),
+        CheckConstraint(
+            "(max_price IS NULL OR price IS NULL OR price <= max_price)",
+            name="ck_prod_price_le_max",
+        ),
+        CheckConstraint(
+            "(sale_price IS NULL OR price IS NULL OR sale_price <= price)",
+            name="ck_prod_sale_le_price",
+        ),
+        CheckConstraint(
+            "(sale_price IS NULL OR min_price IS NULL OR sale_price >= min_price)",
+            name="ck_prod_sale_ge_min",
+        ),
+        CheckConstraint(
+            "(preorder_deposit IS NULL OR price IS NULL OR preorder_deposit <= price)",
+            name="ck_prod_preorder_deposit_le_price",
+        ),
+        CheckConstraint(
+            "(enable_price_dumping OR cost_price IS NULL OR price IS NULL OR price >= cost_price)",
+            name="ck_prod_price_ge_cost_when_not_dumping",
+        ),
+        CheckConstraint(
+            "((NOT is_preorder_enabled) OR (preorder_until IS NULL OR preorder_until >= 0))",
+            name="ck_prod_preorder_until_nonneg",
+        ),
         CheckConstraint("reserved_quantity <= stock_quantity", name="ck_prod_reserved_le_stock"),
-        CheckConstraint("(preorder_lead_days IS NULL OR preorder_lead_days >= 0)", name="ck_prod_preorder_lead_days_nonneg"),
+        CheckConstraint(
+            "(preorder_lead_days IS NULL OR preorder_lead_days >= 0)",
+            name="ck_prod_preorder_lead_days_nonneg",
+        ),
         {"extend_existing": True},
     )
 
@@ -447,11 +537,22 @@ class Product(LenientInitMixin, VersionedMixin, BaseModel):
     def _validate_money(self, key: str, value: Optional[Decimal]) -> Optional[Decimal]:
         if value is not None and value < 0:
             raise ValueError(f"{key} cannot be negative")
-        if key == "preorder_deposit" and value is not None and self.price is not None and value > self.price:
+        if (
+            key == "preorder_deposit"
+            and value is not None
+            and self.price is not None
+            and value > self.price
+        ):
             raise ValueError("preorder_deposit cannot exceed price")
         return value
 
-    @validates("stock_quantity", "reserved_quantity", "min_stock_level", "max_stock_level", "preorder_lead_days")
+    @validates(
+        "stock_quantity",
+        "reserved_quantity",
+        "min_stock_level",
+        "max_stock_level",
+        "preorder_lead_days",
+    )
     def _validate_stock(self, key: str, value: Optional[int]) -> Optional[int]:
         if value is not None and value < 0:
             raise ValueError(f"{key} cannot be negative")
@@ -472,17 +573,35 @@ class Product(LenientInitMixin, VersionedMixin, BaseModel):
 
     @property
     def search_text(self) -> str:
-        parts = [self.name or "", self.sku or "", self.slug or "", self.meta_title or "", self.meta_keywords or ""]
+        parts = [
+            self.name or "",
+            self.sku or "",
+            self.slug or "",
+            self.meta_title or "",
+            self.meta_keywords or "",
+        ]
         return " ".join(parts).strip().lower()
 
     @property
     def full_search_text(self) -> str:
         path = self.category.get_full_path() if self.category else ""
-        parts = [self.search_text, path or "", self.meta_description or "", self.kaspi_product_id or "", self.kaspi_status or ""]
+        parts = [
+            self.search_text,
+            path or "",
+            self.meta_description or "",
+            self.kaspi_product_id or "",
+            self.kaspi_status or "",
+        ]
         return " ".join(p for p in parts if p).strip().lower()
 
     # Serialize
-    def to_dict(self, with_variants: bool = False, with_stocks: bool = False, with_audit: bool = False, json_safe: bool = False) -> Dict[str, Any]:
+    def to_dict(
+        self,
+        with_variants: bool = False,
+        with_stocks: bool = False,
+        with_audit: bool = False,
+        json_safe: bool = False,
+    ) -> dict[str, Any]:
         data = _row_to_dict(self, json_safe=json_safe)
         gallery_raw = data.get("gallery_urls")
         if gallery_raw:
@@ -509,10 +628,10 @@ class Product(LenientInitMixin, VersionedMixin, BaseModel):
         return data
 
     # ---- Extra JSON helpers ----
-    def get_extra(self) -> Dict[str, Any]:
+    def get_extra(self) -> dict[str, Any]:
         return _ensure_json_dict(self.extra, allow_none=True)
 
-    def set_extra(self, payload: Dict[str, Any]) -> None:
+    def set_extra(self, payload: dict[str, Any]) -> None:
         clean = _ensure_json_dict(payload, allow_none=True)
         self.extra = json.dumps(clean)
 
@@ -522,19 +641,21 @@ class Product(LenientInitMixin, VersionedMixin, BaseModel):
         self.extra = json.dumps(data)
 
     # ---- Repricing config in extra ----
-    def get_repricing_config(self) -> Dict[str, Any]:
+    def get_repricing_config(self) -> dict[str, Any]:
         data = self.get_extra()
         cfg = data.get("repricing") or data.get("repricing_config") or data.get("demping") or {}
         return _ensure_json_dict(cfg, allow_none=True)
 
-    def set_repricing_config(self, cfg: Dict[str, Any]) -> None:
+    def set_repricing_config(self, cfg: dict[str, Any]) -> None:
         data = self.get_extra()
         data["repricing"] = _ensure_json_dict(cfg, allow_none=True)
         self.extra = json.dumps(data)
 
     # Search
     @classmethod
-    def search(cls, session: Session, company_id: Optional[int], q: str, limit: int = 50) -> List["Product"]:
+    def search(
+        cls, session: Session, company_id: Optional[int], q: str, limit: int = 50
+    ) -> list[Product]:
         query = session.query(cls).filter(cls.deleted_at.is_(None))
         if company_id is not None:
             query = query.filter(cls.company_id == company_id)
@@ -553,7 +674,7 @@ class Product(LenientInitMixin, VersionedMixin, BaseModel):
         category_id: Optional[int] = None,
         only_active: bool = True,
         limit: int = 100,
-    ) -> List["Product"]:
+    ) -> list[Product]:
         query = session.query(cls)
         if company_id is not None:
             query = query.filter(cls.company_id == company_id)
@@ -563,39 +684,53 @@ class Product(LenientInitMixin, VersionedMixin, BaseModel):
             query = query.filter(cls.category_id == category_id)
         if q:
             like = f"%{(q or '').strip().lower()}%"
-            query = query.filter(or_(cls.name.ilike(like), cls.sku.ilike(like), cls.slug.ilike(like)))
+            query = query.filter(
+                or_(cls.name.ilike(like), cls.sku.ilike(like), cls.slug.ilike(like))
+            )
         return query.order_by(cls.updated_at.desc()).limit(limit).all()
 
     # CRUD
     @classmethod
-    def create(cls, session: Session, name: str, sku: str, slug: str, company_id: Optional[int] = None, **kwargs) -> "Product":
+    def create(
+        cls,
+        session: Session,
+        name: str,
+        sku: str,
+        slug: str,
+        company_id: Optional[int] = None,
+        **kwargs,
+    ) -> Product:
         obj = cls(name=name, sku=sku, slug=slug, company_id=company_id, **kwargs)
         session.add(obj)
         session.commit()
         return obj
 
     @classmethod
-    def get_by_sku(cls, session: Session, sku: str, company_id: Optional[int] = None) -> Optional["Product"]:
+    def get_by_sku(
+        cls, session: Session, sku: str, company_id: Optional[int] = None
+    ) -> Optional[Product]:
         query = session.query(cls).filter_by(sku=sku)
         if company_id is not None:
             query = query.filter_by(company_id=company_id)
         return query.first()
 
     @classmethod
-    def get_by_slug(cls, session: Session, slug: str, company_id: Optional[int] = None) -> Optional["Product"]:
+    def get_by_slug(
+        cls, session: Session, slug: str, company_id: Optional[int] = None
+    ) -> Optional[Product]:
         query = session.query(cls).filter_by(slug=slug)
         if company_id is not None:
             query = query.filter_by(company_id=company_id)
         return query.first()
 
     @classmethod
-    def get_all(cls, session: Session, company_id: Optional[int] = None) -> List["Product"]:
+    def get_all(cls, session: Session, company_id: Optional[int] = None) -> list[Product]:
         query = session.query(cls)
         if company_id is not None:
             query = query.filter_by(company_id=company_id)
         return query.all()
 
-    def update(self, session: Session, **fields) -> "Product":
+    def update(self, session: Session, **fields) -> Product:
         for k, v in fields.items():
             setattr(self, k, v)
         session.commit()
@@ -606,7 +741,13 @@ class Product(LenientInitMixin, VersionedMixin, BaseModel):
         session.commit()
 
     # Soft-delete / restore (cascade)
-    def soft_delete(self, session: Optional[Session] = None, *, cascade: bool = True, actor_id: Optional[int] = None) -> None:
+    def soft_delete(
+        self,
+        session: Optional[Session] = None,
+        *,
+        cascade: bool = True,
+        actor_id: Optional[int] = None,
+    ) -> None:
         self.deleted_at = datetime.utcnow()
         if cascade:
             now = self.deleted_at
@@ -619,7 +760,13 @@ class Product(LenientInitMixin, VersionedMixin, BaseModel):
         if session:
             session.flush()
 
-    def restore(self, session: Optional[Session] = None, *, cascade: bool = True, actor_id: Optional[int] = None) -> None:
+    def restore(
+        self,
+        session: Optional[Session] = None,
+        *,
+        cascade: bool = True,
+        actor_id: Optional[int] = None,
+    ) -> None:
         self.deleted_at = None
         if cascade:
             for v in self.variants:
@@ -632,8 +779,9 @@ class Product(LenientInitMixin, VersionedMixin, BaseModel):
             session.flush()
 
     # Optimistic update
-    def update_with_version(self, session: Session, expected_version: int, **fields) -> "Product":
+    def update_with_version(self, session: Session, expected_version: int, **fields) -> Product:
         from sqlalchemy import update as sa_update  # локально
+
         stmt = (
             sa_update(Product)
             .where(Product.id == self.id, Product.version == expected_version)
@@ -648,7 +796,12 @@ class Product(LenientInitMixin, VersionedMixin, BaseModel):
         return self
 
     # Meta / Audit
-    def set_metadata(self, title: Optional[str] = None, description: Optional[str] = None, keywords: Optional[str] = None) -> None:
+    def set_metadata(
+        self,
+        title: Optional[str] = None,
+        description: Optional[str] = None,
+        keywords: Optional[str] = None,
+    ) -> None:
         if title is not None:
             self.meta_title = title
         if description is not None:
@@ -656,8 +809,12 @@ class Product(LenientInitMixin, VersionedMixin, BaseModel):
         if keywords is not None:
             self.meta_keywords = keywords
 
-    def get_meta(self) -> Dict[str, Optional[str]]:
-        return {"meta_title": self.meta_title, "meta_description": self.meta_description, "meta_keywords": self.meta_keywords}
+    def get_meta(self) -> dict[str, Optional[str]]:
+        return {
+            "meta_title": self.meta_title,
+            "meta_description": self.meta_description,
+            "meta_keywords": self.meta_keywords,
+        }
 
     @property
     def current_price(self) -> Optional[Decimal]:
@@ -675,7 +832,9 @@ class Product(LenientInitMixin, VersionedMixin, BaseModel):
             return None
         return (self.current_price - self.cost_price) * Decimal("100") / self.current_price
 
-    def _dispatch_audit(self, session: Optional[Session], action: str, details: Dict[str, Any]) -> None:
+    def _dispatch_audit(
+        self, session: Optional[Session], action: str, details: dict[str, Any]
+    ) -> None:
         if Product.emit_audit_async_hook:
             Product.emit_audit_async_hook(session, self, action, details)
         else:
@@ -684,17 +843,32 @@ class Product(LenientInitMixin, VersionedMixin, BaseModel):
             except Exception:
                 from app.models.audit_log import AuditLog  # type: ignore
             self.audit_logs.append(
-                AuditLog(product_id=self.id, action=action, details=details or {}, created_at=datetime.utcnow())
+                AuditLog(
+                    product_id=self.id,
+                    action=action,
+                    details=details or {},
+                    created_at=datetime.utcnow(),
+                )
             )
 
-    def emit_audit(self, action: str, details: Dict[str, Any], actor_id: Optional[int] = None) -> None:
+    def emit_audit(
+        self, action: str, details: dict[str, Any], actor_id: Optional[int] = None
+    ) -> None:
         payload = dict(details or {})
         if actor_id is not None:
             payload["actor_id"] = actor_id
         self._dispatch_audit(None, action, payload)
 
     # Stock (агрегаты)
-    def _apply_stock(self, delta: int, movement_type: str, user_id: Optional[int] = None, note: Optional[str] = None, *, actor_id: Optional[int] = None) -> None:
+    def _apply_stock(
+        self,
+        delta: int,
+        movement_type: str,
+        user_id: Optional[int] = None,
+        note: Optional[str] = None,
+        *,
+        actor_id: Optional[int] = None,
+    ) -> None:
         new_q = int(self.stock_quantity or 0) + delta
         if new_q < 0:
             raise ValueError("Resulting stock cannot be negative")
@@ -702,29 +876,67 @@ class Product(LenientInitMixin, VersionedMixin, BaseModel):
         self.stock_quantity = new_q
         self.emit_audit(
             "stock_movement",
-            {"movement_type": movement_type, "delta": delta, "old_qty": old_q, "new_qty": new_q, "note": note, "user_id": user_id},
+            {
+                "movement_type": movement_type,
+                "delta": delta,
+                "old_qty": old_q,
+                "new_qty": new_q,
+                "note": note,
+                "user_id": user_id,
+            },
             actor_id=actor_id,
         )
 
-    def log_stock_movement(self, movement_type: str, qty: int, user_id: Optional[int] = None, note: Optional[str] = None, *, actor_id: Optional[int] = None) -> None:
+    def log_stock_movement(
+        self,
+        movement_type: str,
+        qty: int,
+        user_id: Optional[int] = None,
+        note: Optional[str] = None,
+        *,
+        actor_id: Optional[int] = None,
+    ) -> None:
         if movement_type not in ("in", "out", "adjustment", "return"):
             raise ValueError("Invalid movement_type")
         if qty <= 0:
             raise ValueError("qty must be positive")
-        delta = qty if movement_type in ("in", "return") else (-qty if movement_type == "out" else qty)
+        delta = (
+            qty if movement_type in ("in", "return") else (-qty if movement_type == "out" else qty)
+        )
         self._apply_stock(delta, movement_type, user_id, note, actor_id=actor_id)
 
-    def receive(self, qty: int, user_id: Optional[int] = None, note: Optional[str] = None, *, actor_id: Optional[int] = None) -> None:
+    def receive(
+        self,
+        qty: int,
+        user_id: Optional[int] = None,
+        note: Optional[str] = None,
+        *,
+        actor_id: Optional[int] = None,
+    ) -> None:
         if qty <= 0:
             raise ValueError("qty must be positive")
         self._apply_stock(qty, "in", user_id, note, actor_id=actor_id)
 
-    def ship(self, qty: int, user_id: Optional[int] = None, note: Optional[str] = None, *, actor_id: Optional[int] = None) -> None:
+    def ship(
+        self,
+        qty: int,
+        user_id: Optional[int] = None,
+        note: Optional[str] = None,
+        *,
+        actor_id: Optional[int] = None,
+    ) -> None:
         if qty <= 0:
             raise ValueError("qty must be positive")
         self._apply_stock(-qty, "out", user_id, note, actor_id=actor_id)
 
-    def adjust(self, qty_delta: int, user_id: Optional[int] = None, note: Optional[str] = None, *, actor_id: Optional[int] = None) -> None:
+    def adjust(
+        self,
+        qty_delta: int,
+        user_id: Optional[int] = None,
+        note: Optional[str] = None,
+        *,
+        actor_id: Optional[int] = None,
+    ) -> None:
         if qty_delta == 0:
             return
         self._apply_stock(qty_delta, "adjustment", user_id, note, actor_id=actor_id)
@@ -735,7 +947,9 @@ class Product(LenientInitMixin, VersionedMixin, BaseModel):
         if (self.stock_quantity - self.reserved_quantity) < qty:
             raise ValueError("insufficient free stock to reserve")
         self.reserved_quantity += qty
-        self.emit_audit("reserve_stock", {"qty": qty, "reserved": self.reserved_quantity}, actor_id=actor_id)
+        self.emit_audit(
+            "reserve_stock", {"qty": qty, "reserved": self.reserved_quantity}, actor_id=actor_id
+        )
 
     def release(self, qty: int, *, actor_id: Optional[int] = None) -> None:
         if qty <= 0:
@@ -743,7 +957,9 @@ class Product(LenientInitMixin, VersionedMixin, BaseModel):
         if self.reserved_quantity < qty:
             raise ValueError("cannot release more than reserved")
         self.reserved_quantity -= qty
-        self.emit_audit("release_stock", {"qty": qty, "reserved": self.reserved_quantity}, actor_id=actor_id)
+        self.emit_audit(
+            "release_stock", {"qty": qty, "reserved": self.reserved_quantity}, actor_id=actor_id
+        )
 
     @property
     def free_stock(self) -> int:
@@ -758,10 +974,10 @@ class Product(LenientInitMixin, VersionedMixin, BaseModel):
         return len(self.variants) > 0
 
     # Gallery (JSON-text)
-    def get_gallery_urls(self) -> List[str]:
+    def get_gallery_urls(self) -> list[str]:
         return _ensure_json_list_of_str(self.gallery_urls, allow_none=True)
 
-    def set_gallery_urls(self, urls: List[str]) -> None:
+    def set_gallery_urls(self, urls: list[str]) -> None:
         clean = _ensure_json_list_of_str(urls, allow_none=True)
         self.gallery_urls = json.dumps(clean)
 
@@ -774,19 +990,19 @@ class Product(LenientInitMixin, VersionedMixin, BaseModel):
         self.stock_quantity = total
         return total
 
-    def sync_stock_from_variants(self) -> Tuple[int, int]:
+    def sync_stock_from_variants(self) -> tuple[int, int]:
         total = sum(int(v.stock_quantity or 0) for v in self.variants if not v.deleted_at)
         self.stock_quantity = total
         self.reserved_quantity = min(self.reserved_quantity, self.stock_quantity)
         return total, self.reserved_quantity
 
-    def get_stocks(self) -> List["ProductStock"]:
+    def get_stocks(self) -> list[ProductStock]:
         return self.stocks
 
-    def get_audit_logs(self) -> List["AuditLog"]:
+    def get_audit_logs(self) -> list[AuditLog]:
         return self.audit_logs
 
-    def get_stock_movements(self, limit: int = 10) -> List["StockMovement"]:
+    def get_stock_movements(self, limit: int = 10) -> list[StockMovement]:
         return self.stock_movements[-limit:]
 
     def is_available(self) -> bool:
@@ -794,7 +1010,9 @@ class Product(LenientInitMixin, VersionedMixin, BaseModel):
 
     def is_preorder(self) -> bool:
         now_ts = int(datetime.utcnow().timestamp())
-        return bool(self.is_preorder_enabled) and (self.preorder_until is None or self.preorder_until > now_ts)
+        return bool(self.is_preorder_enabled) and (
+            self.preorder_until is None or self.preorder_until > now_ts
+        )
 
     def get_category_path(self) -> str:
         return self.category.get_full_path() if self.category else ""
@@ -846,7 +1064,9 @@ class Product(LenientInitMixin, VersionedMixin, BaseModel):
         self.preorder_note = None
         self.preorder_deposit = None
 
-    def auto_preorder_on_depletion(self, *, enable: bool = True, default_lead_days: int = 20) -> None:
+    def auto_preorder_on_depletion(
+        self, *, enable: bool = True, default_lead_days: int = 20
+    ) -> None:
         """
         Автоматический предзаказ при обнулении остатков.
         Флаг хранится в extra["preorder"]["auto_on_depletion"] и extra["preorder"]["default_lead_days"].
@@ -897,7 +1117,9 @@ class Product(LenientInitMixin, VersionedMixin, BaseModel):
         if update_timestamps:
             self.price_updated_at = datetime.utcnow()
 
-    def sync_prices_from_variants(self, session: Optional[Session] = None, *, commit: bool = False) -> Tuple[Optional[Decimal], Optional[Decimal]]:
+    def sync_prices_from_variants(
+        self, session: Optional[Session] = None, *, commit: bool = False
+    ) -> tuple[Optional[Decimal], Optional[Decimal]]:
         active = [v for v in self.variants if not v.deleted_at and v.is_active]
         prices = [v.effective_price for v in active if v.effective_price is not None]
         if not prices:
@@ -924,16 +1146,24 @@ class Product(LenientInitMixin, VersionedMixin, BaseModel):
             raise ValueError("Reserved quantity cannot be negative")
         if self.reserved_quantity > self.stock_quantity:
             raise ValueError("Reserved quantity cannot exceed stock")
-        if self.min_price is not None and self.max_price is not None and self.min_price > self.max_price:
+        if (
+            self.min_price is not None
+            and self.max_price is not None
+            and self.min_price > self.max_price
+        ):
             raise ValueError("min_price cannot be greater than max_price")
         if self.sale_price is not None and self.price is not None and self.sale_price > self.price:
             raise ValueError("sale_price cannot exceed price")
-        if self.preorder_deposit is not None and self.price is not None and self.preorder_deposit > self.price:
+        if (
+            self.preorder_deposit is not None
+            and self.price is not None
+            and self.preorder_deposit > self.price
+        ):
             raise ValueError("preorder_deposit cannot exceed price")
 
     # Import/export
     @classmethod
-    def import_from_dict(cls, session: Session, data: Dict[str, Any]) -> "Product":
+    def import_from_dict(cls, session: Session, data: dict[str, Any]) -> Product:
         from app.models.warehouse import ProductStock  # локально, чтобы не создавать циклы
 
         gallery = data.get("gallery_urls")
@@ -955,22 +1185,53 @@ class Product(LenientInitMixin, VersionedMixin, BaseModel):
         return obj
 
     @classmethod
-    def export_to_dict(cls, obj: "Product", json_safe: bool = False) -> Dict[str, Any]:
-        return obj.to_dict(with_variants=True, with_stocks=True, with_audit=True, json_safe=json_safe)
+    def export_to_dict(cls, obj: Product, json_safe: bool = False) -> dict[str, Any]:
+        return obj.to_dict(
+            with_variants=True, with_stocks=True, with_audit=True, json_safe=json_safe
+        )
 
     @classmethod
-    def export_csv(cls, products: Iterable["Product"]) -> str:
+    def export_csv(cls, products: Iterable[Product]) -> str:
         headers = [
-            "id", "company_id", "name", "slug", "sku", "price", "min_price", "max_price",
-            "cost_price", "sale_price", "stock_quantity", "reserved_quantity", "min_stock_level",
-            "max_stock_level", "is_active", "is_featured",
-            "is_preorder_enabled", "preorder_until", "preorder_deposit", "preorder_note",
-            "preorder_lead_days", "preorder_show_zero_stock",
-            "enable_price_dumping", "exclude_friendly_stores",
-            "repriced_at", "price_updated_at",
-            "category_id", "image_url", "image_public_id", "meta_title", "meta_description",
-            "meta_keywords", "kaspi_product_id", "kaspi_status", "deleted_at", "created_at", "updated_at",
-            "gallery_urls", "extra",
+            "id",
+            "company_id",
+            "name",
+            "slug",
+            "sku",
+            "price",
+            "min_price",
+            "max_price",
+            "cost_price",
+            "sale_price",
+            "stock_quantity",
+            "reserved_quantity",
+            "min_stock_level",
+            "max_stock_level",
+            "is_active",
+            "is_featured",
+            "is_preorder_enabled",
+            "preorder_until",
+            "preorder_deposit",
+            "preorder_note",
+            "preorder_lead_days",
+            "preorder_show_zero_stock",
+            "enable_price_dumping",
+            "exclude_friendly_stores",
+            "repriced_at",
+            "price_updated_at",
+            "category_id",
+            "image_url",
+            "image_public_id",
+            "meta_title",
+            "meta_description",
+            "meta_keywords",
+            "kaspi_product_id",
+            "kaspi_status",
+            "deleted_at",
+            "created_at",
+            "updated_at",
+            "gallery_urls",
+            "extra",
         ]
         sio = io.StringIO()
         w = csv.DictWriter(sio, fieldnames=headers)
@@ -995,7 +1256,9 @@ class Product(LenientInitMixin, VersionedMixin, BaseModel):
         existing = {
             r[0]
             for r in session.execute(
-                select(Product.slug).where(Product.company_id == company_id, Product.slug.in_(candidates))
+                select(Product.slug).where(
+                    Product.company_id == company_id, Product.slug.in_(candidates)
+                )
             ).all()
         }
         for cand in candidates:
@@ -1003,7 +1266,7 @@ class Product(LenientInitMixin, VersionedMixin, BaseModel):
                 return cand
         return f"{base}-{int(datetime.utcnow().timestamp())}"
 
-    def clone_shallow(self, session: Optional[Session] = None) -> "Product":
+    def clone_shallow(self, session: Optional[Session] = None) -> Product:
         copy_slug = self.slug or "product"
         if session is not None:
             copy_slug = self._make_unique_slug(session, copy_slug, self.company_id)
@@ -1048,7 +1311,7 @@ class Product(LenientInitMixin, VersionedMixin, BaseModel):
         )
         return cp
 
-    def clone_deep(self, session: Session) -> "Product":
+    def clone_deep(self, session: Session) -> Product:
         cp = self.clone_shallow(session)
         session.add(cp)
         session.flush()
@@ -1082,7 +1345,9 @@ class ProductVariant(LenientInitMixin, VersionedMixin, BaseModel):
     __allow_unmapped__ = True
 
     id: Mapped[int] = mapped_column(primary_key=True, index=True)
-    product_id: Mapped[int] = mapped_column(ForeignKey("products.id", ondelete="CASCADE"), nullable=False, index=True)
+    product_id: Mapped[int] = mapped_column(
+        ForeignKey("products.id", ondelete="CASCADE"), nullable=False, index=True
+    )
 
     sku: Mapped[Optional[str]] = mapped_column(String(100), nullable=True, index=True)
     name: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
@@ -1090,26 +1355,39 @@ class ProductVariant(LenientInitMixin, VersionedMixin, BaseModel):
     cost_price: Mapped[Optional[Decimal]] = mapped_column(Numeric(14, 2))
     sale_price: Mapped[Optional[Decimal]] = mapped_column(Numeric(14, 2))
 
-    stock_quantity: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default=text("0"))
+    stock_quantity: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default=text("0")
+    )
     attributes: Mapped[Optional[str]] = mapped_column(Text)
 
-    is_active: Mapped[bool] = mapped_column(Boolean, default=True, server_default=text("true"), index=True)
+    is_active: Mapped[bool] = mapped_column(
+        Boolean, default=True, server_default=text("true"), index=True
+    )
     image_url: Mapped[Optional[str]] = mapped_column(String(500))
 
     deleted_at: Mapped[Optional[datetime]] = mapped_column(DateTime, index=True)
 
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, server_default=func.now())
-    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, default=datetime.utcnow, server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, default=datetime.utcnow, onupdate=datetime.utcnow
+    )
 
-    product: Mapped["Product"] = relationship("Product", back_populates="variants")
+    product: Mapped[Product] = relationship("Product", back_populates="variants")
 
     __table_args__ = (
         UniqueConstraint("product_id", "sku", name="uq_variant_product_sku"),
         Index("ix_variant_product_active", "product_id", "is_active"),
         CheckConstraint("stock_quantity >= 0", name="ck_variant_stock_nonneg"),
         CheckConstraint("(price IS NULL OR price >= 0)", name="ck_variant_price_nonneg"),
-        CheckConstraint("(sale_price IS NULL OR sale_price >= 0)", name="ck_variant_sale_price_nonneg"),
-        CheckConstraint("(sale_price IS NULL OR price IS NULL OR sale_price <= price)", name="ck_variant_sale_le_price"),
+        CheckConstraint(
+            "(sale_price IS NULL OR sale_price >= 0)", name="ck_variant_sale_price_nonneg"
+        ),
+        CheckConstraint(
+            "(sale_price IS NULL OR price IS NULL OR sale_price <= price)",
+            name="ck_variant_sale_le_price",
+        ),
         {"extend_existing": True},
     )
 
@@ -1170,11 +1448,11 @@ class ProductVariant(LenientInitMixin, VersionedMixin, BaseModel):
         )
 
     # JSON attrs
-    def set_attributes(self, attributes: Dict[str, Any]) -> None:
+    def set_attributes(self, attributes: dict[str, Any]) -> None:
         clean = _ensure_json_dict(attributes, allow_none=True)
         self.attributes = json.dumps(clean)
 
-    def get_attributes(self) -> Dict[str, Any]:
+    def get_attributes(self) -> dict[str, Any]:
         if self.attributes:
             try:
                 return json.loads(self.attributes)
@@ -1197,7 +1475,7 @@ class ProductVariant(LenientInitMixin, VersionedMixin, BaseModel):
             raise ValueError("Cannot remove negative quantity")
         self.stock_quantity = max(0, self.stock_quantity - qty)
 
-    def get_product(self) -> "Product":
+    def get_product(self) -> Product:
         return self.product  # type: ignore[return-value]
 
     def validate(self) -> None:
@@ -1214,7 +1492,7 @@ class ProductVariant(LenientInitMixin, VersionedMixin, BaseModel):
         cls,
         session: Session,
         product_id: int,
-        rows: Iterable[Dict[str, Any]],
+        rows: Iterable[dict[str, Any]],
         by: str = "sku",
         *,
         atomic: bool = True,
@@ -1225,8 +1503,8 @@ class ProductVariant(LenientInitMixin, VersionedMixin, BaseModel):
         file_logging: bool = True,
     ):
         tx = session.begin() if atomic else None
-        items: List["ProductVariant"] = []
-        errors: List[Dict[str, Any]] = []
+        items: list[ProductVariant] = []
+        errors: list[dict[str, Any]] = []
         logger = _get_bulk_logger() if file_logging else None
 
         try:
@@ -1235,7 +1513,9 @@ class ProductVariant(LenientInitMixin, VersionedMixin, BaseModel):
                 for v in session.execute(
                     select(ProductVariant).where(
                         ProductVariant.product_id == product_id,
-                        or_(ProductVariant.deleted_at.is_(None), ProductVariant.deleted_at == None),  # noqa: E711
+                        or_(
+                            ProductVariant.deleted_at.is_(None), ProductVariant.deleted_at == None
+                        ),  # noqa: E711
                     )
                 ).scalars()
             }
@@ -1262,7 +1542,12 @@ class ProductVariant(LenientInitMixin, VersionedMixin, BaseModel):
                     err = {"row": raw, "error": str(e)}
                     errors.append(err)
                     if logger:
-                        logger.error("bulk_upsert error | product_id=%s | error=%s | row=%s", product_id, e, raw)
+                        logger.error(
+                            "bulk_upsert error | product_id=%s | error=%s | row=%s",
+                            product_id,
+                            e,
+                            raw,
+                        )
 
             session.flush()
             if atomic and tx:
@@ -1273,13 +1558,19 @@ class ProductVariant(LenientInitMixin, VersionedMixin, BaseModel):
             err = {"row": None, "error": f"transaction_failed: {e}"}
             errors.append(err)
             if logger:
-                logger.error("bulk_upsert transaction_failed | product_id=%s | error=%s", product_id, e)
+                logger.error(
+                    "bulk_upsert transaction_failed | product_id=%s | error=%s", product_id, e
+                )
 
         if audit_on_error and errors:
             product = session.get(Product, product_id)
             if product:
                 sample = errors[:audit_error_cap]
-                product.emit_audit("variant_bulk_upsert_errors", {"error_count": len(errors), "sample": sample, "by": by}, actor_id=actor_id)
+                product.emit_audit(
+                    "variant_bulk_upsert_errors",
+                    {"error_count": len(errors), "sample": sample, "by": by},
+                    actor_id=actor_id,
+                )
                 session.flush()
 
         if return_report:
@@ -1288,7 +1579,9 @@ class ProductVariant(LenientInitMixin, VersionedMixin, BaseModel):
 
     # Bulk soft-delete / restore
     @classmethod
-    def bulk_soft_delete(cls, session: Session, product_id: int, ids: Optional[List[int]] = None) -> int:
+    def bulk_soft_delete(
+        cls, session: Session, product_id: int, ids: Optional[list[int]] = None
+    ) -> int:
         now = datetime.utcnow()
         q = session.query(cls).filter(cls.product_id == product_id, cls.deleted_at.is_(None))
         if ids:
@@ -1301,7 +1594,9 @@ class ProductVariant(LenientInitMixin, VersionedMixin, BaseModel):
         return count
 
     @classmethod
-    def bulk_restore(cls, session: Session, product_id: int, ids: Optional[List[int]] = None) -> int:
+    def bulk_restore(
+        cls, session: Session, product_id: int, ids: Optional[list[int]] = None
+    ) -> int:
         q = session.query(cls).filter(cls.product_id == product_id, cls.deleted_at.is_not(None))
         if ids:
             q = q.filter(cls.id.in_(ids))
@@ -1314,7 +1609,7 @@ class ProductVariant(LenientInitMixin, VersionedMixin, BaseModel):
 
     # Import/export
     @classmethod
-    def import_from_dict(cls, session: Session, data: Dict[str, Any]) -> "ProductVariant":
+    def import_from_dict(cls, session: Session, data: dict[str, Any]) -> ProductVariant:
         attrs = data.get("attributes")
         if isinstance(attrs, dict):
             data["attributes"] = json.dumps(_ensure_json_dict(attrs))
@@ -1324,14 +1619,18 @@ class ProductVariant(LenientInitMixin, VersionedMixin, BaseModel):
         return obj
 
     @classmethod
-    def export_to_dict(cls, obj: "ProductVariant", json_safe: bool = False) -> Dict[str, Any]:
+    def export_to_dict(cls, obj: ProductVariant, json_safe: bool = False) -> dict[str, Any]:
         data = obj.to_dict(json_safe=json_safe)
         return data
 
     # Query helpers
     @classmethod
-    def get_by_sku(cls, session: Session, product_id: int, sku: str) -> Optional["ProductVariant"]:
-        return session.query(cls).filter(cls.product_id == product_id, cls.sku == (sku or "").strip().lower()).first()
+    def get_by_sku(cls, session: Session, product_id: int, sku: str) -> Optional[ProductVariant]:
+        return (
+            session.query(cls)
+            .filter(cls.product_id == product_id, cls.sku == (sku or "").strip().lower())
+            .first()
+        )
 
     @classmethod
     def search(
@@ -1341,7 +1640,7 @@ class ProductVariant(LenientInitMixin, VersionedMixin, BaseModel):
         q: Optional[str] = None,
         only_active: bool = True,
         limit: int = 100,
-    ) -> List["ProductVariant"]:
+    ) -> list[ProductVariant]:
         query = session.query(cls).filter(cls.product_id == product_id)
         if only_active:
             query = query.filter(and_(cls.is_active.is_(True), cls.deleted_at.is_(None)))
@@ -1357,8 +1656,8 @@ class ProductVariant(LenientInitMixin, VersionedMixin, BaseModel):
         *,
         product_id: int,
         sku: str,
-        defaults: Optional[Dict[str, Any]] = None,
-    ) -> Tuple["ProductVariant", bool]:
+        defaults: Optional[dict[str, Any]] = None,
+    ) -> tuple[ProductVariant, bool]:
         sku_norm = (sku or "").strip().lower()
         obj = cls.get_by_sku(session, product_id, sku_norm)
         if obj:
@@ -1378,7 +1677,7 @@ class ProductVariant(LenientInitMixin, VersionedMixin, BaseModel):
         self.product_id = new_product_id
         session.flush()
 
-    def to_dict(self, json_safe: bool = False) -> Dict[str, Any]:
+    def to_dict(self, json_safe: bool = False) -> dict[str, Any]:
         data = _row_to_dict(self, json_safe=json_safe)
         if data.get("attributes"):
             try:

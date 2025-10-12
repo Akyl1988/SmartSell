@@ -14,25 +14,13 @@ from __future__ import annotations
 import enum
 import json
 import logging
+from collections.abc import AsyncIterator, Iterable, Iterator, Sequence
 from contextlib import asynccontextmanager, contextmanager
 from datetime import UTC, datetime, timedelta
-from decimal import Decimal, ROUND_HALF_UP
-from typing import (
-    Any,
-    Dict,
-    Optional,
-    List,
-    Tuple,
-    TYPE_CHECKING,
-    Iterator,
-    AsyncIterator,
-    Sequence,
-    ClassVar,
-    Iterable,
-    Literal,
-)
-
+from decimal import ROUND_HALF_UP, Decimal
+from typing import TYPE_CHECKING, Any, ClassVar, Literal, Optional
 from zoneinfo import ZoneInfo
+
 from sqlalchemy import (
     Boolean,
     CheckConstraint,
@@ -46,20 +34,11 @@ from sqlalchemy import (
     UniqueConstraint,
     func,
     select,
-    and_,
-    or_,
 )
 from sqlalchemy.exc import DBAPIError, OperationalError
-from sqlalchemy.orm import (
-    Mapped,
-    mapped_column,
-    relationship,
-    validates,
-    Session,
-    backref,
-)
-from sqlalchemy.orm.exc import StaleDataError
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import Mapped, Session, backref, mapped_column, relationship, validates
+from sqlalchemy.orm.exc import StaleDataError
 
 from app.models.base import BaseModel, SoftDeleteMixin
 
@@ -182,11 +161,11 @@ class BillingPayment(BaseModel, SoftDeleteMixin):
     description: Mapped[Optional[str]] = mapped_column(Text)
     meta: Mapped[Optional[str]] = mapped_column(Text)
 
-    order: Mapped[Optional["Order"]] = relationship(
+    order: Mapped[Optional[Order]] = relationship(
         "Order", back_populates="payments", foreign_keys=lambda: [BillingPayment.order_id]
     )
     company: Mapped[Optional[Any]] = relationship("Company", back_populates="billing_payments")
-    subscription: Mapped[Optional["Subscription"]] = relationship(
+    subscription: Mapped[Optional[Subscription]] = relationship(
         "Subscription",
         back_populates="payments",
         foreign_keys=lambda: [BillingPayment.subscription_id],
@@ -270,7 +249,7 @@ class BillingPayment(BaseModel, SoftDeleteMixin):
     def link_receipt(self, url: Optional[str]) -> None:
         self.provider_receipt_url = (url or "").strip() or None
 
-    def attach_to_invoice(self, session: Session, invoice: "Invoice") -> None:
+    def attach_to_invoice(self, session: Session, invoice: Invoice) -> None:
         """Привязать к инвойсу и отметить его оплаченным."""
         if invoice.company_id != self.company_id:
             raise ValueError("Company mismatch: payment vs invoice")
@@ -287,10 +266,14 @@ class BillingPayment(BaseModel, SoftDeleteMixin):
             return
         if not self.order_id:
             return
-        order: Optional["Order"] = session.get(Order, self.order_id)
+        order: Optional[Order] = session.get(Order, self.order_id)
         if not order:
             return
-        if set_paid_on_capture and self.status == PaymentStatus.CAPTURED.value and not getattr(order, "is_closed", False):
+        if (
+            set_paid_on_capture
+            and self.status == PaymentStatus.CAPTURED.value
+            and not getattr(order, "is_closed", False)
+        ):
             try:
                 order.mark_paid(note="auto by BillingPayment.capture", session=session)
             except Exception:
@@ -311,8 +294,8 @@ class BillingPayment(BaseModel, SoftDeleteMixin):
         provider: Optional[str] = None,
         provider_payment_id: Optional[str] = None,
         description: Optional[str] = None,
-        meta: Optional[Dict[str, Any]] = None,
-    ) -> "BillingPayment":
+        meta: Optional[dict[str, Any]] = None,
+    ) -> BillingPayment:
         return cls(
             company_id=company_id,
             order_id=order_id,
@@ -379,9 +362,9 @@ class BillingPayment(BaseModel, SoftDeleteMixin):
         )
 
     @staticmethod
-    async def export_as_dicts_async(session: AsyncSession, **kwargs) -> List[Dict[str, Any]]:
+    async def export_as_dicts_async(session: AsyncSession, **kwargs) -> list[dict[str, Any]]:
         rows = (await session.execute(BillingPayment.export_query(**kwargs))).all()
-        out: List[Dict[str, Any]] = []
+        out: list[dict[str, Any]] = []
         for r in rows:
             (
                 pid,
@@ -426,7 +409,7 @@ class BillingPayment(BaseModel, SoftDeleteMixin):
         company_id: Optional[int] = None,
         date_from: Optional[datetime] = None,
         date_to: Optional[datetime] = None,
-    ) -> List[Dict[str, Any]]:
+    ) -> list[dict[str, Any]]:
         conds = []
         if company_id is not None:
             conds.append(BillingPayment.company_id == company_id)
@@ -451,7 +434,7 @@ class BillingPayment(BaseModel, SoftDeleteMixin):
         ]
 
     # -------- unified OperationRow (для ленты «Денежные операции») --------
-    def to_operation_row(self) -> Dict[str, Any]:
+    def to_operation_row(self) -> dict[str, Any]:
         """
         Единый формат для UI:
         {
@@ -499,7 +482,9 @@ class Subscription(BaseModel, SoftDeleteMixin):
     )
 
     plan: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
-    status: Mapped[str] = mapped_column(String(32), nullable=False, index=True)  # active|canceled|overdue|trial|paused
+    status: Mapped[str] = mapped_column(
+        String(32), nullable=False, index=True
+    )  # active|canceled|overdue|trial|paused
     billing_cycle: Mapped[str] = mapped_column(String(32), nullable=False, default="monthly")
 
     price: Mapped[Decimal] = mapped_column(Numeric(14, 2), nullable=False)
@@ -510,7 +495,9 @@ class Subscription(BaseModel, SoftDeleteMixin):
     canceled_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
 
     last_payment_id: Mapped[Optional[int]] = mapped_column(ForeignKey("billing_payments.id"))
-    next_billing_date: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), index=True)
+    next_billing_date: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), index=True
+    )
 
     auto_renew: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     trial_used: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
@@ -518,7 +505,7 @@ class Subscription(BaseModel, SoftDeleteMixin):
     grace_period_days: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
 
     company: Mapped[Optional[Any]] = relationship("Company", back_populates="subscriptions")
-    payments: Mapped[List[BillingPayment]] = relationship(
+    payments: Mapped[list[BillingPayment]] = relationship(
         "BillingPayment",
         back_populates="subscription",
         cascade="all, delete-orphan",
@@ -612,7 +599,7 @@ class Subscription(BaseModel, SoftDeleteMixin):
         status: str = "unpaid",
         notes: Optional[str] = None,
         internal_notes: Optional[str] = None,
-    ) -> Optional["Invoice"]:
+    ) -> Optional[Invoice]:
         now = utc_now()
         if not self.auto_renew:
             return None
@@ -658,7 +645,7 @@ class Subscription(BaseModel, SoftDeleteMixin):
         status: str = "unpaid",
         notes: Optional[str] = None,
         internal_notes: Optional[str] = None,
-    ) -> Optional["Invoice"]:
+    ) -> Optional[Invoice]:
         now = utc_now()
         if not self.auto_renew:
             return None
@@ -696,7 +683,7 @@ class Subscription(BaseModel, SoftDeleteMixin):
         await session.flush()
         return inv
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         return {
             "id": self.id,
             "company_id": self.company_id,
@@ -756,7 +743,7 @@ class Invoice(BaseModel, SoftDeleteMixin):
     payment_id: Mapped[Optional[int]] = mapped_column(ForeignKey("billing_payments.id"))
 
     company: Mapped[Optional[Any]] = relationship("Company", backref="invoices")
-    order: Mapped[Optional["Order"]] = relationship(
+    order: Mapped[Optional[Order]] = relationship(
         "Order", backref="invoices", foreign_keys=lambda: [Invoice.order_id]
     )
     payment: Mapped[Optional[BillingPayment]] = relationship("BillingPayment")
@@ -873,7 +860,7 @@ class Invoice(BaseModel, SoftDeleteMixin):
         self.pdf_url = (url or "").strip() or None
         self.pdf_path = (path or "").strip() or None
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         return {
             "id": self.id,
             "order_id": self.order_id,
@@ -912,7 +899,7 @@ class Invoice(BaseModel, SoftDeleteMixin):
         notes: Optional[str] = None,
         internal_notes: Optional[str] = None,
         number: Optional[str] = None,
-    ) -> "Invoice":
+    ) -> Invoice:
         sub = (
             _to_decimal(subtotal)
             if subtotal is not None
@@ -936,7 +923,7 @@ class Invoice(BaseModel, SoftDeleteMixin):
         )
 
     # unified OperationRow
-    def to_operation_row(self) -> Dict[str, Any]:
+    def to_operation_row(self) -> dict[str, Any]:
         return {
             "kind": "invoice",
             "id": self.id,
@@ -945,7 +932,9 @@ class Invoice(BaseModel, SoftDeleteMixin):
             "currency": _norm_currency_code(self.currency, default="KZT"),
             "status": self.status,
             "title": f"Счёт {self.invoice_number or ''}".strip(),
-            "created_at": _safe_iso(self.issue_date or self.created_at if hasattr(self, "created_at") else None),
+            "created_at": _safe_iso(
+                self.issue_date or self.created_at if hasattr(self, "created_at") else None
+            ),
             "completed_at": _safe_iso(self.paid_at or self.due_date),
             "links": {"pdf": self.pdf_url} if self.pdf_url else {},
             "is_success": self.status == "paid",
@@ -995,7 +984,7 @@ class BillingInvoice(BaseModel, SoftDeleteMixin):
         DateTime(timezone=True), default=utc_now, onupdate=utc_now, nullable=False, index=True
     )
 
-    order: Mapped[Optional["Order"]] = relationship(
+    order: Mapped[Optional[Order]] = relationship(
         "Order", back_populates="invoice", foreign_keys=lambda: [BillingInvoice.order_id]
     )
 
@@ -1023,7 +1012,9 @@ class BillingInvoice(BaseModel, SoftDeleteMixin):
         remain = total - paid
         return max(remain, Decimal("0.00"))
 
-    def apply_payment(self, amount: Decimal | int | float, *, when: Optional[datetime] = None) -> None:
+    def apply_payment(
+        self, amount: Decimal | int | float, *, when: Optional[datetime] = None
+    ) -> None:
         amt = _to_decimal(amount)
         if amt <= 0:
             return
@@ -1044,7 +1035,7 @@ class BillingInvoice(BaseModel, SoftDeleteMixin):
     def is_unsettled(self) -> bool:
         return self.status not in {"paid", "canceled"} and self.remaining_due() > Decimal("0")
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         return {
             "id": self.id,
             "order_id": self.order_id,
@@ -1067,7 +1058,7 @@ class BillingInvoice(BaseModel, SoftDeleteMixin):
         }
 
     # unified OperationRow
-    def to_operation_row(self) -> Dict[str, Any]:
+    def to_operation_row(self) -> dict[str, Any]:
         return {
             "kind": "billing_invoice",
             "id": self.id,
@@ -1118,7 +1109,9 @@ class WalletBalance(BaseModel, SoftDeleteMixin):
 
     __table_args__ = (
         CheckConstraint("balance >= 0", name="ck_wallet_balance_nonneg"),
-        CheckConstraint("(credit_limit IS NULL OR credit_limit >= 0)", name="ck_wallet_credit_nonneg"),
+        CheckConstraint(
+            "(credit_limit IS NULL OR credit_limit >= 0)", name="ck_wallet_credit_nonneg"
+        ),
         CheckConstraint(
             "(auto_topup_threshold IS NULL OR auto_topup_threshold >= 0)",
             name="ck_wallet_autotopup_threshold_nonneg",
@@ -1139,8 +1132,12 @@ class WalletBalance(BaseModel, SoftDeleteMixin):
 
     # ----------------- пессимистические блокировки -----------------
     @contextmanager
-    def lock_for_update(self, session: Session, *, nowait: bool = False, skip_locked: bool = False) -> Iterator[None]:
-        stmt = select(WalletBalance).where(WalletBalance.id == self.id).with_for_update(nowait=nowait)
+    def lock_for_update(
+        self, session: Session, *, nowait: bool = False, skip_locked: bool = False
+    ) -> Iterator[None]:
+        stmt = (
+            select(WalletBalance).where(WalletBalance.id == self.id).with_for_update(nowait=nowait)
+        )
         try:
             if skip_locked and getattr(session.bind.dialect, "name", "") == "postgresql":
                 stmt = stmt.with_for_update(skip_locked=True)
@@ -1154,8 +1151,12 @@ class WalletBalance(BaseModel, SoftDeleteMixin):
             ...
 
     @asynccontextmanager
-    async def lock_for_update_async(self, session: AsyncSession, *, nowait: bool = False, skip_locked: bool = False) -> AsyncIterator[None]:
-        stmt = select(WalletBalance).where(WalletBalance.id == self.id).with_for_update(nowait=nowait)
+    async def lock_for_update_async(
+        self, session: AsyncSession, *, nowait: bool = False, skip_locked: bool = False
+    ) -> AsyncIterator[None]:
+        stmt = (
+            select(WalletBalance).where(WalletBalance.id == self.id).with_for_update(nowait=nowait)
+        )
         try:
             if skip_locked and getattr(session.bind.dialect, "name", "") == "postgresql":
                 stmt = stmt.with_for_update(skip_locked=True)
@@ -1214,11 +1215,7 @@ class WalletBalance(BaseModel, SoftDeleteMixin):
         )
 
     async def _auto_topup_deficit_via_gateway_async(
-        self,
-        *,
-        session: AsyncSession,
-        deficit: Decimal,
-        idempotency_key: Optional[str] = None
+        self, *, session: AsyncSession, deficit: Decimal, idempotency_key: Optional[str] = None
     ) -> None:
         if deficit <= 0:
             return
@@ -1260,7 +1257,7 @@ class WalletBalance(BaseModel, SoftDeleteMixin):
         description: str = "credit",
         reference_type: Optional[str] = None,
         reference_id: Optional[int] = None,
-    ) -> "WalletTransaction":
+    ) -> WalletTransaction:
         if amount <= 0:
             raise ValueError("Credit amount must be positive")
         before = self.balance or Decimal("0")
@@ -1289,7 +1286,7 @@ class WalletBalance(BaseModel, SoftDeleteMixin):
         description: str = "credit",
         reference_type: Optional[str] = None,
         reference_id: Optional[int] = None,
-    ) -> "WalletTransaction":
+    ) -> WalletTransaction:
         amt = _to_decimal(amount)
         if amt <= 0:
             raise ValueError("Credit amount must be positive")
@@ -1319,7 +1316,7 @@ class WalletBalance(BaseModel, SoftDeleteMixin):
         reference_type: Optional[str] = None,
         reference_id: Optional[int] = None,
         idempotency_key: Optional[str] = None,
-    ) -> "WalletTransaction":
+    ) -> WalletTransaction:
         if amount <= 0:
             raise ValueError("Debit amount must be positive")
         before = self.balance or Decimal("0")
@@ -1328,7 +1325,9 @@ class WalletBalance(BaseModel, SoftDeleteMixin):
             deficit = amt - before
             if session is None:
                 raise ValueError("Insufficient wallet funds")
-            self._auto_topup_deficit_via_gateway(session=session, deficit=deficit, idempotency_key=idempotency_key)
+            self._auto_topup_deficit_via_gateway(
+                session=session, deficit=deficit, idempotency_key=idempotency_key
+            )
             before = self.balance or Decimal("0")
         if before < amt:
             raise ValueError("Insufficient wallet balance")
@@ -1358,7 +1357,7 @@ class WalletBalance(BaseModel, SoftDeleteMixin):
         reference_type: Optional[str] = None,
         reference_id: Optional[int] = None,
         idempotency_key: Optional[str] = None,
-    ) -> "WalletTransaction":
+    ) -> WalletTransaction:
         amt = _to_decimal(amount)
         if amt <= 0:
             raise ValueError("Debit amount must be positive")
@@ -1399,7 +1398,7 @@ class WalletBalance(BaseModel, SoftDeleteMixin):
         nowait: bool = False,
         skip_locked: bool = False,
         idempotency_key: Optional[str] = None,
-    ) -> "WalletTransaction":
+    ) -> WalletTransaction:
         amt = _to_decimal(amount)
         attempt = 0
         last_exc: Optional[Exception] = None
@@ -1453,14 +1452,16 @@ class WalletBalance(BaseModel, SoftDeleteMixin):
         nowait: bool = False,
         skip_locked: bool = False,
         idempotency_key: Optional[str] = None,
-    ) -> "WalletTransaction":
+    ) -> WalletTransaction:
         amt = _to_decimal(amount)
         attempt = 0
         last_exc: Optional[Exception] = None
         while attempt <= retries:
             attempt += 1
             try:
-                async with self.lock_for_update_async(session, nowait=nowait, skip_locked=skip_locked):
+                async with self.lock_for_update_async(
+                    session, nowait=nowait, skip_locked=skip_locked
+                ):
                     before = self.balance or Decimal("0")
                     if before < amt:
                         deficit = amt - before
@@ -1501,7 +1502,7 @@ class WalletBalance(BaseModel, SoftDeleteMixin):
         description: str = "auto_topup",
         reference_type: Optional[str] = "autotopup",
         reference_id: Optional[int] = None,
-    ) -> Optional["WalletTransaction"]:
+    ) -> Optional[WalletTransaction]:
         if not self.auto_topup_enabled:
             return None
         if self.auto_topup_threshold is None or self.auto_topup_amount is None:
@@ -1524,7 +1525,11 @@ class WalletBalance(BaseModel, SoftDeleteMixin):
         return None
 
     def maybe_notify_low_balance(self, *, threshold: Optional[Decimal] = None) -> bool:
-        thr = _to_decimal(threshold) if threshold is not None else (self.auto_topup_threshold or Decimal("0"))
+        thr = (
+            _to_decimal(threshold)
+            if threshold is not None
+            else (self.auto_topup_threshold or Decimal("0"))
+        )
         if (self.balance or Decimal("0")) <= thr:
             if self.on_low_balance:
                 try:
@@ -1541,7 +1546,7 @@ class WalletBalance(BaseModel, SoftDeleteMixin):
         session: Session,
         idempotency_key: Optional[str] = None,
         description: str = "gateway_charge",
-    ) -> "WalletTransaction":
+    ) -> WalletTransaction:
         amt = _to_decimal(amount)
         if amt <= 0:
             raise ValueError("Amount must be positive")
@@ -1572,7 +1577,9 @@ class WalletBalance(BaseModel, SoftDeleteMixin):
                 reference_type="gateway_charge",
                 reference_id=None,
             )
-        return self.debit_safe(session, amt, description=description, reference_type="local", reference_id=None)
+        return self.debit_safe(
+            session, amt, description=description, reference_type="local", reference_id=None
+        )
 
     def topup_via_gateway(
         self,
@@ -1581,7 +1588,7 @@ class WalletBalance(BaseModel, SoftDeleteMixin):
         session: Session,
         idempotency_key: Optional[str] = None,
         description: str = "gateway_topup",
-    ) -> "WalletTransaction":
+    ) -> WalletTransaction:
         amt = _to_decimal(amount)
         if amt <= 0:
             raise ValueError("Amount must be positive")
@@ -1605,18 +1612,28 @@ class WalletBalance(BaseModel, SoftDeleteMixin):
                     except Exception:
                         pass
                 raise ValueError("External gateway topup failed")
-            return self.credit(amt, session=session, description=description, reference_type="gateway_topup", reference_id=None)
-        return self.credit(amt, session=session, description=description, reference_type="local", reference_id=None)
+            return self.credit(
+                amt,
+                session=session,
+                description=description,
+                reference_type="gateway_topup",
+                reference_id=None,
+            )
+        return self.credit(
+            amt, session=session, description=description, reference_type="local", reference_id=None
+        )
 
     def _ensure_currency_compat(self, *, expected_currency: Optional[str]) -> None:
         if expected_currency and (self.currency or "").upper() != (expected_currency or "").upper():
-            raise ValueError(f"Currency mismatch: wallet={self.currency} expected={expected_currency}")
+            raise ValueError(
+                f"Currency mismatch: wallet={self.currency} expected={expected_currency}"
+            )
 
     def settle_amount_with_wallet(
         self,
         session: Session,
         *,
-        company: "Company",
+        company: Company,
         amount: Decimal | int | float,
         currency: str = "KZT",
         leave_min_positive: bool = True,
@@ -1629,18 +1646,20 @@ class WalletBalance(BaseModel, SoftDeleteMixin):
         invoice_internal_notes: Optional[str] = None,
         use_locking: bool = True,
         retries: int = 3,
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         req = _to_decimal(amount)
         if req <= 0:
             raise ValueError("Amount must be positive")
 
         self._ensure_currency_compat(expected_currency=currency)
 
-        def _compute_spend(current: Decimal) -> Tuple[Decimal, Decimal]:
+        def _compute_spend(current: Decimal) -> tuple[Decimal, Decimal]:
             min_keep = _to_decimal(min_positive_balance) if leave_min_positive else Decimal("0")
             if allow_zero_balance and min_keep > 0:
                 min_keep = min(min_keep, Decimal("0.00"))
-            effective_min = Decimal("0.00") if allow_zero_balance else max(min_keep, Decimal("0.01"))
+            effective_min = (
+                Decimal("0.00") if allow_zero_balance else max(min_keep, Decimal("0.01"))
+            )
             max_spend_local = max(Decimal("0"), current - effective_min)
             wallet_spend_local = min(req, max_spend_local)
             missing_local = req - wallet_spend_local
@@ -1658,10 +1677,14 @@ class WalletBalance(BaseModel, SoftDeleteMixin):
                         inv: Optional[Invoice] = None
 
                         if wallet_spend > 0:
-                            self.debit_safe(session, wallet_spend, description="settle", reference_type="settle")
+                            self.debit_safe(
+                                session, wallet_spend, description="settle", reference_type="settle"
+                            )
 
                         if missing > 0:
-                            number = Invoice.generate_number(session, prefix=invoice_prefix, company_id=company.id)
+                            number = Invoice.generate_number(
+                                session, prefix=invoice_prefix, company_id=company.id
+                            )
                             inv = Invoice(
                                 order_id=None,
                                 company_id=company.id,
@@ -1680,21 +1703,46 @@ class WalletBalance(BaseModel, SoftDeleteMixin):
                             )
                             session.add(inv)
                             session.flush()
-                            _emit_audit_safe(session=session, company_id=company.id, action="wallet.settle_invoice_created", meta={"missing": str(missing), "invoice_number": inv.invoice_number})
+                            _emit_audit_safe(
+                                session=session,
+                                company_id=company.id,
+                                action="wallet.settle_invoice_created",
+                                meta={
+                                    "missing": str(missing),
+                                    "invoice_number": inv.invoice_number,
+                                },
+                            )
                         else:
-                            _emit_audit_safe(session=session, company_id=company.id, action="wallet.settle_covered_by_wallet", meta={"spent": str(wallet_spend)})
+                            _emit_audit_safe(
+                                session=session,
+                                company_id=company.id,
+                                action="wallet.settle_covered_by_wallet",
+                                meta={"spent": str(wallet_spend)},
+                            )
 
-                        return {"requested": req, "wallet_spent": wallet_spend, "missing": missing, "invoice": inv}
+                        return {
+                            "requested": req,
+                            "wallet_spent": wallet_spend,
+                            "missing": missing,
+                            "invoice": inv,
+                        }
                 else:
                     current = self.balance or Decimal("0")
                     wallet_spend, missing = _compute_spend(current)
                     inv: Optional[Invoice] = None
 
                     if wallet_spend > 0:
-                        self.debit(wallet_spend, session=session, description="settle", reference_type="settle")
+                        self.debit(
+                            wallet_spend,
+                            session=session,
+                            description="settle",
+                            reference_type="settle",
+                        )
 
                     if missing > 0:
-                        number = Invoice.generate_number(session, prefix=invoice_prefix, company_id=company.id)
+                        number = Invoice.generate_number(
+                            session, prefix=invoice_prefix, company_id=company.id
+                        )
                         inv = Invoice(
                             order_id=None,
                             company_id=company.id,
@@ -1713,15 +1761,32 @@ class WalletBalance(BaseModel, SoftDeleteMixin):
                         )
                         session.add(inv)
                         session.flush()
-                        _emit_audit_safe(session=session, company_id=company.id, action="wallet.settle_invoice_created", meta={"missing": str(missing), "invoice_number": inv.invoice_number})
+                        _emit_audit_safe(
+                            session=session,
+                            company_id=company.id,
+                            action="wallet.settle_invoice_created",
+                            meta={"missing": str(missing), "invoice_number": inv.invoice_number},
+                        )
                     else:
-                        _emit_audit_safe(session=session, company_id=company.id, action="wallet.settle_covered_by_wallet", meta={"spent": str(wallet_spend)})
+                        _emit_audit_safe(
+                            session=session,
+                            company_id=company.id,
+                            action="wallet.settle_covered_by_wallet",
+                            meta={"spent": str(wallet_spend)},
+                        )
 
-                    return {"requested": req, "wallet_spent": wallet_spend, "missing": missing, "invoice": inv}
+                    return {
+                        "requested": req,
+                        "wallet_spent": wallet_spend,
+                        "missing": missing,
+                        "invoice": inv,
+                    }
             except Exception as e:
                 if use_locking and self._should_retry(e) and attempt < retries:
                     attempt += 1
-                    log.warning("settle_amount_with_wallet retry %s/%s due to %s", attempt, retries, repr(e))
+                    log.warning(
+                        "settle_amount_with_wallet retry %s/%s due to %s", attempt, retries, repr(e)
+                    )
                     last_exc = e
                     continue
                 raise
@@ -1730,7 +1795,7 @@ class WalletBalance(BaseModel, SoftDeleteMixin):
         self,
         session: AsyncSession,
         *,
-        company: "Company",
+        company: Company,
         amount: Decimal | int | float,
         currency: str = "KZT",
         leave_min_positive: bool = True,
@@ -1743,17 +1808,19 @@ class WalletBalance(BaseModel, SoftDeleteMixin):
         invoice_internal_notes: Optional[str] = None,
         use_locking: bool = True,
         retries: int = 3,
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         req = _to_decimal(amount)
         if req <= 0:
             raise ValueError("Amount must be positive")
         self._ensure_currency_compat(expected_currency=currency)
 
-        def _compute_spend(current: Decimal) -> Tuple[Decimal, Decimal]:
+        def _compute_spend(current: Decimal) -> tuple[Decimal, Decimal]:
             min_keep = _to_decimal(min_positive_balance) if leave_min_positive else Decimal("0")
             if allow_zero_balance and min_keep > 0:
                 min_keep = min(min_keep, Decimal("0.00"))
-            effective_min = Decimal("0.00") if allow_zero_balance else max(min_keep, Decimal("0.01"))
+            effective_min = (
+                Decimal("0.00") if allow_zero_balance else max(min_keep, Decimal("0.01"))
+            )
             max_spend_local = max(Decimal("0"), current - effective_min)
             wallet_spend_local = min(req, max_spend_local)
             missing_local = req - wallet_spend_local
@@ -1771,10 +1838,14 @@ class WalletBalance(BaseModel, SoftDeleteMixin):
                         inv: Optional[Invoice] = None
 
                         if wallet_spend > 0:
-                            await self.debit_safe_async(session, wallet_spend, description="settle", reference_type="settle")
+                            await self.debit_safe_async(
+                                session, wallet_spend, description="settle", reference_type="settle"
+                            )
 
                         if missing > 0:
-                            number = await Invoice.generate_number_async(session, prefix=invoice_prefix, company_id=company.id)
+                            number = await Invoice.generate_number_async(
+                                session, prefix=invoice_prefix, company_id=company.id
+                            )
                             inv = Invoice(
                                 order_id=None,
                                 company_id=company.id,
@@ -1793,11 +1864,29 @@ class WalletBalance(BaseModel, SoftDeleteMixin):
                             )
                             session.add(inv)
                             await session.flush()
-                            await _emit_audit_safe_async(session=session, company_id=company.id, action="wallet.settle_invoice_created", meta={"missing": str(missing), "invoice_number": inv.invoice_number})
+                            await _emit_audit_safe_async(
+                                session=session,
+                                company_id=company.id,
+                                action="wallet.settle_invoice_created",
+                                meta={
+                                    "missing": str(missing),
+                                    "invoice_number": inv.invoice_number,
+                                },
+                            )
                         else:
-                            await _emit_audit_safe_async(session=session, company_id=company.id, action="wallet.settle_covered_by_wallet", meta={"spent": str(wallet_spend)})
+                            await _emit_audit_safe_async(
+                                session=session,
+                                company_id=company.id,
+                                action="wallet.settle_covered_by_wallet",
+                                meta={"spent": str(wallet_spend)},
+                            )
 
-                        return {"requested": req, "wallet_spent": wallet_spend, "missing": missing, "invoice": inv}
+                        return {
+                            "requested": req,
+                            "wallet_spent": wallet_spend,
+                            "missing": missing,
+                            "invoice": inv,
+                        }
                 else:
                     current = self.balance or Decimal("0")
                     wallet_spend, missing = _compute_spend(current)
@@ -1823,7 +1912,9 @@ class WalletBalance(BaseModel, SoftDeleteMixin):
                         await session.flush()
 
                     if missing > 0:
-                        number = await Invoice.generate_number_async(session, prefix=invoice_prefix, company_id=company.id)
+                        number = await Invoice.generate_number_async(
+                            session, prefix=invoice_prefix, company_id=company.id
+                        )
                         inv = Invoice(
                             order_id=None,
                             company_id=company.id,
@@ -1842,20 +1933,40 @@ class WalletBalance(BaseModel, SoftDeleteMixin):
                         )
                         session.add(inv)
                         await session.flush()
-                        await _emit_audit_safe_async(session=session, company_id=company.id, action="wallet.settle_invoice_created", meta={"missing": str(missing), "invoice_number": inv.invoice_number})
+                        await _emit_audit_safe_async(
+                            session=session,
+                            company_id=company.id,
+                            action="wallet.settle_invoice_created",
+                            meta={"missing": str(missing), "invoice_number": inv.invoice_number},
+                        )
                     else:
-                        await _emit_audit_safe_async(session=session, company_id=company.id, action="wallet.settle_covered_by_wallet", meta={"spent": str(wallet_spend)})
+                        await _emit_audit_safe_async(
+                            session=session,
+                            company_id=company.id,
+                            action="wallet.settle_covered_by_wallet",
+                            meta={"spent": str(wallet_spend)},
+                        )
 
-                    return {"requested": req, "wallet_spent": wallet_spend, "missing": missing, "invoice": inv}
+                    return {
+                        "requested": req,
+                        "wallet_spent": wallet_spend,
+                        "missing": missing,
+                        "invoice": inv,
+                    }
             except Exception as e:
                 if use_locking and self._should_retry(e) and attempt < retries:
                     attempt += 1
-                    log.warning("settle_amount_with_wallet_async retry %s/%s due to %s", attempt, retries, repr(e))
+                    log.warning(
+                        "settle_amount_with_wallet_async retry %s/%s due to %s",
+                        attempt,
+                        retries,
+                        repr(e),
+                    )
                     last_exc = e
                     continue
                 raise
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         return {
             "id": self.id,
             "company_id": self.company_id,
@@ -1863,8 +1974,12 @@ class WalletBalance(BaseModel, SoftDeleteMixin):
             "currency": self.currency,
             "credit_limit": str(self.credit_limit) if self.credit_limit is not None else None,
             "auto_topup_enabled": self.auto_topup_enabled,
-            "auto_topup_threshold": str(self.auto_topup_threshold) if self.auto_topup_threshold is not None else None,
-            "auto_topup_amount": str(self.auto_topup_amount) if self.auto_topup_amount is not None else None,
+            "auto_topup_threshold": str(self.auto_topup_threshold)
+            if self.auto_topup_threshold is not None
+            else None,
+            "auto_topup_amount": str(self.auto_topup_amount)
+            if self.auto_topup_amount is not None
+            else None,
             "version_id": self.version_id,
         }
 
@@ -1879,15 +1994,19 @@ class WalletBalance(BaseModel, SoftDeleteMixin):
         auto_topup_enabled: bool = False,
         auto_topup_threshold: Decimal | int | float | None = None,
         auto_topup_amount: Decimal | int | float | None = None,
-    ) -> "WalletBalance":
+    ) -> WalletBalance:
         return cls(
             company_id=company_id,
             balance=_to_decimal(balance),
             currency=_norm_currency_code(currency, default="KZT"),
             credit_limit=_to_decimal(credit_limit),
             auto_topup_enabled=auto_topup_enabled,
-            auto_topup_threshold=(None if auto_topup_threshold is None else _to_decimal(auto_topup_threshold)),
-            auto_topup_amount=(None if auto_topup_amount is None else _to_decimal(auto_topup_amount)),
+            auto_topup_threshold=(
+                None if auto_topup_threshold is None else _to_decimal(auto_topup_threshold)
+            ),
+            auto_topup_amount=(
+                None if auto_topup_amount is None else _to_decimal(auto_topup_amount)
+            ),
         )
 
     @classmethod
@@ -1898,13 +2017,19 @@ class WalletBalance(BaseModel, SoftDeleteMixin):
         *,
         create_if_missing: bool = False,
         currency: str = "KZT",
-    ) -> "WalletBalance":
-        wb = session.execute(select(cls).where(cls.company_id == company_id).limit(1)).scalar_one_or_none()
+    ) -> WalletBalance:
+        wb = session.execute(
+            select(cls).where(cls.company_id == company_id).limit(1)
+        ).scalar_one_or_none()
         if wb:
             return wb
         if not create_if_missing:
             raise LookupError("WalletBalance not found for company")
-        wb = cls(company_id=company_id, balance=Decimal("0"), currency=_norm_currency_code(currency, default="KZT"))
+        wb = cls(
+            company_id=company_id,
+            balance=Decimal("0"),
+            currency=_norm_currency_code(currency, default="KZT"),
+        )
         session.add(wb)
         session.flush()
         return wb
@@ -1917,14 +2042,18 @@ class WalletBalance(BaseModel, SoftDeleteMixin):
         *,
         create_if_missing: bool = False,
         currency: str = "KZT",
-    ) -> "WalletBalance":
+    ) -> WalletBalance:
         row = await session.execute(select(cls).where(cls.company_id == company_id).limit(1))
         wb = row.scalar_one_or_none()
         if wb:
             return wb
         if not create_if_missing:
             raise LookupError("WalletBalance not found for company")
-        wb = cls(company_id=company_id, balance=Decimal("0"), currency=_norm_currency_code(currency, default="KZT"))
+        wb = cls(
+            company_id=company_id,
+            balance=Decimal("0"),
+            currency=_norm_currency_code(currency, default="KZT"),
+        )
         session.add(wb)
         await session.flush()
         return wb
@@ -1943,7 +2072,9 @@ class WalletTransaction(BaseModel, SoftDeleteMixin):
         ForeignKey("wallet_balances.id", ondelete="CASCADE"), nullable=False, index=True
     )
 
-    transaction_type: Mapped[str] = mapped_column(String(32), nullable=False, index=True)  # credit|debit|adjustment
+    transaction_type: Mapped[str] = mapped_column(
+        String(32), nullable=False, index=True
+    )  # credit|debit|adjustment
     amount: Mapped[Decimal] = mapped_column(Numeric(14, 2), nullable=False)
 
     balance_before: Mapped[Decimal] = mapped_column(Numeric(14, 2), nullable=False)
@@ -1955,7 +2086,9 @@ class WalletTransaction(BaseModel, SoftDeleteMixin):
     description: Mapped[str] = mapped_column(String(255), nullable=False, default="")
     extra_data: Mapped[Optional[str]] = mapped_column(Text)
 
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, nullable=False, index=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utc_now, nullable=False, index=True
+    )
 
     wallet: Mapped[Any] = relationship("WalletBalance", back_populates="transactions")
 
@@ -1975,7 +2108,7 @@ class WalletTransaction(BaseModel, SoftDeleteMixin):
             raise ValueError(f"Invalid transaction_type: {vv}")
         return vv
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         return {
             "id": self.id,
             "wallet_id": self.wallet_id,
@@ -1990,7 +2123,7 @@ class WalletTransaction(BaseModel, SoftDeleteMixin):
         }
 
     # unified OperationRow
-    def to_operation_row(self) -> Dict[str, Any]:
+    def to_operation_row(self) -> dict[str, Any]:
         direction = "in" if self.transaction_type == "credit" else "out"
         return {
             "kind": "wallet_txn",
@@ -2008,21 +2141,29 @@ class WalletTransaction(BaseModel, SoftDeleteMixin):
 
 
 # ---------------- audit helpers ----------------
-def _emit_audit_safe(*, session: Session, company_id: int, action: str, meta: Optional[Dict[str, Any]] = None) -> None:
+def _emit_audit_safe(
+    *, session: Session, company_id: int, action: str, meta: Optional[dict[str, Any]] = None
+) -> None:
     try:
         from app.models.audit import ExternalAuditEvent  # type: ignore
     except Exception:
         return
-    evt = ExternalAuditEvent(company_id=company_id, action=action, metadata_json=_json_dumps(meta), created_at=utc_now())
+    evt = ExternalAuditEvent(
+        company_id=company_id, action=action, metadata_json=_json_dumps(meta), created_at=utc_now()
+    )
     session.add(evt)
 
 
-async def _emit_audit_safe_async(*, session: AsyncSession, company_id: int, action: str, meta: Optional[Dict[str, Any]] = None) -> None:
+async def _emit_audit_safe_async(
+    *, session: AsyncSession, company_id: int, action: str, meta: Optional[dict[str, Any]] = None
+) -> None:
     try:
         from app.models.audit import ExternalAuditEvent  # type: ignore
     except Exception:
         return
-    evt = ExternalAuditEvent(company_id=company_id, action=action, metadata_json=_json_dumps(meta), created_at=utc_now())
+    evt = ExternalAuditEvent(
+        company_id=company_id, action=action, metadata_json=_json_dumps(meta), created_at=utc_now()
+    )
     session.add(evt)
     await session.flush()
 
@@ -2031,7 +2172,9 @@ async def _emit_audit_safe_async(*, session: AsyncSession, company_id: int, acti
 OperationKind = Literal["payment", "invoice", "billing_invoice", "wallet_txn"]
 
 
-def _within_range(dt: Optional[datetime], df: Optional[datetime], dtmax: Optional[datetime]) -> bool:
+def _within_range(
+    dt: Optional[datetime], df: Optional[datetime], dtmax: Optional[datetime]
+) -> bool:
     if not dt:
         return True
     if df and dt < df:
@@ -2049,7 +2192,7 @@ def operations_feed_sync(
     date_to: Optional[datetime] = None,
     kinds: Optional[Iterable[OperationKind]] = None,
     limit: int = 500,
-) -> List[Dict[str, Any]]:
+) -> list[dict[str, Any]]:
     """
     Унифицированная лента денежных операций по компании.
     Собирает из: BillingPayment, Invoice, BillingInvoice, WalletTransaction.
@@ -2057,35 +2200,50 @@ def operations_feed_sync(
     """
     kinds_set = set(kinds or {"payment", "invoice", "billing_invoice", "wallet_txn"})
 
-    out: List[Tuple[datetime, Dict[str, Any]]] = []
+    out: list[tuple[datetime, dict[str, Any]]] = []
 
     if "payment" in kinds_set:
-        rows = session.execute(
-            select(BillingPayment).where(BillingPayment.company_id == company_id)
-            .order_by(BillingPayment.created_at.desc())
-            .limit(limit)
-        ).scalars().all()
+        rows = (
+            session.execute(
+                select(BillingPayment)
+                .where(BillingPayment.company_id == company_id)
+                .order_by(BillingPayment.created_at.desc())
+                .limit(limit)
+            )
+            .scalars()
+            .all()
+        )
         for p in rows:
             if _within_range(p.created_at, date_from, date_to):
                 out.append((p.created_at or utc_now(), p.to_operation_row()))
 
     if "invoice" in kinds_set:
-        rows = session.execute(
-            select(Invoice).where(Invoice.company_id == company_id)
-            .order_by(Invoice.issue_date.desc())
-            .limit(limit)
-        ).scalars().all()
+        rows = (
+            session.execute(
+                select(Invoice)
+                .where(Invoice.company_id == company_id)
+                .order_by(Invoice.issue_date.desc())
+                .limit(limit)
+            )
+            .scalars()
+            .all()
+        )
         for inv in rows:
             base_dt = inv.issue_date or getattr(inv, "created_at", None) or utc_now()
             if _within_range(base_dt, date_from, date_to):
                 out.append((base_dt, inv.to_operation_row()))
 
     if "billing_invoice" in kinds_set:
-        rows = session.execute(
-            select(BillingInvoice).where(BillingInvoice.company_id == company_id)
-            .order_by(BillingInvoice.issued_at.desc().nullslast())
-            .limit(limit)
-        ).scalars().all()
+        rows = (
+            session.execute(
+                select(BillingInvoice)
+                .where(BillingInvoice.company_id == company_id)
+                .order_by(BillingInvoice.issued_at.desc().nullslast())
+                .limit(limit)
+            )
+            .scalars()
+            .all()
+        )
         for bi in rows:
             base_dt = bi.issued_at or bi.created_at
             if _within_range(base_dt, date_from, date_to):
@@ -2093,14 +2251,20 @@ def operations_feed_sync(
 
     if "wallet_txn" in kinds_set:
         # получаем wallet id
-        w = session.execute(select(WalletBalance).where(WalletBalance.company_id == company_id)).scalar_one_or_none()
+        w = session.execute(
+            select(WalletBalance).where(WalletBalance.company_id == company_id)
+        ).scalar_one_or_none()
         if w:
-            txs = session.execute(
-                select(WalletTransaction)
-                .where(WalletTransaction.wallet_id == w.id)
-                .order_by(WalletTransaction.created_at.desc())
-                .limit(limit)
-            ).scalars().all()
+            txs = (
+                session.execute(
+                    select(WalletTransaction)
+                    .where(WalletTransaction.wallet_id == w.id)
+                    .order_by(WalletTransaction.created_at.desc())
+                    .limit(limit)
+                )
+                .scalars()
+                .all()
+            )
             for t in txs:
                 if _within_range(t.created_at, date_from, date_to):
                     out.append((t.created_at or utc_now(), t.to_operation_row()))
@@ -2117,13 +2281,14 @@ async def operations_feed_async(
     date_to: Optional[datetime] = None,
     kinds: Optional[Iterable[OperationKind]] = None,
     limit: int = 500,
-) -> List[Dict[str, Any]]:
+) -> list[dict[str, Any]]:
     kinds_set = set(kinds or {"payment", "invoice", "billing_invoice", "wallet_txn"})
-    out: List[Tuple[datetime, Dict[str, Any]]] = []
+    out: list[tuple[datetime, dict[str, Any]]] = []
 
     if "payment" in kinds_set:
         rows = await session.execute(
-            select(BillingPayment).where(BillingPayment.company_id == company_id)
+            select(BillingPayment)
+            .where(BillingPayment.company_id == company_id)
             .order_by(BillingPayment.created_at.desc())
             .limit(limit)
         )
@@ -2133,7 +2298,8 @@ async def operations_feed_async(
 
     if "invoice" in kinds_set:
         rows = await session.execute(
-            select(Invoice).where(Invoice.company_id == company_id)
+            select(Invoice)
+            .where(Invoice.company_id == company_id)
             .order_by(Invoice.issue_date.desc())
             .limit(limit)
         )
@@ -2144,7 +2310,8 @@ async def operations_feed_async(
 
     if "billing_invoice" in kinds_set:
         rows = await session.execute(
-            select(BillingInvoice).where(BillingInvoice.company_id == company_id)
+            select(BillingInvoice)
+            .where(BillingInvoice.company_id == company_id)
             .order_by(BillingInvoice.issued_at.desc().nullslast())
             .limit(limit)
         )
@@ -2154,7 +2321,9 @@ async def operations_feed_async(
                 out.append((base_dt, bi.to_operation_row()))
 
     if "wallet_txn" in kinds_set:
-        wrow = await session.execute(select(WalletBalance).where(WalletBalance.company_id == company_id))
+        wrow = await session.execute(
+            select(WalletBalance).where(WalletBalance.company_id == company_id)
+        )
         w = wrow.scalar_one_or_none()
         if w:
             txs = await session.execute(

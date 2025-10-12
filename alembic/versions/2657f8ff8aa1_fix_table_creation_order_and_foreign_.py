@@ -5,9 +5,10 @@ Revises: 20240914_add_campaign_and_audit_models
 Create Date: 2024-09-15 08:00:00.000000
 """
 
-from alembic import op
 import sqlalchemy as sa
-from sqlalchemy import inspect, text
+from sqlalchemy import inspect
+
+from alembic import op
 
 # --- Alembic identifiers ---
 revision = "2657f8ff8aa1"
