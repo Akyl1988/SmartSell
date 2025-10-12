@@ -3,26 +3,17 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime, timedelta
-from typing import Any, Optional, Dict, List, Literal
+from typing import Any, Literal, Optional
 
-from sqlalchemy import (
-    Index,
-    Integer,
-    String,
-    DateTime,
-    Text,
-    CheckConstraint,
-    select,
-    or_,
-    inspect,
-)
-from sqlalchemy.orm import Mapped, mapped_column, Session
+from sqlalchemy import CheckConstraint, DateTime, Index, Integer, String, Text, inspect, or_, select
 from sqlalchemy.exc import OperationalError, ProgrammingError
+from sqlalchemy.orm import Mapped, Session, mapped_column
 
 try:
     # SQLAlchemy >=2.x
     from sqlalchemy.exc import NoSuchTableError
 except Exception:  # pragma: no cover
+
     class NoSuchTableError(Exception):  # type: ignore
         ...
 
@@ -57,7 +48,7 @@ class InventoryOutbox(BaseModel, SoftDeleteMixin):
     aggregate_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
     event_type: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
 
-    payload: Mapped[Optional[Dict[str, Any]]] = mapped_column(JSONBCompat, nullable=True)
+    payload: Mapped[Optional[dict[str, Any]]] = mapped_column(JSONBCompat, nullable=True)
 
     channel: Mapped[Optional[str]] = mapped_column(String(64), index=True)
     status: Mapped[str] = mapped_column(String(16), nullable=False, default="pending", index=True)
@@ -121,11 +112,11 @@ class InventoryOutbox(BaseModel, SoftDeleteMixin):
         aggregate_type: str,
         aggregate_id: int | str,
         event_type: str,
-        payload: Dict[str, Any] | None = None,
+        payload: dict[str, Any] | None = None,
         channel: Optional[str] = None,
         status: OutboxStatus = "pending",
         next_attempt_in_seconds: Optional[int] = None,
-    ) -> "InventoryOutbox":
+    ) -> InventoryOutbox:
         """
         Жёсткая постановка события в Outbox.
         Ожидает, что таблица существует в БД (иначе упадёт на flush/commit).
@@ -151,12 +142,12 @@ class InventoryOutbox(BaseModel, SoftDeleteMixin):
         aggregate_type: str,
         aggregate_id: int | str,
         event_type: str,
-        payload: Dict[str, Any] | None = None,
+        payload: dict[str, Any] | None = None,
         channel: Optional[str] = "erp",
         status: OutboxStatus = "pending",
         next_attempt_in_seconds: Optional[int] = None,
         log_prefix: str = "InventoryOutbox",
-    ) -> Optional["InventoryOutbox"]:
+    ) -> Optional[InventoryOutbox]:
         """
         Безопасная постановка события (не ломает основной бизнес-флоу):
 
@@ -169,7 +160,7 @@ class InventoryOutbox(BaseModel, SoftDeleteMixin):
             log.info("%s: table not present in metadata — skipping enqueue.", log_prefix)
             return None
 
-        ev: Optional["InventoryOutbox"] = None
+        ev: Optional[InventoryOutbox] = None
         try:
             with session.begin_nested():  # savepoint (SQLite/PG поддерживают)
                 ev = InventoryOutbox(
@@ -216,7 +207,7 @@ class InventoryOutbox(BaseModel, SoftDeleteMixin):
         due_only: bool = False,
         channel: Optional[str] = None,
         order_by_created_asc: bool = True,
-    ) -> List["InventoryOutbox"]:
+    ) -> list[InventoryOutbox]:
         """
         Получить пачку событий.
         - due_only=True вернёт только «готовые к попытке» (next_attempt_at IS NULL или <= now).
@@ -277,7 +268,7 @@ class InventoryOutbox(BaseModel, SoftDeleteMixin):
             f"type={self.event_type} status={self.status} attempts={self.attempts}>"
         )
 
-    def to_public_dict(self) -> Dict[str, Any]:
+    def to_public_dict(self) -> dict[str, Any]:
         return {
             "id": self.id,
             "aggregate_type": self.aggregate_type,
@@ -310,10 +301,10 @@ class InventoryOutbox(BaseModel, SoftDeleteMixin):
         aggregate_type: str = "product_stock",
         aggregate_id: str | int = "1",
         event_type: str = "stock.updated",
-        payload: Optional[Dict[str, Any]] = None,
+        payload: Optional[dict[str, Any]] = None,
         channel: Optional[str] = "erp",
         status: OutboxStatus = "pending",
-    ) -> "InventoryOutbox":
+    ) -> InventoryOutbox:
         return cls(
             aggregate_type=aggregate_type,
             aggregate_id=str(aggregate_id),

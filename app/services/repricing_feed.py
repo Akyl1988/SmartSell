@@ -15,9 +15,8 @@ Kaspi.kz integration: product feed generation, orders sync, and availability syn
 from __future__ import annotations
 
 import asyncio
-import math
-from datetime import datetime, timedelta, timezone
-from typing import Any, Dict, List, Optional, Tuple
+from datetime import datetime, timedelta
+from typing import Any, Optional
 
 import httpx
 from sqlalchemy import and_, select
@@ -81,7 +80,7 @@ class _RetryingAsyncClient:
                 last_exc = e
                 if attempt >= self._retries:
                     break
-                sleep_for = self._base * (2 ** attempt)
+                sleep_for = self._base * (2**attempt)
                 await asyncio.sleep(sleep_for)
         assert last_exc is not None
         raise last_exc
@@ -145,7 +144,7 @@ class KaspiService:
         status: Optional[str] = None,
         page: int = 1,
         page_size: int = 100,
-    ) -> List[Dict[str, Any]]:
+    ) -> list[dict[str, Any]]:
         """
         Получение заказов из Kaspi.
         Если даты не заданы — последние 24 часа.
@@ -176,7 +175,7 @@ class KaspiService:
                 logger.error("Kaspi get_orders error: %s", e)
                 raise RuntimeError(f"Failed to fetch orders from Kaspi: {e}") from e
 
-    async def get_order_details(self, order_id: str) -> Optional[Dict[str, Any]]:
+    async def get_order_details(self, order_id: str) -> Optional[dict[str, Any]]:
         async with self._client() as client:
             try:
                 resp = await client.get(self._url(f"/orders/{order_id}"), headers=self.headers)
@@ -190,7 +189,9 @@ class KaspiService:
         payload = {"status": status}
         async with self._client() as client:
             try:
-                resp = await client.patch(self._url(f"/orders/{order_id}/status"), headers=self.headers, json=payload)
+                resp = await client.patch(
+                    self._url(f"/orders/{order_id}/status"), headers=self.headers, json=payload
+                )
                 resp.raise_for_status()
                 logger.info("Kaspi: статус заказа %s обновлён на '%s'.", order_id, status)
                 return True
@@ -200,10 +201,14 @@ class KaspiService:
 
     # ---------------------- Products API ----------------------
 
-    async def get_products(self, *, page: int = 1, page_size: int = 100) -> List[Dict[str, Any]]:
+    async def get_products(self, *, page: int = 1, page_size: int = 100) -> list[dict[str, Any]]:
         async with self._client() as client:
             try:
-                resp = await client.get(self._url("/products"), headers=self.headers, params={"page": page, "pageSize": page_size})
+                resp = await client.get(
+                    self._url("/products"),
+                    headers=self.headers,
+                    params={"page": page, "pageSize": page_size},
+                )
                 resp.raise_for_status()
                 data = resp.json() or {}
                 items = data.get("products") or data.get("items") or []
@@ -222,7 +227,9 @@ class KaspiService:
                     json={"availability": int(max(0, availability))},
                 )
                 resp.raise_for_status()
-                logger.info("Kaspi: обновлена доступность товара %s -> %s.", product_id, availability)
+                logger.info(
+                    "Kaspi: обновлена доступность товара %s -> %s.", product_id, availability
+                )
                 return True
             except httpx.HTTPError as e:
                 logger.error("Kaspi update_product_availability(%s) error: %s", product_id, e)
@@ -238,10 +245,14 @@ class KaspiService:
         try:
             result = await db.execute(
                 select(Product).where(
-                    and_(Product.company_id == company_id, Product.is_active.is_(True), Product.deleted_at.is_(None))
+                    and_(
+                        Product.company_id == company_id,
+                        Product.is_active.is_(True),
+                        Product.deleted_at.is_(None),
+                    )
                 )
             )
-            products: List[Product] = list(result.scalars().all())
+            products: list[Product] = list(result.scalars().all())
             xml_content = self._generate_xml_feed(products)
             logger.info("Kaspi: сгенерирован фид из %s товаров.", len(products))
             return xml_content
@@ -249,7 +260,7 @@ class KaspiService:
             logger.error("Kaspi generate_product_feed error: %s", e)
             raise RuntimeError(f"Failed to generate product feed: {e}") from e
 
-    def _generate_xml_feed(self, products: List[Product]) -> str:
+    def _generate_xml_feed(self, products: list[Product]) -> str:
         """
         Минимальный валидный фид. Поля подогнаны под наши модели:
           - id: kaspi_product_id или наш id
@@ -260,7 +271,7 @@ class KaspiService:
           - availability: свободный остаток (free_stock) или 0 при предзаказе
           - image: image_url
         """
-        lines: List[str] = ['<?xml version="1.0" encoding="UTF-8"?>', "<products>"]
+        lines: list[str] = ['<?xml version="1.0" encoding="UTF-8"?>', "<products>"]
 
         for p in products:
             pid = _ensure_str(p.kaspi_product_id or p.id)
@@ -311,13 +322,13 @@ class KaspiService:
 
     # ---------------------- Orders sync -----------------------
 
-    async def sync_orders(self, company_id: int, db: AsyncSession) -> Dict[str, Any]:
+    async def sync_orders(self, company_id: int, db: AsyncSession) -> dict[str, Any]:
         """
         Загружает свежие заказы из Kaspi, создаёт/обновляет у нас в БД.
         """
         created = 0
         updated = 0
-        errors: List[str] = []
+        errors: list[str] = []
 
         try:
             kaspi_orders = await self.get_orders()
@@ -330,7 +341,9 @@ class KaspiService:
                 order_id = _ensure_str(ko.get("id"))
                 # Ищем существующий
                 q = await db.execute(
-                    select(Order).where(and_(Order.company_id == company_id, Order.external_id == order_id))
+                    select(Order).where(
+                        and_(Order.company_id == company_id, Order.external_id == order_id)
+                    )
                 )
                 existing: Optional[Order] = q.scalar_one_or_none()
 
@@ -364,7 +377,9 @@ class KaspiService:
         logger.info("Kaspi orders sync completed: %s", result)
         return result
 
-    async def _create_order_from_kaspi(self, kaspi_order: Dict[str, Any], company_id: int, db: AsyncSession) -> Optional[Order]:
+    async def _create_order_from_kaspi(
+        self, kaspi_order: dict[str, Any], company_id: int, db: AsyncSession
+    ) -> Optional[Order]:
         """
         Создаёт Order + OrderItem[] из данных Kaspi.
         Ожидаем, что модели Order/OrderItem реализуют calculate_total()/calculate_totals().
@@ -450,21 +465,29 @@ class KaspiService:
         Используем p.kaspi_product_id; если его нет — пропускаем (возвращаем True, чтобы не валить пайплайн).
         """
         if not product.kaspi_product_id:
-            logger.info("Kaspi availability: пропуск, у товара %s нет kaspi_product_id.", product.id)
+            logger.info(
+                "Kaspi availability: пропуск, у товара %s нет kaspi_product_id.", product.id
+            )
             return True
         availability = 0 if product.is_preorder() else max(0, int(product.free_stock))
         return await self.update_product_availability(str(product.kaspi_product_id), availability)
 
-    async def bulk_sync_availability(self, company_id: int, db: AsyncSession, *, limit: int = 500) -> Dict[str, int]:
+    async def bulk_sync_availability(
+        self, company_id: int, db: AsyncSession, *, limit: int = 500
+    ) -> dict[str, int]:
         """
         Массовый апдейт доступности в Kaspi для активных товаров компании.
         """
         result = await db.execute(
             select(Product).where(
-                and_(Product.company_id == company_id, Product.is_active.is_(True), Product.deleted_at.is_(None))
+                and_(
+                    Product.company_id == company_id,
+                    Product.is_active.is_(True),
+                    Product.deleted_at.is_(None),
+                )
             )
         )
-        products: List[Product] = list(result.scalars().all())
+        products: list[Product] = list(result.scalars().all())
         ok = 0
         fail = 0
 

@@ -26,44 +26,21 @@ Base model with common fields and functionality (SQLAlchemy 2.x, DeclarativeBase
 from __future__ import annotations
 
 import logging
-from contextlib import contextmanager, asynccontextmanager
-from datetime import datetime, timezone
+from collections.abc import AsyncIterator, Iterable, Iterator, Sequence
+from contextlib import asynccontextmanager, contextmanager
+from datetime import UTC, datetime
 from importlib import import_module
-from typing import (
-    Any,
-    Dict,
-    Iterable,
-    Optional,
-    Sequence,
-    Type,
-    TypeVar,
-    List,
-    Callable,
-    AsyncIterator,
-    Iterator,
-    Tuple,
-)
+from typing import Any, Optional, TypeVar
 
-from sqlalchemy import (
-    DateTime,
-    Integer,
-    MetaData,
-    select,
-    text,
-    exc as sa_exc,
-    func,  # для count/агрегаций
-)
-from sqlalchemy.orm import (
-    DeclarativeBase,
-    declared_attr,
-    Mapped,
-    mapped_column,
-    Session,
-)
+from sqlalchemy import func  # для count/агрегаций
+from sqlalchemy import DateTime, Integer, MetaData
+from sqlalchemy import exc as sa_exc
+from sqlalchemy import select, text
+from sqlalchemy.orm import DeclarativeBase, Mapped, Session, declared_attr, mapped_column
 
 # Optional async support (модуль может работать и без зависимости на async в рантайме)
 try:  # pragma: no cover
-    from sqlalchemy.ext.asyncio import AsyncSession, AsyncEngine
+    from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession
 except Exception:  # pragma: no cover
     AsyncSession = None  # type: ignore
     AsyncEngine = None  # type: ignore
@@ -85,23 +62,25 @@ try:  # pragma: no cover
     def _compile_pg_citext_for_sqlite(type_, compiler, **kw):
         # Ближайший аналог: текст с кейз-инсенситивной сортировкой/сравнением
         return "TEXT COLLATE NOCASE"
+
 except Exception:
     # Если в окружении нет postgresql.dialect — это ок; тогда CITEXT не используется.
     pass
+
 
 # --------------------------------------------------------------------------------------
 # Вспомогательные TZ-утилиты (tz-aware UTC) — безопасно сосуществуют с naive полями
 # --------------------------------------------------------------------------------------
 def utcnow_tz() -> datetime:
     """Текущее время в UTC (tz-aware)."""
-    return datetime.now(timezone.utc)
+    return datetime.now(UTC)
 
 
 def to_utc(dt: datetime) -> datetime:
     """Привести дату к UTC (если naive — считаем, что это UTC и проставляем tzinfo)."""
     if dt.tzinfo is None:
-        return dt.replace(tzinfo=timezone.utc)
-    return dt.astimezone(timezone.utc)
+        return dt.replace(tzinfo=UTC)
+    return dt.astimezone(UTC)
 
 
 def utc_now() -> datetime:
@@ -116,7 +95,7 @@ def utc_now() -> datetime:
 # SQLAlchemy naming conventions (для alembic и единых имён ограничений/индексов)
 # --------------------------------------------------------------------------------------
 # Примечание: сохраняю ваши шаблоны (column_0_N_name). Это ок, если так ожидается тестами/миграциями.
-NAMING_CONVENTIONS: Dict[str, str] = {
+NAMING_CONVENTIONS: dict[str, str] = {
     "ix": "ix__%(table_name)s__%(column_0_N_name)s",
     "uq": "uq__%(table_name)s__%(column_0_N_name)s",
     "ck": "ck__%(table_name)s__%(constraint_name)s",
@@ -240,13 +219,13 @@ class BaseModel(Base):
         main = {k: getattr(self, k, None) for k in ("id", "created_at", "updated_at")}
         return f"<{self.__class__.__name__}({main})>"
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         """Быстрая сериализация всех колонок таблицы (только маппед-колонки)."""
         return {col.name: getattr(self, col.name) for col in self.__table__.columns}  # type: ignore[attr-defined]
 
     # Безопасная сериализация для логов/внешних API (даты -> isoformat, None остаётся None)
-    def to_public_dict(self) -> Dict[str, Any]:
-        out: Dict[str, Any] = {}
+    def to_public_dict(self) -> dict[str, Any]:
+        out: dict[str, Any] = {}
         for col in self.__table__.columns:  # type: ignore[attr-defined]
             v = getattr(self, col.name)
             if isinstance(v, datetime):
@@ -312,8 +291,8 @@ class LockableMixin:
 # --------------------------------------------------------------------------------------
 # Вспомогательные утилиты
 # --------------------------------------------------------------------------------------
-def _chunked(iterable: Iterable[Dict[str, Any]], size: int) -> Iterator[List[Dict[str, Any]]]:
-    buf: List[Dict[str, Any]] = []
+def _chunked(iterable: Iterable[dict[str, Any]], size: int) -> Iterator[list[dict[str, Any]]]:
+    buf: list[dict[str, Any]] = []
     for item in iterable:
         buf.append(item)
         if len(buf) >= size:
@@ -326,14 +305,14 @@ def _chunked(iterable: Iterable[Dict[str, Any]], size: int) -> Iterator[List[Dic
 # --------------------------------------------------------------------------------------
 # CRUD / query helpers (совместимы с SQLAlchemy 2.x)
 # --------------------------------------------------------------------------------------
-def create(session: Session, model: Type[T], **kwargs) -> T:
+def create(session: Session, model: type[T], **kwargs) -> T:
     obj = model(**kwargs)
     session.add(obj)
     session.commit()
     return obj
 
 
-def get_by_id(session: Session, model: Type[T], obj_id: Any) -> Optional[T]:
+def get_by_id(session: Session, model: type[T], obj_id: Any) -> Optional[T]:
     return session.get(model, obj_id)
 
 
@@ -351,10 +330,10 @@ def update(session: Session, obj: T, **kwargs) -> T:
 
 def get_or_create(
     session: Session,
-    model: Type[T],
-    defaults: Optional[Dict[str, Any]] = None,
+    model: type[T],
+    defaults: Optional[dict[str, Any]] = None,
     **lookup: Any,
-) -> Tuple[T, bool]:
+) -> tuple[T, bool]:
     """
     Вернуть (obj, created). Если объект не найден — создать с defaults+lookup.
     """
@@ -379,7 +358,7 @@ def get_or_create(
 def bulk_insert_rows(
     session: Session,
     table,  # sqlalchemy.Table (обычно Model.__table__)
-    rows: Sequence[Dict[str, Any]],
+    rows: Sequence[dict[str, Any]],
     *,
     chunk_size: int = 1000,
 ) -> int:
@@ -398,8 +377,8 @@ def bulk_insert_rows(
 
 def bulk_update_rows(
     session: Session,
-    model: Type[T],
-    data_list: Iterable[Dict[str, Any]],
+    model: type[T],
+    data_list: Iterable[dict[str, Any]],
     *,
     chunk_size: int = 1000,
 ) -> None:
@@ -408,7 +387,8 @@ def bulk_update_rows(
     data_list: iterable словарей вида {'id': ..., '<field>': ...}
     Обновляет чанками, чтобы не раздувать сессию в highload.
     """
-    def _flush(buf: List[Dict[str, Any]]) -> None:
+
+    def _flush(buf: list[dict[str, Any]]) -> None:
         for data in buf:
             obj_id = data.get("id")
             if obj_id is None:
@@ -422,7 +402,7 @@ def bulk_update_rows(
                 setattr(obj, key, value)
         session.flush()
 
-    buffer: List[Dict[str, Any]] = []
+    buffer: list[dict[str, Any]] = []
     for row in data_list:
         buffer.append(row)
         if len(buffer) >= chunk_size:
@@ -435,7 +415,7 @@ def bulk_update_rows(
 
 # --- ALIAS для совместимости с тестами/старым кодом ---
 def bulk_update(
-    session: Session, model: Type[T], data_list: Iterable[Dict[str, Any]], *, chunk_size: int = 1000
+    session: Session, model: type[T], data_list: Iterable[dict[str, Any]], *, chunk_size: int = 1000
 ) -> None:
     """
     Совместимый алиас: некоторые тесты/модули импортируют bulk_update из app.models.base.
@@ -444,15 +424,15 @@ def bulk_update(
     return bulk_update_rows(session, model, data_list, chunk_size=chunk_size)
 
 
-def exists(session: Session, model: Type[T], **kwargs) -> bool:
+def exists(session: Session, model: type[T], **kwargs) -> bool:
     return session.query(model).filter_by(**kwargs).first() is not None
 
 
-def first(session: Session, model: Type[T], **kwargs) -> Optional[T]:
+def first(session: Session, model: type[T], **kwargs) -> Optional[T]:
     return session.query(model).filter_by(**kwargs).first()
 
 
-def count(session: Session, model: Type[T], **kwargs) -> int:
+def count(session: Session, model: type[T], **kwargs) -> int:
     """Быстрый счётчик записей по фильтру."""
     q = select(func.count()).select_from(model).filter_by(**kwargs)  # type: ignore[arg-type]
     return int(session.execute(q).scalar() or 0)
@@ -478,7 +458,7 @@ def refresh_safe(session: Session, obj: T, *, expire: bool = False) -> T:
 # --------------------------------------------------------------------------------------
 def for_update_by_id(
     session: Session,
-    model: Type[T],
+    model: type[T],
     obj_id: Any,
     *,
     nowait: bool = False,
@@ -489,8 +469,10 @@ def for_update_by_id(
     nowait=True  -> не ждать блокировку, при занятости — исключение.
     skip_locked=True -> пропустить заблокированные (вернёт None, если запись занята).
     """
-    q = select(model).where(model.id == obj_id).with_for_update(
-        nowait=nowait, skip_locked=skip_locked
+    q = (
+        select(model)
+        .where(model.id == obj_id)
+        .with_for_update(nowait=nowait, skip_locked=skip_locked)
     )
     return session.execute(q).scalars().first()
 
@@ -553,23 +535,23 @@ def locked_transaction(
 # Async CRUD / query helpers (если установлен sqlalchemy.ext.asyncio)
 # --------------------------------------------------------------------------------------
 # Примечание: чтобы не тащить async-зависимости всегда, типы аннотированы через Optional
-async def acreate(session: "AsyncSession", model: Type[T], **kwargs) -> T:  # type: ignore[valid-type]
+async def acreate(session: AsyncSession, model: type[T], **kwargs) -> T:  # type: ignore[valid-type]
     obj = model(**kwargs)
     session.add(obj)
     await session.commit()
     return obj
 
 
-async def aget_by_id(session: "AsyncSession", model: Type[T], obj_id: Any) -> Optional[T]:  # type: ignore[valid-type]
+async def aget_by_id(session: AsyncSession, model: type[T], obj_id: Any) -> Optional[T]:  # type: ignore[valid-type]
     return await session.get(model, obj_id)
 
 
-async def adelete(session: "AsyncSession", obj: T) -> None:  # type: ignore[valid-type]
+async def adelete(session: AsyncSession, obj: T) -> None:  # type: ignore[valid-type]
     await session.delete(obj)  # type: ignore[arg-type]
     await session.commit()
 
 
-async def aupdate(session: "AsyncSession", obj: T, **kwargs) -> T:  # type: ignore[valid-type]
+async def aupdate(session: AsyncSession, obj: T, **kwargs) -> T:  # type: ignore[valid-type]
     for k, v in kwargs.items():
         setattr(obj, k, v)
     await session.commit()
@@ -577,11 +559,11 @@ async def aupdate(session: "AsyncSession", obj: T, **kwargs) -> T:  # type: igno
 
 
 async def aget_or_create(
-    session: "AsyncSession",  # type: ignore[valid-type]
-    model: Type[T],
-    defaults: Optional[Dict[str, Any]] = None,
+    session: AsyncSession,  # type: ignore[valid-type]
+    model: type[T],
+    defaults: Optional[dict[str, Any]] = None,
     **lookup: Any,
-) -> Tuple[T, bool]:
+) -> tuple[T, bool]:
     """
     Async-версия get_or_create с защитой от гонок по unique.
     """
@@ -608,9 +590,9 @@ async def aget_or_create(
 
 
 async def abulk_insert_rows(
-    session: "AsyncSession",  # type: ignore[valid-type]
+    session: AsyncSession,  # type: ignore[valid-type]
     table,
-    rows: Sequence[Dict[str, Any]],
+    rows: Sequence[dict[str, Any]],
     *,
     chunk_size: int = 1000,
 ) -> int:
@@ -626,16 +608,17 @@ async def abulk_insert_rows(
 
 
 async def abulk_update_rows(
-    session: "AsyncSession",  # type: ignore[valid-type]
-    model: Type[T],
-    data_list: Iterable[Dict[str, Any]],
+    session: AsyncSession,  # type: ignore[valid-type]
+    model: type[T],
+    data_list: Iterable[dict[str, Any]],
     *,
     chunk_size: int = 1000,
 ) -> None:
     """
     Асинхронная версия массового обновления с чанкованием.
     """
-    async def _flush(buf: List[Dict[str, Any]]) -> None:
+
+    async def _flush(buf: list[dict[str, Any]]) -> None:
         for data in buf:
             obj_id = data.get("id")
             if obj_id is None:
@@ -649,7 +632,7 @@ async def abulk_update_rows(
                 setattr(obj, key, value)
         await session.flush()
 
-    buffer: List[Dict[str, Any]] = []
+    buffer: list[dict[str, Any]] = []
     for row in data_list:
         buffer.append(row)
         if len(buffer) >= chunk_size:
@@ -660,52 +643,56 @@ async def abulk_update_rows(
     await session.commit()
 
 
-async def aexists(session: "AsyncSession", model: Type[T], **kwargs) -> bool:  # type: ignore[valid-type]
+async def aexists(session: AsyncSession, model: type[T], **kwargs) -> bool:  # type: ignore[valid-type]
     q = select(model).filter_by(**kwargs).limit(1)
     res = await session.execute(q)
     return res.scalars().first() is not None
 
 
-async def afirst(session: "AsyncSession", model: Type[T], **kwargs) -> Optional[T]:  # type: ignore[valid-type]
+async def afirst(session: AsyncSession, model: type[T], **kwargs) -> Optional[T]:  # type: ignore[valid-type]
     q = select(model).filter_by(**kwargs).limit(1)
     res = await session.execute(q)
     return res.scalars().first()
 
 
-async def acount(session: "AsyncSession", model: Type[T], **kwargs) -> int:  # type: ignore[valid-type]
+async def acount(session: AsyncSession, model: type[T], **kwargs) -> int:  # type: ignore[valid-type]
     q = select(func.count()).select_from(model).filter_by(**kwargs)  # type: ignore[arg-type]
     res = await session.execute(q)
     return int(res.scalar() or 0)
 
 
 async def afor_update_by_id(  # type: ignore[valid-type]
-    session: "AsyncSession",
-    model: Type[T],
+    session: AsyncSession,
+    model: type[T],
     obj_id: Any,
     *,
     nowait: bool = False,
     skip_locked: bool = False,
 ) -> Optional[T]:
-    q = select(model).where(model.id == obj_id).with_for_update(nowait=nowait, skip_locked=skip_locked)
+    q = (
+        select(model)
+        .where(model.id == obj_id)
+        .with_for_update(nowait=nowait, skip_locked=skip_locked)
+    )
     res = await session.execute(q)
     return res.scalars().first()
 
 
-async def apg_advisory_xact_lock(session: "AsyncSession", key: int) -> None:  # type: ignore[valid-type]
+async def apg_advisory_xact_lock(session: AsyncSession, key: int) -> None:  # type: ignore[valid-type]
     try:
         await session.execute(text("SELECT pg_advisory_xact_lock(:k)"), {"k": int(key)})
     except Exception as e:  # pragma: no cover
         logger.warning("apg_advisory_xact_lock failed for key=%s: %s", key, e)
 
 
-async def apg_advisory_lock(session: "AsyncSession", key: int) -> None:  # type: ignore[valid-type]
+async def apg_advisory_lock(session: AsyncSession, key: int) -> None:  # type: ignore[valid-type]
     try:
         await session.execute(text("SELECT pg_advisory_lock(:k)"), {"k": int(key)})
     except Exception as e:  # pragma: no cover
         logger.warning("apg_advisory_lock failed for key=%s: %s", key, e)
 
 
-async def apg_advisory_unlock(session: "AsyncSession", key: int) -> None:  # type: ignore[valid-type]
+async def apg_advisory_unlock(session: AsyncSession, key: int) -> None:  # type: ignore[valid-type]
     try:
         await session.execute(text("SELECT pg_advisory_unlock(:k)"), {"k": int(key)})
     except Exception as e:  # pragma: no cover
@@ -714,11 +701,11 @@ async def apg_advisory_unlock(session: "AsyncSession", key: int) -> None:  # typ
 
 @asynccontextmanager
 async def alocked_transaction(
-    session: "AsyncSession",  # type: ignore[valid-type]
+    session: AsyncSession,  # type: ignore[valid-type]
     *,
     advisory_key: Optional[int] = None,
     commit: bool = True,
-) -> AsyncIterator["AsyncSession"]:
+) -> AsyncIterator[AsyncSession]:
     """
     Async-контекст для безопасной транзакции c optional advisory-lock.
     Использование:
@@ -742,7 +729,7 @@ async def alocked_transaction(
 def upsert_postgres(
     session: Session,
     table,  # Table or ORM model.__table__
-    rows: Sequence[Dict[str, Any]],
+    rows: Sequence[dict[str, Any]],
     *,
     conflict_cols: Sequence[str],
     update_cols: Optional[Sequence[str]] = None,
@@ -756,9 +743,7 @@ def upsert_postgres(
     :param update_cols: какие колонки обновлять при конфликте (по умолчанию — все, кроме conflict)
     :return: число обработанных строк
     """
-    from sqlalchemy.dialects.postgresql import (
-        insert as pg_insert,
-    )  # локально, чтобы не мешать другим СУБД
+    from sqlalchemy.dialects.postgresql import insert as pg_insert
 
     if not rows:
         return 0
@@ -768,7 +753,7 @@ def upsert_postgres(
     if update_cols is None:
         update_cols = sorted(cols - set(conflict_cols))
 
-    def _do_chunk(chunk: List[Dict[str, Any]]) -> None:
+    def _do_chunk(chunk: list[dict[str, Any]]) -> None:
         nonlocal processed
         stmt = pg_insert(table).values(chunk)
         update_map = {c: getattr(stmt.excluded, c) for c in update_cols or []}
@@ -783,9 +768,9 @@ def upsert_postgres(
 
 
 async def aupsert_postgres(
-    session: "AsyncSession",  # type: ignore[valid-type]
+    session: AsyncSession,  # type: ignore[valid-type]
     table,
-    rows: Sequence[Dict[str, Any]],
+    rows: Sequence[dict[str, Any]],
     *,
     conflict_cols: Sequence[str],
     update_cols: Optional[Sequence[str]] = None,
@@ -801,7 +786,7 @@ async def aupsert_postgres(
     if update_cols is None:
         update_cols = sorted(cols - set(conflict_cols))
 
-    async def _do_chunk(chunk: List[Dict[str, Any]]) -> None:
+    async def _do_chunk(chunk: list[dict[str, Any]]) -> None:
         nonlocal processed
         stmt = pg_insert(table).values(chunk)
         update_map = {c: getattr(stmt.excluded, c) for c in update_cols or []}
@@ -820,13 +805,13 @@ async def aupsert_postgres(
 # --------------------------------------------------------------------------------------
 def paginate(
     session: Session,
-    model: Type[T],
+    model: type[T],
     *,
     page: int = 1,
     per_page: int = 50,
-    where: Optional[Dict[str, Any]] = None,
+    where: Optional[dict[str, Any]] = None,
     order_by: Optional[Any] = None,
-) -> Tuple[List[T], int]:
+) -> tuple[list[T], int]:
     """
     Возвращает (items, total).
     """
@@ -844,14 +829,14 @@ def paginate(
 
 
 async def apaginate(
-    session: "AsyncSession",  # type: ignore[valid-type]
-    model: Type[T],
+    session: AsyncSession,  # type: ignore[valid-type]
+    model: type[T],
     *,
     page: int = 1,
     per_page: int = 50,
-    where: Optional[Dict[str, Any]] = None,
+    where: Optional[dict[str, Any]] = None,
     order_by: Optional[Any] = None,
-) -> Tuple[List[T], int]:
+) -> tuple[list[T], int]:
     page = max(1, int(page))
     per_page = max(1, int(per_page))
     stmt = select(model)
@@ -892,6 +877,7 @@ def _import_domain(module_name: str) -> None:
     try:
         # предотвращаем повторный импорт, который может приводить к повторной регистрации таблиц
         import sys
+
         if module_name in sys.modules:
             return
         import_module(module_name)
@@ -972,7 +958,7 @@ def metadata_drop_all(bind) -> None:
     Base.metadata.drop_all(bind)
 
 
-async def metadata_create_all_async(async_engine: "AsyncEngine") -> None:  # type: ignore[valid-type]
+async def metadata_create_all_async(async_engine: AsyncEngine) -> None:  # type: ignore[valid-type]
     """
     Асинхронный wrapper вокруг Base.metadata.create_all для async engine.
     В т.ч. включает расширение citext в Postgres перед созданием таблиц.
@@ -986,7 +972,7 @@ async def metadata_create_all_async(async_engine: "AsyncEngine") -> None:  # typ
     await async_engine.run_sync(_enable_and_create)  # type: ignore[arg-type]
 
 
-async def metadata_drop_all_async(async_engine: "AsyncEngine") -> None:  # type: ignore[valid-type]
+async def metadata_drop_all_async(async_engine: AsyncEngine) -> None:  # type: ignore[valid-type]
     """
     Асинхронный wrapper вокруг Base.metadata.drop_all для async engine.
     """

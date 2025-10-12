@@ -2,10 +2,11 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
-from decimal import Decimal, ROUND_HALF_UP
-from typing import Iterable, List, Optional, Tuple, Dict, Any
+from decimal import ROUND_HALF_UP, Decimal
+from typing import Any, Optional
 
 from sqlalchemy.orm import Session
 
@@ -35,32 +36,49 @@ log = logging.getLogger(__name__)
 # =========================
 @dataclass
 class RepricingConfig:
-    enabled: bool = False                      # включено/выключено для товара
-    min_price: Optional[Decimal] = None        # нижняя граница, нельзя ниже
-    max_price: Optional[Decimal] = None        # верхняя граница, нельзя выше
-    step: Decimal = Decimal("1")               # шаг изменения (1/10/100 тг)
-    undercut: Decimal = Decimal("1")           # на сколько быть ниже конкурента
-    cooldown_seconds: int = 900                # кулдаун между изменениями (15 мин)
-    ignore_seller_ids: List[str] = field(default_factory=list)  # дружественные магазины (ID)
-    include_only_seller_ids: List[str] = field(default_factory=list)  # если указан список — сравниваем только с ними
-    marketplace: str = "kaspi"                 # пока каспи
+    enabled: bool = False  # включено/выключено для товара
+    min_price: Optional[Decimal] = None  # нижняя граница, нельзя ниже
+    max_price: Optional[Decimal] = None  # верхняя граница, нельзя выше
+    step: Decimal = Decimal("1")  # шаг изменения (1/10/100 тг)
+    undercut: Decimal = Decimal("1")  # на сколько быть ниже конкурента
+    cooldown_seconds: int = 900  # кулдаун между изменениями (15 мин)
+    ignore_seller_ids: list[str] = field(default_factory=list)  # дружественные магазины (ID)
+    include_only_seller_ids: list[str] = field(
+        default_factory=list
+    )  # если указан список — сравниваем только с ними
+    marketplace: str = "kaspi"  # пока каспи
     # Опционально — защита маржи (если есть себестоимость)
     min_margin_percent: Optional[Decimal] = None
 
     @classmethod
-    def from_product(cls, p: Any) -> "RepricingConfig":
+    def from_product(cls, p: Any) -> RepricingConfig:
         """
         Грузим конфиг из товара, если там есть JSON-поле (например p.settings / p.meta / p.extra).
         Без жёсткой привязки к схеме — читаем максимально безопасно.
         """
-        data: Dict[str, Any] = {}
-        for field_name in ("repricing_config", "dempg_config", "pricing_rules", "extra", "settings"):
+        data: dict[str, Any] = {}
+        for field_name in (
+            "repricing_config",
+            "dempg_config",
+            "pricing_rules",
+            "extra",
+            "settings",
+        ):
             try:
                 raw = getattr(p, field_name, None)
-                if isinstance(raw, dict) and ("repricing" in raw or "repricing_config" in raw or "demping" in raw):
-                    data = raw.get("repricing") or raw.get("repricing_config") or raw.get("demping") or {}
+                if isinstance(raw, dict) and (
+                    "repricing" in raw or "repricing_config" in raw or "demping" in raw
+                ):
+                    data = (
+                        raw.get("repricing")
+                        or raw.get("repricing_config")
+                        or raw.get("demping")
+                        or {}
+                    )
                     break
-                if isinstance(raw, dict) and any(k in raw for k in ("enabled", "min_price", "max_price", "step", "undercut")):
+                if isinstance(raw, dict) and any(
+                    k in raw for k in ("enabled", "min_price", "max_price", "step", "undercut")
+                ):
                     data = raw
                     break
             except Exception:
@@ -81,8 +99,12 @@ class RepricingConfig:
             step=dec(data.get("step")) or Decimal("1"),
             undercut=dec(data.get("undercut")) or Decimal("1"),
             cooldown_seconds=int(data.get("cooldown_seconds", 900) or 900),
-            ignore_seller_ids=list(data.get("ignore_seller_ids", [])) if isinstance(data.get("ignore_seller_ids"), list) else [],
-            include_only_seller_ids=list(data.get("include_only_seller_ids", [])) if isinstance(data.get("include_only_seller_ids"), list) else [],
+            ignore_seller_ids=list(data.get("ignore_seller_ids", []))
+            if isinstance(data.get("ignore_seller_ids"), list)
+            else [],
+            include_only_seller_ids=list(data.get("include_only_seller_ids", []))
+            if isinstance(data.get("include_only_seller_ids"), list)
+            else [],
             marketplace=str(data.get("marketplace", "kaspi")),
             min_margin_percent=dec(data.get("min_margin_percent")),
         )
@@ -102,18 +124,22 @@ class RepricingService:
 
     def __init__(self, session: Session, kaspi: Optional[KaspiService] = None):
         self.session = session
-        self.kaspi = kaspi or getattr(__import__("app.services.kaspi_service", fromlist=["KaspiService"]), "KaspiService", None)
+        self.kaspi = kaspi or getattr(
+            __import__("app.services.kaspi_service", fromlist=["KaspiService"]),
+            "KaspiService",
+            None,
+        )
 
     # ---------- Публичное API ----------
-    def run_for_product_id(self, product_id: int) -> Optional[Tuple[Decimal, str]]:
+    def run_for_product_id(self, product_id: int) -> Optional[tuple[Decimal, str]]:
         product: Product = self._load_product(product_id)
         if not product:
             log.warning("Repricing: product %s not found", product_id)
             return None
         return self._reprice_product(product)
 
-    def run_bulk(self, product_ids: Iterable[int]) -> Dict[int, Optional[Tuple[Decimal, str]]]:
-        out: Dict[int, Optional[Tuple[Decimal, str]]] = {}
+    def run_bulk(self, product_ids: Iterable[int]) -> dict[int, Optional[tuple[Decimal, str]]]:
+        out: dict[int, Optional[tuple[Decimal, str]]] = {}
         for pid in product_ids:
             try:
                 out[pid] = self.run_for_product_id(pid)
@@ -123,7 +149,7 @@ class RepricingService:
         return out
 
     # ---------- Основная логика ----------
-    def _reprice_product(self, product: Product) -> Optional[Tuple[Decimal, str]]:
+    def _reprice_product(self, product: Product) -> Optional[tuple[Decimal, str]]:
         cfg = RepricingConfig.from_product(product)
 
         if not cfg.enabled:
@@ -140,7 +166,9 @@ class RepricingService:
 
         # Защита маржи
         if cfg.min_margin_percent is not None and cost is not None:
-            min_allowed = (cost * (Decimal("1") + (cfg.min_margin_percent / Decimal("100")))).quantize(Decimal("0.01"))
+            min_allowed = (
+                cost * (Decimal("1") + (cfg.min_margin_percent / Decimal("100")))
+            ).quantize(Decimal("0.01"))
             if cfg.min_price is None or min_allowed > cfg.min_price:
                 cfg.min_price = min_allowed
 
@@ -148,7 +176,9 @@ class RepricingService:
         new_price, reason = self._compute_new_price(current_price, competitor, cfg)
 
         if new_price is None or new_price == current_price:
-            log.info("Repricing: product %s price unchanged (%s)", getattr(product, "id", None), reason)
+            log.info(
+                "Repricing: product %s price unchanged (%s)", getattr(product, "id", None), reason
+            )
             return None
 
         # Применяем и сохраняем
@@ -178,9 +208,9 @@ class RepricingService:
     @staticmethod
     def _compute_new_price(
         current: Decimal,
-        competitor: Optional[Tuple[Decimal, str]],
+        competitor: Optional[tuple[Decimal, str]],
         cfg: RepricingConfig,
-    ) -> Tuple[Optional[Decimal], str]:
+    ) -> tuple[Optional[Decimal], str]:
         """
         Возвращает (новая_цена, причина).
         competitor: (price, seller_id) или None если конкурентов нет.
@@ -214,7 +244,9 @@ class RepricingService:
         if comp_price > current:
             if cfg.max_price is None:
                 return None, "no_ceiling_set"
-            target = min(cfg.max_price, comp_price)  # можно подниматься до конкурента, но не выше потолка
+            target = min(
+                cfg.max_price, comp_price
+            )  # можно подниматься до конкурента, но не выше потолка
             new_price = RepricingService._nudge_towards(current, target, step)
             new_price = RepricingService._clamp(new_price, cfg.min_price, cfg.max_price)
             if new_price <= current:
@@ -233,7 +265,9 @@ class RepricingService:
         return None, "equal_no_change"
 
     @staticmethod
-    def _nudge_towards(current: Decimal, target: Decimal, step: Decimal, down: bool | None = None) -> Decimal:
+    def _nudge_towards(
+        current: Decimal, target: Decimal, step: Decimal, down: bool | None = None
+    ) -> Decimal:
         """
         Смещение от current к target дискретно шагом step.
         Если down=True — двигаемся только вниз. Если False — только вверх. Если None — по направлению к target.
@@ -272,7 +306,7 @@ class RepricingService:
     # ---------- Данные и интеграции ----------
     def _best_competitor_price(
         self, product: Product, cfg: RepricingConfig
-    ) -> Optional[Tuple[Decimal, str]]:
+    ) -> Optional[tuple[Decimal, str]]:
         """
         Получаем цены конкурентов из Kaspi и выбираем «лучшую»:
           - минимальная цена среди релевантных продавцов
@@ -287,11 +321,14 @@ class RepricingService:
                 log.debug("Repricing: KaspiService not available, skip competitor scan")
                 return None
 
-            rows: List[Dict[str, Any]] = self.kaspi.get_competitor_prices(  # type: ignore[attr-defined]
-                sku=sku, product_id=product_id
-            ) or []
+            rows: list[dict[str, Any]] = (
+                self.kaspi.get_competitor_prices(  # type: ignore[attr-defined]
+                    sku=sku, product_id=product_id
+                )
+                or []
+            )
 
-            filtered: List[Tuple[Decimal, str]] = []
+            filtered: list[tuple[Decimal, str]] = []
             for r in rows:
                 sid = str(r.get("seller_id"))
                 if sid in set(cfg.ignore_seller_ids):
@@ -307,7 +344,11 @@ class RepricingService:
             return filtered[0]
 
         except Exception as e:
-            log.warning("Repricing: competitor scan failed for product %s: %s", getattr(product, "id", None), e)
+            log.warning(
+                "Repricing: competitor scan failed for product %s: %s",
+                getattr(product, "id", None),
+                e,
+            )
             return None
 
     # ---------- Работа с ценой товара ----------
@@ -388,7 +429,9 @@ class RepricingService:
         return True
 
     # ---------- Outbox событие ----------
-    def _emit_outbox(self, product: Product, *, old_price: Decimal, new_price: Decimal, reason: str) -> None:
+    def _emit_outbox(
+        self, product: Product, *, old_price: Decimal, new_price: Decimal, reason: str
+    ) -> None:
         if not InventoryOutbox:
             return
         payload = {

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import logging
+import os
 import threading
 import time
 from datetime import UTC, datetime
@@ -127,11 +128,23 @@ class InMemoryStorage:
         with self._lock:
             return [dict(v) for v in self._db["campaigns"].values()]
 
-    def title_exists(self, title: str, exclude_id: Optional[int] = None) -> bool:
+    def title_exists(
+        self, title: str, exclude_id: Optional[int] = None, owner: Optional[str] = None
+    ) -> bool:
+        """
+        Проверка уникальности title среди НЕархивных кампаний.
+        Опционально — в разрезе владельца (owner).
+        """
         t = (title or "").strip().lower()
+        own = (owner or "").strip().lower() if owner else None
         with self._lock:
             for cid, data in self._db["campaigns"].items():
                 if exclude_id is not None and cid == exclude_id:
+                    continue
+                if data.get("archived"):
+                    # архив не блокирует создание новой кампании с тем же title
+                    continue
+                if own is not None and (data.get("owner") or "").strip().lower() != own:
                     continue
                 other = (data.get("title") or "").strip().lower()
                 if t == other:
@@ -156,7 +169,7 @@ class InMemoryStorage:
         with self._lock:
             self._db["messages"].pop(mid, None)
 
-    # ---- сиды (для тестов)
+    # ---- сиды (для тестов/демо)
     def _ensure_seed_campaign(self, campaign_id: int, title: str, active: bool = True) -> None:
         if campaign_id not in self._db["campaigns"]:
             self._db["campaigns"][campaign_id] = {
@@ -174,7 +187,11 @@ class InMemoryStorage:
             }
 
     def _seed_once(self) -> None:
-        if not self._db["campaigns"]:
+        # по умолчанию при pytest/CI сид не включаем, чтобы не ловить коллизии title
+        running_pytest = "PYTEST_CURRENT_TEST" in os.environ
+        seed_enabled = os.getenv("SMARTSELL_SEED_CAMPAIGNS")
+        do_seed = (seed_enabled == "1") or (seed_enabled is None and not running_pytest)
+        if do_seed and not self._db["campaigns"]:
             self._db["campaigns"][1] = {
                 "id": 1,
                 "title": "Demo",
@@ -201,26 +218,32 @@ class InMemoryStorage:
                 "owner": "demo",
                 "schedule": None,
             }
-        self._ensure_seed_campaign(1001, "Seeded")
-        self._ensure_seed_campaign(1002, "Seeded 2")
-        self._ensure_seed_campaign(1003, "Seeded 3")
+            self._ensure_seed_campaign(1001, "Seeded")
+            self._ensure_seed_campaign(1002, "Seeded 2")
+            self._ensure_seed_campaign(1003, "Seeded 3")
 
         current_max = max(self._db["campaigns"].keys()) if self._db["campaigns"] else 0
         self._seq["campaigns"] = max(self._seq.get("campaigns", 0), current_max, 1003)
 
 
 # ------------------------------------------------------------------------------
-# Выбор активного STORAGE (SQL если есть, иначе InMemory)
+# Выбор активного STORAGE
+# По умолчанию — только in-memory. SQL включается ТОЛЬКО если SMARTSELL_USE_SQL=1.
+# Это избавляет от неожиданных сидов/данных в тестовой среде.
 # ------------------------------------------------------------------------------
 _STORAGE_BACKEND = "memory"
-try:
-    # если появится app/storage/campaigns_sql.py — подключимся автоматически
-    from app.storage.campaigns_sql import CampaignsStorageSQL  # type: ignore
+storage: Any
 
-    storage = CampaignsStorageSQL()
-    _STORAGE_BACKEND = "sql"
-except Exception as _e:  # noqa: N816
-    logger.info("SQL storage not available, using in-memory: %s", _e)
+if os.getenv("SMARTSELL_USE_SQL") == "1":
+    try:
+        from app.storage.campaigns_sql import CampaignsStorageSQL  # type: ignore
+
+        storage = CampaignsStorageSQL()
+        _STORAGE_BACKEND = "sql"
+    except Exception as _e:  # noqa: N816
+        logger.info("SQL storage not available, using in-memory: %s", _e)
+        storage = InMemoryStorage()
+else:
     storage = InMemoryStorage()
 
 
@@ -560,8 +583,31 @@ def _save_campaign(c: Campaign) -> None:
     storage.save_campaign(c.model_dump())
 
 
-def _title_exists(title: str, exclude_id: Optional[int] = None) -> bool:
-    return storage.title_exists(title, exclude_id)
+def _title_exists(
+    title: str, exclude_id: Optional[int] = None, owner: Optional[str] = None
+) -> bool:
+    """
+    Обёртка над storage.title_exists:
+    - учитывает owner при наличии;
+    - игнорирует архивашки;
+    - совместима с стораджами, где сигнатура другая.
+    """
+    try:
+        return storage.title_exists(title, exclude_id=exclude_id, owner=owner)  # type: ignore[call-arg]
+    except TypeError:
+        # Фоллбек: ручной проход по списку кампаний
+        t = (title or "").strip().lower()
+        own = (owner or "").strip().lower() if owner else None
+        for c in storage.list_campaigns():
+            if exclude_id is not None and int(c.get("id")) == int(exclude_id):
+                continue
+            if c.get("archived"):
+                continue
+            if own is not None and (c.get("owner") or "").strip().lower() != own:
+                continue
+            if (c.get("title") or "").strip().lower() == t:
+                return True
+        return False
 
 
 def _find_message_in_campaign(camp: Campaign, message_id: int) -> tuple[int, Optional[Message]]:
@@ -624,7 +670,9 @@ router = APIRouter(prefix="/api/v1/campaigns", tags=["campaigns"])
 async def create_campaign(
     campaign: Campaign = Body(...), user: UserCtx = Depends(get_current_user)
 ):
-    if _title_exists(campaign.title):
+    # owner, учитываем при уникальности
+    owner = (campaign.owner or user.username or "").strip()
+    if _title_exists(campaign.title, owner=owner):
         raise HTTPException(status_code=400, detail="title must be unique")
     new_id = storage.next_id("campaigns")
 
@@ -634,7 +682,7 @@ async def create_campaign(
     payload["tags"] = _normalize_tags(payload.get("tags"))
     payload["created_at"] = _now_iso()
     payload["updated_at"] = _now_iso()
-    payload["owner"] = payload.get("owner") or user.username
+    payload["owner"] = owner
     payload.setdefault("archived", False)
     payload.setdefault("active", True)
     payload.setdefault("schedule", None)
@@ -707,6 +755,7 @@ async def campaign_health_check():
 
 @router.get("/_debug/backends")
 async def debug_backends():
+    # Ленивая инициализация очередей (для отладки окружения)
     _maybe_init_celery()
     _maybe_init_rq()
     return {
@@ -851,7 +900,8 @@ async def import_campaigns_bulk(
     errors: list[dict[str, Any]] = []
     for idx, campaign in enumerate(payload):
         try:
-            if _title_exists(campaign.title):
+            owner = (campaign.owner or user.username or "").strip()
+            if _title_exists(campaign.title, owner=owner):
                 errors.append({"index": idx, "title": campaign.title, "error": "duplicate title"})
                 continue
             new_id = storage.next_id("campaigns")
@@ -860,7 +910,7 @@ async def import_campaigns_bulk(
             cdict["tags"] = _normalize_tags(cdict.get("tags"))
             cdict["created_at"] = _now_iso()
             cdict["updated_at"] = _now_iso()
-            cdict["owner"] = cdict.get("owner") or user.username
+            cdict["owner"] = owner
             cdict.setdefault("archived", False)
             cdict.setdefault("active", True)
             msgs: list[Message] = []
@@ -912,7 +962,8 @@ async def import_campaigns_bulk(
 async def save_campaign_draft(
     campaign: Campaign = Body(...), user: UserCtx = Depends(get_current_user)
 ):
-    if _title_exists(campaign.title):
+    owner = (campaign.owner or user.username or "").strip()
+    if _title_exists(campaign.title, owner=owner):
         raise HTTPException(status_code=400, detail="title must be unique")
     new_id = storage.next_id("campaigns")
     payload = campaign.model_dump()
@@ -922,7 +973,7 @@ async def save_campaign_draft(
     payload["tags"] = _normalize_tags(payload.get("tags"))
     payload["created_at"] = _now_iso()
     payload["updated_at"] = _now_iso()
-    payload["owner"] = payload.get("owner") or user.username
+    payload["owner"] = owner
     payload.setdefault("schedule", None)
 
     # ID для сообщений, если пришли
@@ -992,12 +1043,14 @@ async def update_campaign(
     want_change_title = ("title" in campaign.model_fields_set) or (
         campaign.title and (campaign.title != current.get("title"))
     )
-    if want_change_title and _title_exists(campaign.title, exclude_id=campaign_id):
+    owner = (campaign.owner or current.get("owner") or user.username or "").strip()
+    if want_change_title and _title_exists(campaign.title, exclude_id=campaign_id, owner=owner):
         raise HTTPException(status_code=400, detail="title must be unique")
     updated = {**current, **campaign.model_dump(exclude_unset=True)}
     updated["id"] = campaign_id
     updated["tags"] = _normalize_tags(updated.get("tags"))
     updated["updated_at"] = _now_iso()
+    updated["owner"] = owner or current.get("owner")
 
     # сообщения: если в payload пришли — синхронизируем стор
     if "messages" in campaign.model_fields_set:

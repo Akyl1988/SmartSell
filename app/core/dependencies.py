@@ -20,13 +20,13 @@ ENV (optional):
   ENVIRONMENT=development
 """
 
-import asyncio
 import os
 import sys
 import time
 from collections import defaultdict, deque
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
-from typing import Any, Callable, Deque, Dict, Optional, Sequence, Tuple
+from typing import Any, Deque, Optional
 
 from fastapi import Depends, HTTPException, Request, Response, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
@@ -37,6 +37,7 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 try:
     from app.core.config import settings  # type: ignore
 except Exception:  # pragma: no cover
+
     class _Settings:
         ENVIRONMENT: str = os.getenv("ENVIRONMENT", "development")
         REDIS_URL: str = os.getenv("REDIS_URL", "redis://localhost:6379/0")
@@ -49,24 +50,42 @@ except Exception:  # pragma: no cover
 # Logging (robust import with fallbacks)
 # ------------------------------------------------------------------------------
 try:
-    from app.core.logging import audit_logger, get_logger, bind_context  # type: ignore
+    from app.core.logging import audit_logger, bind_context, get_logger  # type: ignore
 except Exception:  # pragma: no cover
+
     class _DummyAuditLogger:
-        def log_auth_success(self, **kwargs): ...
-        def log_auth_failure(self, **kwargs): ...
+        def log_auth_success(self, **kwargs):
+            ...
+
+        def log_auth_failure(self, **kwargs):
+            ...
 
     def get_logger(name: str):
         class _L:
-            def info(self, *a, **k): ...
-            def warning(self, *a, **k): ...
-            def error(self, *a, **k): ...
-            def debug(self, *a, **k): ...
+            def info(self, *a, **k):
+                ...
+
+            def warning(self, *a, **k):
+                ...
+
+            def error(self, *a, **k):
+                ...
+
+            def debug(self, *a, **k):
+                ...
+
         return _L()
 
     class _DummyBind:
-        def __init__(self, **kwargs): ...
-        def __enter__(self): return self
-        def __exit__(self, exc_type, exc, tb): ...
+        def __init__(self, **kwargs):
+            ...
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            ...
+
     def bind_context(**kwargs):  # contextmanager stub
         return _DummyBind()
 
@@ -78,19 +97,50 @@ log = get_logger(__name__)
 # Exceptions (robust import with fallbacks)
 # ------------------------------------------------------------------------------
 try:
-    from app.core.exceptions import AuthenticationError, AuthorizationError, RateLimitError  # type: ignore
+    from app.core.exceptions import (  # type: ignore
+        AuthenticationError,
+        AuthorizationError,
+        RateLimitError,
+    )
 except Exception:  # pragma: no cover
+
     class AuthenticationError(HTTPException):
-        def __init__(self, detail="Authentication required", code="AUTH_REQUIRED", status_code=401, headers: Dict[str, str] | None = None):
-            super().__init__(status_code=status_code, detail={"error": detail, "code": code}, headers=headers or {"WWW-Authenticate": "Bearer"})
+        def __init__(
+            self,
+            detail="Authentication required",
+            code="AUTH_REQUIRED",
+            status_code=401,
+            headers: dict[str, str] | None = None,
+        ):
+            super().__init__(
+                status_code=status_code,
+                detail={"error": detail, "code": code},
+                headers=headers or {"WWW-Authenticate": "Bearer"},
+            )
 
     class AuthorizationError(HTTPException):
-        def __init__(self, detail="Insufficient permissions", code="INSUFFICIENT_PERMISSIONS", status_code=403):
+        def __init__(
+            self,
+            detail="Insufficient permissions",
+            code="INSUFFICIENT_PERMISSIONS",
+            status_code=403,
+        ):
             super().__init__(status_code=status_code, detail={"error": detail, "code": code})
 
     class RateLimitError(HTTPException):
-        def __init__(self, detail="Rate limit exceeded", code="RATE_LIMIT_EXCEEDED", status_code=429, headers: Dict[str, str] | None = None):
-            super().__init__(status_code=status_code, detail={"error": detail, "code": code}, headers=headers or {})
+        def __init__(
+            self,
+            detail="Rate limit exceeded",
+            code="RATE_LIMIT_EXCEEDED",
+            status_code=429,
+            headers: dict[str, str] | None = None,
+        ):
+            super().__init__(
+                status_code=status_code,
+                detail={"error": detail, "code": code},
+                headers=headers or {},
+            )
+
 
 # ------------------------------------------------------------------------------
 # DB session provider (supports app.core.database or app.core.db)
@@ -101,29 +151,38 @@ except Exception:  # pragma: no cover
     try:
         from app.core.db import get_db  # type: ignore
     except Exception:  # last resort
+
         def get_db():  # type: ignore
             # Dummy generator so Depends(get_db) does not explode
             class _Dummy:
-                def __enter__(self): return self
-                def __exit__(self, *a): ...
+                def __enter__(self):
+                    return self
+
+                def __exit__(self, *a):
+                    ...
+
             def _gen():
                 db = _Dummy()
                 try:
                     yield db
                 finally:
                     pass
+
             return _gen()
+
 
 # ------------------------------------------------------------------------------
 # Security helpers (advanced -> legacy)
 # ------------------------------------------------------------------------------
 _HAS_ADV_SECURITY = False
 try:
-    from app.core.security import (  # type: ignore
-        decode_access_token,   # -> dict payload {sub, scp, role, jti, exp, kid, ...}
-        TokenError,            # -> exception class
-        get_refresh_from_cookie,  # noqa: F401 (may be unused here)
+    from app.core.security import (
+        decode_access_token,  # -> dict payload {sub, scp, role, jti, exp, kid, ...}
     )
+    from app.core.security import (  # type: ignore; noqa: F401 (may be unused here)
+        get_refresh_from_cookie,
+    )
+
     _HAS_ADV_SECURITY = True
 except Exception:  # pragma: no cover
     try:
@@ -136,15 +195,16 @@ except Exception:  # pragma: no cover
 # ------------------------------------------------------------------------------
 try:
     import redis.asyncio as aioredis  # type: ignore
+
     _HAS_REDIS = True
 except Exception:  # pragma: no cover
     aioredis = None  # type: ignore
     _HAS_REDIS = False
 
-_redis_client: Optional["aioredis.Redis"] = None  # type: ignore
+_redis_client: Optional[aioredis.Redis] = None  # type: ignore
 
 
-def _redis() -> Optional["aioredis.Redis"]:  # type: ignore
+def _redis() -> Optional[aioredis.Redis]:  # type: ignore
     """Lazy init of asyncio Redis client."""
     global _redis_client
     if not _HAS_REDIS:
@@ -162,6 +222,7 @@ def _redis() -> Optional["aioredis.Redis"]:  # type: ignore
             log.warning("Redis init failed", error=str(e))
             return None
     return _redis_client
+
 
 # ------------------------------------------------------------------------------
 # Utility: correlation ids and client info
@@ -185,10 +246,12 @@ def get_client_info(request: Request) -> dict:
         **ids,
     }
 
+
 # ------------------------------------------------------------------------------
 # Authentication
 # ------------------------------------------------------------------------------
 security = HTTPBearer(auto_error=False)
+
 
 @dataclass
 class AuthContext:
@@ -303,7 +366,11 @@ async def get_current_user(
     info = get_client_info(request)
     with bind_context(user_id=getattr(user, "id", None), **info):
         try:
-            audit_logger.log_auth_success(user_id=getattr(user, "id", None), ip_address=info["ip_address"], user_agent=info["user_agent"])
+            audit_logger.log_auth_success(
+                user_id=getattr(user, "id", None),
+                ip_address=info["ip_address"],
+                user_agent=info["user_agent"],
+            )
         except Exception:
             pass
 
@@ -354,6 +421,7 @@ def require_scopes(required: Sequence[str]) -> Callable[..., Any]:
 
     return _dep
 
+
 # ------------------------------------------------------------------------------
 # Pagination
 # ------------------------------------------------------------------------------
@@ -380,6 +448,7 @@ class Pagination:
 def get_pagination(page: int = 1, per_page: int = 20) -> Pagination:
     return Pagination(page=page, per_page=per_page)
 
+
 # ------------------------------------------------------------------------------
 # Rate limiting: Redis token bucket -> memory sliding window
 # ------------------------------------------------------------------------------
@@ -390,13 +459,16 @@ def _env_int(name: str, default: int) -> int:
     except Exception:
         return default
 
+
 _API_RATE_LIMIT = _env_int("RATE_LIMIT_PER_MINUTE", getattr(settings, "RATE_LIMIT_PER_MINUTE", 100))
-_API_RATE_WINDOW = _env_int("RATE_LIMIT_WINDOW_SECONDS", getattr(settings, "RATE_LIMIT_WINDOW_SECONDS", 60))
+_API_RATE_WINDOW = _env_int(
+    "RATE_LIMIT_WINDOW_SECONDS", getattr(settings, "RATE_LIMIT_WINDOW_SECONDS", 60)
+)
 _AUTH_RATE_LIMIT = _env_int("AUTH_RATE_LIMIT", 10)
 _AUTH_RATE_WINDOW = _env_int("AUTH_RATE_WINDOW_SECONDS", 60)
 
 # in-memory sliding window
-_rate_mem: Dict[str, Deque[float]] = defaultdict(deque)
+_rate_mem: dict[str, Deque[float]] = defaultdict(deque)
 
 _RL_LUA = r"""
 local key        = KEYS[1]
@@ -436,7 +508,8 @@ redis.call('EXPIRE', key, ttl_sec)
 return {allowed, math.floor(tokens), retry_after_ms}
 """
 
-async def _rl_redis_allow(key: str, max_requests: int, window_seconds: int) -> Tuple[bool, int]:
+
+async def _rl_redis_allow(key: str, max_requests: int, window_seconds: int) -> tuple[bool, int]:
     client = _redis()
     if not client:
         return True, 0
@@ -452,7 +525,7 @@ async def _rl_redis_allow(key: str, max_requests: int, window_seconds: int) -> T
         return True, 0
 
 
-def _rl_mem_allow(key: str, max_requests: int, window_seconds: int) -> Tuple[bool, int]:
+def _rl_mem_allow(key: str, max_requests: int, window_seconds: int) -> tuple[bool, int]:
     now = time.time()
     cutoff = now - window_seconds
     q = _rate_mem[key]
@@ -474,13 +547,16 @@ def _rate_key(request: Request, tag: str, per_user: bool = True) -> str:
             # keep only tail of token to avoid storing secrets
             user_or_ip = auth.rsplit(" ", 1)[-1][-16:]
         else:
-            user_or_ip = (request.client.host if request.client else "0.0.0.0")
+            user_or_ip = request.client.host if request.client else "0.0.0.0"
         return f"{base}:{user_or_ip}"
     return base
 
 
-def rate_limit(max_requests: int = 100, window_seconds: int = 60, tag: str = "api", per_user: bool = True):
+def rate_limit(
+    max_requests: int = 100, window_seconds: int = 60, tag: str = "api", per_user: bool = True
+):
     """Factory of async dependency for rate limiting with Redis->memory fallback."""
+
     async def dep(request: Request):
         key = _rate_key(request, tag=tag, per_user=per_user)
         if _HAS_REDIS and _redis():
@@ -499,17 +575,24 @@ def rate_limit(max_requests: int = 100, window_seconds: int = 60, tag: str = "ap
                 headers=headers,
             )
         return True
+
     return dep
 
 
 # Profiles (names for compatibility with your routers)
 async def auth_rate_limit(request: Request):
-    dep = rate_limit(max_requests=_AUTH_RATE_LIMIT, window_seconds=_AUTH_RATE_WINDOW, tag="auth", per_user=True)
+    dep = rate_limit(
+        max_requests=_AUTH_RATE_LIMIT, window_seconds=_AUTH_RATE_WINDOW, tag="auth", per_user=True
+    )
     return await dep(request)
 
+
 async def api_rate_limit(request: Request):
-    dep = rate_limit(max_requests=_API_RATE_LIMIT, window_seconds=_API_RATE_WINDOW, tag="api", per_user=True)
+    dep = rate_limit(
+        max_requests=_API_RATE_LIMIT, window_seconds=_API_RATE_WINDOW, tag="api", per_user=True
+    )
     return await dep(request)
+
 
 # Backward-compat names the user pasted in their draft (keep both)
 auth_rate_limit_dep = auth_rate_limit
@@ -518,7 +601,8 @@ api_rate_limit_dep = api_rate_limit
 # ------------------------------------------------------------------------------
 # Idempotency via Idempotency-Key
 # ------------------------------------------------------------------------------
-_idem_mem: Dict[str, Tuple[int, float]] = {}
+_idem_mem: dict[str, tuple[int, float]] = {}
+
 
 async def ensure_idempotency(request: Request, response: Response):
     """
@@ -579,6 +663,7 @@ async def set_idempotency_result(key: str, status_code: int, ttl_seconds: int = 
         except Exception:
             pass
     _idem_mem[key] = (status_code, time.time() + ttl_seconds)
+
 
 # ------------------------------------------------------------------------------
 # Module alias to support legacy imports: app.core.dependencies -> this module

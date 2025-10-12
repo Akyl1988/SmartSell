@@ -1,9 +1,10 @@
 """Tests for database base classes and core models."""
 
 import pytest
-from app.models.base import Base, BaseModel, SoftDeleteMixin, TenantMixin, AuditMixin, LockableMixin
-from app.models.user import User, UserSession, OTPCode
+
 from app.models.audit_log import AuditLog
+from app.models.base import AuditMixin, Base, BaseModel, LockableMixin, SoftDeleteMixin, TenantMixin
+from app.models.user import OTPCode, User, UserSession
 from app.models.warehouse import StockMovement
 
 

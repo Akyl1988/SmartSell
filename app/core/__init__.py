@@ -23,20 +23,25 @@ SmartSell3 Core Package Initializer (enterprise-grade)
 import os
 import time
 import uuid
-from typing import Any, Dict, Optional
+from typing import Any, Optional
 
 from fastapi import FastAPI, Request, Response
-from fastapi.responses import PlainTextResponse, JSONResponse
+from fastapi.responses import JSONResponse, PlainTextResponse
 
 # --- Settings ---
 try:
-    from app.core.config import settings, get_settings  # type: ignore
+    from app.core.config import get_settings, settings  # type: ignore
 except Exception as e:  # pragma: no cover
     raise RuntimeError("Failed to import settings from app.core.config") from e
 
 # --- Logging: structured logger + audit ---
 try:
-    from app.core.logging import configure_logging, get_logger, audit_logger, bind_context  # type: ignore
+    from app.core.logging import (  # type: ignore
+        audit_logger,
+        bind_context,
+        configure_logging,
+        get_logger,
+    )
 except Exception as e:  # pragma: no cover
     raise RuntimeError("Failed to import logging utilities from app.core.logging") from e
 
@@ -56,14 +61,13 @@ SessionLocal = None
 Base = None
 
 try:  # предпочтительно
-    from app.core.database import (  # type: ignore
-        engine as _engine,
-        AsyncSession as _AsyncSession,
-        async_session_maker as _async_session_maker,
-        create_async_engine as _create_async_engine,
-        SessionLocal as _SessionLocal,
-        Base as _Base,
-    )
+    from app.core.database import AsyncSession as _AsyncSession
+    from app.core.database import Base as _Base
+    from app.core.database import SessionLocal as _SessionLocal
+    from app.core.database import async_session_maker as _async_session_maker
+    from app.core.database import create_async_engine as _create_async_engine
+    from app.core.database import engine as _engine  # type: ignore
+
     engine = _engine
     AsyncSession = _AsyncSession
     async_session_maker = _async_session_maker
@@ -72,14 +76,13 @@ try:  # предпочтительно
     Base = _Base
 except Exception:
     try:
-        from app.core.db import (  # type: ignore
-            engine as _engine,
-            AsyncSession as _AsyncSession,
-            async_session_maker as _async_session_maker,
-            create_async_engine as _create_async_engine,
-            SessionLocal as _SessionLocal,
-            Base as _Base,
-        )
+        from app.core.db import AsyncSession as _AsyncSession
+        from app.core.db import Base as _Base
+        from app.core.db import SessionLocal as _SessionLocal
+        from app.core.db import async_session_maker as _async_session_maker
+        from app.core.db import create_async_engine as _create_async_engine
+        from app.core.db import engine as _engine  # type: ignore
+
         engine = _engine
         AsyncSession = _AsyncSession
         async_session_maker = _async_session_maker
@@ -92,13 +95,22 @@ except Exception:
 # --- OpenTelemetry (best-effort) ---
 try:
     from opentelemetry.trace import get_current_span  # type: ignore
+
     _HAS_OTEL = True
 except Exception:
     _HAS_OTEL = False
 
 # --- Prometheus (best-effort) ---
 try:
-    from prometheus_client import Counter, Histogram, Gauge, CollectorRegistry, CONTENT_TYPE_LATEST, generate_latest  # type: ignore
+    from prometheus_client import (  # type: ignore
+        CONTENT_TYPE_LATEST,
+        CollectorRegistry,
+        Counter,
+        Gauge,
+        Histogram,
+        generate_latest,
+    )
+
     _HAS_PROM = True
 except Exception:
     _HAS_PROM = False
@@ -106,6 +118,7 @@ except Exception:
 # --- StatsD (best-effort) ---
 try:
     from statsd import StatsClient  # type: ignore
+
     _HAS_STATSD = True
 except Exception:
     _HAS_STATSD = False
@@ -113,7 +126,7 @@ except Exception:
 __version__: str = getattr(settings, "VERSION", "0.0.0")
 
 
-def build_info() -> Dict[str, Any]:
+def build_info() -> dict[str, Any]:
     """Структурированная информация о сборке/окружении (для /health, логов)."""
     try:
         info = settings.build_info  # type: ignore[attr-defined]
@@ -134,6 +147,7 @@ _HTTP_REQ_LATENCY = None
 _READY_GAUGE = None
 _statd_client = None
 
+
 def _init_metrics() -> None:
     global _PROM_REGISTRY, _HTTP_REQ_COUNT, _HTTP_REQ_LATENCY, _READY_GAUGE, _statd_client
     log = get_logger("metrics-init")
@@ -141,10 +155,16 @@ def _init_metrics() -> None:
     if _HAS_PROM:
         _PROM_REGISTRY = CollectorRegistry()
         _HTTP_REQ_COUNT = Counter(
-            "http_requests_total", "Total HTTP requests", ["method", "path", "status"], registry=_PROM_REGISTRY
+            "http_requests_total",
+            "Total HTTP requests",
+            ["method", "path", "status"],
+            registry=_PROM_REGISTRY,
         )
         _HTTP_REQ_LATENCY = Histogram(
-            "http_request_duration_seconds", "HTTP request latency (seconds)", ["method", "path"], registry=_PROM_REGISTRY
+            "http_request_duration_seconds",
+            "HTTP request latency (seconds)",
+            ["method", "path"],
+            registry=_PROM_REGISTRY,
         )
         _READY_GAUGE = Gauge(
             "smartsell_ready", "Readiness status (1=ready,0=not_ready)", registry=_PROM_REGISTRY
@@ -183,6 +203,7 @@ def _observe_request_metrics(method: str, path: str, status_code: int, duration:
 def _add_trusted_hosts_middleware(app: FastAPI) -> None:
     try:
         from starlette.middleware.trustedhost import TrustedHostMiddleware
+
         allowed = getattr(settings, "ALLOWED_HOSTS", ["*"]) or ["*"]
         if allowed != ["*"]:
             app.add_middleware(TrustedHostMiddleware, allowed_hosts=allowed)
@@ -193,6 +214,7 @@ def _add_trusted_hosts_middleware(app: FastAPI) -> None:
 def _add_cors_middleware(app: FastAPI) -> None:
     try:
         from fastapi.middleware.cors import CORSMiddleware
+
         cors = getattr(settings, "cors_config", None)
         if isinstance(cors, dict):
             app.add_middleware(
@@ -254,7 +276,9 @@ def _add_request_id_and_tracing_middleware(app: FastAPI) -> None:
 
             # метрики
             try:
-                _observe_request_metrics(request.method, request.url.path, getattr(response, "status_code", 500), dt)
+                _observe_request_metrics(
+                    request.method, request.url.path, getattr(response, "status_code", 500), dt
+                )
             except Exception:
                 pass
 
@@ -312,7 +336,7 @@ def _critical_env_warnings() -> list[str]:
     return issues
 
 
-def core_health_check() -> Dict[str, Any]:
+def core_health_check() -> dict[str, Any]:
     """
     Лёгкая самопроверка ядра.
     """
@@ -415,7 +439,9 @@ def _register_health_endpoints(app: FastAPI) -> None:
         if _HAS_PROM and _PROM_REGISTRY is not None:
             data = generate_latest(_PROM_REGISTRY)  # type: ignore
             return Response(content=data, media_type=CONTENT_TYPE_LATEST)
-        return PlainTextResponse("# metrics disabled (prometheus_client not installed)\n", status_code=200)
+        return PlainTextResponse(
+            "# metrics disabled (prometheus_client not installed)\n", status_code=200
+        )
 
     log.info("Health endpoints registered", endpoints=["/livez", "/readyz", "/metrics"])
 
