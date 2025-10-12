@@ -252,3 +252,5 @@ junit.xml
 celerybeat-schedule
 *.pid
 *.pid.lock
+# ignore alembic backup artifacts
+migrations/versions/*bak_*

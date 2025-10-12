@@ -18,26 +18,25 @@ Order / OrderItem / OrderStatusHistory — управление заказами
 from __future__ import annotations
 
 import enum
-from decimal import Decimal
-from typing import Any, Dict, List, Optional, Sequence, Tuple, TYPE_CHECKING
+from collections.abc import Sequence
 from datetime import datetime
+from decimal import Decimal
+from typing import TYPE_CHECKING, Any, Optional
 
+from sqlalchemy import CheckConstraint, Column, DateTime
+from sqlalchemy import Enum as SQLEnum
 from sqlalchemy import (
-    Column,
     ForeignKey,
+    Index,
     Integer,
     Numeric,
     String,
     Text,
-    DateTime,
-    Enum as SQLEnum,
-    CheckConstraint,
-    Index,
     UniqueConstraint,
+    delete,
     func,
     select,
     update,
-    delete,
 )
 from sqlalchemy.orm import relationship, validates
 
@@ -111,7 +110,7 @@ class OrderSource(str, enum.Enum):
     API = "api"
 
 
-ALLOWED_TRANSITIONS: Dict[OrderStatus, set[OrderStatus]] = {
+ALLOWED_TRANSITIONS: dict[OrderStatus, set[OrderStatus]] = {
     OrderStatus.PENDING: {OrderStatus.CONFIRMED, OrderStatus.CANCELLED},
     OrderStatus.CONFIRMED: {OrderStatus.PAID, OrderStatus.CANCELLED},
     OrderStatus.PAID: {OrderStatus.PROCESSING, OrderStatus.REFUNDED, OrderStatus.CANCELLED},
@@ -250,8 +249,10 @@ class Order(Base):
 
     # ------------------------ CRUD / Query helpers ------------------------
     @staticmethod
-    def get_by_order_number(session, order_number: str) -> Optional["Order"]:
-        return session.query(Order).filter(Order.order_number == (order_number or "").strip()).first()
+    def get_by_order_number(session, order_number: str) -> Optional[Order]:
+        return (
+            session.query(Order).filter(Order.order_number == (order_number or "").strip()).first()
+        )
 
     @staticmethod
     def create(
@@ -264,7 +265,7 @@ class Order(Base):
         customer_email: Optional[str] = None,
         customer_name: Optional[str] = None,
         **extra_fields: Any,
-    ) -> "Order":
+    ) -> Order:
         obj = Order(
             company_id=company_id,
             order_number=order_number,
@@ -284,11 +285,11 @@ class Order(Base):
         *,
         company_id: int,
         order_number: str,
-        items: Sequence[Dict[str, Any]],
+        items: Sequence[dict[str, Any]],
         source: OrderSource = OrderSource.MANUAL,
         currency: str = "KZT",
         **customer_and_shipping: Any,
-    ) -> "Order":
+    ) -> Order:
         order = Order(
             company_id=company_id,
             order_number=order_number,
@@ -357,7 +358,7 @@ class Order(Base):
         description: Optional[str] = None,
         image_url: Optional[str] = None,
         notes: Optional[str] = None,
-    ) -> "OrderItem":
+    ) -> OrderItem:
         item = OrderItem(
             order=self,
             product_id=product_id,
@@ -384,9 +385,9 @@ class Order(Base):
         session=None,
         user_id: Optional[int] = None,
         description: Optional[str] = None,
-        old_values: Optional[Dict[str, Any]] = None,
-        new_values: Optional[Dict[str, Any]] = None,
-        details: Optional[Dict[str, Any]] = None,
+        old_values: Optional[dict[str, Any]] = None,
+        new_values: Optional[dict[str, Any]] = None,
+        details: Optional[dict[str, Any]] = None,
         request_id: Optional[str] = None,
         correlation_id: Optional[str] = None,
         source: Optional[str] = None,
@@ -502,9 +503,7 @@ class Order(Base):
     def confirm(self, user_id: Optional[int] = None, note: Optional[str] = None, *, session=None):
         self.change_status(OrderStatus.CONFIRMED, user_id, note, session=session)
 
-    def mark_paid(
-        self, user_id: Optional[int] = None, note: Optional[str] = None, *, session=None
-    ):
+    def mark_paid(self, user_id: Optional[int] = None, note: Optional[str] = None, *, session=None):
         self.change_status(OrderStatus.PAID, user_id, note, session=session)
 
     def start_processing(
@@ -537,7 +536,7 @@ class Order(Base):
         date_from: Optional[datetime] = None,
         date_to: Optional[datetime] = None,
         only_status: Optional[OrderStatus] = None,
-    ) -> List[Tuple[str, float]]:
+    ) -> list[tuple[str, float]]:
         """
         Возвращает [(period_label, revenue_sum)], сгруппировано по часам или дням.
         Требует Postgres (date_trunc/to_char). На других СУБД может потребоваться адаптация.
@@ -758,9 +757,9 @@ class Order(Base):
         )
 
     @staticmethod
-    async def export_as_dicts_async(session, **kwargs) -> List[Dict[str, Any]]:
+    async def export_as_dicts_async(session, **kwargs) -> list[dict[str, Any]]:
         rows = (await session.execute(Order.export_query(**kwargs))).all()
-        out: List[Dict[str, Any]] = []
+        out: list[dict[str, Any]] = []
         for r in rows:
             (
                 oid,
@@ -913,18 +912,14 @@ class OrderItem(Base):
         order = self.order
         if not order:
             return Decimal("0")
-        return (_to_decimal(order.discount_amount) * self._proportion()).quantize(
-            Decimal("0.01")
-        )
+        return (_to_decimal(order.discount_amount) * self._proportion()).quantize(Decimal("0.01"))
 
     @property
     def allocated_shipping_amount(self) -> Decimal:
         order = self.order
         if not order:
             return Decimal("0")
-        return (_to_decimal(order.shipping_amount) * self._proportion()).quantize(
-            Decimal("0.01")
-        )
+        return (_to_decimal(order.shipping_amount) * self._proportion()).quantize(Decimal("0.01"))
 
     @property
     def gross_total_with_allocations(self) -> Decimal:
@@ -974,7 +969,7 @@ class OrderStatusHistory(Base):
 
     # -------- Снимки истории --------
     @staticmethod
-    async def snapshot_for_order_async(session, order_id: int) -> List[Dict[str, Any]]:
+    async def snapshot_for_order_async(session, order_id: int) -> list[dict[str, Any]]:
         rows = await session.execute(
             select(
                 OrderStatusHistory.id,
@@ -988,7 +983,7 @@ class OrderStatusHistory(Base):
             .where(OrderStatusHistory.order_id == order_id)
             .order_by(OrderStatusHistory.changed_at.asc(), OrderStatusHistory.id.asc())
         )
-        out: List[Dict[str, Any]] = []
+        out: list[dict[str, Any]] = []
         for rid, oid, old_s, new_s, by, at, note in rows.all():
             out.append(
                 {
@@ -1044,7 +1039,7 @@ class OrderStatusHistory(Base):
                 OrderStatusHistory.id.asc(),
             )
         )
-        first_map: Dict[int, Tuple[int, OrderStatus, OrderStatus, datetime]] = {}
+        first_map: dict[int, tuple[int, OrderStatus, OrderStatus, datetime]] = {}
         for oid, hid, old_s, new_s, changed_at in hist_first_rows.all():
             if oid not in first_map:
                 first_map[oid] = (hid, old_s, new_s, changed_at)

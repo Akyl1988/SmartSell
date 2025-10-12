@@ -23,26 +23,26 @@ Unified database configuration and session management for SmartSell3 (async + sy
 
 from __future__ import annotations
 
-import os
 import logging
+import os
 import time as _time
+from collections.abc import AsyncIterator, Generator, Iterator
 from contextlib import contextmanager
 from contextvars import ContextVar
-from typing import AsyncIterator, Iterator, Optional, Generator, Dict, Any
+from typing import Optional
 
-from sqlalchemy import create_engine, text, event
+from sqlalchemy import create_engine, event, text
 from sqlalchemy.engine import Engine
 from sqlalchemy.engine.url import make_url
-from sqlalchemy.exc import SQLAlchemyError, OperationalError
-from sqlalchemy.orm import Session, sessionmaker, DeclarativeBase
-from sqlalchemy.pool import NullPool
-
+from sqlalchemy.exc import OperationalError, SQLAlchemyError
 from sqlalchemy.ext.asyncio import (
     AsyncEngine,
     AsyncSession,
     async_sessionmaker,
     create_async_engine,
 )
+from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
+from sqlalchemy.pool import NullPool
 
 logger = logging.getLogger(__name__)
 
@@ -51,8 +51,10 @@ logger = logging.getLogger(__name__)
 # -----------------------------------------------------------------------------
 try:
     from app.core.config import get_settings  # type: ignore
+
     settings = get_settings()
 except Exception:
+
     class _S:
         ENVIRONMENT = os.getenv("ENVIRONMENT", "development")
         DEBUG = os.getenv("DEBUG", "0") in ("1", "true", "True")
@@ -64,7 +66,9 @@ except Exception:
 
         def sqlalchemy_engine_options_effective(self, async_engine: bool) -> dict:
             return {}
+
     settings = _S()  # type: ignore
+
 
 # -----------------------------------------------------------------------------
 # База декларативных моделей (SQLAlchemy 2.x)
@@ -72,20 +76,34 @@ except Exception:
 class Base(DeclarativeBase):
     pass
 
+
 __all__ = [
     # Base
     "Base",
     # Async
-    "get_async_db", "init_db_async", "close_db_async", "reload_async_engine",
-    "health_check_db_async", "ensure_extensions_async",
+    "get_async_db",
+    "init_db_async",
+    "close_db_async",
+    "reload_async_engine",
+    "health_check_db_async",
+    "ensure_extensions_async",
     # Sync
-    "get_db", "session_scope", "init_db", "drop_db", "recreate_db",
-    "dispose_engine", "reload_engine", "health_check_db", "ensure_extensions",
+    "get_db",
+    "session_scope",
+    "init_db",
+    "drop_db",
+    "recreate_db",
+    "dispose_engine",
+    "reload_engine",
+    "health_check_db",
+    "ensure_extensions",
     # Alembic
     "get_alembic_engine_url",
     # RW routing + stats
-    "RWRoute", "get_query_stats",
+    "RWRoute",
+    "get_query_stats",
 ]
+
 
 # -----------------------------------------------------------------------------
 # Вспомогательные: нормализация URL
@@ -112,7 +130,11 @@ def _normalize_pg_to_psycopg2(url: str) -> str:
 
 
 def _validate_is_postgres(url: str) -> None:
-    if not (url.startswith("postgresql://") or url.startswith("postgresql+") or url.startswith("postgres://")):
+    if not (
+        url.startswith("postgresql://")
+        or url.startswith("postgresql+")
+        or url.startswith("postgres://")
+    ):
         raise RuntimeError(
             f"PostgreSQL required, got DATABASE_URL='{url}'. "
             "Use 'postgresql+psycopg2://user:pass@host:port/dbname'."
@@ -148,7 +170,9 @@ def _resolve_async_url() -> str:
             make_url(url)
             return url
         except Exception:
-            logger.warning("Invalid async DATABASE_URL; falling back to sqlite memory.", exc_info=False)
+            logger.warning(
+                "Invalid async DATABASE_URL; falling back to sqlite memory.", exc_info=False
+            )
 
     return "sqlite+aiosqlite:///:memory:"
 
@@ -214,8 +238,10 @@ def _engine_options(async_engine: bool) -> dict:
 # -----------------------------------------------------------------------------
 _rw_mode: ContextVar[str] = ContextVar("_rw_mode", default="write")  # "read" | "write"
 
+
 class RWRoute:
     """with RWRoute('read'): ... → чтения уходят в реплику (если настроена)."""
+
     def __init__(self, mode: str = "read"):
         if mode not in ("read", "write"):
             raise ValueError("mode must be 'read' or 'write'")
@@ -242,7 +268,7 @@ _SYNC_SESSION_MAKER: Optional[sessionmaker] = None
 _SYNC_REPLICA_ENGINE: Optional[Engine] = None
 
 # простая in-memory статистика
-_query_stats: Dict[str, Dict[str, float]] = {}
+_query_stats: dict[str, dict[str, float]] = {}
 
 
 def _install_query_metrics_on_sync_engine(eng: Engine) -> None:
@@ -262,7 +288,7 @@ def _install_query_metrics_on_sync_engine(eng: Engine) -> None:
         bucket["total_ms"] += dur
 
 
-def get_query_stats() -> Dict[str, Dict[str, float]]:
+def get_query_stats() -> dict[str, dict[str, float]]:
     return {k: dict(v) for k, v in _query_stats.items()}
 
 
@@ -275,7 +301,11 @@ def _get_async_engine() -> AsyncEngine:
     url = _resolve_async_url()
     _ASYNC_ENGINE = create_async_engine(url, **_engine_options(async_engine=True))
     _ASYNC_SESSION_MAKER = async_sessionmaker(
-        bind=_ASYNC_ENGINE, expire_on_commit=False, class_=AsyncSession, autoflush=False, autocommit=False
+        bind=_ASYNC_ENGINE,
+        expire_on_commit=False,
+        class_=AsyncSession,
+        autoflush=False,
+        autocommit=False,
     )
 
     # replica (опционально)
@@ -284,7 +314,9 @@ def _get_async_engine() -> AsyncEngine:
         try:
             rep_url = _normalize_pg_to_asyncpg(rep)
             make_url(rep_url)
-            _ASYNC_REPLICA_ENGINE = create_async_engine(rep_url, **_engine_options(async_engine=True))
+            _ASYNC_REPLICA_ENGINE = create_async_engine(
+                rep_url, **_engine_options(async_engine=True)
+            )
         except Exception as e:
             logger.warning("Async replica init failed; primary will be used. %s", e)
 
@@ -306,7 +338,9 @@ def _get_sync_engine() -> Engine:
         return _SYNC_ENGINE
 
     def _install_pg_connection_events(engine: Engine) -> None:
-        app_name = f"{getattr(settings, 'PROJECT_NAME', 'SmartSell3')}@{getattr(settings, 'VERSION', '')}".strip("@")
+        app_name = f"{getattr(settings, 'PROJECT_NAME', 'SmartSell3')}@{getattr(settings, 'VERSION', '')}".strip(
+            "@"
+        )
         pg_search_path = getattr(settings, "PG_SEARCH_PATH", "") or os.getenv("PG_SEARCH_PATH", "")
         try:
             stmt_timeout_ms = int(getattr(settings, "POSTGRES_STATEMENT_TIMEOUT_MS", 0) or 0)
@@ -334,7 +368,9 @@ def _get_sync_engine() -> Engine:
     url = _resolve_sync_pg_url()
     _SYNC_ENGINE = create_engine(url, **_engine_options(async_engine=False))
     _install_pg_connection_events(_SYNC_ENGINE)
-    _SYNC_SESSION_MAKER = sessionmaker(bind=_SYNC_ENGINE, autocommit=False, autoflush=False, expire_on_commit=False)
+    _SYNC_SESSION_MAKER = sessionmaker(
+        bind=_SYNC_ENGINE, autocommit=False, autoflush=False, expire_on_commit=False
+    )
 
     # replica (опционально)
     rep = (os.getenv("DATABASE_REPLICA_URL_SYNC", "") or "").strip()
@@ -421,6 +457,7 @@ async def reload_async_engine() -> None:
 
 async def health_check_db_async(timeout_seconds: int = 2) -> dict:
     from sqlalchemy import text as sqltext
+
     try:
         eng = _get_async_engine()
         async with eng.connect() as conn:
@@ -428,9 +465,13 @@ async def health_check_db_async(timeout_seconds: int = 2) -> dict:
             version = None
             try:
                 if str(eng.url).startswith("sqlite"):
-                    version = (await conn.execute(sqltext("SELECT sqlite_version()"))).scalar_one_or_none()
+                    version = (
+                        await conn.execute(sqltext("SELECT sqlite_version()"))
+                    ).scalar_one_or_none()
                 else:
-                    version = (await conn.execute(sqltext("SHOW server_version"))).scalar_one_or_none()
+                    version = (
+                        await conn.execute(sqltext("SHOW server_version"))
+                    ).scalar_one_or_none()
             except Exception:
                 version = None
         return {"ok": True, "error": None, "server_version": version}
@@ -450,6 +491,7 @@ async def ensure_extensions_async() -> None:
         "CREATE EXTENSION IF NOT EXISTS citext",
     ]
     from sqlalchemy import text as sqltext
+
     try:
         async with eng.begin() as conn:
             for s in stmts:
@@ -622,5 +664,6 @@ def _try_instrument_otel() -> None:
         )
     except Exception as e:
         logger.debug("OTEL instrument (async) skipped: %s", e)
+
 
 _try_instrument_otel()

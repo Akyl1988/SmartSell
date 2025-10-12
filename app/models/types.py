@@ -2,11 +2,11 @@
 from __future__ import annotations
 
 import re
-from datetime import datetime, timezone
-from typing import Any, Iterable, Optional, Sequence
+from collections.abc import Iterable, Sequence
+from datetime import UTC, datetime
+from typing import Optional
 
-from sqlalchemy.types import TypeDecorator, JSON, DateTime, String
-from sqlalchemy import types as sqltypes
+from sqlalchemy.types import JSON, DateTime, String, TypeDecorator
 
 try:
     # Будет доступен только если установлен драйвер/диалект PostgreSQL
@@ -70,13 +70,13 @@ class UTCDateTime(TypeDecorator):
             # считаем, что это уже UTC
             return value.replace(tzinfo=None)
         # конвертируем в UTC и убираем tzinfo для совместимости с большинством БД
-        return value.astimezone(timezone.utc).replace(tzinfo=None)
+        return value.astimezone(UTC).replace(tzinfo=None)
 
     def process_result_value(self, value: Optional[datetime], dialect) -> Optional[datetime]:
         if value is None:
             return None
         # возвращаем aware-дату в UTC
-        return value.replace(tzinfo=timezone.utc)
+        return value.replace(tzinfo=UTC)
 
 
 # ======================================================================

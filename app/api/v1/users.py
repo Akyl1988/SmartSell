@@ -4,7 +4,7 @@ User management endpoints (enterprise-ready).
 
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional
+from typing import Any, Optional
 
 from fastapi import APIRouter, Depends, Path, Query
 from sqlalchemy import or_
@@ -18,12 +18,7 @@ from app.core.dependencies import (
     get_current_verified_user,
     get_pagination,
 )
-from app.core.exceptions import (
-    AuthenticationError,
-    ForbiddenError,
-    NotFoundError,
-    SmartSellValidationError,
-)
+from app.core.exceptions import AuthenticationError, NotFoundError, SmartSellValidationError
 from app.core.logging import audit_logger
 from app.core.security import get_password_hash, verify_password
 from app.models.user import User, UserSession
@@ -37,13 +32,13 @@ router = APIRouter(prefix="/users", tags=["Users"], dependencies=[Depends(api_ra
 # Helpers
 # ---------------------------------------------------------------------------
 
+
 def _is_admin(user: User) -> bool:
     # Поддерживаем обе возможные модели флага
     return bool(getattr(user, "is_superuser", False) or getattr(user, "is_admin", False))
 
 
 def _apply_user_filters(query, search: Optional[str], is_active: Optional[bool]):
-
     if is_active is not None:
         query = query.filter(User.is_active == is_active)
 
@@ -69,6 +64,7 @@ _ALLOWED_SORT_FIELDS = {
     "last_login_at": getattr(User, "last_login_at", User.id),
 }
 
+
 def _apply_sorting(query, sort_by: str, sort_order: str):
     col = _ALLOWED_SORT_FIELDS.get(sort_by, _ALLOWED_SORT_FIELDS["created_at"])
     return query.order_by(col.asc() if sort_order.lower() == "asc" else col.desc())
@@ -77,6 +73,7 @@ def _apply_sorting(query, sort_by: str, sort_order: str):
 # ---------------------------------------------------------------------------
 # Me
 # ---------------------------------------------------------------------------
+
 
 @router.get("/me", response_model=UserResponse)
 async def get_current_user_info(current_user: User = Depends(get_current_user)):
@@ -91,7 +88,7 @@ async def update_current_user(
     db: Session = Depends(get_db),
 ):
     """Update current user information."""
-    changes: Dict[str, Dict[str, Any]] = {}
+    changes: dict[str, dict[str, Any]] = {}
 
     for field, value in user_update.dict(exclude_unset=True).items():
         if hasattr(current_user, field):
@@ -213,7 +210,7 @@ async def change_password(
     return SuccessResponse(message="Password changed successfully")
 
 
-@router.get("/me/sessions", response_model=List[dict])
+@router.get("/me/sessions", response_model=list[dict])
 async def list_my_sessions(
     current_user: User = Depends(get_current_verified_user),
     db: Session = Depends(get_db),
@@ -242,7 +239,7 @@ async def list_my_sessions(
 
 @router.post("/me/sessions/revoke", response_model=SuccessResponse)
 async def revoke_my_sessions(
-    session_ids: List[int],
+    session_ids: list[int],
     current_user: User = Depends(get_current_verified_user),
     db: Session = Depends(get_db),
 ):
@@ -301,6 +298,7 @@ async def revoke_all_my_sessions(
 # Public profiles & admin listing
 # ---------------------------------------------------------------------------
 
+
 @router.get("/{user_id}", response_model=UserResponse)
 async def get_user_public_profile(
     user_id: int = Path(..., ge=1),
@@ -335,7 +333,9 @@ async def list_users(
             # Не админ — ограничим только собой
             total = 1
             items = [current_user]
-            return PaginatedResponse.create(items=items, total=total, page=pagination.page, per_page=pagination.per_page)
+            return PaginatedResponse.create(
+                items=items, total=total, page=pagination.page, per_page=pagination.per_page
+            )
 
     q = db.query(User)
     q = _apply_user_filters(q, search, is_active)
@@ -344,12 +344,15 @@ async def list_users(
     q = _apply_sorting(q, sort_by, sort_order)
     users = q.offset(pagination.offset).limit(pagination.limit).all()
 
-    return PaginatedResponse.create(items=users, total=total, page=pagination.page, per_page=pagination.per_page)
+    return PaginatedResponse.create(
+        items=users, total=total, page=pagination.page, per_page=pagination.per_page
+    )
 
 
 # ---------------------------------------------------------------------------
 # Soft verification & 2FA switches (опционально, без внешних интеграций)
 # ---------------------------------------------------------------------------
+
 
 class VerificationToggle(BaseModel):
     value: bool
@@ -379,7 +382,9 @@ async def toggle_email_verified(
         resource_id=str(current_user.id),
         changes={"is_email_verified": {"old": old, "new": bool(body.value)}},
     )
-    return SuccessResponse(message="Email verification flag updated", data={"is_email_verified": bool(body.value)})
+    return SuccessResponse(
+        message="Email verification flag updated", data={"is_email_verified": bool(body.value)}
+    )
 
 
 @router.post("/me/verify/phone", response_model=SuccessResponse)
@@ -403,7 +408,9 @@ async def toggle_phone_verified(
         resource_id=str(current_user.id),
         changes={"is_verified": {"old": old, "new": bool(body.value)}},
     )
-    return SuccessResponse(message="Phone verification flag updated", data={"is_verified": bool(body.value)})
+    return SuccessResponse(
+        message="Phone verification flag updated", data={"is_verified": bool(body.value)}
+    )
 
 
 @router.post("/me/2fa", response_model=SuccessResponse)
@@ -426,4 +433,6 @@ async def toggle_2fa(
         resource_id=str(current_user.id),
         changes={"is_two_factor_enabled": {"old": old, "new": bool(body.value)}},
     )
-    return SuccessResponse(message="2FA setting updated", data={"is_two_factor_enabled": bool(body.value)})
+    return SuccessResponse(
+        message="2FA setting updated", data={"is_two_factor_enabled": bool(body.value)}
+    )

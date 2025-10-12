@@ -1,10 +1,29 @@
-# app/models/otp.py
 from __future__ import annotations
 
+"""
+Enterprise-grade OTP domain models & helpers.
+
+Задачи модуля:
+- ЕДИНЫЙ владелец таблицы `otp_codes` (исключаем дубли маппера и конфликты backref).
+- Совместимость с «наследием»: если класс OTPCode уже смэплен в другом месте —
+  аккуратно «дополняем» его методами/слушателями, не ломая контракт.
+- Новая расширенная модель `OtpAttempt` для аналитики/лимитов/антифрода.
+- Утилиты для генерации/хеширования/проверки кодов, централизованный аудит.
+- Async-репозиторные методы (SQLAlchemy 2.x, AsyncSession-first).
+
+ВАЖНО:
+- Ничего не удаляем из легаси — только добавляем/исправляем.
+- Совместимо с PostgreSQL и SQLite (для тестов). Все datetime — UTC naive.
+"""
+
 import enum
+import hashlib
 import hmac
+import os
+import secrets
+from collections.abc import Callable, Sequence
 from datetime import datetime, timedelta
-from typing import Any, Callable, Dict, Optional, Sequence, Tuple, Union, Type
+from typing import Any, Optional, Union
 
 from sqlalchemy import (
     Boolean,
@@ -15,29 +34,29 @@ from sqlalchemy import (
     Index,
     Integer,
     String,
+    UniqueConstraint,
     and_,
     delete,
+    event,
     func,
     or_,
     select,
     update,
-    UniqueConstraint,
-    event,
 )
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import relationship, validates
+from sqlalchemy.orm import class_mapper, relationship, validates
 from sqlalchemy.orm.exc import UnmappedClassError
-from sqlalchemy.orm import class_mapper
 
-from app.models.base import Base
-
+# Используем ту же Declarative Base, что и всё приложение
+from app.models.base import BaseModel as Base  # единая metadata/registry для всех моделей
 
 # ---------------------------------------------------------------------------
-# Общие утилиты / SIEM
+# Общие утилиты (время, код, хеш, аудит)
 # ---------------------------------------------------------------------------
+
 
 def utc_now() -> datetime:
-    """Naive UTC 'сейчас' (без tzinfo) — удобно для SQLite и кросс-БД по проекту."""
+    """Naive UTC 'сейчас' (без tzinfo) — единообразно по проекту."""
     return datetime.utcnow()
 
 
@@ -50,38 +69,72 @@ def constant_time_equals(a: str | bytes, b: str | bytes) -> bool:
     return hmac.compare_digest(a, b)
 
 
-_AUDIT_SINK: Optional[Callable[[str, Dict[str, Any]], None]] = None
+def generate_numeric_code(length: int = 6) -> str:
+    """
+    Криптографически стойкая генерация цифрового OTP.
+    Возвращает строку фиксированной длины из цифр [0-9] (с ведущими нулями).
+    """
+    length = max(4, min(int(length or 6), 12))
+    return "".join(str(secrets.randbelow(10)) for _ in range(length))
 
 
-def configure_audit_sink(sink: Optional[Callable[[str, Dict[str, Any]], None]]) -> None:
-    """Регистрирует внешнюю приёмную точку для аудита (например, логер/шина)."""
+def get_otp_secret() -> bytes:
+    """
+    Секрет для хеширования OTP. В проде ОБЯЗАТЕЛЬНО задать переменную окружения:
+      OTP_SECRET="<long_random_string>"
+    """
+    val = os.getenv("OTP_SECRET", "dev-only-default-please-override-in-prod")
+    return val.encode("utf-8")
+
+
+def hash_code_sha256(code: str) -> str:
+    """HMAC-SHA256(OTP_SECRET, code) -> hex."""
+    mac = hmac.new(get_otp_secret(), (code or "").encode("utf-8"), hashlib.sha256)
+    return mac.hexdigest()
+
+
+def verify_code_sha256(plain_code: str, stored_hash_hex: str) -> bool:
+    """Проверка plain-кода против сохранённого HMAC-SHA256 hex."""
+    try:
+        mac = hmac.new(get_otp_secret(), (plain_code or "").encode("utf-8"), hashlib.sha256)
+        return constant_time_equals(mac.hexdigest(), (stored_hash_hex or ""))
+    except Exception:
+        return False
+
+
+_AUDIT_SINK: Optional[Callable[[str, dict[str, Any]], None]] = None
+
+
+def configure_audit_sink(sink: Optional[Callable[[str, dict[str, Any]], None]]) -> None:
+    """Регистрирует внешний sink для аудита (логер/шина и т.п.)."""
     global _AUDIT_SINK
     _AUDIT_SINK = sink
 
 
-def get_audit_sink() -> Optional[Callable[[str, Dict[str, Any]], None]]:
+def get_audit_sink() -> Optional[Callable[[str, dict[str, Any]], None]]:
     return _AUDIT_SINK
 
 
-def _emit(event_name: str, payload: Dict[str, Any]) -> None:
-    """Безопасно публикует событие в подключённый sink (если он есть)."""
+def _emit(event_name: str, payload: dict[str, Any]) -> None:
+    """Безопасно публикует событие в sink (если задан)."""
     sink = _AUDIT_SINK
     if sink:
         try:
             sink(event_name, payload)
         except Exception:
-            # Никогда не ломаем бизнес-логику из-за проблем с аудитом
+            # Бизнес-логику из-за аудита не ломаем
             pass
 
 
 # ---------------------------------------------------------------------------
-# SINGLE-MAPPER GUARD FOR OTPCode
+# SINGLE-MAPPER GUARD FOR OTPCode (анти-дубликат маппера)
 # ---------------------------------------------------------------------------
+
 
 def _get_existing_mapped_class(name: str):
     """
     Вернёт уже смэпленный класс с данным именем из Declarative Registry, если он есть
-    и реально промаплен. Нужен, чтобы не задвоить OTPCode, если он объявлен в другом модуле.
+    и действительно промаплен. Нужен, чтобы не задвоить OTPCode, если он объявлен в другом модуле.
     """
     try:
         reg = Base.registry._class_registry  # type: ignore[attr-defined]
@@ -99,29 +152,37 @@ def _get_existing_mapped_class(name: str):
     return None
 
 
-def _patch_otpcode_api(cls: Type[Any]) -> None:
+def _patch_otpcode_api(cls: type[Any]) -> None:
     """
     Аккуратно добавляем недостающие методы в уже существующий OTPCode (если он был смэплен
-    вне этого файла), не затирая чужую бизнес-логику.
+    вне этого файла), не затирая чужую бизнес-логику/атрибуты.
     """
     if not hasattr(cls, "is_expired"):
+
         def is_expired(self) -> bool:
             return utc_now() >= (getattr(self, "expires_at", None) or utc_now())
+
         setattr(cls, "is_expired", is_expired)
 
     if not hasattr(cls, "can_be_verified"):
+
         def can_be_verified(self) -> bool:
             return not bool(getattr(self, "is_used", False)) and not self.is_expired()
+
         setattr(cls, "can_be_verified", can_be_verified)
 
     if not hasattr(cls, "mark_used"):
+
         def mark_used(self) -> None:
             self.is_used = True
-            self.verified_at = utc_now()
-            self.updated_at = utc_now()
+            setattr(self, "verified_at", utc_now())
+            if hasattr(self, "updated_at"):
+                setattr(self, "updated_at", utc_now())
+
         setattr(cls, "mark_used", mark_used)
 
     if not hasattr(cls, "verify_plain"):
+
         def verify_plain(self, plain_code: str) -> bool:
             if not self.can_be_verified():
                 return False
@@ -130,15 +191,23 @@ def _patch_otpcode_api(cls: Type[Any]) -> None:
                 self.mark_used()
             else:
                 self.attempts = int(getattr(self, "attempts", 0) or 0) + 1
-                self.updated_at = utc_now()
+                if hasattr(self, "updated_at"):
+                    setattr(self, "updated_at", utc_now())
             return ok
+
         setattr(cls, "verify_plain", verify_plain)
 
     if not hasattr(cls, "factory"):
+
         @staticmethod
-        def factory(*, phone: str = "77000000000", code: str = "123456",
-                    purpose: str = "login", ttl_minutes: int = 5,
-                    user_id: Optional[int] = None):
+        def factory(
+            *,
+            phone: str = "77000000000",
+            code: str = "123456",
+            purpose: str = "login",
+            ttl_minutes: int = 5,
+            user_id: Optional[int] = None,
+        ):
             now = utc_now()
             return cls(
                 phone=phone,
@@ -151,11 +220,15 @@ def _patch_otpcode_api(cls: Type[Any]) -> None:
                 created_at=now,
                 updated_at=now,
             )
+
         setattr(cls, "factory", factory)
 
     if not hasattr(cls, "a_find_latest_active"):
+
         @staticmethod
-        async def a_find_latest_active(session: AsyncSession, *, phone: str, purpose: str = "login"):
+        async def a_find_latest_active(
+            session: AsyncSession, *, phone: str, purpose: str = "login"
+        ):
             rows = await session.execute(
                 select(cls)
                 .where(
@@ -168,11 +241,15 @@ def _patch_otpcode_api(cls: Type[Any]) -> None:
                 .limit(1)
             )
             return rows.scalar_one_or_none()
+
         setattr(cls, "a_find_latest_active", a_find_latest_active)
 
     if not hasattr(cls, "a_verify_and_mark"):
+
         @staticmethod
-        async def a_verify_and_mark(session: AsyncSession, *, phone: str, purpose: str, code: str, max_attempts: int = 5) -> bool:
+        async def a_verify_and_mark(
+            session: AsyncSession, *, phone: str, purpose: str, code: str, max_attempts: int = 5
+        ) -> bool:
             rec = await cls.a_find_latest_active(session, phone=phone, purpose=purpose)
             if not rec:
                 return False
@@ -180,14 +257,21 @@ def _patch_otpcode_api(cls: Type[Any]) -> None:
                 return False
             if rec.verify_plain(code):
                 await session.flush()
-                _emit("otp.legacy.verify.ok", {"id": rec.id, "phone": rec.phone, "purpose": rec.purpose})
+                _emit(
+                    "otp.legacy.verify.ok",
+                    {"id": rec.id, "phone": rec.phone, "purpose": rec.purpose},
+                )
                 return True
             await session.flush()
-            _emit("otp.legacy.verify.fail", {"id": rec.id, "phone": rec.phone, "purpose": rec.purpose})
+            _emit(
+                "otp.legacy.verify.fail", {"id": rec.id, "phone": rec.phone, "purpose": rec.purpose}
+            )
             return False
+
         setattr(cls, "a_verify_and_mark", a_verify_and_mark)
 
     if not hasattr(cls, "a_cleanup_expired"):
+
         @staticmethod
         async def a_cleanup_expired(session: AsyncSession, *, older_than_minutes: int = 60) -> int:
             threshold = utc_now() - timedelta(minutes=older_than_minutes)
@@ -197,13 +281,14 @@ def _patch_otpcode_api(cls: Type[Any]) -> None:
                         cls.expires_at < threshold,
                         and_(
                             cls.is_used.is_(True),
-                            cls.verified_at != None,  # noqa: E711
-                            cls.verified_at < threshold,
+                            getattr(cls, "verified_at") != None,  # noqa: E711
+                            getattr(cls, "verified_at") < threshold,
                         ),
                     )
                 )
             )
             return int(res.rowcount or 0)
+
         setattr(cls, "a_cleanup_expired", a_cleanup_expired)
 
 
@@ -218,9 +303,11 @@ if _existing_otpcode is None:
 
     class OTPCode(Base):
         """
-        Легаси-модель для совместимости (таблица otp_codes).
-        Минимальные поля и логика валидации/верификации.
+        Легаси-модель (таблица otp_codes) — совместимая и минимальная.
+        ВАЖНО: связь с User через back_populates (НЕ backref), чтобы не конфликтовать
+        с уже объявленной User.otp_codes.
         """
+
         __tablename__ = "otp_codes"
         __mapper_args__ = {"eager_defaults": True}
         __table_args__ = (
@@ -230,6 +317,7 @@ if _existing_otpcode is None:
             Index("ix_otpcode_expires_at", "expires_at"),
             Index("ix_otpcode_is_used", "is_used"),
             Index("ix_otpcode_phone_purpose_created", "phone", "purpose", "created_at"),
+            UniqueConstraint("code", "phone", "purpose", name="uq_otp_code_phone_purpose"),
             CheckConstraint("attempts >= 0", name="ck_otpcode_attempts_non_negative"),
             {"extend_existing": True},
         )
@@ -240,12 +328,17 @@ if _existing_otpcode is None:
         purpose = Column(String(32), nullable=False, default="login")
 
         # дефолт: +5 минут с момента создания
-        expires_at = Column(DateTime, nullable=False, default=lambda: utc_now() + timedelta(minutes=5))
+        expires_at = Column(
+            DateTime, nullable=False, default=lambda: utc_now() + timedelta(minutes=5)
+        )
         is_used = Column(Boolean, nullable=False, default=False)
         attempts = Column(Integer, nullable=False, default=0)
 
         user_id = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
-        user = relationship("User", backref="otp_codes", foreign_keys=[user_id], lazy="selectin")
+        # ВАЖНО: back_populates — без авто-создания backref на User
+        user = relationship(
+            "User", back_populates="otp_codes", foreign_keys=[user_id], lazy="selectin"
+        )
 
         created_at = Column(DateTime, nullable=False, default=utc_now)
         verified_at = Column(DateTime, nullable=True)
@@ -310,7 +403,7 @@ if _existing_otpcode is None:
             purpose: str = "login",
             ttl_minutes: int = 5,
             user_id: Optional[int] = None,
-        ) -> "OTPCode":
+        ) -> OTPCode:
             now = utc_now()
             return OTPCode(
                 phone=phone,
@@ -327,7 +420,7 @@ if _existing_otpcode is None:
         @staticmethod
         async def a_find_latest_active(
             session: AsyncSession, *, phone: str, purpose: str = "login"
-        ) -> Optional["OTPCode"]:
+        ) -> Optional[OTPCode]:
             rows = await session.execute(
                 select(OTPCode)
                 .where(
@@ -352,10 +445,15 @@ if _existing_otpcode is None:
                 return False
             if rec.verify_plain(code):
                 await session.flush()
-                _emit("otp.legacy.verify.ok", {"id": rec.id, "phone": rec.phone, "purpose": rec.purpose})
+                _emit(
+                    "otp.legacy.verify.ok",
+                    {"id": rec.id, "phone": rec.phone, "purpose": rec.purpose},
+                )
                 return True
             await session.flush()
-            _emit("otp.legacy.verify.fail", {"id": rec.id, "phone": rec.phone, "purpose": rec.purpose})
+            _emit(
+                "otp.legacy.verify.fail", {"id": rec.id, "phone": rec.phone, "purpose": rec.purpose}
+            )
             return False
 
         @staticmethod
@@ -389,6 +487,7 @@ else:
 
 # --- ЕДИНАЯ ТОЧКА РЕГИСТРАЦИИ LISTENERS ДЛЯ OTPCode (для обоих сценариев) ---
 
+
 def _otp_init_fn(target, args, kwargs) -> None:
     """
     Подстраховка на уровне инициализации инстанса:
@@ -415,32 +514,27 @@ def _otp_before_insert_fn(_mapper, _connection, target) -> None:
         target.is_used = False
     if not getattr(target, "created_at", None):
         target.created_at = utc_now()
-    if not getattr(target, "updated_at", None):
+    if hasattr(target, "updated_at") and not getattr(target, "updated_at", None):
         target.updated_at = utc_now()
 
 
 def _otp_before_update_fn(_mapper, _connection, target) -> None:
-    target.updated_at = utc_now()
+    if hasattr(target, "updated_at"):
+        target.updated_at = utc_now()
     if getattr(target, "attempts", None) is None:
         target.attempts = 0
     if getattr(target, "is_used", None) is None:
-        # фикс: раньше могла быть опечатка target.is_used = False()
         target.is_used = False
 
 
-def _ensure_otp_listeners(model_cls: Type[Any]) -> None:
+def _ensure_otp_listeners(model_cls: type[Any]) -> None:
     """
-    Регистрируем слушатели, если ещё не зарегистрированы.
-    Это устраняет проблему, когда OTPCode уже смэплен в другом месте, и
-    наши декораторы не сработали, а также защищает от повторной регистрации.
+    Регистрируем слушатели, если ещё не зарегистрированы (защита от повторной регистрации).
     """
-    # init
     if not event.contains(model_cls, "init", _otp_init_fn):
         event.listen(model_cls, "init", _otp_init_fn, propagate=True)
-    # before_insert
     if not event.contains(model_cls, "before_insert", _otp_before_insert_fn):
         event.listen(model_cls, "before_insert", _otp_before_insert_fn, propagate=True)
-    # before_update
     if not event.contains(model_cls, "before_update", _otp_before_update_fn):
         event.listen(model_cls, "before_update", _otp_before_update_fn, propagate=True)
 
@@ -450,8 +544,9 @@ _ensure_otp_listeners(OTPCode)
 
 
 # ---------------------------------------------------------------------------
-# Новая модель — enterprise-ready: otp_attempts (без изменений логики)
+# Новая модель — enterprise-ready: otp_attempts
 # ---------------------------------------------------------------------------
+
 
 class OtpPurpose(str, enum.Enum):
     LOGIN = "login"
@@ -478,6 +573,7 @@ class OtpAttempt(Base):
     """
     Enterprise-вариант хранения OTP-попыток с расширенной аналитикой/ограничениями.
     """
+
     __tablename__ = "otp_attempts"
     __mapper_args__ = {"eager_defaults": True}
     __table_args__ = (
@@ -490,7 +586,9 @@ class OtpAttempt(Base):
         Index("ix_otp_attempt_blocked", "is_blocked"),
         UniqueConstraint("id", name="uq_otp_attempts_id"),
         CheckConstraint("attempts_left >= 0", name="ck_otp_attempts_left_non_negative"),
-        CheckConstraint("sent_count_hour >= 0 AND sent_count_day >= 0", name="ck_otp_sent_counts_non_negative"),
+        CheckConstraint(
+            "sent_count_hour >= 0 AND sent_count_day >= 0", name="ck_otp_sent_counts_non_negative"
+        ),
         CheckConstraint("fraud_score >= 0", name="ck_otp_fraud_score_non_negative"),
         {"extend_existing": True},
     )
@@ -498,7 +596,9 @@ class OtpAttempt(Base):
     id = Column(Integer, primary_key=True, autoincrement=True, index=True)
     phone = Column(String(32), nullable=False)
     code_hash = Column(String(255), nullable=False)
-    expires_at = Column(DateTime, nullable=False, default=lambda: utc_now() + timedelta(minutes=DEFAULT_OTP_TTL_MIN))
+    expires_at = Column(
+        DateTime, nullable=False, default=lambda: utc_now() + timedelta(minutes=DEFAULT_OTP_TTL_MIN)
+    )
 
     attempts_left = Column(Integer, default=5, nullable=False)
     is_verified = Column(Boolean, default=False, nullable=False)
@@ -621,7 +721,10 @@ class OtpAttempt(Base):
         if flag:
             self.fraud_flags = (self.fraud_flags + f",{flag}") if self.fraud_flags else flag
         self.updated_at = utc_now()
-        _emit("otp.fraud.bump", self.to_audit_dict(extra={"points": points, "flag": flag, "score": self.fraud_score}))
+        _emit(
+            "otp.fraud.bump",
+            self.to_audit_dict(extra={"points": points, "flag": flag, "score": self.fraud_score}),
+        )
         return self.fraud_score
 
     # Attempts & Verification
@@ -647,7 +750,9 @@ class OtpAttempt(Base):
         if auto_archive:
             self.auto_archive_after_verify(reason=archive_reason)
 
-    def verify_with_plain(self, plain_code: str, verifier: Callable[[str, str], bool], *, auto_archive: bool = True) -> bool:
+    def verify_with_plain(
+        self, plain_code: str, verifier: Callable[[str, str], bool], *, auto_archive: bool = True
+    ) -> bool:
         if not self.is_valid():
             _emit("otp.verify.denied", self.to_audit_dict(extra={"reason": "not_valid"}))
             return False
@@ -712,7 +817,7 @@ class OtpAttempt(Base):
         self.updated_at = now
         _emit("otp.send.register", self.to_audit_dict())
 
-    def window_remaining_seconds(self) -> Tuple[int, int]:
+    def window_remaining_seconds(self) -> tuple[int, int]:
         now = utc_now()
         hstart = self.hour_window_started_at
         dstart = self.day_window_started_at
@@ -751,7 +856,7 @@ class OtpAttempt(Base):
         user_id: Optional[int] = None,
         channel: Union[str, OtpChannel] = OtpChannel.SMS.value,
         attempts_left: int = 5,
-    ) -> "OtpAttempt":
+    ) -> OtpAttempt:
         now = utc_now()
         purpose_val = purpose.value if isinstance(purpose, OtpPurpose) else str(purpose)
         channel_val = channel.value if isinstance(channel, OtpChannel) else str(channel)
@@ -785,7 +890,7 @@ class OtpAttempt(Base):
         user_id: Optional[int] = None,
         attempts_left: int = 5,
         verified: bool = False,
-    ) -> "OtpAttempt":
+    ) -> OtpAttempt:
         now = utc_now()
         obj = OtpAttempt(
             phone=phone,
@@ -812,7 +917,7 @@ class OtpAttempt(Base):
         phone: str,
         purpose: OtpPurpose = OtpPurpose.LOGIN,
         channel: OtpChannel = OtpChannel.SMS,
-    ) -> Optional["OtpAttempt"]:
+    ) -> Optional[OtpAttempt]:
         rows = await session.execute(
             select(OtpAttempt)
             .where(
@@ -841,7 +946,7 @@ class OtpAttempt(Base):
         attempts_left: int = 5,
         user_id: Optional[int] = None,
         reset_rate_windows: bool = True,
-    ) -> "OtpAttempt":
+    ) -> OtpAttempt:
         old = await OtpAttempt.get_latest_active_for_phone(
             session, phone=phone, purpose=purpose, channel=channel
         )
@@ -879,7 +984,9 @@ class OtpAttempt(Base):
 
     # Maintenance
     @staticmethod
-    async def cleanup_verified(session: AsyncSession, *, older_than_days: int = 7, reason: str = "archived") -> int:
+    async def cleanup_verified(
+        session: AsyncSession, *, older_than_days: int = 7, reason: str = "archived"
+    ) -> int:
         threshold = utc_now() - timedelta(days=older_than_days)
         res = await session.execute(
             update(OtpAttempt)
@@ -911,11 +1018,16 @@ class OtpAttempt(Base):
         )
         count = int(res.rowcount or 0)
         if count:
-            _emit("otp.cleanup.unverified_expired", {"count": count, "older_than_minutes": older_than_minutes})
+            _emit(
+                "otp.cleanup.unverified_expired",
+                {"count": count, "older_than_minutes": older_than_minutes},
+            )
         return count
 
     @staticmethod
-    async def purge_soft_deleted_verified(session: AsyncSession, *, older_than_days: int = 30) -> int:
+    async def purge_soft_deleted_verified(
+        session: AsyncSession, *, older_than_days: int = 30
+    ) -> int:
         threshold = utc_now() - timedelta(days=older_than_days)
         res = await session.execute(
             delete(OtpAttempt).where(
@@ -926,7 +1038,10 @@ class OtpAttempt(Base):
         )
         count = int(res.rowcount or 0)
         if count:
-            _emit("otp.purge.soft_deleted_verified", {"count": count, "older_than_days": older_than_days})
+            _emit(
+                "otp.purge.soft_deleted_verified",
+                {"count": count, "older_than_days": older_than_days},
+            )
         return count
 
     @staticmethod
@@ -946,7 +1061,9 @@ class OtpAttempt(Base):
     async def purge_soft_deleted(session: AsyncSession, *, older_than_days: int = 7) -> int:
         threshold = utc_now() - timedelta(days=older_than_days)
         res = await session.execute(
-            delete(OtpAttempt).where(OtpAttempt.deleted_at.is_not(None), OtpAttempt.deleted_at < threshold)
+            delete(OtpAttempt).where(
+                OtpAttempt.deleted_at.is_not(None), OtpAttempt.deleted_at < threshold
+            )
         )
         count = int(res.rowcount or 0)
         if count:
@@ -971,7 +1088,9 @@ class OtpAttempt(Base):
         return count
 
     @staticmethod
-    async def bulk_soft_delete(session: AsyncSession, ids: Sequence[int], *, reason: str = "bulk_soft_delete") -> int:
+    async def bulk_soft_delete(
+        session: AsyncSession, ids: Sequence[int], *, reason: str = "bulk_soft_delete"
+    ) -> int:
         if not ids:
             return 0
         res = await session.execute(
@@ -1001,7 +1120,11 @@ class OtpAttempt(Base):
     # Queries
     @staticmethod
     async def count_sent_today(
-        session: AsyncSession, *, phone: str, purpose: OtpPurpose = OtpPurpose.LOGIN, channel: OtpChannel = OtpChannel.SMS
+        session: AsyncSession,
+        *,
+        phone: str,
+        purpose: OtpPurpose = OtpPurpose.LOGIN,
+        channel: OtpChannel = OtpChannel.SMS,
     ) -> int:
         since = utc_now() - timedelta(days=1)
         rows = await session.execute(
@@ -1017,13 +1140,13 @@ class OtpAttempt(Base):
 
     # Audit / Serialization
     @staticmethod
-    def configure_audit_sink(sink: Optional[Callable[[str, Dict[str, Any]], None]]) -> None:
+    def configure_audit_sink(sink: Optional[Callable[[str, dict[str, Any]], None]]) -> None:
         configure_audit_sink(sink)
 
-    def emit_audit_event(self, event_name: str, *, extra: Optional[Dict[str, Any]] = None) -> None:
+    def emit_audit_event(self, event_name: str, *, extra: Optional[dict[str, Any]] = None) -> None:
         _emit(event_name, self.to_audit_dict(extra=extra))
 
-    def to_audit_dict(self, *, extra: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    def to_audit_dict(self, *, extra: Optional[dict[str, Any]] = None) -> dict[str, Any]:
         payload = {
             "id": self.id,
             "phone": self.phone,
@@ -1049,13 +1172,13 @@ class OtpAttempt(Base):
             payload["extra"] = extra
         return payload
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         base = self.to_audit_dict()
         base["seconds_left"] = self.seconds_left
         base["is_archived"] = self.is_archived
         return base
 
-    def to_public_dict(self) -> Dict[str, Any]:
+    def to_public_dict(self) -> dict[str, Any]:
         return {
             "id": self.id,
             "phone": self.phone,
@@ -1077,12 +1200,81 @@ class OtpAttempt(Base):
         )
 
 
+# ---------------------------------------------------------------------------
+# Высокоуровневые сервисные функции (удобно использовать из хендлеров)
+# ---------------------------------------------------------------------------
+
+
+async def issue_plain_code_for_phone(
+    session: AsyncSession,
+    *,
+    phone: str,
+    purpose: OtpPurpose = OtpPurpose.LOGIN,
+    channel: OtpChannel = OtpChannel.SMS,
+    length: int = 6,
+    ttl_minutes: int = DEFAULT_OTP_TTL_MIN,
+    attempts_left: int = 5,
+    user_id: Optional[int] = None,
+) -> tuple[OtpAttempt, str]:
+    """
+    Выдаёт новый OTP для телефона: генерирует код, создаёт/заменяет последнюю попытку.
+    Возвращает (созданная попытка, ПЛЕЙН-код). В БД сохраняется ТОЛЬКО hash.
+    """
+    plain = generate_numeric_code(length)
+    code_hash = hash_code_sha256(plain)
+    attempt = await OtpAttempt.create_or_replace_latest(
+        session,
+        phone=phone,
+        code_hash=code_hash,
+        purpose=purpose,
+        channel=channel,
+        ttl_minutes=ttl_minutes,
+        attempts_left=attempts_left,
+        user_id=user_id,
+    )
+    # Регистрируем факт отправки (после успешной доставки можно дернуть повторно)
+    attempt.register_sent()
+    await session.flush()
+    return attempt, plain
+
+
+async def verify_plain_code_for_phone(
+    session: AsyncSession,
+    *,
+    phone: str,
+    code: str,
+    purpose: OtpPurpose = OtpPurpose.LOGIN,
+    channel: OtpChannel = OtpChannel.SMS,
+) -> bool:
+    """Проверяет введённый plain-код по последней активной попытке."""
+    attempt = await OtpAttempt.get_latest_active_for_phone(
+        session, phone=phone, purpose=purpose, channel=channel
+    )
+    if not attempt:
+        _emit(
+            "otp.verify.no_attempt",
+            {"phone": phone, "purpose": purpose.value, "channel": channel.value},
+        )
+        return False
+    ok = attempt.verify_with_plain(code, verify_code_sha256)
+    await session.flush()
+    return ok
+
+
 __all__ = [
+    # утилиты
+    "utc_now",
+    "generate_numeric_code",
+    "hash_code_sha256",
+    "verify_code_sha256",
+    "configure_audit_sink",
+    "get_audit_sink",
+    # модели/enum'ы
     "OTPCode",
     "OtpAttempt",
     "OtpPurpose",
     "OtpChannel",
-    "utc_now",
-    "configure_audit_sink",
-    "get_audit_sink",
+    # сервисы
+    "issue_plain_code_for_phone",
+    "verify_plain_code_for_phone",
 ]

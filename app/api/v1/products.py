@@ -13,11 +13,11 @@ Product management endpoints (enterprise-ready).
 from __future__ import annotations
 
 from enum import Enum
-from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
+from typing import Any, Optional
 
 from fastapi import APIRouter, Depends, Path, Query
 from pydantic import BaseModel, Field, validator
-from sqlalchemy import and_, func, or_
+from sqlalchemy import func, or_
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -33,23 +33,19 @@ from app.core.logging import audit_logger
 from app.models.product import Category, Product
 from app.models.user import User
 from app.schemas.base import PaginatedResponse, SuccessResponse
-from app.schemas.product import (
-    ProductCreate,
-    ProductResponse,
-    ProductSearchFilters,
-    ProductUpdate,
-)
+from app.schemas.product import ProductCreate, ProductResponse, ProductSearchFilters, ProductUpdate
 
 # -------------------- Repricing service (мягкий импорт) --------------------
 
 try:
     # Рекомендуемый сервис (мы его проектировали ранее)
     from app.services.repricing_service import (
-        RepricingService,
         RepricingChannel,
         RepricingConfig,
+        RepricingService,
         RepricingTickResult,
     )
+
     _repricing_available = True
 except Exception:
     # Шим на случай, если сервис ещё не завезли: хранение в памяти (на время процесса)
@@ -65,18 +61,18 @@ except Exception:
         max: Optional[float] = None
         step: float = 1.0
         channel: RepricingChannel = RepricingChannel.kaspi
-        friendly_ids: List[str] = []
+        friendly_ids: list[str] = []
         cooldown: int = 0
         hysteresis: float = 0.0
 
     class RepricingTickResult(BaseModel):
         current_price: Optional[float] = None
         target_price: Optional[float] = None
-        best_competitor: Optional[Dict[str, Any]] = None
+        best_competitor: Optional[dict[str, Any]] = None
         reason: str = "repricing service not configured; using shim"
 
     class _ShimStore:
-        cfg: Dict[int, RepricingConfig] = {}
+        cfg: dict[int, RepricingConfig] = {}
 
     class RepricingService:
         def __init__(self, db: Session):
@@ -118,6 +114,7 @@ _ALLOWED_SORT_FIELDS = {
     "updated_at": Product.updated_at,
     "stock_quantity": Product.stock_quantity,
 }
+
 
 def _apply_filters(query, filters: ProductSearchFilters):
     if filters.category_id is not None:
@@ -177,15 +174,19 @@ def _is_admin(user: User) -> bool:
         return True
     return False
 
+
 # ---------------------------------------------------------------------------
 # Основные CRUD
 # ---------------------------------------------------------------------------
+
 
 @router.get("", response_model=PaginatedResponse[ProductResponse])
 async def list_products(
     filters: ProductSearchFilters = Depends(),
     pagination: Pagination = Depends(get_pagination),
-    sort_by: str = Query("created_at", description=f"One of: {', '.join(_ALLOWED_SORT_FIELDS.keys())}"),
+    sort_by: str = Query(
+        "created_at", description=f"One of: {', '.join(_ALLOWED_SORT_FIELDS.keys())}"
+    ),
     sort_order: str = Query("desc", pattern="^(?i)(asc|desc)$"),
     db: Session = Depends(get_db),
 ):
@@ -268,7 +269,7 @@ async def update_product(
         raise NotFoundError("Product not found", "PRODUCT_NOT_FOUND")
 
     try:
-        changes: Dict[str, Any] = {}
+        changes: dict[str, Any] = {}
 
         for field, value in product_update.dict(exclude_unset=True).items():
             if hasattr(product, field):
@@ -333,6 +334,7 @@ async def delete_product(
 # Stock
 # ---------------------------------------------------------------------------
 
+
 @router.get("/{product_id}/stock", response_model=dict)
 async def get_product_stock(
     product_id: int,
@@ -389,6 +391,7 @@ async def update_product_stock(
 # ---------------------------------------------------------------------------
 # Feature toggles / Active toggles
 # ---------------------------------------------------------------------------
+
 
 @router.post("/{product_id}/feature", response_model=SuccessResponse)
 async def set_featured(
@@ -477,15 +480,16 @@ async def deactivate_product(
 # Bulk operations
 # ---------------------------------------------------------------------------
 
+
 @router.post("/bulk/create", response_model=SuccessResponse)
 async def bulk_create_products(
-    payload: List[ProductCreate],
+    payload: list[ProductCreate],
     current_user: User = Depends(get_current_verified_user),
     db: Session = Depends(get_db),
 ):
     """Bulk create products. Возвращает счётчики и ошибки по индексам."""
     created = 0
-    errors: List[Dict[str, Any]] = []
+    errors: list[dict[str, Any]] = []
 
     for idx, data in enumerate(payload):
         try:
@@ -518,12 +522,14 @@ async def bulk_create_products(
             errors.append({"index": idx, "error": code})
 
     db.commit()
-    return SuccessResponse(message="Bulk create finished", data={"created": created, "errors": errors})
+    return SuccessResponse(
+        message="Bulk create finished", data={"created": created, "errors": errors}
+    )
 
 
 @router.post("/bulk/update", response_model=SuccessResponse)
 async def bulk_update_products(
-    payload: List[Dict[str, Any]],
+    payload: list[dict[str, Any]],
     current_user: User = Depends(get_current_verified_user),
     db: Session = Depends(get_db),
 ):
@@ -532,7 +538,7 @@ async def bulk_update_products(
     Формат элемента: {"id": int, <поле>: <значение>, ...}
     """
     updated = 0
-    errors: List[Dict[str, Any]] = []
+    errors: list[dict[str, Any]] = []
 
     for idx, item in enumerate(payload):
         pid = item.get("id")
@@ -577,12 +583,14 @@ async def bulk_update_products(
             errors.append({"index": idx, "error": code, "id": pid})
 
     db.commit()
-    return SuccessResponse(message="Bulk update finished", data={"updated": updated, "errors": errors})
+    return SuccessResponse(
+        message="Bulk update finished", data={"updated": updated, "errors": errors}
+    )
 
 
 @router.post("/bulk/activate", response_model=SuccessResponse)
 async def bulk_activate_products(
-    ids: List[int],
+    ids: list[int],
     current_user: User = Depends(get_current_verified_user),
     db: Session = Depends(get_db),
 ):
@@ -610,7 +618,7 @@ async def bulk_activate_products(
 
 @router.post("/bulk/deactivate", response_model=SuccessResponse)
 async def bulk_deactivate_products(
-    ids: List[int],
+    ids: list[int],
     current_user: User = Depends(get_current_verified_user),
     db: Session = Depends(get_db),
 ):
@@ -640,7 +648,8 @@ async def bulk_deactivate_products(
 # Search helpers / suggestions
 # ---------------------------------------------------------------------------
 
-@router.get("/_suggest", response_model=List[str])
+
+@router.get("/_suggest", response_model=list[str])
 async def product_suggest(
     q: str = Query("", min_length=0),
     limit: int = Query(10, ge=1, le=50),
@@ -678,10 +687,13 @@ async def product_suggest(
 # Categories
 # ---------------------------------------------------------------------------
 
-@router.get("/categories", response_model=List[Dict[str, Any]])
+
+@router.get("/categories", response_model=list[dict[str, Any]])
 async def list_categories(
     db: Session = Depends(get_db),
-    only_active: bool = Query(False, description="Return only categories that have active products"),
+    only_active: bool = Query(
+        False, description="Return only categories that have active products"
+    ),
 ):
     """
     Список категорий. Если only_active=True — возвращаем только те, где есть активные товары.
@@ -697,7 +709,7 @@ async def list_categories(
     return [{"id": c.id, "name": c.name, "slug": getattr(c, "slug", None)} for c in cats]
 
 
-@router.get("/categories/{category_id}", response_model=Dict[str, Any])
+@router.get("/categories/{category_id}", response_model=dict[str, Any])
 async def get_category(
     category_id: int = Path(..., ge=1),
     with_counts: bool = Query(True),
@@ -708,7 +720,7 @@ async def get_category(
     if not cat:
         raise NotFoundError("Category not found", "CATEGORY_NOT_FOUND")
 
-    payload: Dict[str, Any] = {"id": cat.id, "name": cat.name, "slug": getattr(cat, "slug", None)}
+    payload: dict[str, Any] = {"id": cat.id, "name": cat.name, "slug": getattr(cat, "slug", None)}
     if with_counts:
         counts = (
             db.query(func.count(Product.id))
@@ -723,15 +735,24 @@ async def get_category(
 # Repricing (новые эндпоинты)
 # ---------------------------------------------------------------------------
 
+
 class RepricingConfigIn(BaseModel):
     enabled: bool = Field(False, description="Включить автоматический демпинг для товара")
-    min: Optional[float] = Field(None, ge=0, description="Минимальная цена, ниже которой опускаться нельзя")
-    max: Optional[float] = Field(None, ge=0, description="Максимальная цена, выше которой подниматься не надо")
+    min: Optional[float] = Field(
+        None, ge=0, description="Минимальная цена, ниже которой опускаться нельзя"
+    )
+    max: Optional[float] = Field(
+        None, ge=0, description="Максимальная цена, выше которой подниматься не надо"
+    )
     step: float = Field(1.0, gt=0, description="Шаг изменения цены (например 1 или 10 тенге)")
     channel: RepricingChannel = Field(RepricingChannel.kaspi, description="Целевой канал")
-    friendly_ids: List[str] = Field(default_factory=list, description="ID магазинов-друзей, с кем не демпингуем")
+    friendly_ids: list[str] = Field(
+        default_factory=list, description="ID магазинов-друзей, с кем не демпингуем"
+    )
     cooldown: int = Field(0, ge=0, description="Кулдаун в секундах между изменениями")
-    hysteresis: float = Field(0.0, ge=0, description="Гистерезис на флуктуации (минимальный шаг реакции)")
+    hysteresis: float = Field(
+        0.0, ge=0, description="Гистерезис на флуктуации (минимальный шаг реакции)"
+    )
 
     @validator("max")
     def _max_vs_min(cls, v, values):
@@ -749,7 +770,7 @@ class RepricingConfigOut(RepricingConfigIn):
 class RepricingTickOut(BaseModel):
     current_price: Optional[float]
     target_price: Optional[float]
-    best_competitor: Optional[Dict[str, Any]]
+    best_competitor: Optional[dict[str, Any]]
     reason: str
     applied: bool = False
 
@@ -779,7 +800,7 @@ async def set_repricing_config(
     saved = service.set_config(product, RepricingConfig(**cfg.dict()))
 
     # Синхронизируем с моделью Product, где это возможно
-    changes: Dict[str, Any] = {}
+    changes: dict[str, Any] = {}
     if hasattr(product, "enable_price_dumping"):
         old = product.enable_price_dumping
         if old != cfg.enabled:

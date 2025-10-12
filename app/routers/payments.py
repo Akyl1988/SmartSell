@@ -1,5 +1,6 @@
 # app/routers/payments.py
 from __future__ import annotations
+
 """
 Payments router for payment processing and management (enterprise-grade).
 
@@ -14,7 +15,6 @@ Payments router for payment processing and management (enterprise-grade).
 import json
 import uuid
 from datetime import datetime
-from typing import Optional
 
 from fastapi import APIRouter, Depends, Request, status
 from sqlalchemy import and_, select
@@ -30,9 +30,9 @@ except Exception:
 
 # Депсы/безопасность/логи/ошибки/идемпотентность
 from app.core.deps import api_rate_limit_dep, ensure_idempotency, set_idempotency_result
-from app.core.security import get_current_user, require_manager
-from app.core.errors import bad_request, not_found, conflict, server_error
+from app.core.errors import bad_request, conflict, not_found, server_error
 from app.core.logging import audit_logger
+from app.core.security import get_current_user, require_manager
 
 # Модели/схемы
 from app.models import Order, Payment, PaymentRefund, User
@@ -58,10 +58,12 @@ router = APIRouter(
 # Helpers
 # ---------------------------------------------------------------------
 
+
 def _order_company_scope(company_id: int):
     """Фильтр заказов компании с учётом soft-delete."""
     # Order.is_deleted может быть колонкой Boolean, используем is_(False) вместо `not ...`
     return and_(Order.company_id == company_id, Order.is_deleted.is_(False))
+
 
 def _to_json_string(data: object) -> str:
     """Надёжно сериализуем произвольный payload в строку (если колонка у вас не JSONB)."""
@@ -72,9 +74,11 @@ def _to_json_string(data: object) -> str:
     except Exception:
         return str(data)
 
+
 # ---------------------------------------------------------------------
 # GET /payments
 # ---------------------------------------------------------------------
+
 
 @router.get("/", response_model=list[PaymentResponse], summary="Список платежей компании")
 async def get_payments(
@@ -90,9 +94,11 @@ async def get_payments(
     payments = (await db.execute(stmt)).scalars().all()
     return payments
 
+
 # ---------------------------------------------------------------------
 # POST /payments/create
 # ---------------------------------------------------------------------
+
 
 @router.post(
     "/create",
@@ -135,7 +141,8 @@ async def create_payment_intent(
         provider_invoice_id=provider_idempotency_key,
         amount=payment_data.amount,
         currency=payment_data.currency,
-        description=payment_data.description or f"Payment for order {getattr(order, 'order_number', order.id)}",
+        description=payment_data.description
+        or f"Payment for order {getattr(order, 'order_number', order.id)}",
         status="created",
     )
 
@@ -192,9 +199,11 @@ async def create_payment_intent(
         await db.commit()
         raise server_error(f"Failed to create payment: {e!s}")
 
+
 # ---------------------------------------------------------------------
 # GET /payments/{payment_id}
 # ---------------------------------------------------------------------
+
 
 @router.get("/{payment_id}", response_model=PaymentResponse, summary="Получить платёж по ID")
 async def get_payment(
@@ -212,9 +221,11 @@ async def get_payment(
         raise not_found("Payment not found")
     return payment
 
+
 # ---------------------------------------------------------------------
 # POST /payments/{payment_id}/refund
 # ---------------------------------------------------------------------
+
 
 @router.post(
     "/{payment_id}/refund",
@@ -309,9 +320,11 @@ async def create_refund(
         await db.commit()
         raise server_error(f"Failed to create refund: {e!s}")
 
+
 # ---------------------------------------------------------------------
 # POST /payments/webhooks/tiptop
 # ---------------------------------------------------------------------
+
 
 @router.post("/webhooks/tiptop", summary="Webhook TipTop Pay")
 async def tiptop_webhook(
@@ -382,14 +395,20 @@ async def tiptop_webhook(
         action="webhook_processed",
         resource_type="payment",
         resource_id=str(payment.id),
-        changes={"old_status": old_status, "new_status": payment.status, "event_id": webhook_data.event_id},
+        changes={
+            "old_status": old_status,
+            "new_status": payment.status,
+            "event_id": webhook_data.event_id,
+        },
     )
 
     return {"message": "Webhook processed successfully"}
 
+
 # ---------------------------------------------------------------------
 # GET /payments/{payment_id}/status
 # ---------------------------------------------------------------------
+
 
 @router.get("/{payment_id}/status", summary="Проверка статуса платежа у провайдера")
 async def check_payment_status(
@@ -437,7 +456,11 @@ async def check_payment_status(
                 changes={"old_status": old_status, "new_status": payment.status},
             )
 
-        return {"status": payment.status, "provider_status": provider_status, "updated_at": payment.updated_at}
+        return {
+            "status": payment.status,
+            "provider_status": provider_status,
+            "updated_at": payment.updated_at,
+        }
 
     except Exception as e:
         # Возвращаем локальный статус + сообщение об ошибке провайдера

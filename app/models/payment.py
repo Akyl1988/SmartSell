@@ -1,4 +1,3 @@
-# app/models/payment.py
 """
 Payments & Refunds domain (PostgreSQL first, cross-dialect safe).
 
@@ -7,6 +6,8 @@ Payments & Refunds domain (PostgreSQL first, cross-dialect safe).
 - Кросс-диалектные алиасы типов (чтобы тесты на SQLite не падали по DDL).
 - Безопасная однонаправленная связь Payment -> Order без обязательного back_populates,
   чтобы не ломаться, если Order.payments ссылается не на Payment.
+- ✅ Исправлено: добавлен симметричный маппинг Payment.customer (back_populates="payments"),
+  чтобы не падало с ошибкой "Mapper 'Payment' has no property 'customer'".
 """
 
 from __future__ import annotations
@@ -16,24 +17,21 @@ import json
 import logging
 import os
 import uuid
-from contextlib import contextmanager, asynccontextmanager
-from datetime import datetime, timedelta, timezone
-from decimal import Decimal, ROUND_DOWN
-from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple, Union
+from collections.abc import Iterable, Sequence
+from contextlib import asynccontextmanager, contextmanager
+from datetime import UTC, datetime, timedelta
+from decimal import ROUND_DOWN, Decimal
+from typing import Any, Optional
 
+from sqlalchemy import Boolean, CheckConstraint, Column, DateTime
+from sqlalchemy import Enum as SQLEnum
 from sqlalchemy import (
-    Boolean,
-    CheckConstraint,
-    Column,
-    DateTime,
-    Enum as SQLEnum,
     ForeignKey,
     Index,
     Integer,
     Numeric,
     String,
     Text,
-    UniqueConstraint,
     and_,
     event,
     func,
@@ -156,7 +154,7 @@ class IntegrationOutbox(Base):
 
     def mark_sent(self):
         self.status = OutboxStatus.SENT.value
-        self.updated_at = datetime.now(timezone.utc).replace(tzinfo=None)
+        self.updated_at = datetime.now(UTC).replace(tzinfo=None)
         self.next_attempt_at = None
         self.last_error = None
 
@@ -164,7 +162,7 @@ class IntegrationOutbox(Base):
         self.status = OutboxStatus.FAILED.value
         self.attempts = int(self.attempts or 0) + 1
         self.last_error = (err or "")[:2000]
-        self.updated_at = datetime.now(timezone.utc).replace(tzinfo=None)
+        self.updated_at = datetime.now(UTC).replace(tzinfo=None)
         self.next_attempt_at = self.updated_at + timedelta(seconds=retry_in_seconds)
 
     # --- Batch accessors (sync) ---
@@ -176,7 +174,7 @@ class IntegrationOutbox(Base):
         aggregate_type: Optional[str] = None,
         limit: int = 1000,
         due_only: bool = False,
-    ) -> List["IntegrationOutbox"]:
+    ) -> list[IntegrationOutbox]:
         q = select(IntegrationOutbox).where(IntegrationOutbox.status == status.value)
         if aggregate_type:
             q = q.where(IntegrationOutbox.aggregate_type == aggregate_type)
@@ -193,13 +191,13 @@ class IntegrationOutbox(Base):
     # --- Batch accessors (async) ---
     @staticmethod
     async def batch_fetch_async(
-        session: "AsyncSession",
+        session: AsyncSession,
         *,
         status: OutboxStatus = OutboxStatus.PENDING,
         aggregate_type: Optional[str] = None,
         limit: int = 1000,
         due_only: bool = False,
-    ) -> List["IntegrationOutbox"]:
+    ) -> list[IntegrationOutbox]:
         q = select(IntegrationOutbox).where(IntegrationOutbox.status == status.value)
         if aggregate_type:
             q = q.where(IntegrationOutbox.aggregate_type == aggregate_type)
@@ -273,9 +271,18 @@ class Payment(Base):
 
     is_test = Column(Boolean, nullable=False, default=False)
 
-    # ВАЖНО: однонаправленная связь, чтобы не требовать зеркальный back_populates на Order
-    # (в вашем случае Order.payments указывает не на Payment, из-за чего мапперы падали).
+    # Связи
+    # Однонаправленная связь к Order — не требуем back_populates на Order
     order = relationship("Order", foreign_keys=[order_id])
+
+    # ✅ СИММЕТРИЧНАЯ СВЯЗЬ С КЛИЕНТОМ (исправление падения мапперов)
+    # Customer.payments -> back_populates="customer"
+    customer = relationship(
+        "Customer",
+        back_populates="payments",
+        foreign_keys=[customer_id],
+        lazy="selectin",
+    )
 
     refunds = relationship(
         "PaymentRefund",
@@ -317,7 +324,7 @@ class Payment(Base):
         return (amt - ref).quantize(Decimal("0.01"))
 
     # ---------- Fee Rules ----------
-    FEE_RULES: Dict[Tuple[PaymentProvider, PaymentMethod], Dict[str, Decimal]] = {
+    FEE_RULES: dict[tuple[PaymentProvider, PaymentMethod], dict[str, Decimal]] = {
         (PaymentProvider.TIPTOP, PaymentMethod.CARD): {
             "rate": Decimal("0.012"),
             "fixed": Decimal("50.00"),
@@ -362,9 +369,9 @@ class Payment(Base):
 
     # ---------- Domain methods ----------
     def _utcnow(self) -> datetime:
-        return datetime.now(timezone.utc).replace(tzinfo=None)
+        return datetime.now(UTC).replace(tzinfo=None)
 
-    def mark_processing(self, *, provider_payload: Optional[Dict[str, Any]] = None) -> None:
+    def mark_processing(self, *, provider_payload: Optional[dict[str, Any]] = None) -> None:
         if self.status not in {PaymentStatus.PENDING, PaymentStatus.PROCESSING}:
             raise ValueError(f"Cannot mark_processing from status {self.status}")
         self.status = PaymentStatus.PROCESSING
@@ -377,7 +384,7 @@ class Payment(Base):
     def mark_success(
         self,
         *,
-        provider_payload: Optional[Dict[str, Any]] = None,
+        provider_payload: Optional[dict[str, Any]] = None,
         receipt_url: Optional[str] = None,
         receipt_number: Optional[str] = None,
     ) -> None:
@@ -410,7 +417,7 @@ class Payment(Base):
         *,
         reason: Optional[str] = None,
         code: Optional[str] = None,
-        provider_payload: Optional[Dict[str, Any]] = None,
+        provider_payload: Optional[dict[str, Any]] = None,
     ) -> None:
         if self.status in {PaymentStatus.SUCCESS, PaymentStatus.REFUNDED}:
             raise ValueError(f"Cannot mark_failed from status {self.status}")
@@ -429,7 +436,7 @@ class Payment(Base):
         self._bump_version()
 
     def cancel(
-        self, *, provider_payload: Optional[Dict[str, Any]] = None, reason: Optional[str] = None
+        self, *, provider_payload: Optional[dict[str, Any]] = None, reason: Optional[str] = None
     ) -> None:
         if self.status in {PaymentStatus.SUCCESS, PaymentStatus.REFUNDED}:
             raise ValueError(f"Cannot cancel from status {self.status}")
@@ -488,7 +495,7 @@ class Payment(Base):
         return self.refunded_amount
 
     def enqueue_webhook_event(
-        self, session: Session, event_type: str, payload: Dict[str, Any]
+        self, session: Session, event_type: str, payload: dict[str, Any]
     ) -> IntegrationOutbox:
         out = IntegrationOutbox(
             aggregate_type="payment",
@@ -515,13 +522,13 @@ class Payment(Base):
         notes: Optional[str] = None,
         internal_notes: Optional[str] = None,
         wallet_only: bool = False,
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """
         1) Пробуем списать из кошелька, соблюдая резерв >= reserve_min (или ровно 0).
         2) Если не хватило и wallet_only=False — создаём Invoice на точный дефицит.
         3) Если закрыли всю сумму — SUCCESS, иначе PROCESSING (ждём оплату инвойса).
         """
-        from app.models.billing import WalletBalance, Invoice  # локальный импорт (без циклов)
+        from app.models.billing import Invoice, WalletBalance  # локальный импорт (без циклов)
 
         # infer company_id из Order (если есть)
         if company_id is None:
@@ -612,7 +619,7 @@ class Payment(Base):
         return {"debited": debited, "shortfall": shortfall, "invoice": created_invoice}
 
     # ---------- Highload safety / locking ----------
-    def lock_for_update(self, session: Session) -> "Payment":
+    def lock_for_update(self, session: Session) -> Payment:
         locked = session.execute(
             select(Payment).where(Payment.id == self.id).with_for_update()
         ).scalar_one()
@@ -634,7 +641,7 @@ class Payment(Base):
 
     @staticmethod
     @asynccontextmanager
-    async def advisory_lock_async(session: "AsyncSession", payment_id: int):
+    async def advisory_lock_async(session: AsyncSession, payment_id: int):
         key = Payment.advisory_key_for_payment(int(payment_id))
         try:
             await session.execute(text("SELECT pg_advisory_xact_lock(:k)"), {"k": key})
@@ -702,9 +709,9 @@ class Payment(Base):
         )
 
     @staticmethod
-    def export_as_dicts(session: Session, **kwargs) -> List[Dict[str, Any]]:
+    def export_as_dicts(session: Session, **kwargs) -> list[dict[str, Any]]:
         rows = session.execute(Payment.export_query(**kwargs)).all()
-        out: List[Dict[str, Any]] = []
+        out: list[dict[str, Any]] = []
         for r in rows:
             (
                 pid,
@@ -748,10 +755,10 @@ class Payment(Base):
 
     # NEW: async export
     @staticmethod
-    async def export_as_dicts_async(session: "AsyncSession", **kwargs) -> List[Dict[str, Any]]:
+    async def export_as_dicts_async(session: AsyncSession, **kwargs) -> list[dict[str, Any]]:
         q = Payment.export_query(**kwargs)
         rows = (await session.execute(q)).all()
-        out: List[Dict[str, Any]] = []
+        out: list[dict[str, Any]] = []
         for r in rows:
             (
                 pid,
@@ -803,7 +810,7 @@ class Payment(Base):
         status_in: Optional[Iterable[PaymentStatus]] = None,
         is_test: Optional[bool] = None,
         customer_id: Optional[int] = None,
-    ) -> List[Dict[str, Any]]:
+    ) -> list[dict[str, Any]]:
         filters = []
         if date_from:
             filters.append(
@@ -863,9 +870,9 @@ class Payment(Base):
         date_from: Optional[datetime] = None,
         date_to: Optional[datetime] = None,
         reason_ilike: Optional[str] = None,
-    ) -> List[Dict[str, Any]]:
-        where_clauses: List[str] = []
-        params: Dict[str, Any] = {}
+    ) -> list[dict[str, Any]]:
+        where_clauses: list[str] = []
+        params: dict[str, Any] = {}
 
         if customer_id is not None:
             where_clauses.append("p.customer_id = :customer_id")
@@ -908,7 +915,7 @@ class Payment(Base):
         window_from: Optional[datetime] = None,
         window_to: Optional[datetime] = None,
         min_count: int = 5,
-    ) -> List[Dict[str, Any]]:
+    ) -> list[dict[str, Any]]:
         filters = [Payment.customer_ip.is_not(None)]
         if window_from:
             filters.append(Payment.created_at >= window_from)
@@ -952,7 +959,7 @@ class Payment(Base):
         window_to: Optional[datetime] = None,
         min_count: int = 10,
         top_n: int = 100,
-    ) -> List[Dict[str, Any]]:
+    ) -> list[dict[str, Any]]:
         filters = [Payment.user_agent.is_not(None)]
         if window_from:
             filters.append(Payment.created_at >= window_from)
@@ -989,7 +996,7 @@ class Payment(Base):
         return out
 
     # ---------- Helpers ----------
-    def _merge_provider_data(self, payload: Dict[str, Any]) -> None:
+    def _merge_provider_data(self, payload: dict[str, Any]) -> None:
         try:
             current = self.provider_data or {}
             if isinstance(current, str):
@@ -1004,7 +1011,7 @@ class Payment(Base):
     def _bump_version(self) -> None:
         self.version = int(self.version or 1) + 1
 
-    def _siem(self, event_name: str, *, extra: Optional[Dict[str, Any]] = None) -> None:
+    def _siem(self, event_name: str, *, extra: Optional[dict[str, Any]] = None) -> None:
         payload = {
             "event": event_name,
             "payment_id": self.id,
@@ -1023,13 +1030,13 @@ class Payment(Base):
             payload.update(extra)
         _emit_siem(payload)
 
-    def _enqueue_webhook_event(self, event_type: str, payload: Dict[str, Any]) -> None:
-        pending: List[Tuple[str, Dict[str, Any]]] = getattr(self, "_pending_outbox", [])
+    def _enqueue_webhook_event(self, event_type: str, payload: dict[str, Any]) -> None:
+        pending: list[tuple[str, dict[str, Any]]] = getattr(self, "_pending_outbox", [])
         pending.append((event_type, payload))
         setattr(self, "_pending_outbox", pending)
 
     # ---------- Serialization ----------
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         return {
             "id": self.id,
             "uuid": str(self.uuid) if self.uuid else None,
@@ -1066,7 +1073,7 @@ class Payment(Base):
             "updated_at": self._iso(self.updated_at),
         }
 
-    def to_public_dict(self) -> Dict[str, Any]:
+    def to_public_dict(self) -> dict[str, Any]:
         return {
             "id": self.id,
             "uuid": str(self.uuid) if self.uuid else None,
@@ -1110,7 +1117,7 @@ class Payment(Base):
         is_test: bool = False,
         customer_id: Optional[int] = None,
         description: Optional[str] = None,
-    ) -> "Payment":
+    ) -> Payment:
         return cls(
             order_id=order_id,
             amount=Decimal(str(amount)),
@@ -1176,9 +1183,9 @@ class PaymentRefund(Base):
     )
 
     def _utcnow(self) -> datetime:
-        return datetime.now(timezone.utc).replace(tzinfo=None)
+        return datetime.now(UTC).replace(tzinfo=None)
 
-    def mark_processing(self, *, provider_payload: Optional[Dict[str, Any]] = None) -> None:
+    def mark_processing(self, *, provider_payload: Optional[dict[str, Any]] = None) -> None:
         if self.status not in {PaymentStatus.PENDING, PaymentStatus.PROCESSING}:
             raise ValueError(f"Cannot mark_processing from status {self.status}")
         self.status = PaymentStatus.PROCESSING
@@ -1188,7 +1195,7 @@ class PaymentRefund(Base):
         self._siem("refund.processing")
         self._bump_version()
 
-    def mark_completed(self, *, provider_payload: Optional[Dict[str, Any]] = None) -> None:
+    def mark_completed(self, *, provider_payload: Optional[dict[str, Any]] = None) -> None:
         if self.status not in {PaymentStatus.PENDING, PaymentStatus.PROCESSING}:
             raise ValueError(f"Cannot mark_completed from status {self.status}")
         self.status = PaymentStatus.SUCCESS
@@ -1200,7 +1207,7 @@ class PaymentRefund(Base):
         self._bump_version()
 
     def mark_failed(
-        self, *, reason: Optional[str] = None, provider_payload: Optional[Dict[str, Any]] = None
+        self, *, reason: Optional[str] = None, provider_payload: Optional[dict[str, Any]] = None
     ) -> None:
         if self.status in {PaymentStatus.SUCCESS}:
             raise ValueError(f"Cannot mark_failed from status {self.status}")
@@ -1215,7 +1222,7 @@ class PaymentRefund(Base):
         self._bump_version()
 
     def enqueue_webhook_event(
-        self, session: Session, event_type: str, payload: Dict[str, Any]
+        self, session: Session, event_type: str, payload: dict[str, Any]
     ) -> IntegrationOutbox:
         out = IntegrationOutbox(
             aggregate_type="payment_refund",
@@ -1229,7 +1236,7 @@ class PaymentRefund(Base):
         session.add(out)
         return out
 
-    def _merge_provider_data(self, payload: Dict[str, Any]) -> None:
+    def _merge_provider_data(self, payload: dict[str, Any]) -> None:
         try:
             current = self.provider_data or {}
             if isinstance(current, str):
@@ -1244,7 +1251,7 @@ class PaymentRefund(Base):
     def _bump_version(self) -> None:
         self.version = int(self.version or 1) + 1
 
-    def _siem(self, event_name: str, *, extra: Optional[Dict[str, Any]] = None) -> None:
+    def _siem(self, event_name: str, *, extra: Optional[dict[str, Any]] = None) -> None:
         payload = {
             "event": event_name,
             "refund_id": self.id,
@@ -1259,12 +1266,12 @@ class PaymentRefund(Base):
             payload.update(extra)
         _emit_siem(payload)
 
-    def _enqueue_webhook_event(self, event_type: str, payload: Dict[str, Any]) -> None:
-        pending: List[Tuple[str, Dict[str, Any]]] = getattr(self, "_pending_outbox", [])
+    def _enqueue_webhook_event(self, event_type: str, payload: dict[str, Any]) -> None:
+        pending: list[tuple[str, dict[str, Any]]] = getattr(self, "_pending_outbox", [])
         pending.append((event_type, payload))
         setattr(self, "_pending_outbox", pending)
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         return {
             "id": self.id,
             "uuid": str(self.uuid) if self.uuid else None,
@@ -1285,7 +1292,7 @@ class PaymentRefund(Base):
             "updated_at": self._iso(self.updated_at),
         }
 
-    def to_public_dict(self) -> Dict[str, Any]:
+    def to_public_dict(self) -> dict[str, Any]:
         return {
             "id": self.id,
             "uuid": str(self.uuid) if self.uuid else None,
@@ -1315,7 +1322,7 @@ class PaymentRefund(Base):
         currency: str = "KZT",
         status: PaymentStatus = PaymentStatus.PENDING,
         reason: Optional[str] = None,
-    ) -> "PaymentRefund":
+    ) -> PaymentRefund:
         return cls(
             payment_id=payment_id,
             amount=Decimal(str(amount)),
@@ -1365,10 +1372,10 @@ class ProviderReconciliation(Base):
         *,
         provider: PaymentProvider,
         statement_at: datetime,
-        items: Sequence[Dict[str, Any]],
+        items: Sequence[dict[str, Any]],
         amount_tol: Decimal = Decimal("0.01"),
         currency: str = "KZT",
-    ) -> Dict[str, int]:
+    ) -> dict[str, int]:
         """
         items: [{external_id, amount, currency?, meta?...}]
         Правила:
@@ -1518,7 +1525,7 @@ from sqlalchemy.orm import Session as SASession  # avoid name clash above
 @event.listens_for(SASession, "after_flush")
 def after_flush(session, flush_context):  # pragma: no cover
     for obj in list(session.new) + list(session.dirty):
-        pending: List[Tuple[str, Dict[str, Any]]] = getattr(obj, "_pending_outbox", None)
+        pending: list[tuple[str, dict[str, Any]]] = getattr(obj, "_pending_outbox", None)
         if not pending:
             continue
         try:
@@ -1555,7 +1562,7 @@ def after_flush(session, flush_context):  # pragma: no cover
 # =========================
 
 
-def _emit_siem(payload: Dict[str, Any]) -> None:
+def _emit_siem(payload: dict[str, Any]) -> None:
     """
     Fail-safe multi-sink SIEM emitter:
     - Kafka (env KAFKA_BROKERS, KAFKA_TOPIC_SIEM) — best effort
@@ -1576,7 +1583,7 @@ def _emit_siem(payload: Dict[str, Any]) -> None:
         logger.info("SIEM_EVENT %s", payload)
 
 
-def _emit_kafka(payload: Dict[str, Any]) -> None:
+def _emit_kafka(payload: dict[str, Any]) -> None:
     brokers = os.getenv("KAFKA_BROKERS")
     topic = os.getenv("KAFKA_TOPIC_SIEM", "siem.events")
     if not brokers:
@@ -1591,10 +1598,23 @@ def _emit_kafka(payload: Dict[str, Any]) -> None:
     p.flush(1.0)
 
 
-def _emit_sentry(payload: Dict[str, Any]) -> None:
+def _emit_sentry(payload: dict[str, Any]) -> None:
     try:
         import sentry_sdk  # type: ignore
     except Exception:
         return
     sentry_sdk.capture_message(f"SIEM_EVENT: {payload.get('event')}", level="info")
     # по желанию — breadcrumbs/contexts
+
+
+__all__ = [
+    "Payment",
+    "PaymentRefund",
+    "IntegrationOutbox",
+    "ProviderReconciliation",
+    "PaymentStatus",
+    "PaymentMethod",
+    "PaymentProvider",
+    "OutboxStatus",
+    "ReconciliationStatus",
+]

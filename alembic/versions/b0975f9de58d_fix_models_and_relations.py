@@ -6,10 +6,13 @@ Create Date: 2025-09-20 00:24:23.515966
 """
 
 from __future__ import annotations
-from typing import Sequence, Union
+
+from collections.abc import Sequence
+from typing import Union
 
 import sqlalchemy as sa
 from sqlalchemy import inspect
+
 from alembic import op
 
 # revision identifiers, used by Alembic.

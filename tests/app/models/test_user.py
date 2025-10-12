@@ -1,17 +1,18 @@
 """Tests for User model and related entities."""
 
-import pytest
 from datetime import datetime
+
+import pytest
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
 # --- Импортируем модели и общую Base ---
 import app.models  # важно, чтобы подтянулись все ORM-классы
-from app.models.base import Base, BaseModel
-from app.models.user import User, UserSession, OTPCode
 from app.models.audit_log import AuditLog
-from app.models.warehouse import StockMovement
+from app.models.base import Base, BaseModel
 from app.models.product import Product
+from app.models.user import OTPCode, User, UserSession
+from app.models.warehouse import StockMovement
 
 
 @pytest.fixture

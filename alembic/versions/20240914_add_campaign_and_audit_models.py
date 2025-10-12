@@ -5,10 +5,11 @@ Revises: c4c8623bc099
 Create Date: 2024-09-14 06:30:00.000000
 """
 
-from alembic import op
 import sqlalchemy as sa
 from sqlalchemy import inspect, text
 from sqlalchemy.dialects.postgresql import ENUM as PGEnum
+
+from alembic import op
 
 # --- Alembic identifiers ---
 revision = "20240914_add_campaign_and_audit_models"

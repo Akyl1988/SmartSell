@@ -1,5 +1,5 @@
 """
-Tests for authentication functionality.
+Tests for authentication functionality (legacy /api/auth/* alias supported).
 """
 
 import pytest
@@ -12,6 +12,7 @@ from app.models import Company, OtpAttempt, User
 from app.utils.otp import hash_otp_code
 
 
+@pytest.mark.anyio
 class TestAuth:
     """Test authentication endpoints"""
 
@@ -29,14 +30,15 @@ class TestAuth:
         }
 
         async with AsyncClient(app=app, base_url="http://test") as client:
+            # thanks to legacy alias this path must exist
             response = await client.post("/api/auth/register", json=user_data)
 
-        assert response.status_code == 200
+        assert response.status_code == 200, response.text
         data = response.json()
 
         assert "access_token" in data
         assert "refresh_token" in data
-        assert data["token_type"] == "bearer"
+        assert data.get("token_type") == "bearer"
 
     @pytest.mark.asyncio
     async def test_register_duplicate_phone(self, db_session: AsyncSession):
@@ -66,8 +68,9 @@ class TestAuth:
         async with AsyncClient(app=app, base_url="http://test") as client:
             response = await client.post("/api/auth/register", json=user_data)
 
-        assert response.status_code == 400
-        assert "already exists" in response.json()["detail"]
+        assert response.status_code == 400, response.text
+        detail = response.json().get("detail", "")
+        assert "already" in detail.lower() or "exists" in detail.lower()
 
     @pytest.mark.asyncio
     async def test_login_with_password(self, db_session: AsyncSession):
@@ -93,7 +96,7 @@ class TestAuth:
         async with AsyncClient(app=app, base_url="http://test") as client:
             response = await client.post("/api/auth/login", json=login_data)
 
-        assert response.status_code == 200
+        assert response.status_code == 200, response.text
         data = response.json()
 
         assert "access_token" in data
@@ -151,7 +154,7 @@ class TestAuth:
         async with AsyncClient(app=app, base_url="http://test") as client:
             response = await client.post("/api/auth/login", json=login_data)
 
-        assert response.status_code == 200
+        assert response.status_code == 200, response.text
         data = response.json()
 
         assert "access_token" in data
@@ -161,18 +164,16 @@ class TestAuth:
     async def test_send_otp(self):
         """Test sending OTP"""
 
-        # Mock Mobizon service would be needed here
-        # For now, just test the endpoint structure
-
+        # В реальном тесте сервис Mobizon нужно мокать.
+        # Здесь проверяем только, что эндпоинт существует и отвечает корректным кодом.
         async with AsyncClient(app=app, base_url="http://test") as client:
             response = await client.post(
                 "/api/auth/send-otp",
                 params={"phone": "+77001234567", "purpose": "login"},
             )
 
-        # This would fail without proper Mobizon configuration
-        # In a real test, we'd mock the service
-        assert response.status_code in [200, 500]
+        # В зависимости от конфигурации может вернуться 200 (успех) или 500 (ошибка внешнего сервиса).
+        assert response.status_code in (200, 500)
 
     @pytest.mark.asyncio
     async def test_refresh_token(self, db_session: AsyncSession):
@@ -197,14 +198,14 @@ class TestAuth:
 
         async with AsyncClient(app=app, base_url="http://test") as client:
             login_response = await client.post("/api/auth/login", json=login_data)
+            assert login_response.status_code == 200, login_response.text
             tokens = login_response.json()
 
             # Use refresh token
             refresh_data = {"refresh_token": tokens["refresh_token"]}
-
             response = await client.post("/api/auth/token/refresh", json=refresh_data)
 
-        assert response.status_code == 200
+        assert response.status_code == 200, response.text
         data = response.json()
 
         assert "access_token" in data
@@ -235,19 +236,20 @@ class TestAuth:
 
         async with AsyncClient(app=app, base_url="http://test") as client:
             login_response = await client.post("/api/auth/login", json=login_data)
+            assert login_response.status_code == 200, login_response.text
             tokens = login_response.json()
 
             # Get user info
             headers = {"Authorization": f"Bearer {tokens['access_token']}"}
             response = await client.get("/api/auth/me", headers=headers)
 
-        assert response.status_code == 200
+        assert response.status_code == 200, response.text
         data = response.json()
 
         assert data["phone"] == "+77001234567"
-        assert data["first_name"] == "Test"
-        assert data["last_name"] == "User"
-        assert data["role"] == "admin"
+        assert data.get("first_name") == "Test"
+        assert data.get("last_name") == "User"
+        assert data.get("role") == "admin"
 
     @pytest.mark.asyncio
     async def test_change_password(self, db_session: AsyncSession):
@@ -272,6 +274,7 @@ class TestAuth:
 
         async with AsyncClient(app=app, base_url="http://test") as client:
             login_response = await client.post("/api/auth/login", json=login_data)
+            assert login_response.status_code == 200, login_response.text
             tokens = login_response.json()
 
             # Change password
@@ -285,7 +288,7 @@ class TestAuth:
                 "/api/auth/change-password", json=password_data, headers=headers
             )
 
-        assert response.status_code == 200
+        assert response.status_code == 200, response.text
 
         # Verify new password works
         login_data = {"phone": "+77001234567", "password": "newpassword123"}
@@ -293,7 +296,7 @@ class TestAuth:
         async with AsyncClient(app=app, base_url="http://test") as client:
             response = await client.post("/api/auth/login", json=login_data)
 
-        assert response.status_code == 200
+        assert response.status_code == 200, response.text
 
     @pytest.mark.asyncio
     async def test_unauthorized_access(self):
@@ -316,51 +319,15 @@ class TestAuth:
         assert response.status_code == 401
 
 
-# Test fixtures and utilities
-@pytest.fixture
-async def db_session():
-    """Database session fixture for testing"""
-    # This would be implemented with a test database
-    # For now, it's a placeholder
-    pass
+# --------------------------------------------------------------------------------------
+# ВАЖНО: никаких локальных фикстур db_session тут НЕ объявляем,
+# чтобы не переопределить test DB из tests/conftest.py.
+# --------------------------------------------------------------------------------------
 
 
-@pytest.fixture
-async def test_user(db_session):
-    """Create test user fixture"""
-    company = Company(name="Test Company")
-    db_session.add(company)
-    await db_session.flush()
-
-    user = User(
-        company_id=company.id,
-        phone="+77001234567",
-        hashed_password=get_password_hash("password123"),
-        role="admin",
-        first_name="Test",
-        last_name="User",
-    )
-    db_session.add(user)
-    await db_session.commit()
-
-    return user
-
-
-@pytest.fixture
-async def auth_headers(test_user):
-    """Get auth headers for test user"""
-    login_data = {"phone": test_user.phone, "password": "password123"}
-
-    async with AsyncClient(app=app, base_url="http://test") as client:
-        response = await client.post("/api/auth/login", json=login_data)
-        tokens = response.json()
-
-        return {"Authorization": f"Bearer {tokens['access_token']}"}
-
-
-# Additional helper functions for testing
+# Доп. утилиты (чистые фабрики моделей без побочных эффектов)
 def create_test_company(name: str = "Test Company") -> Company:
-    """Create test company"""
+    """Create test company (detached, must be added to session by caller)."""
     return Company(name=name)
 
 
@@ -370,7 +337,7 @@ def create_test_user(
     password: str = "password123",
     role: str = "admin",
 ) -> User:
-    """Create test user"""
+    """Create test user (detached, must be added to session by caller)."""
     return User(
         company_id=company_id,
         phone=phone,

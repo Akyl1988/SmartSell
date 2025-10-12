@@ -28,8 +28,9 @@ Adapted from PR #18 to work with PR #21 base model system.
 from __future__ import annotations
 
 import json
+from collections.abc import Callable, Iterable, Sequence
 from datetime import UTC, datetime, timedelta
-from typing import Any, Callable, Dict, Iterable, Optional, Sequence, Tuple, List
+from typing import Any, Optional
 
 from sqlalchemy import (
     Boolean,
@@ -42,16 +43,14 @@ from sqlalchemy import (
     Numeric,
     String,
     Text,
-    UniqueConstraint,
     func,
+    literal,
     select,
     update,
-    literal,
 )
-from sqlalchemy.orm import relationship, validates, object_session
+from sqlalchemy.orm import object_session, relationship, validates
 
 from app.models.base import Base
-
 
 # -----------------------------------------------------------------------
 # Константы/утилиты
@@ -74,7 +73,7 @@ def _mask_secret(value: Optional[str], keep_last: int = 4) -> Optional[str]:
 
 
 # -------- Настройки кошелька/биллинга (дефолты и ключи в settings JSON) ----------
-DEFAULT_WALLET_SETTINGS: Dict[str, Any] = {
+DEFAULT_WALLET_SETTINGS: dict[str, Any] = {
     # автосписание подписок/счетов с привязанной карты/счёта (по умолчанию ВЫКЛ.)
     "wallet.autopay_enabled": False,
     # минимально «положительный» баланс. Бизнес-правило: «достаточно 1₸ или ровно 0».
@@ -434,8 +433,8 @@ class Company(Base):
     def _append_settings_history(
         self,
         *,
-        prev: Optional[Dict[str, Any]],
-        new: Optional[Dict[str, Any]],
+        prev: Optional[dict[str, Any]],
+        new: Optional[dict[str, Any]],
         by_user_id: Optional[int] = None,
     ) -> None:
         """Добавить запись в settings_history и обрезать историю до лимита."""
@@ -459,13 +458,13 @@ class Company(Base):
             history = history[-SETTINGS_HISTORY_LIMIT:]
         self.settings_history = json.dumps(history, ensure_ascii=False)
 
-    def _apply_settings_defaults(self, data: Dict[str, Any]) -> Dict[str, Any]:
+    def _apply_settings_defaults(self, data: dict[str, Any]) -> dict[str, Any]:
         """Гарантирует наличие ключей WALLET/ BILLING по умолчанию."""
         out = dict(DEFAULT_WALLET_SETTINGS)
         out.update(data or {})
         return out
 
-    def _validate_wallet_settings(self, data: Dict[str, Any]) -> None:
+    def _validate_wallet_settings(self, data: dict[str, Any]) -> None:
         """Валидируем только те ключи, что влияют на критичную логику."""
         autopay = bool(data.get("wallet.autopay_enabled", False))
         min_pos = int(data.get("wallet.min_positive_balance", 1) or 0)
@@ -499,7 +498,7 @@ class Company(Base):
     def get_settings(self) -> Optional[str]:
         return self.settings
 
-    def get_settings_dict(self, default: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    def get_settings_dict(self, default: Optional[dict[str, Any]] = None) -> dict[str, Any]:
         if not self.settings:
             return self._apply_settings_defaults(default or {})
         try:
@@ -509,7 +508,7 @@ class Company(Base):
         except Exception:
             return self._apply_settings_defaults(default or {})
 
-    def set_settings_dict(self, data: Dict[str, Any], *, by_user_id: Optional[int] = None) -> None:
+    def set_settings_dict(self, data: dict[str, Any], *, by_user_id: Optional[int] = None) -> None:
         prev = self.get_settings_dict()
         data = self._apply_settings_defaults(data or {})
         self._validate_wallet_settings(data)
@@ -561,7 +560,7 @@ class Company(Base):
     # -----------------------------
     # Wallet helper (по ТЗ может понадобиться)
     # -----------------------------
-    def ensure_wallet(self, session) -> "WalletBalance":
+    def ensure_wallet(self, session) -> WalletBalance:
         """
         Гарантирует наличие WalletBalance для компании.
         Возвращает объект кошелька (существующий или новый).
@@ -575,7 +574,7 @@ class Company(Base):
         session.add(wb)
         return wb
 
-    def get_wallet_config(self) -> Dict[str, Any]:
+    def get_wallet_config(self) -> dict[str, Any]:
         """
         Удобный доступ к ключевым настройкам кошелька/биллинга с дефолтами.
         """
@@ -616,7 +615,7 @@ class Company(Base):
         *,
         amount_due: int,
         current_balance: int,
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """
         Планирует стратегию оплаты: сначала кошелёк, затем — автосписание (если включено),
         в приоритете — выставление инвойса ровно на нехватающую сумму.
@@ -628,7 +627,7 @@ class Company(Base):
             amount_due=amount_due, balance=current_balance, allow_zero_ok=cfg["allow_zero_ok"]
         )
 
-        plan: Dict[str, Any] = {
+        plan: dict[str, Any] = {
             "currency": currency,
             "enough_in_wallet": missing == 0,
             "use_wallet_amount": min(amount_due, max(0, current_balance)),
@@ -663,20 +662,34 @@ class Company(Base):
         self.last_sync_error_code = (code or "").strip() or None
         self.last_sync_error_message = (message or "").strip() or None
 
-    def sync_kaspi(self, *, success: bool, error_code: Optional[str] = None, error_message: Optional[str] = None) -> None:
+    def sync_kaspi(
+        self,
+        *,
+        success: bool,
+        error_code: Optional[str] = None,
+        error_message: Optional[str] = None,
+    ) -> None:
         if success:
             self.sync_mark_success(source="kaspi")
         else:
             self.sync_mark_error(source="kaspi", code=error_code, message=error_message)
 
-    def sync_onec(self, *, success: bool, error_code: Optional[str] = None, error_message: Optional[str] = None) -> None:
+    def sync_onec(
+        self,
+        *,
+        success: bool,
+        error_code: Optional[str] = None,
+        error_message: Optional[str] = None,
+    ) -> None:
         if success:
             self.sync_mark_success(source="1c")
         else:
             self.sync_mark_error(source="1c", code=error_code, message=error_message)
 
     @staticmethod
-    async def batch_sync_mark_success_async(session, company_ids: Sequence[int], *, source: str) -> int:
+    async def batch_sync_mark_success_async(
+        session, company_ids: Sequence[int], *, source: str
+    ) -> int:
         """Батч-пометка успешной синхронизации."""
         if not company_ids:
             return 0
@@ -696,7 +709,12 @@ class Company(Base):
 
     @staticmethod
     async def batch_sync_mark_error_async(
-        session, company_ids: Sequence[int], *, source: str, code: Optional[str], message: Optional[str]
+        session,
+        company_ids: Sequence[int],
+        *,
+        source: str,
+        code: Optional[str],
+        message: Optional[str],
     ) -> int:
         """Батч-пометка неуспешной синхронизации."""
         if not company_ids:
@@ -725,7 +743,7 @@ class Company(Base):
         date_from: Optional[datetime] = None,
         date_to: Optional[datetime] = None,
         include_status: Optional[Iterable[str]] = None,
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """
         Агрегаты по заказам за период: count/sum/avg.
         Требуемые поля в Order: company_id, created_at, total_amount (Numeric), status (опц.)
@@ -761,7 +779,7 @@ class Company(Base):
         date_from: Optional[datetime] = None,
         date_to: Optional[datetime] = None,
         include_status: Optional[Iterable[str]] = None,
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """Синхронная версия агрегатов по заказам."""
         from app.models.order import Order  # type: ignore
 
@@ -788,7 +806,7 @@ class Company(Base):
         }
 
     @staticmethod
-    async def revenue_by_day_async(session, company_id: int, last_n_days: int = 30) -> List[dict]:
+    async def revenue_by_day_async(session, company_id: int, last_n_days: int = 30) -> list[dict]:
         """Выручка по дням из Orders.total_amount за последние N дней."""
         from app.models.order import Order  # type: ignore
 
@@ -810,7 +828,7 @@ class Company(Base):
         *,
         date_from: Optional[datetime] = None,
         date_to: Optional[datetime] = None,
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """Агрегаты по платежам (BillingPayment.amount)."""
         from app.models.billing import BillingPayment  # type: ignore
 
@@ -840,7 +858,7 @@ class Company(Base):
         *,
         date_from: Optional[datetime] = None,
         date_to: Optional[datetime] = None,
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """Синхронная версия агрегатов по платежам."""
         from app.models.billing import BillingPayment  # type: ignore
 
@@ -868,7 +886,7 @@ class Company(Base):
         session,
         *,
         date_to: Optional[datetime] = None,
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """
         Долги по инвойсам: суммарно и количество с долгом.
         Ожидаемые поля: total_due (Numeric), paid_amount (Numeric).
@@ -900,7 +918,7 @@ class Company(Base):
         session,
         *,
         date_to: Optional[datetime] = None,
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """Синхронная версия долгов по инвойсам."""
         from app.models.invoice import Invoice  # type: ignore
 
@@ -1123,7 +1141,7 @@ class Company(Base):
         *,
         archived_reason: str = "archived",
         by_user_id: Optional[int] = None,
-        notify_fn: Optional[Callable[[int, str, Dict[str, Any]], None]] = None,
+        notify_fn: Optional[Callable[[int, str, dict[str, Any]], None]] = None,
         write_audit: bool = True,
     ) -> int:
         """
@@ -1174,7 +1192,7 @@ class Company(Base):
         *,
         reactivate: bool = False,
         by_user_id: Optional[int] = None,
-        notify_fn: Optional[Callable[[int, str, Dict[str, Any]], None]] = None,
+        notify_fn: Optional[Callable[[int, str, dict[str, Any]], None]] = None,
         write_audit: bool = True,
     ) -> int:
         """
@@ -1186,7 +1204,7 @@ class Company(Base):
         if not company_ids:
             return 0
         now = utc_now()
-        values: Dict[str, Any] = dict(
+        values: dict[str, Any] = dict(
             deleted_at=None,
             deleted_by=None,
             delete_reason=None,
@@ -1222,7 +1240,7 @@ class Company(Base):
     # -----------------------------
     # Вспомогательный аудит
     # -----------------------------
-    def _emit_audit_event(self, action: str, meta: Optional[Dict[str, Any]] = None) -> None:
+    def _emit_audit_event(self, action: str, meta: Optional[dict[str, Any]] = None) -> None:
         """Создаёт ExternalAuditEvent (если модель доступна). Безопасно падает в no-op при отсутствии модели."""
         try:
             from app.models.audit import ExternalAuditEvent  # type: ignore
@@ -1246,7 +1264,7 @@ class Company(Base):
 
     @staticmethod
     def _emit_audit_event_static(
-        *, session, company_id: int, action: str, meta: Optional[Dict[str, Any]] = None
+        *, session, company_id: int, action: str, meta: Optional[dict[str, Any]] = None
     ) -> None:
         """Статическая версия для bulk-операций."""
         try:
@@ -1267,7 +1285,7 @@ class Company(Base):
     def update_audit(self) -> None:
         self.updated_at = utc_now()
 
-    def to_dict(self, mask_secrets: bool = True) -> Dict[str, Any]:
+    def to_dict(self, mask_secrets: bool = True) -> dict[str, Any]:
         """
         Сериализация. По умолчанию маскирует чувствительные поля.
         """
@@ -1296,12 +1314,19 @@ class Company(Base):
     # Быстрые выборки/поиск
     # -----------------------------
     @staticmethod
-    def get_active(session, *, limit: int = 100) -> List["Company"]:
-        q = select(Company).where(Company.is_active.is_(True)).order_by(Company.id.asc()).limit(limit)
+    def get_active(session, *, limit: int = 100) -> list[Company]:
+        q = (
+            select(Company)
+            .where(Company.is_active.is_(True))
+            .order_by(Company.id.asc())
+            .limit(limit)
+        )
         return list(session.execute(q).scalars().all())
 
     @staticmethod
-    def find_by_external(session, *, external_id: Optional[str] = None, onec_id: Optional[str] = None) -> Optional["Company"]:
+    def find_by_external(
+        session, *, external_id: Optional[str] = None, onec_id: Optional[str] = None
+    ) -> Optional[Company]:
         conds = []
         if external_id:
             conds.append(Company.external_id == external_id)
@@ -1331,10 +1356,10 @@ class Company(Base):
         email: Optional[str] = None,
         address: Optional[str] = None,
         owner_id: Optional[int] = None,
-        settings: Optional[Dict[str, Any]] = None,
+        settings: Optional[dict[str, Any]] = None,
         external_id: Optional[str] = None,
         onec_id: Optional[str] = None,
-    ) -> "Company":
+    ) -> Company:
         obj = Company(
             name=name,
             bin_iin=bin_iin,
@@ -1363,7 +1388,7 @@ class Company(Base):
         products: int = 0,
         orders: int = 0,
         plan: str = "start",
-    ) -> "Company":
+    ) -> Company:
         """
         Создаёт компанию и (опционально) связанных пользователей/товары/заказы для тестов.
         Требуются минимальные поля у связанных моделей:
@@ -1400,7 +1425,9 @@ class Company(Base):
                     Product(
                         company_id=company.id,
                         name=f"Product {i}",
-                        price=Numeric().bind_processor(None)(100 + i) if hasattr(Numeric, "bind_processor") else 100 + i,  # type: ignore
+                        price=Numeric().bind_processor(None)(100 + i)
+                        if hasattr(Numeric, "bind_processor")
+                        else 100 + i,  # type: ignore
                     )
                 )
 

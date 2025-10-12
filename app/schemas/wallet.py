@@ -1,5 +1,6 @@
 # app/schemas/wallet.py
 from __future__ import annotations
+
 """
 Pydantic-схемы для модуля Wallet.
 - Совместимы с Pydantic v2.
@@ -12,11 +13,10 @@ Pydantic-схемы для модуля Wallet.
 """
 
 from datetime import datetime
-from decimal import Decimal, ROUND_HALF_UP, InvalidOperation
-from typing import Any, Dict, List, Literal, Optional, TypeVar, Generic
+from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
+from typing import Any, Generic, Literal, Optional, TypeVar
 
-from pydantic import BaseModel, Field, ConfigDict, field_validator
-
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 # ====== Вспомогательные утилиты ==============================================
 
@@ -69,6 +69,7 @@ BaseJsonModel.model_config = ConfigDict(
 
 # ====== Пагинация и обёртки ===================================================
 
+
 class PaginationMeta(BaseModel):
     page: int = Field(1, ge=1)
     size: int = Field(20, ge=1, le=200)
@@ -79,16 +80,20 @@ T = TypeVar("T")
 
 
 class Page(BaseModel, Generic[T]):
-    items: List[T] = Field(default_factory=list)
+    items: list[T] = Field(default_factory=list)
     meta: PaginationMeta = Field(default_factory=PaginationMeta)
 
 
 # ====== Аккаунты ==============================================================
 
+
 class WalletAccountBase(BaseModel):
     """Базовая схема для кошелька."""
+
     user_id: int = Field(..., ge=1, description="ID пользователя-владельца")
-    currency: str = Field(..., min_length=3, max_length=10, description="Код валюты ISO-подобный (например, KZT, USD)")
+    currency: str = Field(
+        ..., min_length=3, max_length=10, description="Код валюты ISO-подобный (например, KZT, USD)"
+    )
     model_config = ConfigDict(
         from_attributes=True,
         populate_by_name=True,
@@ -104,6 +109,7 @@ class WalletAccountBase(BaseModel):
 
 class WalletAccountCreate(WalletAccountBase):
     """Создание кошелька (поддержка начального баланса)."""
+
     balance: Optional[Decimal] = Field(default=Decimal("0"), description="Начальный баланс")
 
     @field_validator("balance", mode="before")
@@ -116,6 +122,7 @@ class WalletAccountCreate(WalletAccountBase):
 
 class WalletAccountOut(WalletAccountBase):
     """Выдача кошелька наружу."""
+
     id: int
     balance: Decimal = Field(..., description="Текущий баланс")
     created_at: Optional[datetime] = None
@@ -129,6 +136,7 @@ class WalletAccountOut(WalletAccountBase):
 
 class WalletAccountsPage(Page[WalletAccountOut]):
     """Страница аккаунтов (items + meta)."""
+
     pass
 
 
@@ -139,6 +147,7 @@ TxType = Literal["deposit", "withdraw", "transfer_in", "transfer_out", "adjustme
 
 class WalletTransactionBase(BaseModel):
     """Базовая схема транзакции (только сумма)."""
+
     amount: Decimal = Field(..., gt=0, description="Сумма транзакции")
     model_config = ConfigDict(json_encoders=_JSON_DECIMAL)
 
@@ -153,16 +162,19 @@ class WalletTransactionBase(BaseModel):
 
 class WalletDeposit(WalletTransactionBase):
     """Запрос на депозит."""
+
     reference: Optional[str] = Field(default=None, max_length=255)
 
 
 class WalletWithdraw(WalletTransactionBase):
     """Запрос на вывод."""
+
     reference: Optional[str] = Field(default=None, max_length=255)
 
 
 class WalletTransfer(BaseModel):
     """Запрос на перевод между кошельками."""
+
     source_account_id: int = Field(..., ge=1)
     destination_account_id: int = Field(..., ge=1)
     amount: Decimal = Field(..., gt=0, description="Сумма перевода")
@@ -180,6 +192,7 @@ class WalletTransfer(BaseModel):
 
 class WalletTransactionOut(WalletTransactionBase):
     """Ответ по транзакции."""
+
     id: int
     account_id: int
     type: TxType | str
@@ -206,8 +219,10 @@ class WalletTransactionOut(WalletTransactionBase):
 
 # ====== Баланс ================================================================
 
+
 class BalanceOut(BaseModel):
     """Единообразный ответ по балансу аккаунта."""
+
     account_id: int
     currency: str
     balance: Decimal
@@ -226,8 +241,10 @@ class BalanceOut(BaseModel):
 
 # ====== Ледгер ================================================================
 
+
 class LedgerItem(BaseModel):
     """Элемент выписки (ледгера)."""
+
     id: int
     account_id: int
     type: TxType | str
@@ -257,11 +274,13 @@ class LedgerItem(BaseModel):
 
 class LedgerPage(BaseModel):
     """Страница ледгера."""
-    items: List[LedgerItem] = Field(default_factory=list)
+
+    items: list[LedgerItem] = Field(default_factory=list)
     meta: PaginationMeta = Field(default_factory=PaginationMeta)
 
 
 # ====== Универсальная ошибка (необязательно) =================================
+
 
 class ErrorResponse(BaseModel):
     detail: str

@@ -11,8 +11,9 @@ from __future__ import annotations
 
 import importlib
 import time
+from collections.abc import Iterable
 from types import ModuleType
-from typing import Iterable, List, Optional
+from typing import Optional
 
 from fastapi import APIRouter
 from fastapi.responses import JSONResponse
@@ -20,12 +21,14 @@ from fastapi.responses import JSONResponse
 try:
     # settings может отсутствовать на ранних этапах, подстрахуемся
     from app.core.config import settings  # type: ignore
+
     _API_V1_PREFIX: str = getattr(settings, "API_V1_PREFIX", "/api/v1") or "/api/v1"
 except Exception:
     _API_V1_PREFIX = "/api/v1"
 
 try:
     from app.core.logging import get_logger  # type: ignore
+
     logger = get_logger(__name__)
 except Exception:
     # минимальный fallback логгер
@@ -33,12 +36,14 @@ except Exception:
 
     logger = _logging.getLogger(__name__)
     if not logger.handlers:
-        _logging.basicConfig(level=_logging.INFO, format="%(asctime)s %(levelname)s [%(name)s] %(message)s")
+        _logging.basicConfig(
+            level=_logging.INFO, format="%(asctime)s %(levelname)s [%(name)s] %(message)s"
+        )
 
 
 # Явный список v1-модулей с роутерами.
 # Порядок важен, чтобы базовые/авторизационные шли раньше.
-ROUTER_MODULES: List[str] = [
+ROUTER_MODULES: list[str] = [
     "app.api.v1.auth",
     "app.api.v1.users",
     "app.api.v1.products",
@@ -47,7 +52,7 @@ ROUTER_MODULES: List[str] = [
 ]
 
 # Дополнительно можно автодобавлять модули позже (через фичефлаги/настройки).
-EXTRA_ROUTER_MODULES: List[str] = []
+EXTRA_ROUTER_MODULES: list[str] = []
 
 
 def _include_router_safely(parent: APIRouter, child: APIRouter, api_prefix: str) -> None:
@@ -95,8 +100,8 @@ def create_api_router() -> APIRouter:
     """Create API router with all v1 endpoints (idempotent)."""
     # ВАЖНО: тут не задаём общий prefix — чтобы умно соединять абсолютные/относительные префиксы дочерних роутеров.
     api_router = APIRouter()
-    registered: List[str] = []
-    skipped: List[str] = []
+    registered: list[str] = []
+    skipped: list[str] = []
 
     for module_name in _iter_modules():
         module = _load_module(module_name)

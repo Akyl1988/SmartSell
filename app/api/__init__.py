@@ -23,15 +23,15 @@ from typing import Any, Optional
 from fastapi import APIRouter
 
 # Рекомендуемый современный агрегатор (экспортируем наружу)
-from app.api.routes import (
-    mount_v1,             # монтирование в FastAPI/APIRouter
-    mount_all,            # alias на mount_v1
-    include_router_smart, # умное подключение одного роутера
-)
+from app.api.routes import include_router_smart  # умное подключение одного роутера
+from app.api.routes import mount_all  # alias на mount_v1
+from app.api.routes import mount_v1  # монтирование в FastAPI/APIRouter
 
 logger = logging.getLogger(__name__)
 if not logger.handlers:
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s [%(name)s] %(message)s")
+    logging.basicConfig(
+        level=logging.INFO, format="%(asctime)s %(levelname)s [%(name)s] %(message)s"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -46,20 +46,20 @@ def _try_import(path: str) -> Optional[Any]:
         return None
 
 
-_auth_mod      = _try_import("app.api.v1.auth")
-_users_mod     = _try_import("app.api.v1.users")
-_products_mod  = _try_import("app.api.v1.products")
+_auth_mod = _try_import("app.api.v1.auth")
+_users_mod = _try_import("app.api.v1.users")
+_products_mod = _try_import("app.api.v1.products")
 _campaigns_mod = _try_import("app.api.v1.campaigns")
-_wallet_mod    = _try_import("app.api.v1.wallet")
-_payments_mod  = _try_import("app.api.v1.payments")
+_wallet_mod = _try_import("app.api.v1.wallet")
+_payments_mod = _try_import("app.api.v1.payments")
 
 # Для прямого реэкспорта модулей (если кто-то делает `from app.api import wallet`)
-auth      = _auth_mod
-users     = _users_mod
-products  = _products_mod
+auth = _auth_mod
+users = _users_mod
+products = _products_mod
 campaigns = _campaigns_mod
-wallet    = _wallet_mod   # может быть None
-payments  = _payments_mod # может быть None
+wallet = _wallet_mod  # может быть None
+payments = _payments_mod  # может быть None
 
 
 # ---------------------------------------------------------------------------
@@ -101,7 +101,9 @@ def _safe_include(parent: APIRouter, mod: Any, fallback_prefix: str = "/v1") -> 
             logger.debug("Included router as-is: %s", r.prefix)
         else:
             parent.include_router(r, prefix=fallback_prefix)
-            logger.debug("Included router with prefix %s: %s", fallback_prefix, r.prefix or "<root>")
+            logger.debug(
+                "Included router with prefix %s: %s", fallback_prefix, r.prefix or "<root>"
+            )
         return True
     except Exception as e:
         logger.warning("Router include failed (%s): %s", getattr(mod, "__name__", mod), e)
@@ -115,9 +117,9 @@ def _safe_include(parent: APIRouter, mod: Any, fallback_prefix: str = "/v1") -> 
 # ---------------------------------------------------------------------------
 api_router = APIRouter()
 
-_safe_include(api_router, _auth_mod,      fallback_prefix="/v1")
-_safe_include(api_router, _users_mod,     fallback_prefix="/v1")
-_safe_include(api_router, _products_mod,  fallback_prefix="/v1")
+_safe_include(api_router, _auth_mod, fallback_prefix="/v1")
+_safe_include(api_router, _users_mod, fallback_prefix="/v1")
+_safe_include(api_router, _products_mod, fallback_prefix="/v1")
 _safe_include(api_router, _campaigns_mod, fallback_prefix="/v1")
 
 if not _safe_include(api_router, _wallet_mod, fallback_prefix="/v1"):
@@ -133,9 +135,17 @@ def get_api_router() -> APIRouter:
 
 __all__ = [
     # современный путь
-    "mount_v1", "mount_all", "include_router_smart",
+    "mount_v1",
+    "mount_all",
+    "include_router_smart",
     # базовые/опциональные модули
-    "auth", "users", "products", "campaigns", "wallet", "payments",
+    "auth",
+    "users",
+    "products",
+    "campaigns",
+    "wallet",
+    "payments",
     # обратная совместимость
-    "api_router", "get_api_router",
+    "api_router",
+    "get_api_router",
 ]

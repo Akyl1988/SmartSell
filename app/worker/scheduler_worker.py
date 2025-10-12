@@ -26,12 +26,13 @@ import logging
 import smtplib
 import socket
 import time
+from collections.abc import Callable
 from contextlib import contextmanager
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
-from typing import Callable, Dict, Optional
+from typing import Optional
 
 from apscheduler.events import EVENT_JOB_ERROR, EVENT_JOB_MAX_INSTANCES, EVENT_JOB_MISSED
 from apscheduler.schedulers.background import BackgroundScheduler
@@ -73,6 +74,7 @@ logger.setLevel(logging.INFO)
 
 # -------- Вспомогательные сущности -------- #
 
+
 def _utcnow_naive() -> datetime:
     """Naive UTC для совместимости с большинством наших моделей."""
     return datetime.utcnow()
@@ -80,7 +82,7 @@ def _utcnow_naive() -> datetime:
 
 def _utcnow_aware() -> datetime:
     """Aware UTC — для сравнения, где это критично (планировщик)."""
-    return datetime.now(timezone.utc)
+    return datetime.now(UTC)
 
 
 @dataclass
@@ -126,6 +128,7 @@ def db_session():
 
 # -------- SMTP отправка с ретраями -------- #
 
+
 def _build_email(smtp: SmtpConfig, recipient: str, subject: str, plain_text: str) -> MIMEMultipart:
     msg = MIMEMultipart()
     msg["From"] = f"{smtp.from_name} <{smtp.from_email or smtp.user}>"
@@ -147,7 +150,9 @@ def _send_via_smtp(smtp: SmtpConfig, msg: MIMEMultipart) -> None:
             server.login(smtp.user, smtp.password)
 
     if smtp.use_ssl:
-        with smtplib.SMTP_SSL(host=smtp.host, port=smtp.port, timeout=smtp.connect_timeout) as server:
+        with smtplib.SMTP_SSL(
+            host=smtp.host, port=smtp.port, timeout=smtp.connect_timeout
+        ) as server:
             _configure(server)
             server.send_message(msg)
     else:
@@ -156,7 +161,9 @@ def _send_via_smtp(smtp: SmtpConfig, msg: MIMEMultipart) -> None:
             server.send_message(msg)
 
 
-def _smtp_send_with_retry(send_fn: Callable[[], None], *, retries: int = 2, base_delay: float = 0.7) -> None:
+def _smtp_send_with_retry(
+    send_fn: Callable[[], None], *, retries: int = 2, base_delay: float = 0.7
+) -> None:
     last_err: Optional[Exception] = None
     for attempt in range(retries + 1):
         try:
@@ -166,8 +173,10 @@ def _smtp_send_with_retry(send_fn: Callable[[], None], *, retries: int = 2, base
             last_err = e
             if attempt >= retries:
                 break
-            sleep_s = base_delay * (2 ** attempt)
-            logger.warning("SMTP send retry %s/%s через %.1fs: %s", attempt + 1, retries, sleep_s, e)
+            sleep_s = base_delay * (2**attempt)
+            logger.warning(
+                "SMTP send retry %s/%s через %.1fs: %s", attempt + 1, retries, sleep_s, e
+            )
             time.sleep(sleep_s)
     assert last_err is not None
     raise last_err
@@ -182,20 +191,26 @@ scheduler = BackgroundScheduler(
 
 _JOB_ID_PROCESS_CAMPAIGNS = "process_campaigns"
 
+
 # События планировщика для детального лога
 def _on_scheduler_event(event):
     if event.code == EVENT_JOB_MISSED:
         logger.warning("APScheduler: пропущен запуск job_id=%s", getattr(event, "job_id", "?"))
     elif event.code == EVENT_JOB_MAX_INSTANCES:
-        logger.error("APScheduler: достигнут максимум инстансов job_id=%s", getattr(event, "job_id", "?"))
+        logger.error(
+            "APScheduler: достигнут максимум инстансов job_id=%s", getattr(event, "job_id", "?")
+        )
     elif event.code == EVENT_JOB_ERROR:
         logger.exception("APScheduler: ошибка в job_id=%s", getattr(event, "job_id", "?"))
 
 
-scheduler.add_listener(_on_scheduler_event, EVENT_JOB_MISSED | EVENT_JOB_MAX_INSTANCES | EVENT_JOB_ERROR)
+scheduler.add_listener(
+    _on_scheduler_event, EVENT_JOB_MISSED | EVENT_JOB_MAX_INSTANCES | EVENT_JOB_ERROR
+)
 
 
 # -------- Бизнес-логика -------- #
+
 
 def send_message(message_id: int) -> None:
     """
@@ -284,7 +299,9 @@ def process_scheduled_campaigns() -> None:
             if not pending:
                 # Если нечего слать — завершаем кампанию
                 campaign.status = CampaignStatus.COMPLETED
-                logger.info("Кампания id=%s помечена как COMPLETED (нет PENDING сообщений)", campaign.id)
+                logger.info(
+                    "Кампания id=%s помечена как COMPLETED (нет PENDING сообщений)", campaign.id
+                )
                 continue
 
             # Ставим каждое сообщение в очередь на ближайший запуск
@@ -309,7 +326,8 @@ def process_scheduled_campaigns() -> None:
 
 # -------- Публичные сервисные функции воркера -------- #
 
-def enqueue_campaign(campaign_id: int) -> Dict[str, int]:
+
+def enqueue_campaign(campaign_id: int) -> dict[str, int]:
     """
     Принудительно поставить в очередь PENDING-сообщения указанной кампании.
     Удобно дергать из админки/скриптов.
@@ -353,8 +371,8 @@ def start() -> None:
         id=_JOB_ID_PROCESS_CAMPAIGNS,
         replace_existing=True,
         max_instances=1,
-        coalesce=True,           # слить пропущенные запуски в один
-        misfire_grace_time=60,   # допуск по пропуску
+        coalesce=True,  # слить пропущенные запуски в один
+        misfire_grace_time=60,  # допуск по пропуску
     )
 
     scheduler.start()
@@ -392,7 +410,7 @@ def reload_jobs() -> None:
     logger.info("Базовые задачи планировщика пересозданы")
 
 
-def get_status() -> Dict[str, str]:
+def get_status() -> dict[str, str]:
     """Короткий статус воркера: запущен/нет, кол-во задач."""
     try:
         jobs = scheduler.get_jobs()

@@ -26,7 +26,8 @@ if trio is not None and not hasattr(trio, "MultiError"):
         setattr(trio, "MultiError", _MultiError)
     except Exception:
         # если trio — proxy-модуль с защитой, создадим тонкий shim-модуль и подменим sys.modules
-        import types, sys  # noqa: PLC0415
+        import sys
+        import types  # noqa: PLC0415
 
         m = types.ModuleType("trio")
         for attr in dir(trio):

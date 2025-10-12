@@ -1,15 +1,16 @@
 # app/routers/analytics.py
 from __future__ import annotations
+
 """
 Analytics router for business intelligence and reporting.
 """
 
 from datetime import datetime, timedelta
 from decimal import Decimal
-from typing import List, Optional
+from typing import Optional
 
-from fastapi import APIRouter, Depends, status
-from sqlalchemy import and_, desc, func, select, false
+from fastapi import APIRouter, Depends
+from sqlalchemy import and_, desc, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 # DB dependency (db / database fallback)
@@ -18,9 +19,9 @@ try:
 except Exception:
     from app.core.db import get_db  # type: ignore
 
+from app.core.deps import api_rate_limit_dep, ensure_idempotency
 from app.core.errors import bad_request, server_error
 from app.core.security import require_analyst
-from app.core.deps import api_rate_limit_dep, ensure_idempotency
 from app.models import Order, OrderItem, Product, User
 from app.schemas import (
     AnalyticsFilter,
@@ -37,6 +38,7 @@ router = APIRouter(prefix="/analytics", tags=["analytics"])
 
 
 # ---------- helpers ----------
+
 
 def _parse_dt_or_default(value: Optional[str], default: datetime) -> datetime:
     if not value:
@@ -68,6 +70,7 @@ def _normalize_interval(interval: Optional[str]) -> str:
 
 # ---------- endpoints ----------
 
+
 @router.get(
     "/dashboard",
     response_model=DashboardStats,
@@ -91,8 +94,7 @@ async def get_dashboard_stats(
     # total revenue (completed/paid)
     total_revenue_dec = (
         await db.execute(
-            select(func.coalesce(func.sum(Order.total_amount), 0))
-            .where(
+            select(func.coalesce(func.sum(Order.total_amount), 0)).where(
                 and_(
                     Order.company_id == current_user.company_id,
                     Order.status.in_(["completed", "paid"]),
@@ -475,6 +477,7 @@ async def export_analytics(
 
 # ---------- shared query ----------
 
+
 async def get_sales_data(
     db: AsyncSession,
     company_id: int,
@@ -515,8 +518,8 @@ async def get_sales_data(
     )
     rows = res.all()
 
-    labels: List[str] = []
-    data: List[float] = []
+    labels: list[str] = []
+    data: list[float] = []
     for row in rows:
         period: datetime = row.period  # date_trunc returns timestamp
         if interval == "day":

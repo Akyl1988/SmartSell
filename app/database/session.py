@@ -2,11 +2,11 @@
 from __future__ import annotations
 
 import os
-from typing import Generator, AsyncGenerator
+from collections.abc import AsyncGenerator, Generator
 
 from sqlalchemy import create_engine
-from sqlalchemy.orm import sessionmaker, Session
-from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
+from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
+from sqlalchemy.orm import Session, sessionmaker
 
 # Поддерживаем как postgresql+psycopg2://..., так и postgresql://...
 SYNC_URL = os.getenv(
@@ -41,12 +41,14 @@ AsyncSessionLocal = sessionmaker(
     future=True,
 )
 
+
 def get_db() -> Generator[Session, None, None]:
     db = SessionLocal()
     try:
         yield db
     finally:
         db.close()
+
 
 async def get_async_session() -> AsyncGenerator[AsyncSession, None]:
     async with AsyncSessionLocal() as session:

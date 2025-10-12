@@ -1,5 +1,6 @@
 # app/routers/__init__.py
 from __future__ import annotations
+
 """
 Routers package initialization (enterprise-grade).
 
@@ -16,16 +17,21 @@ import importlib
 import logging
 import os
 import pkgutil
-import sys
+from collections.abc import Iterable
 from dataclasses import dataclass
 from types import ModuleType
-from typing import Dict, Iterable, List, Optional, Set, Tuple
+from typing import Optional
 
 from fastapi import APIRouter, FastAPI, Response
 from fastapi.responses import PlainTextResponse
 
 try:
-    from prometheus_client import CONTENT_TYPE_LATEST, CollectorRegistry, generate_latest  # type: ignore
+    from prometheus_client import (  # type: ignore
+        CONTENT_TYPE_LATEST,
+        CollectorRegistry,
+        generate_latest,
+    )
+
     _PROM_AVAILABLE = True
 except Exception:  # pragma: no cover
     _PROM_AVAILABLE = False
@@ -44,21 +50,21 @@ logger = logging.getLogger(__name__)
 # -------------------------------------------------------------------------
 @dataclass(frozen=True)
 class RouterSpec:
-    module: str                 # e.g. "app.routers.auth"
-    attr: str = "router"        # имя APIRouter в модуле
+    module: str  # e.g. "app.routers.auth"
+    attr: str = "router"  # имя APIRouter в модуле
     prefix: Optional[str] = None
-    tags: Optional[List[str]] = None
-    enabled: bool = True        # можно временно отключить модуль
+    tags: Optional[list[str]] = None
+    enabled: bool = True  # можно временно отключить модуль
 
 
 # При необходимости переопредели префиксы/теги тут:
-ROUTER_SPECS: Tuple[RouterSpec, ...] = (
-    RouterSpec("app.routers.auth",       prefix="/auth",       tags=["auth"]),
-    RouterSpec("app.routers.products",   prefix="/products",   tags=["products"]),
-    RouterSpec("app.routers.orders",     prefix="/orders",     tags=["orders"]),
-    RouterSpec("app.routers.payments",   prefix="/payments",   tags=["payments"]),
+ROUTER_SPECS: tuple[RouterSpec, ...] = (
+    RouterSpec("app.routers.auth", prefix="/auth", tags=["auth"]),
+    RouterSpec("app.routers.products", prefix="/products", tags=["products"]),
+    RouterSpec("app.routers.orders", prefix="/orders", tags=["orders"]),
+    RouterSpec("app.routers.payments", prefix="/payments", tags=["payments"]),
     RouterSpec("app.routers.warehouses", prefix="/warehouses", tags=["warehouses"]),
-    RouterSpec("app.routers.analytics",  prefix="/analytics",  tags=["analytics"]),
+    RouterSpec("app.routers.analytics", prefix="/analytics", tags=["analytics"]),
 )
 
 # Имя атрибута по умолчанию, который должен экспортировать APIRouter
@@ -81,7 +87,7 @@ def _api_prefix() -> str:
 # -------------------------------------------------------------------------
 # ENV filters: include/exclude с масками
 # -------------------------------------------------------------------------
-def _parse_csv_env(name: str) -> List[str]:
+def _parse_csv_env(name: str) -> list[str]:
     raw = os.getenv(name, "").strip()
     return [x.strip() for x in raw.split(",") if x.strip()]
 
@@ -90,7 +96,7 @@ def _match_any(name: str, patterns: Iterable[str]) -> bool:
     return any(fnmatch.fnmatch(name, p) for p in patterns)
 
 
-def _should_include(module_name: str, includes: List[str], excludes: List[str]) -> bool:
+def _should_include(module_name: str, includes: list[str], excludes: list[str]) -> bool:
     if includes and not _match_any(module_name, includes):
         return False
     if excludes and _match_any(module_name, excludes):
@@ -124,7 +130,7 @@ def _import_module(module_name: str) -> Optional[ModuleType]:
         return None
 
 
-def _extract_router_info(mod: ModuleType) -> Optional[Tuple[APIRouter, str, List[str]]]:
+def _extract_router_info(mod: ModuleType) -> Optional[tuple[APIRouter, str, list[str]]]:
     """
     Ищем APIRouter и метаданные префикса/тегов в модуле.
     Поддерживаются необязательные экспортируемые переменные:
@@ -156,7 +162,7 @@ def _extract_router_info(mod: ModuleType) -> Optional[Tuple[APIRouter, str, List
 # -------------------------------------------------------------------------
 # Загрузка роутеров: ручные + автосканирование
 # -------------------------------------------------------------------------
-def load_all_routers() -> Dict[str, Tuple[APIRouter, str, List[str]]]:
+def load_all_routers() -> dict[str, tuple[APIRouter, str, list[str]]]:
     """
     Собирает все доступные роутеры.
     Приоритет: ROUTER_SPECS (enabled=True) → autodiscover.
@@ -166,8 +172,8 @@ def load_all_routers() -> Dict[str, Tuple[APIRouter, str, List[str]]]:
     includes = _parse_csv_env("ROUTERS_INCLUDE")
     excludes = _parse_csv_env("ROUTERS_EXCLUDE")
 
-    loaded: Dict[str, Tuple[APIRouter, str, List[str]]] = {}
-    seen_modules: Set[str] = set()
+    loaded: dict[str, tuple[APIRouter, str, list[str]]] = {}
+    seen_modules: set[str] = set()
 
     # 1) Ручные спецификации
     for spec in ROUTER_SPECS:
@@ -245,7 +251,9 @@ def register_routers(app: FastAPI) -> None:
 
         try:
             app.include_router(router, prefix=full_prefix, tags=tags)
-            logger.info("Router registered: module=%s prefix=%s tags=%s", module_name, full_prefix, tags)
+            logger.info(
+                "Router registered: module=%s prefix=%s tags=%s", module_name, full_prefix, tags
+            )
         except Exception as e:
             logger.warning("Router registration failed: module=%s error=%s", module_name, e)
 
@@ -263,13 +271,14 @@ def register_health(app: FastAPI) -> None:
     - /readyz — базовые проверки готовности (settings.health_check, БД если доступно).
     - /metrics — Prometheus endpoint.
     """
+
     @app.get("/livez", include_in_schema=False)
     def livez() -> Response:
         return PlainTextResponse("OK", status_code=200)
 
     @app.get("/readyz", include_in_schema=False)
     def readyz() -> Response:
-        errors: List[str] = []
+        errors: list[str] = []
 
         # settings.health_check(), если реализовано
         try:
@@ -284,6 +293,7 @@ def register_health(app: FastAPI) -> None:
         # db health, если есть helper
         try:
             from app.core.db import health_check_db  # type: ignore
+
             db_res = health_check_db()
             if not db_res.get("ok", True):
                 errors.append("db: " + (db_res.get("error") or "unknown error"))
@@ -307,6 +317,7 @@ def register_health(app: FastAPI) -> None:
             except Exception as e:  # pragma: no cover
                 logger.warning("Prometheus metrics failed: %s", e)
                 return PlainTextResponse("metrics unavailable", status_code=503)
+
     else:
         logger.info("prometheus_client not installed; /metrics will not be exposed")
 

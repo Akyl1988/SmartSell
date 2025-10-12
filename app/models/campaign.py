@@ -27,28 +27,27 @@ Campaign & Message models for marketing campaigns and messaging.
 from __future__ import annotations
 
 import enum
+from collections.abc import Iterable, Sequence
 from datetime import UTC, datetime, timedelta
-from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
+from typing import Any, Optional
 
+from sqlalchemy import CheckConstraint, DateTime
+from sqlalchemy import Enum as SAEnum
 from sqlalchemy import (
-    CheckConstraint,
-    DateTime,
-    Enum as SAEnum,
     ForeignKey,
     Index,
     Integer,
     String,
     Text,
     UniqueConstraint,
+    delete,
     func,
     select,
     update,
-    delete,
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship, validates
 
 from app.models.base import Base  # PR #21 Base
-
 
 # -----------------------------------------------------------------------------
 # Константы / утилиты
@@ -161,7 +160,7 @@ class Campaign(SoftDeleteMixin, Base):
     delivered_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     failed_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
 
-    messages: Mapped[List["Message"]] = relationship(
+    messages: Mapped[list[Message]] = relationship(
         "Message",
         back_populates="campaign",
         cascade="all, delete-orphan",
@@ -237,7 +236,7 @@ class Campaign(SoftDeleteMixin, Base):
         status: MessageStatus = MessageStatus.PENDING,
         provider_message_id: Optional[str] = None,
         error_code: Optional[str] = None,
-    ) -> "Message":
+    ) -> Message:
         msg = Message(
             campaign=self,
             recipient=recipient,
@@ -256,10 +255,10 @@ class Campaign(SoftDeleteMixin, Base):
         recipients: Iterable[str],
         *,
         content_template: str,
-        template_vars_iter: Optional[Iterable[Dict[str, Any]]] = None,
+        template_vars_iter: Optional[Iterable[dict[str, Any]]] = None,
         channel: ChannelType = ChannelType.EMAIL,
-    ) -> List["Message"]:
-        msgs: List[Message] = []
+    ) -> list[Message]:
+        msgs: list[Message] = []
         if template_vars_iter is None:
             template_vars_iter = [{} for _ in recipients]
         for recipient, vars_ in zip(recipients, template_vars_iter):
@@ -271,13 +270,13 @@ class Campaign(SoftDeleteMixin, Base):
     async def bulk_insert_messages_async(
         session,
         campaign_id: int,
-        items: Iterable[Dict[str, Any]],
+        items: Iterable[dict[str, Any]],
     ) -> int:
         """
         Highload-вставка сообщений через bulk_insert_mappings.
         items: {recipient, content, channel?, status?, provider_message_id?, error_code?}
         """
-        rows: List[Dict[str, Any]] = []
+        rows: list[dict[str, Any]] = []
         for it in items:
             rows.append(
                 {
@@ -342,7 +341,7 @@ class Campaign(SoftDeleteMixin, Base):
 
     # --------- Аналитика ---------
     @staticmethod
-    async def aggregate_by_status_async(session, campaign_id: int) -> Dict[str, int]:
+    async def aggregate_by_status_async(session, campaign_id: int) -> dict[str, int]:
         rows = await session.execute(
             select(Message.status, func.count(Message.id))
             .where(Message.campaign_id == campaign_id, Message.deleted_at.is_(None))
@@ -351,7 +350,7 @@ class Campaign(SoftDeleteMixin, Base):
         return {status.value: int(cnt) for status, cnt in rows.all()}
 
     @staticmethod
-    async def aggregate_by_channel_async(session, campaign_id: int) -> Dict[str, int]:
+    async def aggregate_by_channel_async(session, campaign_id: int) -> dict[str, int]:
         rows = await session.execute(
             select(Message.channel, func.count(Message.id))
             .where(Message.campaign_id == campaign_id, Message.deleted_at.is_(None))
@@ -367,7 +366,7 @@ class Campaign(SoftDeleteMixin, Base):
         bucket: str = "day",  # 'hour' | 'day'
         field: str = "sent_at",  # 'sent_at' | 'delivered_at'
         include_deleted: bool = False,  # учитывать ли удалённые сообщения
-    ) -> List[Tuple[str, int]]:
+    ) -> list[tuple[str, int]]:
         """
         Вернёт [(label, count)], где label — YYYY-MM-DD или YYYY-MM-DD HH:00.
         """
@@ -403,7 +402,7 @@ class Campaign(SoftDeleteMixin, Base):
         *,
         bucket: str = "day",  # 'hour' | 'day'
         only_failed: bool = False,  # динамика ошибок среди удалённых
-    ) -> List[Tuple[str, int]]:
+    ) -> list[tuple[str, int]]:
         """
         Агрегация по времени удаления (deleted_at). Полезно для мониторинга "уборок".
         """
@@ -637,7 +636,7 @@ class Campaign(SoftDeleteMixin, Base):
         return int(res.rowcount or 0)
 
     # --------- Сериализация ---------
-    def to_dict(self, with_messages: bool = False) -> Dict[str, Any]:
+    def to_dict(self, with_messages: bool = False) -> dict[str, Any]:
         data = {
             "id": self.id,
             "title": self.title,
@@ -666,7 +665,7 @@ class Campaign(SoftDeleteMixin, Base):
         description: Optional[str] = None,
         status: CampaignStatus = CampaignStatus.DRAFT,
         scheduled_at: Optional[datetime] = None,
-    ) -> "Campaign":
+    ) -> Campaign:
         return Campaign(
             company_id=company_id,
             title=title,
@@ -684,7 +683,7 @@ class Campaign(SoftDeleteMixin, Base):
         messages: int = 10,
         channel: ChannelType = ChannelType.EMAIL,
         content_template: str = "Hello, {name}!",
-    ) -> "Campaign":
+    ) -> Campaign:
         """
         Удобный генератор: создаёт кампанию + N сообщений (recipient=user{i}@mail).
         """
@@ -910,7 +909,7 @@ class Message(SoftDeleteMixin, Base):
         if when.tzinfo is None:
             raise ValueError("bulk_update_status_async(): 'when' must be timezone-aware (UTC).")
 
-        values: Dict[str, Any] = {"status": status}
+        values: dict[str, Any] = {"status": status}
         if status == MessageStatus.SENT:
             values["sent_at"] = when
             values["error_code"] = None
@@ -933,7 +932,7 @@ class Message(SoftDeleteMixin, Base):
 
     # --------- Рендер/сериализация ---------
     @staticmethod
-    def render_content_static(template: str, variables: Dict[str, Any]) -> str:
+    def render_content_static(template: str, variables: dict[str, Any]) -> str:
         class _SafeDict(dict):
             def __missing__(self, key):  # type: ignore[override]
                 return "{" + key + "}"
@@ -943,7 +942,7 @@ class Message(SoftDeleteMixin, Base):
         except Exception as exc:
             raise ValueError(f"Template rendering failed: {exc}") from exc
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         return {
             "id": self.id,
             "campaign_id": self.campaign_id,
@@ -972,7 +971,7 @@ class Message(SoftDeleteMixin, Base):
         status: MessageStatus = MessageStatus.PENDING,
         provider_message_id: Optional[str] = None,
         error_code: Optional[str] = None,
-    ) -> "Message":
+    ) -> Message:
         return Message(
             campaign_id=campaign_id,
             recipient=recipient,
@@ -991,7 +990,7 @@ class Message(SoftDeleteMixin, Base):
         count: int = 10,
         channel: ChannelType = ChannelType.EMAIL,
         content_template: str = "Hello, {i}!",
-    ) -> List["Message"]:
+    ) -> list[Message]:
         """
         Удобный генератор: создаёт N сообщений с recipient=user{i}@example.com.
         """

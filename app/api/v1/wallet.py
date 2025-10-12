@@ -4,23 +4,16 @@ from __future__ import annotations
 import inspect
 import logging
 from decimal import Decimal, InvalidOperation
-from typing import Any, Dict, List, Optional, Literal, Callable, Tuple
+from typing import Any, Literal, Optional
 
-from fastapi import (
-    APIRouter,
-    Depends,
-    HTTPException,
-    Query,
-    Path,
-    status,
-    Header,
-)
-from pydantic import BaseModel, Field, ConfigDict, conint, constr
+from fastapi import APIRouter, Depends, Header, HTTPException, Path, Query, status
+from pydantic import BaseModel, Field, conint, constr
 
 # =============================================================================
 # ЛОГИРОВАНИЕ
 # =============================================================================
 logger = logging.getLogger(__name__)
+
 
 # =============================================================================
 # DEMO RBAC / USER CTX (совместимо со стилем campaigns)
@@ -30,16 +23,20 @@ class UserCtx(BaseModel):
     role: Literal["admin", "manager", "viewer"] = "manager"
     username: str = "demo"
 
+
 async def get_current_user() -> UserCtx:
     # Демо-реализация. В проде подменяй на Depends(auth.get_current_user)
     return UserCtx(id=1, role="manager", username="demo")
+
 
 def require_role(*roles: str):
     async def dep(user: UserCtx = Depends(get_current_user)):
         if user.role not in roles:
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="forbidden")
         return user
+
     return dep
+
 
 # =============================================================================
 # ХЕЛПЕРЫ
@@ -50,6 +47,7 @@ def _norm_ccy(code: Optional[str]) -> str:
         raise HTTPException(status_code=422, detail="currency must be 3..10 chars")
     return v
 
+
 def _to_dec_str(v: Any) -> str:
     if isinstance(v, Decimal):
         return str(v.normalize()) if v == v.to_integral() else str(v)
@@ -58,6 +56,7 @@ def _to_dec_str(v: Any) -> str:
         return str(d.normalize()) if d == d.to_integral() else str(d)
     except (InvalidOperation, ValueError, TypeError):
         raise HTTPException(status_code=400, detail="invalid decimal")
+
 
 def _pick_http_status(exc: Exception) -> int:
     msg = str(exc).lower()
@@ -71,21 +70,25 @@ def _pick_http_status(exc: Exception) -> int:
         return status.HTTP_409_CONFLICT
     return status.HTTP_400_BAD_REQUEST
 
+
 def _safe_bool(v: Any, default: bool = False) -> bool:
     try:
         return bool(v)
     except Exception:
         return default
 
+
 # =============================================================================
 # Pydantic схемы (самодостаточно, без внешних импортов)
 # =============================================================================
 CurrencyStr = constr(strip_whitespace=True, min_length=3, max_length=10)  # type: ignore
 
+
 class WalletAccountCreate(BaseModel):
     user_id: conint(ge=1)  # type: ignore
     currency: CurrencyStr
     balance: Optional[Decimal] = Field(None, description="Начальный баланс (опционально)")
+
 
 class WalletAccountOut(BaseModel):
     id: conint(ge=1)  # type: ignore
@@ -95,13 +98,16 @@ class WalletAccountOut(BaseModel):
     created_at: str
     updated_at: str
 
+
 class WalletDeposit(BaseModel):
     amount: Decimal = Field(..., gt=0)
     reference: Optional[str] = Field(None, max_length=255)
 
+
 class WalletWithdraw(BaseModel):
     amount: Decimal = Field(..., gt=0)
     reference: Optional[str] = Field(None, max_length=255)
+
 
 class WalletTransfer(BaseModel):
     source_account_id: conint(ge=1)  # type: ignore
@@ -109,33 +115,40 @@ class WalletTransfer(BaseModel):
     amount: Decimal = Field(..., gt=0)
     reference: Optional[str] = Field(None, max_length=255)
 
+
 class WalletTxBalance(BaseModel):
     account_id: conint(ge=1)  # type: ignore
     currency: CurrencyStr
     balance: str
 
+
 class WalletTransferOut(BaseModel):
     source: WalletTxBalance
     destination: WalletTxBalance
+
 
 class WalletTransactionOut(BaseModel):
     """
     Универсальная схема ответа для депозит/списание: баланс и валюта.
     Для transfer используем WalletTransferOut.
     """
+
     account_id: conint(ge=1)  # type: ignore
     currency: CurrencyStr
     balance: str
+
 
 class BalanceOut(BaseModel):
     account_id: conint(ge=1)  # type: ignore
     currency: CurrencyStr
     balance: str
 
+
 class PageMeta(BaseModel):
     page: conint(ge=1)  # type: ignore
     size: conint(ge=1, le=200)  # type: ignore
     total: int
+
 
 class LedgerItem(BaseModel):
     id: conint(ge=1)  # type: ignore
@@ -146,29 +159,35 @@ class LedgerItem(BaseModel):
     reference: Optional[str]
     created_at: str
 
+
 class LedgerPage(BaseModel):
-    items: List[LedgerItem]
+    items: list[LedgerItem]
     meta: PageMeta
 
+
 class WalletAccountsPage(BaseModel):
-    items: List[WalletAccountOut]
+    items: list[WalletAccountOut]
     meta: PageMeta
+
 
 class HealthOut(BaseModel):
     ok: bool
     engine: Optional[str] = None
     error: Optional[str] = None
 
+
 class StatsOut(BaseModel):
     accounts: int
     ledger_entries: int
     total_balance: str
+
 
 # =============================================================================
 # Storage backend (SQL реализация)
 # =============================================================================
 try:
     from app.storage.wallet_sql import WalletStorageSQL  # type: ignore
+
     storage = WalletStorageSQL()
     _BACKEND = "sql"
 except Exception as e:
@@ -176,7 +195,11 @@ except Exception as e:
 
 # ---- Возможные расширенные методы (работаем мягко, если их нет) -------------
 _HAS_GET_ACC_BY_UC = hasattr(storage, "get_account_by_user_currency")
-_HAS_LIST_ACC_EXT = "currency" in inspect.signature(storage.list_accounts).parameters if hasattr(storage, "list_accounts") else False
+_HAS_LIST_ACC_EXT = (
+    "currency" in inspect.signature(storage.list_accounts).parameters
+    if hasattr(storage, "list_accounts")
+    else False
+)
 _HAS_ADJUST = hasattr(storage, "adjust_balance")
 _HAS_HEALTH = hasattr(storage, "health")
 _HAS_STATS = hasattr(storage, "stats")
@@ -197,6 +220,7 @@ router = APIRouter(
     },
 )
 
+
 # =============================================================================
 # HEALTH / STATS
 # =============================================================================
@@ -212,6 +236,7 @@ def health() -> HealthOut:
     # Базовый ответ, если метод отсутствует
     return HealthOut(ok=True, engine=_BACKEND)
 
+
 @router.get("/stats", response_model=StatsOut, summary="Агрегированная статистика")
 def stats() -> StatsOut:
     if _HAS_STATS:
@@ -220,9 +245,11 @@ def stats() -> StatsOut:
             # ожидание: {"accounts": int, "ledger_entries": int, "total_balance": str|Decimal}
             if isinstance(data, dict):
                 tb = _to_dec_str(data.get("total_balance", "0"))
-                return StatsOut(accounts=int(data.get("accounts", 0)),
-                                ledger_entries=int(data.get("ledger_entries", 0)),
-                                total_balance=tb)
+                return StatsOut(
+                    accounts=int(data.get("accounts", 0)),
+                    ledger_entries=int(data.get("ledger_entries", 0)),
+                    total_balance=tb,
+                )
         except Exception as e:
             raise HTTPException(status_code=_pick_http_status(e), detail=str(e))
     # Fallback — без агрегации из БД
@@ -233,6 +260,7 @@ def stats() -> StatsOut:
         return StatsOut(accounts=acc_count, ledger_entries=0, total_balance="0")
     except Exception as e:
         raise HTTPException(status_code=_pick_http_status(e), detail=str(e))
+
 
 # =============================================================================
 # ACCOUNTS
@@ -258,6 +286,7 @@ def create_account(
     except Exception as e:
         logger.warning("create_account failed; rid=%s; err=%s", x_request_id, e)
         raise HTTPException(status_code=_pick_http_status(e), detail=str(e))
+
 
 @router.get(
     "/accounts",
@@ -296,7 +325,11 @@ def list_accounts(
                 r["currency"] = _norm_ccy(r.get("currency", ""))
                 r["balance"] = _to_dec_str(r.get("balance", "0"))
 
-        meta = rows["meta"] if isinstance(rows, dict) and "meta" in rows else {"page": page, "size": size, "total": len(items) if isinstance(items, list) else 0}
+        meta = (
+            rows["meta"]
+            if isinstance(rows, dict) and "meta" in rows
+            else {"page": page, "size": size, "total": len(items) if isinstance(items, list) else 0}
+        )
         # валидация
         return WalletAccountsPage(
             items=[WalletAccountOut(**r) for r in (items or [])],
@@ -304,6 +337,7 @@ def list_accounts(
         )
     except Exception as e:
         raise HTTPException(status_code=_pick_http_status(e), detail=str(e))
+
 
 @router.get(
     "/accounts/{account_id}",
@@ -324,6 +358,7 @@ def get_account(
         raise
     except Exception as e:
         raise HTTPException(status_code=_pick_http_status(e), detail=str(e))
+
 
 @router.get(
     "/accounts/by-user",
@@ -359,6 +394,7 @@ def get_account_by_user_currency(
     except Exception as e:
         raise HTTPException(status_code=_pick_http_status(e), detail=str(e))
 
+
 @router.get(
     "/accounts/{account_id}/balance",
     response_model=BalanceOut,
@@ -381,6 +417,7 @@ def get_balance(
         return BalanceOut(account_id=account_id, currency=ccy, balance=_to_dec_str(bal))
     except Exception as e:
         raise HTTPException(status_code=_pick_http_status(e), detail=str(e))
+
 
 # =============================================================================
 # MONEY OPS
@@ -408,6 +445,7 @@ def deposit(
         logger.warning("deposit failed (id=%s rid=%s): %s", account_id, x_request_id, e)
         raise HTTPException(status_code=_pick_http_status(e), detail=str(e))
 
+
 @router.post(
     "/accounts/{account_id}/withdraw",
     response_model=WalletTransactionOut,
@@ -429,6 +467,7 @@ def withdraw(
     except Exception as e:
         logger.warning("withdraw failed (id=%s rid=%s): %s", account_id, x_request_id, e)
         raise HTTPException(status_code=_pick_http_status(e), detail=str(e))
+
 
 @router.post(
     "/transfer",
@@ -466,9 +505,13 @@ def transfer(
     except Exception as e:
         logger.warning(
             "transfer failed %s->%s; rid=%s; err=%s",
-            req.source_account_id, req.destination_account_id, x_request_id, e
+            req.source_account_id,
+            req.destination_account_id,
+            x_request_id,
+            e,
         )
         raise HTTPException(status_code=_pick_http_status(e), detail=str(e))
+
 
 # =============================================================================
 # LEDGER
@@ -487,9 +530,13 @@ def ledger(
         page_obj = storage.list_ledger(account_id, page, size)
         # ожидаем {"items":[...], "meta":{"page":..,"size":..,"total":..}}
         items = page_obj.get("items", []) if isinstance(page_obj, dict) else []
-        meta = page_obj.get("meta", {"page": page, "size": size, "total": len(items)}) if isinstance(page_obj, dict) else {"page": page, "size": size, "total": len(items)}
+        meta = (
+            page_obj.get("meta", {"page": page, "size": size, "total": len(items)})
+            if isinstance(page_obj, dict)
+            else {"page": page, "size": size, "total": len(items)}
+        )
         # нормализация amounts/currency
-        norm_items: List[LedgerItem] = []
+        norm_items: list[LedgerItem] = []
         for it in items:
             norm_items.append(
                 LedgerItem(
@@ -506,12 +553,14 @@ def ledger(
     except Exception as e:
         raise HTTPException(status_code=_pick_http_status(e), detail=str(e))
 
+
 # =============================================================================
 # ADMIN: ADJUST BALANCE (если поддерживается стореджем)
 # =============================================================================
 class AdjustIn(BaseModel):
     new_balance: Decimal
     reference: Optional[str] = Field(None, max_length=255)
+
 
 @router.post(
     "/accounts/{account_id}/adjust",
@@ -524,7 +573,10 @@ def adjust_balance(
     payload: AdjustIn = ...,
 ):
     if not _HAS_ADJUST:
-        raise HTTPException(status_code=status.HTTP_501_NOT_IMPLEMENTED, detail="adjust_balance not supported by storage")
+        raise HTTPException(
+            status_code=status.HTTP_501_NOT_IMPLEMENTED,
+            detail="adjust_balance not supported by storage",
+        )
     try:
         out = storage.adjust_balance(account_id, payload.new_balance, payload.reference)  # type: ignore[attr-defined]
         return WalletTransactionOut(

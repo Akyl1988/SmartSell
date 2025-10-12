@@ -12,12 +12,12 @@ os.environ["TESTING"] = "1"
 
 # Пытаемся импортировать DI и Base из приложения
 try:
-    from app.core.database import get_db, Base
+    from app.core.database import Base, get_db
 except ImportError:
-    from app.core.db import get_db, Base
+    from app.core.db import Base, get_db
 
-from app.main import app
 from app.core.config import get_settings
+from app.main import app
 
 
 # ------------------ ENUMS ------------------

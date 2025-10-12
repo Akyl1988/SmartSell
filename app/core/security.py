@@ -57,39 +57,42 @@ import os
 import re
 import secrets
 import time
-import json
-from datetime import datetime, timedelta, timezone
-from typing import Any, Dict, Optional, Union, Literal, Tuple
+from datetime import UTC, datetime, timedelta
+from typing import Any, Literal, Optional, Union
 
 from jose import jwt
-from jose.exceptions import JWTError, ExpiredSignatureError, JWTClaimsError, JOSEError
-
+from jose.exceptions import ExpiredSignatureError, JOSEError, JWTClaimsError, JWTError
 from passlib.context import CryptContext
 
 # ---------- Optional dependencies (best-effort) ----------
 try:
     from passlib.hash import argon2  # noqa: F401
+
     _HAS_ARGON2 = True
 except Exception:
     _HAS_ARGON2 = False
 
 try:
     import redis  # type: ignore
+
     _HAS_REDIS = True
 except Exception:
     _HAS_REDIS = False
 
 try:
     # sync engine используется (на уровне env/alembic) — не тянем async здесь.
-    from sqlalchemy import Table, Column, String, Integer, BigInteger, MetaData, text, select, insert, delete
-    from sqlalchemy.dialects.postgresql import BIGINT
+    from sqlalchemy import BigInteger, Column, MetaData, String, Table
+    from sqlalchemy import insert as sa_insert
+    from sqlalchemy import select, text
     from sqlalchemy.engine import Engine
+
     _HAS_SQLA = True
 except Exception:
     _HAS_SQLA = False
 
 try:
     from app.core.db import engine as _SYNC_ENGINE  # type: ignore
+
     _SYNC_ENGINE_AVAILABLE = True
 except Exception:
     _SYNC_ENGINE_AVAILABLE = False
@@ -109,11 +112,13 @@ pwd_context = CryptContext(
 
 _PASSWORD_PEPPER = os.getenv("PASSWORD_PEPPER", "")
 
+
 def get_password_hash(password: str) -> str:
     """Возвращает хеш пароля (с учётом pepper)."""
     if _PASSWORD_PEPPER:
         password = f"{password}{_PASSWORD_PEPPER}"
     return pwd_context.hash(password)
+
 
 def verify_password(plain_password: str, hashed_password: str) -> bool:
     """Проверяет пароль против хеша (с учётом pepper)."""
@@ -124,6 +129,7 @@ def verify_password(plain_password: str, hashed_password: str) -> bool:
     except Exception:
         return False
 
+
 def needs_rehash(hashed_password: str) -> bool:
     """True, если пароль нужно пересолить (например, миграция на argon2)."""
     try:
@@ -131,7 +137,8 @@ def needs_rehash(hashed_password: str) -> bool:
     except Exception:
         return False
 
-def migrate_hash_if_needed(plain_password: str, hashed_password: str) -> Tuple[bool, str]:
+
+def migrate_hash_if_needed(plain_password: str, hashed_password: str) -> tuple[bool, str]:
     """
     Если текущий хеш устарел (например, bcrypt), возвращает (True, новый_хеш).
     Иначе — (False, старый_хеш).
@@ -140,20 +147,34 @@ def migrate_hash_if_needed(plain_password: str, hashed_password: str) -> Tuple[b
         return True, get_password_hash(plain_password)
     return False, hashed_password
 
+
 # =============================================================================
 # Password policy (strength + banned words)
 # =============================================================================
 _COMMON_BANNED = {
-    "123456", "password", "qwerty", "123456789", "111111", "12345678", "iloveyou",
-    "admin", "welcome", "abc123", "qwerty123", "1q2w3e4r", "000000", "zaq12wsx",
+    "123456",
+    "password",
+    "qwerty",
+    "123456789",
+    "111111",
+    "12345678",
+    "iloveyou",
+    "admin",
+    "welcome",
+    "abc123",
+    "qwerty123",
+    "1q2w3e4r",
+    "000000",
+    "zaq12wsx",
 }
+
 
 def _load_banned_from_env_or_file() -> set[str]:
     out = set(_COMMON_BANNED)
     path = os.getenv("BANNED_PASSWORDS_PATH")
     if path and os.path.exists(path):
         try:
-            with open(path, "r", encoding="utf-8") as f:
+            with open(path, encoding="utf-8") as f:
                 for line in f:
                     s = line.strip()
                     if s:
@@ -168,9 +189,13 @@ def _load_banned_from_env_or_file() -> set[str]:
                 out.add(s.lower())
     return out
 
+
 _BANNED_CACHE = _load_banned_from_env_or_file()
 
-def validate_password_policy(password: str, username: Optional[str] = None, email: Optional[str] = None) -> tuple[bool, list[str]]:
+
+def validate_password_policy(
+    password: str, username: Optional[str] = None, email: Optional[str] = None
+) -> tuple[bool, list[str]]:
     """
     Строгая политика:
     - длина ≥ max(12, settings.PASSWORD_MIN_LENGTH),
@@ -214,6 +239,7 @@ def validate_password_policy(password: str, username: Optional[str] = None, emai
 
     return (len(errors) == 0, errors)
 
+
 # =============================================================================
 # JWT + KID rotation
 # =============================================================================
@@ -222,14 +248,18 @@ JWT_AUDIENCE = os.getenv("JWT_AUDIENCE", "smartsell3-users")
 JWT_LEEWAY_SECONDS = int(os.getenv("JWT_LEEWAY_SECONDS", "30"))
 TokenType = Literal["access", "refresh", "reset", "email_verify"]
 
+
 def _utcnow() -> datetime:
-    return datetime.now(tz=timezone.utc)
+    return datetime.now(tz=UTC)
+
 
 def _expiry_for(token_type: TokenType, override: Optional[timedelta] = None) -> datetime:
     if override:
         return _utcnow() + override
     if token_type == "access":
-        return _utcnow() + timedelta(minutes=int(getattr(settings, "ACCESS_TOKEN_EXPIRE_MINUTES", 30)))
+        return _utcnow() + timedelta(
+            minutes=int(getattr(settings, "ACCESS_TOKEN_EXPIRE_MINUTES", 30))
+        )
     if token_type == "refresh":
         return _utcnow() + timedelta(days=int(getattr(settings, "REFRESH_TOKEN_EXPIRE_DAYS", 7)))
     if token_type == "reset":
@@ -238,15 +268,19 @@ def _expiry_for(token_type: TokenType, override: Optional[timedelta] = None) -> 
         return _utcnow() + timedelta(hours=24)
     return _utcnow() + timedelta(minutes=15)
 
+
 def constant_time_compare(a: str, b: str) -> bool:
     return hmac.compare_digest(a.encode(), b.encode())
+
 
 def _is_symmetric_alg(alg: str) -> bool:
     return alg.startswith("HS")
 
+
 # --- KID registry (in-memory, заполняется из ENV) ---
 # структура: {kid: {"alg": "...", "priv": "...", "pub": "..." } }
 _KID_KEYS: dict[str, dict[str, str]] = {}
+
 
 def _load_kid_keys_from_env() -> None:
     # ищем все переменные вида JWT_KEYS_<kid>_{PRIVATE,PUBLIC,_PATH}
@@ -261,7 +295,7 @@ def _load_kid_keys_from_env() -> None:
         kind = m.group("kind")
         if k.endswith("_PATH"):
             if os.path.exists(v):
-                with open(v, "r", encoding="utf-8") as f:
+                with open(v, encoding="utf-8") as f:
                     val = f.read()
             else:
                 continue
@@ -281,12 +315,15 @@ def _load_kid_keys_from_env() -> None:
             if priv:
                 _KID_KEYS[kid] = {"alg": alg, "priv": priv, "pub": pub}
 
+
 # первичная загрузка
 _load_kid_keys_from_env()
 _ACTIVE_KID = os.getenv("JWT_ACTIVE_KID", "") if _KID_KEYS else ""
 
+
 def get_active_kid() -> Optional[str]:
     return _ACTIVE_KID or None
+
 
 def set_active_kid(kid: str) -> None:
     global _ACTIVE_KID
@@ -294,11 +331,14 @@ def set_active_kid(kid: str) -> None:
         raise ValueError(f"Unknown kid: {kid}")
     _ACTIVE_KID = kid
 
+
 def list_kids() -> list[str]:
     return list(_KID_KEYS.keys())
 
+
 def get_kid_material(kid: str) -> dict[str, str]:
     return _KID_KEYS[kid]
+
 
 def register_kid(kid: str, alg: str, private_pem: str, public_pem: Optional[str] = None) -> None:
     if _is_symmetric_alg(alg):
@@ -306,7 +346,8 @@ def register_kid(kid: str, alg: str, private_pem: str, public_pem: Optional[str]
     else:
         _KID_KEYS[kid] = {"alg": alg, "priv": private_pem, "pub": public_pem or private_pem}
 
-def generate_new_kid(alg: Optional=str) -> Tuple[str, dict]:
+
+def generate_new_kid(alg: Optional[str] = None) -> tuple[str, dict]:
     """
     Генерирует новый KID (для асимметричных — требуется внешний генератор ключей).
     Для HS* — просто выпускает новый kid, но использует текущий SECRET_KEY.
@@ -319,7 +360,10 @@ def generate_new_kid(alg: Optional=str) -> Tuple[str, dict]:
         return kid, {"alg": algorithm, "symmetric": True}
     else:
         # В проде генерируйте PEM вне приложения (HSM/KMS), здесь — плейсхолдер.
-        raise RuntimeError("Asymmetric key generation is not implemented here. Supply PEM via ENV and call register_kid().")
+        raise RuntimeError(
+            "Asymmetric key generation is not implemented here. Supply PEM via ENV and call register_kid()."
+        )
+
 
 def rotate_active_kid(new_kid: str) -> None:
     """
@@ -328,7 +372,8 @@ def rotate_active_kid(new_kid: str) -> None:
     """
     set_active_kid(new_kid)
 
-def _pick_signing_key(alg: Optional[str] = None) -> Tuple[str | bytes, str, Optional[str]]:
+
+def _pick_signing_key(alg: Optional[str] = None) -> tuple[Union[str, bytes], str, Optional[str]]:
     algorithm = alg or getattr(settings, "ALGORITHM", "HS256")
     kid = get_active_kid()
     if _KID_KEYS and kid:
@@ -343,12 +388,15 @@ def _pick_signing_key(alg: Optional[str] = None) -> Tuple[str | bytes, str, Opti
     priv = os.getenv("JWT_PRIVATE_KEY")
     path = os.getenv("JWT_PRIVATE_KEY_PATH")
     if not priv and path and os.path.exists(path):
-        priv = open(path, "r", encoding="utf-8").read()
+        priv = open(path, encoding="utf-8").read()
     if not priv:
         raise RuntimeError("Private key required for asymmetric signing (no KID).")
     return priv, algorithm, None
 
-def _pick_verify_key(token_headers: dict, alg: Optional[str] = None) -> Tuple[str | bytes, str]:
+
+def _pick_verify_key(
+    token_headers: dict, alg: Optional[str] = None
+) -> tuple[Union[str, bytes], str]:
     algorithm = alg or getattr(settings, "ALGORITHM", "HS256")
     kid = token_headers.get("kid")
     if kid and kid in _KID_KEYS:
@@ -360,19 +408,20 @@ def _pick_verify_key(token_headers: dict, alg: Optional[str] = None) -> Tuple[st
     pub = os.getenv("JWT_PUBLIC_KEY")
     path = os.getenv("JWT_PUBLIC_KEY_PATH")
     if not pub and path and os.path.exists(path):
-        pub = open(path, "r", encoding="utf-8").read()
+        pub = open(path, encoding="utf-8").read()
     if not pub:
         # допускаем проверку приватным
         priv = os.getenv("JWT_PRIVATE_KEY")
         ppath = os.getenv("JWT_PRIVATE_KEY_PATH")
         if not priv and ppath and os.path.exists(ppath):
-            priv = open(ppath, "r", encoding="utf-8").read()
+            priv = open(ppath, encoding="utf-8").read()
         if not priv:
             raise RuntimeError("Public (or private) key required for verification (no KID).")
         return priv, algorithm
     return pub, algorithm
 
-def _base_claims(subject: Union[str, int], token_type: TokenType) -> Dict[str, Any]:
+
+def _base_claims(subject: Union[str, int], token_type: TokenType) -> dict[str, Any]:
     return {
         "iss": JWT_ISSUER,
         "aud": JWT_AUDIENCE,
@@ -383,14 +432,16 @@ def _base_claims(subject: Union[str, int], token_type: TokenType) -> Dict[str, A
         "jti": secrets.token_urlsafe(16),
     }
 
-def _encode(payload: Dict[str, Any], alg: Optional[str] = None, kid: Optional[str] = None) -> str:
+
+def _encode(payload: dict[str, Any], alg: Optional[str] = None, kid: Optional[str] = None) -> str:
     key, algorithm, active_kid = _pick_signing_key(alg)
-    headers = {}
+    headers: dict[str, Any] = {}
     if kid or active_kid:
         headers["kid"] = kid or active_kid
     return jwt.encode(payload, key, algorithm=algorithm, headers=headers)
 
-def _decode(token: str, alg: Optional[str] = None) -> Dict[str, Any]:
+
+def _decode(token: str, alg: Optional[str] = None) -> dict[str, Any]:
     headers = jwt.get_unverified_header(token)
     key, algorithm = _pick_verify_key(headers, alg)
     return jwt.decode(
@@ -403,11 +454,12 @@ def _decode(token: str, alg: Optional[str] = None) -> Dict[str, Any]:
         leeway=JWT_LEEWAY_SECONDS,
     )
 
+
 def create_jwt(
     subject: Union[str, int],
     token_type: TokenType = "access",
     expires_delta: Optional[timedelta] = None,
-    extra: Optional[Dict[str, Any]] = None,
+    extra: Optional[dict[str, Any]] = None,
     alg: Optional[str] = None,
     force_kid: Optional[str] = None,
 ) -> str:
@@ -417,11 +469,12 @@ def create_jwt(
         claims.update(extra)
     return _encode(claims, alg, kid=force_kid)
 
+
 def decode_and_validate(
     token: str,
     expected_type: Optional[TokenType] = None,
     alg: Optional[str] = None,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     try:
         payload = _decode(token, alg)
     except ExpiredSignatureError as e:
@@ -439,13 +492,20 @@ def decode_and_validate(
         raise ValueError("Token subject (sub) missing")
     return payload
 
+
 # =============================================================================
 # Denylist backends (Redis → Postgres → in-memory TTL)
 # =============================================================================
 class DenylistBackend:
-    def is_revoked(self, jti: str) -> bool: raise NotImplementedError
-    def revoke(self, jti: str, ttl_seconds: Optional[int]) -> None: raise NotImplementedError
-    def list_jtis(self, limit: int = 100) -> list[str]: return []
+    def is_revoked(self, jti: str) -> bool:
+        raise NotImplementedError
+
+    def revoke(self, jti: str, ttl_seconds: Optional[int]) -> None:
+        raise NotImplementedError
+
+    def list_jtis(self, limit: int = 100) -> list[str]:
+        return []
+
 
 # --- Redis backend ---
 class RedisDenylist(DenylistBackend):
@@ -474,8 +534,16 @@ class RedisDenylist(DenylistBackend):
                 break
         return out[:limit]
 
-# --- Postgres backend (SQLAlchemy Core), использует sync engine ---
+
+# --- SQL (portable) backend (SQLAlchemy Core), использует sync engine ---
 class PostgresDenylist(DenylistBackend):
+    """
+    Название осталось историческим, но реализация кросс-СУБД.
+    Для PostgreSQL используется ON CONFLICT DO NOTHING.
+    Для SQLite — INSERT OR IGNORE.
+    Для прочих — пытаемся обычный INSERT, игнорируя конфликт.
+    """
+
     def __init__(self, engine: Engine, table_name: str = "jwt_denylist"):
         self.engine = engine
         self.table_name = table_name
@@ -484,20 +552,24 @@ class PostgresDenylist(DenylistBackend):
             table_name,
             self._meta,
             Column("jti", String(64), primary_key=True),
-            Column("exp_ts", BIGINT, nullable=True),  # unix seconds; для TTL очистки планировщиком
+            Column(
+                "exp_ts", BigInteger, nullable=True
+            ),  # unix seconds; для TTL очистки планировщиком
             Column("reason", String(256), nullable=True),
         )
         self._ensure()
 
     def _ensure(self):
         with self.engine.begin() as conn:
-            conn.execute(text(
-                f"""CREATE TABLE IF NOT EXISTS {self.table_name} (
+            conn.execute(
+                text(
+                    f"""CREATE TABLE IF NOT EXISTS {self.table_name} (
                     jti VARCHAR(64) PRIMARY KEY,
                     exp_ts BIGINT NULL,
                     reason VARCHAR(256) NULL
                 )"""
-            ))
+                )
+            )
 
     def is_revoked(self, jti: str) -> bool:
         with self.engine.connect() as conn:
@@ -507,12 +579,38 @@ class PostgresDenylist(DenylistBackend):
     def revoke(self, jti: str, ttl_seconds: Optional[int]) -> None:
         exp_ts = int(time.time() + (ttl_seconds or 60 * 60 * 24 * 30))
         with self.engine.begin() as conn:
-            conn.execute(insert(self._table).values(jti=jti, exp_ts=exp_ts).on_conflict_do_nothing())
+            dialect = conn.dialect.name
+            if dialect == "postgresql":
+                # PG: ON CONFLICT DO NOTHING
+                from sqlalchemy.dialects.postgresql import insert as pg_insert  # local import
+
+                stmt = (
+                    pg_insert(self._table)
+                    .values(jti=jti, exp_ts=exp_ts)
+                    .on_conflict_do_nothing(index_elements=[self._table.c.jti])
+                )
+                conn.execute(stmt)
+            elif dialect == "sqlite":
+                # SQLite: INSERT OR IGNORE
+                conn.execute(
+                    text(
+                        f"INSERT OR IGNORE INTO {self.table_name} (jti, exp_ts) VALUES (:jti, :exp_ts)"
+                    ),
+                    {"jti": jti, "exp_ts": exp_ts},
+                )
+            else:
+                # best-effort для других СУБД
+                try:
+                    conn.execute(sa_insert(self._table).values(jti=jti, exp_ts=exp_ts))
+                except Exception:
+                    # конфликт по первичному ключу — игнорируем
+                    pass
 
     def list_jtis(self, limit: int = 100) -> list[str]:
         with self.engine.connect() as conn:
             rows = conn.execute(select(self._table.c.jti).limit(limit)).fetchall()
         return [r[0] for r in rows]
+
 
 # --- In-memory backend (process-local) ---
 class InMemoryDenylist(DenylistBackend):
@@ -536,6 +634,7 @@ class InMemoryDenylist(DenylistBackend):
         now = time.time()
         return [j for j, e in list(self._store.items()) if e >= now][:limit]
 
+
 # --- Backend chooser ---
 def _build_denylist_backend() -> DenylistBackend:
     if _HAS_REDIS:
@@ -553,21 +652,26 @@ def _build_denylist_backend() -> DenylistBackend:
             pass
     return InMemoryDenylist()
 
+
 _DENYLIST: DenylistBackend = _build_denylist_backend()
+
 
 def is_token_revoked(jti: str) -> bool:
     return _DENYLIST.is_revoked(jti)
 
+
 def revoke_token(jti: str, ttl_seconds: Optional[int] = None) -> None:
     _DENYLIST.revoke(jti, ttl_seconds)
+
 
 def list_revoked_jtis(limit: int = 100) -> list[str]:
     return _DENYLIST.list_jtis(limit=limit)
 
+
 # =============================================================================
 # Refresh rotation + cookie helpers (двойная защита)
 # =============================================================================
-def rotate_refresh_token(refresh_token: str) -> tuple[Dict[str, Any], str]:
+def rotate_refresh_token(refresh_token: str) -> tuple[dict[str, Any], str]:
     payload = decode_and_validate(refresh_token, expected_type="refresh")
     jti = payload.get("jti", "")
     if jti and is_token_revoked(jti):
@@ -578,18 +682,24 @@ def rotate_refresh_token(refresh_token: str) -> tuple[Dict[str, Any], str]:
     new_refresh = create_jwt(subject, token_type="refresh")
     return payload, new_refresh
 
+
 # Cookie helpers (работают с FastAPI Response/Request, но не зависят от неё жёстко)
 _REFRESH_COOKIE_NAME = os.getenv("REFRESH_COOKIE_NAME", "refresh_token")
 _REFRESH_COOKIE_DOMAIN = os.getenv("REFRESH_COOKIE_DOMAIN", None)
 _REFRESH_COOKIE_SECURE = os.getenv("REFRESH_COOKIE_SECURE", "1") in ("1", "true", "True")
 _REFRESH_COOKIE_SAMESITE = os.getenv("REFRESH_COOKIE_SAMESITE", "Strict")  # Lax|Strict|None
 
+
 def set_refresh_cookie(response, token: str, max_age_days: Optional[int] = None) -> None:
     """
     Устанавливает HttpOnly cookie с refresh-токеном. Safe defaults.
     response — объект со способом set_cookie(name=..., ...)
     """
-    max_age = int(timedelta(days=max_age_days or int(getattr(settings, "REFRESH_TOKEN_EXPIRE_DAYS", 7))).total_seconds())
+    max_age = int(
+        timedelta(
+            days=max_age_days or int(getattr(settings, "REFRESH_TOKEN_EXPIRE_DAYS", 7))
+        ).total_seconds()
+    )
     response.set_cookie(
         key=_REFRESH_COOKIE_NAME,
         value=token,
@@ -601,6 +711,7 @@ def set_refresh_cookie(response, token: str, max_age_days: Optional[int] = None)
         path="/",
     )
 
+
 def get_refresh_from_cookie(request) -> Optional[str]:
     """
     Достаёт токен из cookie. request.cookies — mapping-like.
@@ -610,6 +721,7 @@ def get_refresh_from_cookie(request) -> Optional[str]:
     except Exception:
         return None
 
+
 def clear_refresh_cookie(response) -> None:
     response.delete_cookie(
         key=_REFRESH_COOKIE_NAME,
@@ -617,16 +729,20 @@ def clear_refresh_cookie(response) -> None:
         path="/",
     )
 
+
 # =============================================================================
 # CSRF helpers (для cookie-based схем)
 # =============================================================================
 _CSRF_SECRET = os.getenv("CSRF_SECRET") or settings.SECRET_KEY
 
+
 def generate_csrf_token(session_id: str) -> str:
     nonce = secrets.token_urlsafe(12)
     msg = f"{session_id}:{nonce}".encode()
+    # фикс опечатки: было _CSR F_SECRET
     sig = hmac.new(_CSRF_SECRET.encode(), msg, "sha256").digest()
     return f"{nonce}.{base64.urlsafe_b64encode(sig).decode().rstrip('=')}"
+
 
 def validate_csrf_token(session_id: str, token: str) -> bool:
     try:
@@ -638,14 +754,19 @@ def validate_csrf_token(session_id: str, token: str) -> bool:
     except Exception:
         return False
 
+
 # =============================================================================
 # Public wrappers (backward compatibility)
 # =============================================================================
 def create_access_token(subject: Union[str, Any], expires_delta: Optional[timedelta] = None) -> str:
     return create_jwt(subject, token_type="access", expires_delta=expires_delta)
 
-def create_refresh_token(subject: Union[str, Any], expires_delta: Optional[timedelta] = None) -> str:
+
+def create_refresh_token(
+    subject: Union[str, Any], expires_delta: Optional[timedelta] = None
+) -> str:
     return create_jwt(subject, token_type="refresh", expires_delta=expires_delta)
+
 
 def verify_token(token: str) -> Optional[str]:
     try:
@@ -657,12 +778,14 @@ def verify_token(token: str) -> Optional[str]:
     except Exception:
         return None
 
+
 # =============================================================================
 # FastAPI helpers (optional)
 # =============================================================================
 try:
     from fastapi import Depends, HTTPException, status
     from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+
     _HAS_FASTAPI = True
 except Exception:
     _HAS_FASTAPI = False
@@ -670,9 +793,13 @@ except Exception:
 if _HAS_FASTAPI:
     http_bearer = HTTPBearer(auto_error=False)
 
-    def get_current_user_sub(credentials: Optional[HTTPAuthorizationCredentials] = Depends(http_bearer)) -> str:
+    def get_current_user_sub(
+        credentials: Optional[HTTPAuthorizationCredentials] = Depends(http_bearer),
+    ) -> str:
         if not credentials or not credentials.scheme.lower() == "bearer":
-            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Not authenticated")
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED, detail="Not authenticated"
+            )
         token = credentials.credentials
         try:
             payload = decode_and_validate(token, expected_type="access")
@@ -682,6 +809,29 @@ if _HAS_FASTAPI:
         if jti and is_token_revoked(jti):
             raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Token revoked")
         return payload["sub"]
+
+    # Backward-compat: некоторые модули ожидают get_current_user (вернём словарь или sub)
+    def get_current_user(
+        credentials: Optional[HTTPAuthorizationCredentials] = Depends(http_bearer),
+    ) -> dict:
+        if not credentials or not credentials.scheme.lower() == "bearer":
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED, detail="Not authenticated"
+            )
+        token = credentials.credentials
+        try:
+            payload = decode_and_validate(token, expected_type="access")
+        except ValueError as e:
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=str(e))
+        jti = payload.get("jti")
+        if jti and is_token_revoked(jti):
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Token revoked")
+        return {"sub": payload["sub"], "claims": payload}
+
+    # Удобный геттер самого схемного объекта
+    def auth_scheme() -> HTTPBearer:
+        return http_bearer
+
 
 # =============================================================================
 # Identity Providers hooks (OAuth2/OIDC/SAML) — best effort
@@ -693,6 +843,7 @@ def build_oidc_client() -> Any:
     """
     try:
         from authlib.integrations.requests_client import OAuth2Session  # type: ignore
+
         disc = os.getenv("OIDC_DISCOVERY_URL", "")
         client_id = os.getenv("OIDC_CLIENT_ID", "")
         client_secret = os.getenv("OIDC_CLIENT_SECRET", "")
@@ -703,15 +854,18 @@ def build_oidc_client() -> Any:
     except Exception:
         return None
 
+
 def build_saml_client() -> Any:
     """
     Вернёт SAML client (если установлен python3-saml/OneLogin). Иначе — None.
     """
     try:
         from onelogin.saml2.auth import OneLogin_Saml2_Settings  # type: ignore
+
         return OneLogin_Saml2_Settings({})  # конфиг заполнить под IdP
     except Exception:
         return None
+
 
 # =============================================================================
 # Debug/Introspection helpers
@@ -728,9 +882,11 @@ def jwt_introspection(token: str) -> dict:
         body = {}
     return {"header": header, "claims": body}
 
+
 def list_active_kids() -> list[dict]:
     """Список зарегистрированных KID с алгами."""
     return [{"kid": k, "alg": v.get("alg", "")} for k, v in _KID_KEYS.items()]
+
 
 # =============================================================================
 # Test utilities
@@ -739,12 +895,14 @@ def generate_random_password(length: int = 16) -> str:
     alphabet = "abcdefghijkmnopqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ23456789!@#$%^&*()-_=+"
     return "".join(secrets.choice(alphabet) for _ in range(length))
 
+
 def issue_test_tokens(user_id: Union[str, int]) -> dict:
     access = create_access_token(user_id)
     refresh = create_refresh_token(user_id)
     return {"access": access, "refresh": refresh}
 
-def create_tokens_for_user(user_id: Union[str, int], include_refresh_cookie=False):
+
+def create_tokens_for_user(user_id: Union[str, int], include_refresh_cookie: bool = False):
     access = create_access_token(user_id)
     refresh = create_refresh_token(user_id)
     result = {"access": access, "refresh": refresh}
@@ -756,3 +914,51 @@ def create_tokens_for_user(user_id: Union[str, int], include_refresh_cookie=Fals
             "samesite": _REFRESH_COOKIE_SAMESITE,
         }
     return result
+
+
+__all__ = [
+    # hashing / password policy
+    "get_password_hash",
+    "verify_password",
+    "needs_rehash",
+    "migrate_hash_if_needed",
+    "validate_password_policy",
+    # jwt core
+    "create_jwt",
+    "decode_and_validate",
+    "create_access_token",
+    "create_refresh_token",
+    "verify_token",
+    # kids / keys
+    "get_active_kid",
+    "set_active_kid",
+    "list_kids",
+    "get_kid_material",
+    "register_kid",
+    "generate_new_kid",
+    "rotate_active_kid",
+    "list_active_kids",
+    # denylist
+    "is_token_revoked",
+    "revoke_token",
+    "list_revoked_jtis",
+    # refresh/cookies/csrf
+    "rotate_refresh_token",
+    "set_refresh_cookie",
+    "get_refresh_from_cookie",
+    "clear_refresh_cookie",
+    "generate_csrf_token",
+    "validate_csrf_token",
+    # fastapi helpers
+    "get_current_user_sub",
+    "get_current_user",
+    "auth_scheme",
+    # idp hooks
+    "build_oidc_client",
+    "build_saml_client",
+    # debug / test utils
+    "jwt_introspection",
+    "generate_random_password",
+    "issue_test_tokens",
+    "create_tokens_for_user",
+]
