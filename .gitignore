@@ -164,13 +164,3 @@ tmp/
 
 # Alembic bytecode cache
 alembic/versions/__pycache__/
-
-# pytest junit xml (на случай CI)
-junit.xml
-
-# celery / rq (если появится)
-celerybeat-schedule
-*.pid
-*.pid.lock
-# ignore alembic backup artifacts
-migrations/versions/*bak_*
