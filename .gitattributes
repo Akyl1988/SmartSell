@@ -1,18 +1,10 @@
-# =========================
-# Global defaults (UTF-8 + LF)
-# =========================
-# Все текстовые файлы по умолчанию считаем текстом, нормализуем переводы строк в LF
-# и указываем кодировку рабочих файлов как UTF-8.
+# Global defaults
 * text=auto eol=lf working-tree-encoding=UTF-8
 
-# =========================
 # Python
-# =========================
 *.py     text eol=lf
 
-# =========================
 # Config / CI
-# =========================
 *.yml    text eol=lf
 *.yaml   text eol=lf
 *.toml   text eol=lf
@@ -21,18 +13,13 @@
 *.ini    text eol=lf
 *.cfg    text eol=lf
 
-# =========================
 # Shell / scripts
-# =========================
 *.sh     text eol=lf
-# Windows-скрипты: CRLF, но всё равно UTF-8 в рабочем дереве
 *.ps1    text eol=crlf working-tree-encoding=UTF-8
 *.bat    text eol=crlf working-tree-encoding=UTF-8
 *.cmd    text eol=crlf working-tree-encoding=UTF-8
 
-# =========================
 # Web / frontend
-# =========================
 *.js     text eol=lf
 *.mjs    text eol=lf
 *.cjs    text eol=lf
@@ -46,62 +33,23 @@
 *.html   text eol=lf
 *.svg    text eol=lf
 
-# =========================
-# Docs / text
-# =========================
+# Docs
 *.md     text eol=lf
 *.rst    text eol=lf
 *.txt    text eol=lf
 LICENSE  text eol=lf
 
-# =========================
-# SQL / data (текстовая)
-# =========================
+# Data (text)
 *.sql    text eol=lf
 *.csv    text eol=lf
 *.tsv    text eol=lf
 
-# =========================
-# Alembic bytecode cache (версии коммитим, кэш — нет diff)
-# =========================
-alembic/versions/__pycache__/* text eol=lf -diff
+# Binary (never recode/diff)
+*.png *.jpg *.jpeg *.gif *.webp *.ico *.pdf -text -diff
+*.zip *.tar *.gz *.bz2 *.xz *.7z *.rar       -text -diff
+*.mp3 *.wav *.flac *.ogg *.mp4 *.mov *.avi *.wmv -text -diff
+*.wasm -text -diff
+*.ttf *.otf *.woff *.woff2 -text -diff
 
-# =========================
-# Binary & archives (никогда не перекодировать/не диффить)
-# =========================
-*.png    -text -diff
-*.jpg    -text -diff
-*.jpeg   -text -diff
-*.gif    -text -diff
-*.webp   -text -diff
-*.ico    -text -diff
-*.pdf    -text -diff
-*.zip    -text -diff
-*.tar    -text -diff
-*.gz     -text -diff
-*.bz2    -text -diff
-*.xz     -text -diff
-*.7z     -text -diff
-*.rar    -text -diff
-*.mp3    -text -diff
-*.wav    -text -diff
-*.mp4    -text -diff
-*.mov    -text -diff
-*.avi    -text -diff
-*.wmv    -text -diff
-*.flac   -text -diff
-*.ogg    -text -diff
-*.wasm   -text -diff
-
-# Шрифты
-*.ttf    -text -diff
-*.otf    -text -diff
-*.woff   -text -diff
-*.woff2  -text -diff
-
-# Бинарные БД/слепки/прочее
-*.sqlite* -text -diff
-*.db      -text -diff
-*.bak     -text -diff
-*.dmp     -text -diff
-*.dump    -text -diff
+# Binary DB snapshots
+*.sqlite* *.db *.bak *.dmp *.dump -text -diff
