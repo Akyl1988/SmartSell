@@ -1,0 +1,3683 @@
+
+Часть 1/20 — Бот-ассистент-программист (AI Bot)
+Цель
+Создать встроенного в платформу SmartSell бота-ассистента, который сможет:
+•	Собирать требования пользователя через диалог (вопросы и ответы).
+•	Генерировать готовый код (backend на FastAPI, frontend, интеграции).
+•	Автоматически тестировать изменения в изолированной среде.
+•	Объяснять каждое изменение простыми словами.
+•	Вносить изменения в платформу только после утверждения пользователем.
+________________________________________
+Основные функции
+1.	Интерактивный чат в интерфейсе платформы.
+Пользователь задаёт команды в простом диалоговом формате, а бот понимает намерения и конвертирует их в задачи для платформы.
+2.	Шаблоны сценариев.
+Примеры готовых сценариев:
+o	добавить товар в каталог;
+o	подключить оплату через TipTop Pay;
+o	изменить элементы интерфейса (кнопки, поля);
+o	настроить аналитику.
+3.	Автоматическая генерация кода.
+o	Бот создаёт код для FastAPI (маршруты, сервисы, модели), React/MUI (компоненты, формы, страницы).
+o	Интеграции: Kaspi API, Cloudinary, Mobizon (OTP), TipTop Pay.
+4.	Объяснение кода.
+o	Каждый сгенерированный участок сопровождается комментариями и отчётом.
+o	Отчёт включает: что изменено, зачем, какие файлы затронуты, как тестировать.
+5.	Тестирование и резервные копии.
+o	Изменения сначала проверяются в тестовой среде.
+o	Перед внедрением создаётся резервная копия (git-branch или tag).
+6.	Безопасность.
+o	Все ключи и пароли шифруются.
+o	Бот работает только с зашифрованными секретами.
+o	Изменения можно внедрять только после подтверждения владельцем проекта.
+________________________________________
+Подробности реализации
+1. Интерактивность
+•	Бот встроен прямо в веб-интерфейс SmartSell.
+•	В интерфейсе появляется окно чата, где бот задаёт уточняющие вопросы:
+«Какую функцию вы хотите добавить?», «Куда разместить кнопку?», «Нужно ли сохранять данные в БД?».
+2. Генерация кода
+•	Бот использует AI-модель для преобразования описания пользователя в готовый код.
+•	Для backend генерируется код на FastAPI (endpoints в app/routers, сервисы в app/services).
+•	Для frontend создаются компоненты React/MUI.
+•	Код структурирован по архитектуре проекта (app + frontend).
+3. Тестирование
+•	Бот автоматически пишет unit-тесты (pytest для FastAPI, React Testing Library для фронтенда).
+•	Все изменения сначала деплоятся на staging (изолированная среда).
+•	Если тесты проходят успешно — бот предлагает пользователю подтвердить внедрение.
+4. Подтверждение изменений
+•	Ничего не попадает в продакшн без явного одобрения.
+•	Бот выводит пользователю краткий отчёт:
+o	что именно изменится;
+o	какие файлы будут затронуты;
+o	для чего нужны изменения.
+•	Пользователь может:
+o	подтвердить внедрение;
+o	отклонить и запросить правки;
+o	задать уточняющие вопросы.
+5. Безопасность
+•	Все API-ключи (Kaspi, TipTop Pay, Cloudinary, Mobizon) хранятся в зашифрованном виде.
+•	Webhooks обрабатываются идемпотентно (по provider_invoice_id).
+•	Перед внедрением изменений делается git-commit и git-tag.
+________________________________________
+Пример сценария работы бота
+1.	Пользователь пишет в чат: «Добавь возможность загружать фото товара».
+2.	Бот уточняет: «Хотите загрузку через Cloudinary?» — пользователь отвечает «Да».
+3.	Бот генерирует код:
+o	backend: новый эндпоинт FastAPI POST /api/products/{id}/image;
+o	сервис cloudinary_service.py для загрузки;
+o	обновлённая Pydantic-схема продукта (image_url);
+o	frontend: компонент загрузки с кнопкой «Загрузить фото».
+4.	Бот показывает дифф: «Добавлены 3 файла, изменён 1, добавлено 50 строк».
+5.	Бот пишет отчёт:
+o	Функция: загрузка фото;
+o	Что сделано: добавлен эндпоинт, компонент, интеграция Cloudinary;
+o	Зачем: чтобы продавцы могли добавлять изображения;
+o	Безопасность: изображения сохраняются в Cloudinary, ссылка хранится в БД.
+6.	Пользователь нажимает «Подтвердить».
+7.	Изменения внедряются в основную ветку.
+
+Часть 2/20 — Платформа SmartSell
+Цель
+Создать облачную систему SmartSell для автоматизации онлайн-торговли, которая объединяет:
+•	управление товарами и заказами;
+•	интеграцию с маркетплейсами и платёжными системами;
+•	аналитику и отчётность;
+•	управление сотрудниками и ролями;
+•	гибкий биллинг и тарифные планы;
+•	коммуникацию с клиентами через рассылки.
+Платформа должна работать по SaaS-модели (подписки), обеспечивая масштабируемость и безопасность.
+________________________________________
+Модули платформы
+2.1. Регистрация и авторизация
+•	Регистрация по номеру телефона.
+•	Подтверждение через SMS-код (OTP) от сервиса Mobizon.
+•	Хранение паролей — только в виде хэшей (bcrypt).
+•	Ограничение на повторное использование пробного периода (по BIN/store_id).
+•	JWT-аутентификация для API:
+o	access token (короткий срок жизни);
+o	refresh token (дольше, хранится безопасно).
+________________________________________
+2.2. Управление товарами
+•	Добавление, редактирование, удаление товаров (CRUD).
+•	Импорт/экспорт через Excel (xlsx).
+•	Фото загружаются в Cloudinary.
+•	Автоматический демпинг цен — установка цены в диапазоне «минимум–максимум» относительно конкурентов.
+•	Поддержка предзаказов (до 30 дней).
+•	Исключение «дружественных магазинов» из демпинга (чтобы не конкурировать с ними).
+________________________________________
+2.3. Управление заказами и накладными
+•	Синхронизация заказов с Kaspi API.
+•	Получение новых заказов в SmartSell.
+•	Управление статусами заказов (подтверждён, в обработке, выполнен, отменён).
+•	Генерация накладных в формате PDF.
+•	Возможность склеивания нескольких накладных в один документ.
+•	Отправка накладных клиентам через WhatsApp или Email.
+________________________________________
+2.4. Склады и логистика
+•	Добавление складов: адрес, контактные данные, часы работы.
+•	Привязка остатков товаров к складам.
+•	Возможность перемещения товара между складами.
+•	Интеграция с логикой Kaspi (самовывоз, отгрузка со склада).
+•	Отчёт по остаткам (суммарный и по каждому складу).
+________________________________________
+2.5. Сотрудники и роли
+•	Два уровня: администратор и сотрудники.
+•	У сотрудников гибкие права доступа:
+o	редактирование цен;
+o	управление остатками;
+o	работа с категориями;
+o	просмотр или редактирование аналитики.
+•	Ведение логов всех действий сотрудников: кто, когда и что изменил.
+•	Возможность назначать индивидуальные права (галочками).
+________________________________________
+2.6. Аналитика
+•	Графики: продажи, выручка, остатки.
+•	Сегментация клиентов:
+o	новый;
+o	постоянный;
+o	VIP.
+•	Отчёты по категориям и товарам (топ-продажи).
+•	Отслеживание повторных клиентов.
+•	Экспорт аналитики в Excel или PDF.
+________________________________________
+2.7. Биллинг и тарифы
+•	Тарифные планы:
+o	Start (минимальный функционал);
+o	Pro (расширенный функционал);
+o	Business (всё включено).
+•	Оплата тарифа через TipTop Pay.
+•	Скидки при оплате за 3, 6 или 12 месяцев.
+•	Баланс кошелька (отображение остатка).
+•	История всех платежей.
+•	Ограничение функций в зависимости от тарифа (например, количество сотрудников или рассылок).
+________________________________________
+2.8. Рассылки
+•	Поддержка рассылок через:
+o	WhatsApp (бизнес-аккаунт);
+o	Email;
+o	Telegram.
+•	Лимит на отправку: до 800 сообщений в день.
+•	Поддержка сегментации базы: рассылка только определённой группе клиентов.
+•	Возможность загружать шаблоны сообщений.
+•	Поддержка ночного режима:
+o	стандартно 22:00–08:00;
+o	время регулируется администратором.
+•	Возможность отложенной отправки сообщений (от 1 минуты до 12 часов).
+•	Хранение истории рассылок, учёт ошибок доставки.
+________________________________________
+Требования к модульности
+•	Каждый модуль должен быть отдельным сервисом внутри app/ (FastAPI routers).
+•	Модули связаны через общую базу данных (PostgreSQL).
+•	Весь функционал должен быть доступен через REST API.
+•	Должна быть возможность в будущем вынести модули в микросервисы.
+
+Часть 3/20 — Интеграция платёжной системы TipTop Pay
+Цель
+Обеспечить пользователям платформы SmartSell возможность приёма онлайн-платежей через провайдера TipTop Pay, с поддержкой:
+•	платежей по картам и кошелькам;
+•	возвратов и отмен;
+•	автоматической фискализации чеков;
+•	уведомлений о статусе платежа через webhook;
+•	безопасного хранения API-ключей.
+________________________________________
+Основные задачи
+1.	Встроить платёжный виджет TipTop Pay на фронтенде (страница оплаты заказа).
+2.	Реализовать серверные методы для:
+o	создания заказа;
+o	инициирования платежа;
+o	подтверждения/отмены/возврата;
+o	проверки статуса транзакции.
+3.	Обрабатывать webhooks от TipTop Pay для изменения статуса заказа в SmartSell.
+4.	Автоматически генерировать фискальные чеки (через API TipTop Pay).
+5.	Шифровать и хранить ключи API только в зашифрованном виде.
+________________________________________
+Интеграция на фронтенде
+•	Форма оплаты размещается на странице подтверждения заказа.
+•	Используется официальный виджет TipTop Pay, подключаемый через JavaScript SDK.
+•	Пользователь вводит данные карты → данные шифруются и отправляются напрямую в TipTop Pay.
+•	SmartSell получает только результат (успешно/ошибка), но не хранит данные карт.
+________________________________________
+Интеграция на backend (FastAPI)
+Конфигурация (app/core/config.py)
+TIPTOP_API_URL = "https://api.tippay.kz"
+TIPTOP_API_KEY = os.getenv("TIPTOP_API_KEY")
+TIPTOP_API_SECRET = os.getenv("TIPTOP_API_SECRET")
+Пример сервиса (app/services/tiptop.py)
+import httpx
+from app.core.config import TIPTOP_API_URL, TIPTOP_API_KEY, TIPTOP_API_SECRET
+
+async def create_payment(order_id: int, amount: float, currency="KZT"):
+    async with httpx.AsyncClient() as client:
+        response = await client.post(
+            f"{TIPTOP_API_URL}/payments",
+            headers={"Authorization": f"Bearer {TIPTOP_API_KEY}"},
+            json={
+                "order_id": order_id,
+                "amount": amount,
+                "currency": currency,
+                "callback_url": "https://smartsell.kz/api/webhooks/tiptop"
+            }
+        )
+        return response.json()
+________________________________________
+Webhooks
+•	Точка приёма: POST /api/webhooks/tiptop
+•	События:
+o	payment_success — заказ помечается как оплаченный;
+o	payment_fail — заказ отменяется или ожидает повторной оплаты;
+o	payment_refund — в заказе появляется статус «возврат».
+•	Безопасность:
+o	Проверка подписи запроса по секретному ключу.
+o	Логирование каждого webhook-вызова.
+o	Идемпотентность: если одно событие пришло дважды — обрабатывается один раз.
+________________________________________
+Фискальные чеки
+•	При успешной оплате автоматически формируется чек.
+•	Данные чека передаются в TipTop Pay для регистрации.
+•	Чек сохраняется в базе данных SmartSell с привязкой к заказу.
+•	Пользователь может скачать чек в PDF.
+________________________________________
+Требования безопасности
+•	Все API-ключи и секреты TipTop Pay хранятся в .env или в менеджере секретов.
+•	Перед использованием ключи загружаются в конфигурацию через pydantic.BaseSettings.
+•	Доступ к ключам ограничен только сервером.
+•	Ошибки и транзакции логируются, но конфиденциальные данные (карты, CVV) не сохраняются.
+________________________________________
+Сценарий работы
+1.	Клиент оформляет заказ в SmartSell.
+2.	Нажимает «Оплатить» → открывается виджет TipTop Pay.
+3.	Вводит данные карты.
+4.	TipTop Pay проводит операцию и отправляет webhook на SmartSell.
+5.	SmartSell обновляет статус заказа: «Оплачен» или «Ошибка».
+6.	При успешной оплате формируется и сохраняется чек.
+7.	Пользователь получает уведомление (WhatsApp/Email/Telegram).
+
+Часть 4/20 — Технологии проекта (стек и принципы применения)
+4.1. Frontend
+Фреймворк: React (SPA)
+UI-библиотека: Material UI (MUI)
+Графики: Recharts или Chart.js (react-chartjs-2)
+Маршрутизация: React Router
+Состояние: Context API / Redux Toolkit (по масштабу)
+HTTP-клиент: axios (с интерцепторами для JWT)
+Сборка: Vite (предпочтительно) или CRA (если уже используется)
+i18n (опц.): react-i18next
+Ключевые требования и практики:
+•	Единый axios-инстанс с базовым baseURL=/api и интерцептором, подставляющим Authorization: Bearer <token> из хранилища (localStorage либо защищённая cookie; для повышенной безопасности рекомендуется HttpOnly cookie + SameSite).
+•	UI в MUI: строгая типографика, таблицы (DataGrid), Dialog/Drawer для модальных форм, Snackbar для нотификаций, Skeleton для состояния загрузки.
+•	Маршруты: публичные (/login) и приватные (/products, /orders, /analytics, /settings). Приватные защищать HOC/компонентом <PrivateRoute> (проверка токена/роли).
+•	Валидация форм: React Hook Form + Zod/Yup; маска телефонов (например, react-input-mask).
+•	Загрузка изображений: виджет Cloudinary (direct upload) или POST на наш API с последующей загрузкой на Cloudinary сервисом (см. бэкенд).
+________________________________________
+4.2. Backend
+Фреймворк: FastAPI (асинхронный, uvicorn/gunicorn+uvicornworkers)
+Язык: Python 3.11+
+ORM: SQLAlchemy 2.x (+ Alembic для миграций)
+Схемы/валидация: Pydantic v2
+Аутентификация: JWT (python-jose или fastapi-jwt-auth), OTP-вход через Mobizon
+HTTP-клиент: httpx (async) для интеграций
+Таск-очередь (опц.): RQ/Celery/Arq (для рассылок, фоновых задач)
+Планировщик (опц.): APScheduler (пуллинг Kaspi, регулярные задачи)
+Структура каталога app/:
+app/
+  main.py                # точка входа FastAPI
+  core/                  # конфиг, безопасность, deps, init логирования
+    config.py
+    security.py
+    logging.py
+  models/                # SQLAlchemy модели
+  schemas/               # Pydantic (request/response DTO)
+  routers/               # эндпоинты: auth, products, orders, payments, analytics, ...
+  services/              # бизнес-логика и интеграции (kaspi, tiptop, cloudinary, mobizon)
+  repositories/          # слой доступа к данным (опц.)
+  utils/                 # утилиты (OTP, PDF, Excel, идемпотентность, ...)
+  workers/               # фоновые задания (если используются)
+Особенности FastAPI:
+•	Естественная OpenAPI-документация (/docs, /redoc) без дополнительных пакетов.
+•	Depends(...) для инъекции зависимостей (сессии БД, текущего пользователя, ролей).
+•	Асинхронные обработчики (async def) и асинхронные клиенты интеграций (httpx).
+Безопасность (бэкенд):
+•	JWT с ограниченным TTL, refresh-механизм опционально.
+•	Повторная проверка (re-OTP) для чувствительных операций (изменение платёжных ключей, экспорт массивов персональных данных).
+•	Rate limiting на критичных роутерах (/auth/*, /payments/*, webhooks) — через middleware/прокси/Nginx + Redis-счётчики.
+•	CORS по allowlist доменов.
+________________________________________
+4.3. База данных
+СУБД: PostgreSQL
+Миграции: Alembic (версии, откаты)
+Моделирование:
+•	Базовые сущности: User, Company/Store (если мульти-арендная модель), Product, Order, OrderItem, Warehouse, ProductStock, Payment, Campaign (рассылки), AuditLog.
+•	Связи: Order 1—* OrderItem, Product 1—* OrderItem, Product *—* Warehouse через ProductStock.
+•	Индексация по частым фильтрам (даты, статус, SKU, phone, external_id).
+•	Журнал аудита (AuditLog): пользователь, действие, сущность, до/после, время.
+Практики:
+•	Транзакции на уровне сервисов: создание заказа + списание остатков + запись платежа — атомарные.
+•	Идемпотентные ключи для платежей и webhooks (provider_invoice_id, event_id).
+•	Отдельные read-replicas (опц.) для аналитики при росте нагрузки.
+________________________________________
+4.4. Инфраструктура и деплой
+Контейнеризация: Docker для app (FastAPI), frontend, postgres
+Запуск (dev/staging/prod): Docker Compose (старт) / Kubernetes (масштаб)
+WSGI/ASGI: uvicorn standalone или gunicorn + uvicorn.workers.UvicornWorker
+Обратный прокси: Nginx/Caddy (TLS, gzip, кэширование статики, лимиты)
+TLS: Let’s Encrypt/ACM
+Секреты: переменные окружения / Secret Manager (никаких секретов в репозитории)
+Пример docker-compose.yml (укрупнённо):
+version: "3.9"
+services:
+  db:
+    image: postgres:16
+    environment:
+      POSTGRES_DB: smartsell
+      POSTGRES_USER: smartsell
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    volumes: [ "pgdata:/var/lib/postgresql/data" ]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U smartsell -d smartsell"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  app:
+    build: ./app
+    environment:
+      DATABASE_URL: postgresql+psycopg://smartsell:${POSTGRES_PASSWORD}@db:5432/smartsell
+      SECRET_KEY: ${SECRET_KEY}
+      MOBIZON_API_KEY: ${MOBIZON_API_KEY}
+      CLOUDINARY_URL: ${CLOUDINARY_URL}
+      TIPTOP_API_KEY: ${TIPTOP_API_KEY}
+      TIPTOP_API_SECRET: ${TIPTOP_API_SECRET}
+    depends_on: [ db ]
+    ports: [ "8000:8000" ]
+    command: >
+      uvicorn app.main:app
+      --host 0.0.0.0 --port 8000
+      --proxy-headers --forwarded-allow-ips='*'
+
+  frontend:
+    build: ./frontend
+    ports: [ "3000:80" ]
+    depends_on: [ app ]
+
+volumes:
+  pgdata:
+________________________________________
+4.5. Интеграции (внешние сервисы)
+4.5.1. Kaspi API
+•	Пуллинг новых заказов по окнам времени/статусу.
+•	Генерация XML/CSV-фида каталога; размещение по публичному URL для периодической загрузки маркетплейсом.
+•	Таймауты, ретраи, ограничение частоты запросов, метрики.
+4.5.2. TipTop Pay
+•	Инициация платежа (create), подтверждение/отмена/возврат, статус.
+•	Приём webhook (подпись/секрет, идемпотентность).
+•	Авто-фискализация чеков (если доступно), хранение ссылок на чеки.
+4.5.3. Cloudinary
+•	Direct upload (виджет) или серверный аплоад.
+•	Хранение secure_url и public_id; удаления/трансформации через API.
+4.5.4. Mobizon (OTP)
+•	Отправка одноразовых кодов, TTL 300 сек.
+•	Антиспам/Rate-limit по номеру/IP, логирование отправок.
+4.5.5. Почта/мессенджеры
+•	Email (SMTP/SendGrid), WhatsApp/Telegram для рассылок и уведомлений.
+•	Очередь задач и ночной режим (окно 22:00–08:00, редактируемое).
+________________________________________
+4.6. Документация и соглашения
+•	Автогенерация API-документации: FastAPI /docs (Swagger UI) и /redoc.
+•	Стиль кода: ruff/flake8 + black (форматирование), isort.
+•	Коммиты: Conventional Commits; семантические версии для релизов.
+•	Диаграммы: архитектура/ERD в репозитории (/docs/).
+________________________________________
+4.7. Тестирование и качество
+•	Unit/Integration tests: pytest, httpx.AsyncClient для API.
+•	Покрытие: критические модули — auth, payments/webhooks, orders, products import.
+•	E2E (опц.): Playwright/Cypress для фронтенда.
+•	Статический анализ: mypy (по мере готовности тайпингов), ruff.
+________________________________________
+4.8. CI/CD
+CI (GitHub Actions):
+•	Линтеры/типы → тесты → сборка Docker-образов → пуш в registry.
+•	Прогон миграций Alembic на staging.
+•	Примитивные smoke-тесты после деплоя.
+CD:
+•	Staging с тестовыми ключами внешних сервисов.
+•	Ручное подтверждение (manual approval) на прод.
+•	Git-теги перед релизом; план отката.
+________________________________________
+4.9. Наблюдаемость и эксплуатация
+•	Логи: JSON-формат, уровни INFO/ERROR/AUDIT (аудит действий сотрудников).
+•	Метрики: Prometheus (RPS, latency p95/p99, ошибки, очередь рассылок, пул БД).
+•	Алерты: нагрузки CPU/RAM, рост 5xx, переполнения очередей, деградация внешних API.
+•	Бэкапы: ежедневные снепшоты БД (шифрованные), хранение 7–30 дней, регулярная проверка восстановления.
+________________________________________
+4.10. Нефункциональные требования (связанные с технологиями)
+•	Производительность: целевой p95 < 300 мс для основных API при заявленной нагрузке; горизонтальное масштабирование через воркеры и реплики БД.
+•	Надёжность: автоматический перезапуск контейнеров, healthchecks, readiness/liveness-пробы.
+•	Безопасность: шифрование секретов, отсутствие чувствительных данных в логах, строгие CORS, защита от повторов webhook-ов.
+
+Часть 5/20 — Безопасность
+5.1. Общие принципы безопасности
+Платформа SmartSell обязана соответствовать современным стандартам защиты данных и предусматривать:
+•	защиту от утечек конфиденциальной информации;
+•	предотвращение атак (SQL Injection, XSS, CSRF, brute-force, replay-атаки);
+•	безопасное хранение паролей и ключей;
+•	защиту каналов связи (TLS);
+•	ведение журнала событий для аудита;
+•	обеспечение идемпотентности критичных операций.
+________________________________________
+5.2. Хранение паролей и секретов
+•	Все пользовательские пароли хранятся только в виде хэшей:
+o	алгоритм: bcrypt (рекомендуется cost=12+) или argon2id;
+o	соли уникальные для каждого пароля;
+o	невозможность восстановления исходного пароля.
+•	API-ключи и секреты (Kaspi, TipTop Pay, Cloudinary, Mobizon):
+o	хранятся только в .env или менеджере секретов;
+o	никогда не попадают в git-репозиторий;
+o	загружаются через Pydantic Settings (app/core/config.py).
+•	В базе данных ключи могут храниться только в зашифрованном виде (например, с помощью Fernet AES256).
+________________________________________
+5.3. Аутентификация и авторизация
+•	Используется JWT-аутентификация:
+o	access token (жизнь: 15–60 мин);
+o	refresh token (жизнь: 7–30 дней).
+•	При входе через OTP (Mobizon):
+o	код длиной 6 цифр, TTL = 5 минут;
+o	не более 5 попыток подтверждения;
+o	антиспам: не более 5 SMS/час для одного номера, ≤10/день/IP.
+•	Авторизация:
+o	роль (admin, manager, analyst, storekeeper) включена в payload JWT;
+o	проверка ролей через Depends в FastAPI.
+________________________________________
+5.4. Защита API
+•	CORS: только разрешённые домены (белый список).
+•	Rate limiting: ограничение количества запросов на пользователя/IP (реализация через Redis или Nginx).
+•	Валидация данных:
+o	все входные данные проходят через Pydantic-схемы;
+o	запрет на «сырой SQL», только ORM.
+•	Защита от CSRF: для API с cookies — SameSite=Strict, HttpOnly, Secure.
+•	Защита от XSS: экранирование вывода, Content-Security-Policy (CSP).
+________________________________________
+5.5. Webhooks (Kaspi, TipTop Pay)
+•	Каждый webhook имеет:
+o	обязательную подпись (HMAC) или секрет;
+o	проверку времени жизни запроса (TTL ≤ 5 минут);
+o	идемпотентность (каждый provider_invoice_id или event_id обрабатывается только 1 раз).
+•	В случае повторной доставки webhook — операция игнорируется (логируется как «duplicate»).
+________________________________________
+5.6. Логирование и аудит
+•	Вести журнал всех действий пользователей:
+o	входы/выходы;
+o	создание/удаление товаров;
+o	редактирование цен;
+o	экспорт/импорт данных;
+o	управление сотрудниками.
+•	Логи хранятся в таблице audit_log:
+o	user_id;
+o	action;
+o	entity_type;
+o	entity_id;
+o	old_value;
+o	new_value;
+o	timestamp.
+•	Системные логи (ошибки, падения, webhooks) пишутся в JSON-формате (подключение Prometheus + ELK/Graylog).
+________________________________________
+5.7. Резервное копирование и восстановление
+•	Ежедневные бэкапы БД (PostgreSQL dump + шифрование).
+•	Хранение бэкапов: минимум 7–30 дней.
+•	Хранение в отдельном защищённом хранилище (например, s3-совместимый storage).
+•	Регулярная проверка восстановления (1 раз в неделю).
+________________________________________
+5.8. Идемпотентность операций
+Для предотвращения повторного выполнения критичных транзакций:
+•	платежи (TipTop Pay) и заказы имеют уникальный idempotency_key;
+•	повторный запрос с тем же ключом возвращает предыдущий результат;
+•	это правило применяется для:
+o	платежей;
+o	webhooks;
+o	операций импорта/экспорта;
+o	создания заказов.
+________________________________________
+5.9. Безопасность фронтенда
+•	В React-приложении:
+o	хранение токенов в HttpOnly cookies (предпочтительно);
+o	Content Security Policy (CSP): разрешать только собственные скрипты;
+o	защита от XSS — все вводимые данные экранируются;
+o	отключение eval и inline-скриптов.
+•	Ограничение доступов:
+o	приватные страницы доступны только авторизованным пользователям;
+o	проверка прав доступа на уровне UI и API.
+________________________________________
+5.10. Соответствие законодательству
+•	Соблюдение требований по защите персональных данных (Закон РК о персональных данных).
+•	Все данные пользователей (ФИО, телефоны, заказы) считаются персональными и подлежат защите.
+•	Пользователь имеет право запросить удаление своих данных.
+________________________________________
+👉 Это была полная Часть 5/20 — Безопасность.
+Дальше пойдёт Часть 6/20 — Архитектура и структура проекта (директории, запуск, CI/CD).
+Хотите, чтобы я сразу выдал её?
+Отлично 👍 Продолжаем. Ниже полная Часть 6/20 — Архитектура и структура проекта с учётом всех замен (FastAPI, структура app/).
+________________________________________
+Часть 6/20 — Архитектура и структура проекта
+6.1. Общая архитектура
+Платформа SmartSell реализуется как многоуровневое приложение:
+•	Frontend (React + MUI) — SPA-интерфейс для продавцов и администраторов.
+•	Backend (FastAPI) — REST API для бизнес-логики и интеграций.
+•	База данных (PostgreSQL) — хранение данных о пользователях, товарах, заказах, платежах.
+•	Интеграции — внешние сервисы (Kaspi API, Cloudinary, Mobizon, TipTop Pay).
+•	Инфраструктура — Docker-контейнеризация, CI/CD через GitHub Actions, мониторинг и логирование.
+________________________________________
+6.2. Структура директорий
+SmartSell/
+├── app/                   # Исходный код FastAPI-приложения
+│   ├── main.py            # Точка входа FastAPI
+│   ├── core/              # Конфигурация, безопасность, зависимости
+│   │   ├── config.py
+│   │   ├── security.py
+│   │   └── logging.py
+│   ├── models/            # SQLAlchemy модели
+│   │   ├── user.py
+│   │   ├── product.py
+│   │   ├── order.py
+│   │   ├── warehouse.py
+│   │   └── payment.py
+│   ├── schemas/           # Pydantic-схемы (DTO)
+│   │   ├── user.py
+│   │   ├── product.py
+│   │   ├── order.py
+│   │   └── payment.py
+│   ├── routers/           # Маршруты FastAPI (эндпоинты)
+│   │   ├── auth.py
+│   │   ├── products.py
+│   │   ├── orders.py
+│   │   ├── payments.py
+│   │   ├── warehouses.py
+│   │   └── analytics.py
+│   ├── services/          # Бизнес-логика и интеграции
+│   │   ├── kaspi_service.py
+│   │   ├── tiptop_service.py
+│   │   ├── cloudinary_service.py
+│   │   └── mobizon_service.py
+│   ├── utils/             # Вспомогательные функции
+│   │   ├── otp.py
+│   │   ├── pdf.py
+│   │   ├── excel.py
+│   │   └── idempotency.py
+│   └── workers/           # Фоновые задачи (рассылки, синхронизация)
+│       └── tasks.py
+├── frontend/              # React + MUI (SPA)
+├── alembic/               # Миграции базы данных
+├── docker-compose.yml
+├── requirements.txt
+└── README.md
+________________________________________
+6.3. Запуск приложения
+Backend (FastAPI)
+Запуск локально:
+uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+Запуск в Docker:
+docker-compose up --build
+Frontend (React)
+Запуск локально:
+npm install
+npm run dev
+________________________________________
+6.4. CI/CD (GitHub Actions)
+•	Триггеры:
+o	push в ветки main и develop;
+o	pull request;
+o	ручной запуск (workflow_dispatch).
+•	Шаги:
+1.	Установка зависимостей.
+2.	Прогон линтеров (black, ruff, isort).
+3.	Запуск тестов (pytest, httpx.AsyncClient).
+4.	Сборка Docker-образов (app, frontend).
+5.	Публикация образов в Docker Registry.
+6.	Деплой на staging-сервер.
+7.	Smoke-тесты.
+8.	(опц.) ручное подтверждение для деплоя на прод.
+________________________________________
+6.5. Окружения
+•	Dev (локальное):
+o	.env.dev, локальная БД.
+o	Uvicorn + reload.
+o	Mock-ключи API.
+•	Staging:
+o	близкое к боевому окружение.
+o	тестовые ключи Kaspi, Cloudinary, TipTop Pay.
+o	используется для проверки перед продакшном.
+•	Prod:
+o	масштабируемые контейнеры (Docker Swarm или Kubernetes).
+o	реальные ключи API.
+o	мониторинг и алертинг.
+________________________________________
+6.6. Интеграция с внешними сервисами
+•	Kaspi API — пуллинг заказов, обновление остатков, публикация фидов.
+•	TipTop Pay — инициирование и обработка платежей, webhooks.
+•	Cloudinary — загрузка изображений.
+•	Mobizon — отправка OTP при регистрации/авторизации.
+Все интеграции реализуются в папке app/services/ как отдельные сервисные классы или функции.
+________________________________________
+6.7. Преимущества архитектуры
+•	Модульность: каждый блок (товары, заказы, аналитика, рассылки) изолирован в своём модуле.
+•	Расширяемость: можно добавлять новые модули без изменения ядра.
+•	Масштабируемость: легко масштабировать отдельно backend или frontend.
+•	Тестируемость: изолированные модули удобно покрывать unit и интеграционными тестами.
+•	Безопасность: чёткое разделение ролей и зон ответственности.
+
+Часть 7/20 — Реализация backend (FastAPI)
+7.1. Общие сведения
+Backend реализуется на базе FastAPI, обеспечивая:
+•	REST API для всех модулей платформы;
+•	асинхронное выполнение (async/await) для высокой производительности;
+•	автоматическую генерацию документации (Swagger UI и Redoc);
+•	строгую валидацию входных и выходных данных через Pydantic;
+•	поддержку зависимостей через Depends;
+•	интеграцию с внешними API (Kaspi, TipTop Pay, Cloudinary, Mobizon).
+________________________________________
+7.2. Точка входа (app/main.py)
+from fastapi import FastAPI
+from app.routers import auth, products, orders, payments, warehouses, analytics
+
+app = FastAPI(
+    title="SmartSell API",
+    version="1.0.0",
+    description="Облачная платформа для автоматизации онлайн-торговли"
+)
+
+# Подключение маршрутов
+app.include_router(auth.router, prefix="/api/auth", tags=["auth"])
+app.include_router(products.router, prefix="/api/products", tags=["products"])
+app.include_router(orders.router, prefix="/api/orders", tags=["orders"])
+app.include_router(payments.router, prefix="/api/payments", tags=["payments"])
+app.include_router(warehouses.router, prefix="/api/warehouses", tags=["warehouses"])
+app.include_router(analytics.router, prefix="/api/analytics", tags=["analytics"])
+________________________________________
+7.3. Конфигурация (app/core/config.py)
+from pydantic_settings import BaseSettings
+
+class Settings(BaseSettings):
+    DATABASE_URL: str
+    SECRET_KEY: str
+    ACCESS_TOKEN_EXPIRE_MINUTES: int = 30
+    REFRESH_TOKEN_EXPIRE_DAYS: int = 7
+
+    MOBIZON_API_KEY: str
+    CLOUDINARY_URL: str
+    TIPTOP_API_KEY: str
+    TIPTOP_API_SECRET: str
+
+    class Config:
+        env_file = ".env"
+
+settings = Settings()
+________________________________________
+7.4. Подключение базы данных (app/core/db.py)
+from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
+from sqlalchemy.orm import sessionmaker
+
+from app.core.config import settings
+
+engine = create_async_engine(settings.DATABASE_URL, echo=False, future=True)
+
+async_session = sessionmaker(
+    engine, class_=AsyncSession, expire_on_commit=False
+)
+
+# Dependency для FastAPI
+async def get_db():
+    async with async_session() as session:
+        yield session
+________________________________________
+7.5. Пример маршрута (app/routers/products.py)
+from fastapi import APIRouter, Depends, HTTPException
+from sqlalchemy.ext.asyncio import AsyncSession
+from app.schemas.product import ProductCreate, ProductOut
+from app.models.product import Product
+from app.core.db import get_db
+
+router = APIRouter()
+
+@router.post("/", response_model=ProductOut)
+async def create_product(product: ProductCreate, db: AsyncSession = Depends(get_db)):
+    db_product = Product(**product.dict())
+    db.add(db_product)
+    await db.commit()
+    await db.refresh(db_product)
+    return db_product
+________________________________________
+7.6. Middleware
+•	CORS Middleware — разрешённые домены (React SPA).
+•	Logging Middleware — запись всех запросов и ответов в JSON-формате.
+•	Error Handling Middleware — централизованная обработка ошибок.
+from fastapi.middleware.cors import CORSMiddleware
+
+origins = ["https://smartsell.kz", "http://localhost:3000"]
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=origins,
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+________________________________________
+7.7. Аутентификация и роли
+•	Авторизация через JWT.
+•	Проверка токенов в зависимости от роли (Depends(get_current_user) + проверка роли).
+•	Ограничение доступа к маршрутам по ролям:
+o	admin — полный доступ;
+o	manager — управление товарами/заказами;
+o	storekeeper — склад;
+o	analyst — только аналитика.
+________________________________________
+7.8. Тестирование backend
+Pytest + httpx.AsyncClient для проверки API.
+Пример:
+import pytest
+from httpx import AsyncClient
+from app.main import app
+
+@pytest.mark.asyncio
+async def test_read_products():
+    async with AsyncClient(app=app, base_url="http://test") as ac:
+        response = await ac.get("/api/products/")
+    assert response.status_code == 200
+________________________________________
+7.9. Преимущества FastAPI для SmartSell
+•	Высокая скорость работы (близко к Node.js и Go).
+•	Простая интеграция со Swagger и Redoc.
+•	Строгая типизация и автогенерация документации.
+•	Лёгкость масштабирования (Uvicorn + Gunicorn).
+•	Удобная работа с зависимостями и middleware.
+________________________________________
+👉 Это была полная Часть 7/20 — Реализация backend (FastAPI).
+Следующая будет Часть 8/20 — Модели данных (SQLAlchemy + Pydantic).
+Хотите, я сразу выдам её?
+Хорошо 👍 Продолжаем. Ниже полная Часть 7/20 — Реализация backend (FastAPI, конфигурация, маршруты, зависимости).
+________________________________________
+Часть 7/20 — Реализация backend (FastAPI)
+7.1. Основные принципы
+Backend реализован на FastAPI и обеспечивает:
+•	REST API для фронтенда и внешних сервисов;
+•	аутентификацию и авторизацию (JWT + OTP);
+•	бизнес-логику работы с товарами, заказами, платежами, рассылками;
+•	интеграцию с внешними сервисами (Kaspi, Cloudinary, TipTop Pay, Mobizon);
+•	генерацию документации API (Swagger/Redoc);
+•	обработку ошибок и логирование.
+________________________________________
+7.2. Конфигурация проекта
+Файл app/core/config.py:
+import os
+from pydantic import BaseSettings
+
+class Settings(BaseSettings):
+    APP_NAME: str = "SmartSell"
+    APP_VERSION: str = "1.0.0"
+
+    DATABASE_URL: str
+    SECRET_KEY: str
+    ACCESS_TOKEN_EXPIRE_MINUTES: int = 30
+
+    MOBIZON_API_KEY: str
+    CLOUDINARY_URL: str
+    TIPTOP_API_KEY: str
+    TIPTOP_API_SECRET: str
+
+    class Config:
+        env_file = ".env"
+
+settings = Settings()
+________________________________________
+7.3. Инициализация FastAPI
+Файл app/main.py:
+from fastapi import FastAPI
+from app.routers import auth, products, orders, payments, warehouses, analytics
+from app.core.config import settings
+
+app = FastAPI(
+    title=settings.APP_NAME,
+    version=settings.APP_VERSION,
+    docs_url="/docs",
+    redoc_url="/redoc"
+)
+
+# Подключение маршрутов
+app.include_router(auth.router, prefix="/api/auth", tags=["auth"])
+app.include_router(products.router, prefix="/api/products", tags=["products"])
+app.include_router(orders.router, prefix="/api/orders", tags=["orders"])
+app.include_router(payments.router, prefix="/api/payments", tags=["payments"])
+app.include_router(warehouses.router, prefix="/api/warehouses", tags=["warehouses"])
+app.include_router(analytics.router, prefix="/api/analytics", tags=["analytics"])
+________________________________________
+7.4. Подключение к базе данных
+Файл app/core/db.py:
+from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
+from sqlalchemy.orm import sessionmaker
+from app.core.config import settings
+
+engine = create_async_engine(settings.DATABASE_URL, future=True, echo=False)
+
+SessionLocal = sessionmaker(
+    autocommit=False,
+    autoflush=False,
+    bind=engine,
+    class_=AsyncSession
+)
+
+async def get_db():
+    async with SessionLocal() as session:
+        yield session
+•	Используется асинхронный драйвер (asyncpg).
+•	Для всех запросов в БД применяется зависимость Depends(get_db) в FastAPI.
+________________________________________
+7.5. Маршруты (routers)
+Маршруты разделены по функциональным областям:
+•	auth.py — регистрация, вход по OTP, JWT-токены.
+•	products.py — CRUD товаров, импорт/экспорт Excel, загрузка фото (Cloudinary).
+•	orders.py — управление заказами, интеграция с Kaspi API.
+•	payments.py — создание платежей, обработка webhooks TipTop Pay.
+•	warehouses.py — склады, остатки, перемещения.
+•	analytics.py — аналитика продаж, повторные клиенты, отчёты.
+Пример маршрута (app/routers/products.py):
+from fastapi import APIRouter, Depends, HTTPException
+from sqlalchemy.ext.asyncio import AsyncSession
+from app.schemas.product import ProductCreate, ProductRead
+from app.models.product import Product
+from app.core.db import get_db
+
+router = APIRouter()
+
+@router.post("/", response_model=ProductRead)
+async def create_product(product: ProductCreate, db: AsyncSession = Depends(get_db)):
+    new_product = Product(**product.dict())
+    db.add(new_product)
+    await db.commit()
+    await db.refresh(new_product)
+    return new_product
+________________________________________
+7.6. Зависимости (Depends)
+FastAPI использует механизм Depends для подключения зависимостей:
+•	Подключение БД (get_db).
+•	Получение текущего пользователя (get_current_user).
+•	Проверка роли (get_current_admin).
+•	Подключение сервисов (KaspiService, TipTopService и т.д.).
+Пример зависимости для авторизации:
+from fastapi import Depends, HTTPException, status
+from fastapi.security import OAuth2PasswordBearer
+from jose import jwt, JWTError
+from app.core.config import settings
+
+oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/auth/login")
+
+def get_current_user(token: str = Depends(oauth2_scheme)):
+    try:
+        payload = jwt.decode(token, settings.SECRET_KEY, algorithms=["HS256"])
+        return payload
+    except JWTError:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token")
+________________________________________
+7.7. Обработка ошибок
+•	Все ошибки логируются.
+•	Для стандартных исключений FastAPI формирует JSON-ответ.
+•	Для бизнес-ошибок используется HTTPException.
+•	Ошибки интеграций (Kaspi, TipTop, Cloudinary) логируются с деталями.
+________________________________________
+7.8. Автоматическая документация API
+•	Swagger UI доступен по адресу /docs.
+•	Redoc доступен по адресу /redoc.
+•	Pydantic-схемы автоматически отображаются в документации.
+•	Возможность скачивания спецификации OpenAPI в формате JSON.
+________________________________________
+7.9. Тестирование backend
+•	Используется pytest + httpx.AsyncClient.
+•	База данных для тестов — отдельная (SQLite in-memory или отдельный PostgreSQL).
+•	Покрытие тестами:
+o	аутентификация;
+o	CRUD товаров;
+o	платежи (mock TipTop Pay);
+o	webhooks;
+o	отчёты и аналитика.
+
+Часть 8/20 — Модели данных (SQLAlchemy + Pydantic)
+8.1. Общие принципы моделирования
+•	СУБД: PostgreSQL.
+•	ORM: SQLAlchemy 2.x (declarative, async).
+•	Схемы валидации/ответов: Pydantic v2.
+•	Миграции: Alembic.
+•	Единые поля аудита: id, created_at, updated_at, deleted_at (soft-delete там, где нужно).
+•	Именование: имена таблиц в snake_case, внешние ключи вида <entity>_id.
+•	Индексы: на поля поиска/фильтрации (дата, статус, артикул, телефон, внешние id).
+•	Идемпотентность: уникальные ключи для событий/платежей (provider_invoice_id, event_id).
+•	Мульти-арендность (если требуется): через company_id/store_id в ключевых таблицах.
+Базовая модель для аудита:
+# app/models/base.py
+import sqlalchemy as sa
+from sqlalchemy.orm import DeclarativeBase, declared_attr
+from datetime import datetime, timezone
+
+class Base(DeclarativeBase):
+    @declared_attr.directive
+    def __tablename__(cls) -> str:
+        return cls.__name__.lower()
+
+    id = sa.Column(sa.BigInteger, primary_key=True, index=True)
+    created_at = sa.Column(sa.DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), nullable=False)
+    updated_at = sa.Column(sa.DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc), nullable=False)
+    deleted_at = sa.Column(sa.DateTime(timezone=True), nullable=True, index=True)
+________________________________________
+8.2. Пользователи и компании
+8.2.1. Company (арендатор / магазин)
+# app/models/company.py
+import sqlalchemy as sa
+from sqlalchemy.orm import relationship
+from app.models.base import Base
+
+class Company(Base):
+    __tablename__ = "companies"
+
+    name = sa.Column(sa.String(255), nullable=False, index=True)
+    bin_iin = sa.Column(sa.String(32), nullable=True, unique=True)  # БИН/ИИН
+    phone = sa.Column(sa.String(32), nullable=True)
+    email = sa.Column(sa.String(255), nullable=True)
+    is_active = sa.Column(sa.Boolean, default=True, nullable=False)
+
+    users = relationship("User", back_populates="company", lazy="selectin")
+Индексы: (bin_iin UNIQUE), (name).
+8.2.2. User
+# app/models/user.py
+import sqlalchemy as sa
+from sqlalchemy.orm import relationship
+from app.models.base import Base
+
+class UserRole(str):
+    ADMIN = "admin"
+    MANAGER = "manager"
+    STOREKEEPER = "storekeeper"
+    ANALYST = "analyst"
+
+class User(Base):
+    __tablename__ = "users"
+
+    company_id = sa.Column(sa.ForeignKey("companies.id", ondelete="CASCADE"), nullable=True, index=True)
+    phone = sa.Column(sa.String(32), unique=True, nullable=False, index=True)
+    email = sa.Column(sa.String(255), unique=True, nullable=True)
+    hashed_password = sa.Column(sa.String(255), nullable=True)  # при OTP может быть пусто
+    role = sa.Column(sa.Enum(UserRole, name="user_role"), default=UserRole.MANAGER, nullable=False)
+    is_active = sa.Column(sa.Boolean, default=True, nullable=False)
+
+    company = relationship("Company", back_populates="users", lazy="joined")
+Индексы: (phone UNIQUE), (email UNIQUE, NULLS NOT DISTINCT по умолчанию в PG14+ не требуется).
+8.2.3. OTP попытки
+# app/models/otp.py
+import sqlalchemy as sa
+from app.models.base import Base
+
+class OtpAttempt(Base):
+    __tablename__ = "otp_attempts"
+
+    phone = sa.Column(sa.String(32), nullable=False, index=True)
+    code_hash = sa.Column(sa.String(255), nullable=False)
+    expires_at = sa.Column(sa.DateTime(timezone=True), nullable=False)
+    attempts_left = sa.Column(sa.Integer, default=5, nullable=False)
+    sent_count_hour = sa.Column(sa.Integer, default=0, nullable=False)
+    sent_count_day = sa.Column(sa.Integer, default=0, nullable=False)
+Индексы: (phone, expires_at).
+________________________________________
+8.3. Каталог, склады и остатки
+8.3.1. Product
+# app/models/product.py
+import sqlalchemy as sa
+from sqlalchemy.orm import relationship
+from app.models.base import Base
+
+class Product(Base):
+    __tablename__ = "products"
+
+    company_id = sa.Column(sa.ForeignKey("companies.id", ondelete="CASCADE"), nullable=False, index=True)
+    sku = sa.Column(sa.String(64), nullable=False, index=True)     # артикул
+    name = sa.Column(sa.String(255), nullable=False, index=True)
+    description = sa.Column(sa.Text, nullable=True)
+    price = sa.Column(sa.Numeric(14, 2), nullable=False, index=True)
+    min_price = sa.Column(sa.Numeric(14, 2), nullable=True)
+    max_price = sa.Column(sa.Numeric(14, 2), nullable=True)
+    image_url = sa.Column(sa.String(1024), nullable=True)
+    image_public_id = sa.Column(sa.String(255), nullable=True)  # для Cloudinary
+    is_active = sa.Column(sa.Boolean, default=True, nullable=False)
+
+    __table_args__ = (
+        sa.UniqueConstraint("company_id", "sku", name="uq_product_company_sku"),
+    )
+
+    stocks = relationship("ProductStock", back_populates="product", lazy="selectin")
+Индексы: (company_id, sku UNIQUE), (name), (price).
+8.3.2. Warehouse и запасы
+# app/models/warehouse.py
+import sqlalchemy as sa
+from sqlalchemy.orm import relationship
+from app.models.base import Base
+
+class Warehouse(Base):
+    __tablename__ = "warehouses"
+
+    company_id = sa.Column(sa.ForeignKey("companies.id", ondelete="CASCADE"), nullable=False, index=True)
+    name = sa.Column(sa.String(255), nullable=False)
+    address = sa.Column(sa.String(512), nullable=True)
+    phone = sa.Column(sa.String(32), nullable=True)
+    schedule = sa.Column(sa.String(255), nullable=True)
+    is_active = sa.Column(sa.Boolean, default=True, nullable=False)
+
+    stocks = relationship("ProductStock", back_populates="warehouse", lazy="selectin")
+
+class ProductStock(Base):
+    __tablename__ = "product_stocks"
+
+    product_id = sa.Column(sa.ForeignKey("products.id", ondelete="CASCADE"), nullable=False, index=True)
+    warehouse_id = sa.Column(sa.ForeignKey("warehouses.id", ondelete="CASCADE"), nullable=False, index=True)
+    qty = sa.Column(sa.Integer, nullable=False, default=0, server_default="0")
+
+    __table_args__ = (
+        sa.UniqueConstraint("product_id", "warehouse_id", name="uq_product_warehouse"),
+    )
+
+    product = relationship("Product", back_populates="stocks", lazy="joined")
+    warehouse = relationship("Warehouse", back_populates="stocks", lazy="joined")
+Индексы: (product_id, warehouse_id UNIQUE).
+________________________________________
+8.4. Заказы и платежи
+8.4.1. Order и OrderItem
+# app/models/order.py
+import sqlalchemy as sa
+from sqlalchemy.orm import relationship
+from app.models.base import Base
+
+class OrderStatus(str):
+    PENDING = "pending"
+    CONFIRMED = "confirmed"
+    PAID = "paid"
+    SHIPPED = "shipped"
+    COMPLETED = "completed"
+    CANCELED = "canceled"
+    REFUNDED = "refunded"
+
+class Order(Base):
+    __tablename__ = "orders"
+
+    company_id = sa.Column(sa.ForeignKey("companies.id", ondelete="CASCADE"), nullable=False, index=True)
+    external_id = sa.Column(sa.String(128), nullable=True, index=True)  # id из Kaspi/др.
+    customer_phone = sa.Column(sa.String(32), nullable=True, index=True)
+    customer_name = sa.Column(sa.String(255), nullable=True)
+    status = sa.Column(sa.Enum(OrderStatus, name="order_status"), default=OrderStatus.PENDING, nullable=False, index=True)
+    total_amount = sa.Column(sa.Numeric(14, 2), nullable=False)
+    currency = sa.Column(sa.String(8), default="KZT", nullable=False)
+
+    items = relationship("OrderItem", back_populates="order", lazy="selectin", cascade="all, delete-orphan")
+
+class OrderItem(Base):
+    __tablename__ = "order_items"
+
+    order_id = sa.Column(sa.ForeignKey("orders.id", ondelete="CASCADE"), nullable=False, index=True)
+    product_id = sa.Column(sa.ForeignKey("products.id", ondelete="RESTRICT"), nullable=False, index=True)
+    name = sa.Column(sa.String(255), nullable=False)
+    price = sa.Column(sa.Numeric(14, 2), nullable=False)
+    qty = sa.Column(sa.Integer, nullable=False)
+
+    order = relationship("Order", back_populates="items", lazy="joined")
+Индексы: (company_id), (status), (external_id).
+8.4.2. Payments
+# app/models/payment.py
+import sqlalchemy as sa
+from app.models.base import Base
+
+class PaymentStatus(str):
+    NEW = "new"
+    SUCCESS = "success"
+    FAILED = "failed"
+    REFUND = "refund"
+
+class Payment(Base):
+    __tablename__ = "payments"
+
+    order_id = sa.Column(sa.ForeignKey("orders.id", ondelete="CASCADE"), nullable=False, index=True)
+    amount = sa.Column(sa.Numeric(14, 2), nullable=False)
+    currency = sa.Column(sa.String(8), default="KZT", nullable=False)
+    provider = sa.Column(sa.String(64), nullable=False, default="tiptop")
+    provider_invoice_id = sa.Column(sa.String(128), nullable=False, unique=True)  # идемпотентность
+    status = sa.Column(sa.Enum(PaymentStatus, name="payment_status"), default=PaymentStatus.NEW, nullable=False, index=True)
+    receipt_url = sa.Column(sa.String(1024), nullable=True)  # ссылка на чек
+Индексы: (provider_invoice_id UNIQUE), (order_id), (status).
+________________________________________
+8.5. Рассылки и коммуникации
+# app/models/campaign.py
+import sqlalchemy as sa
+from app.models.base import Base
+
+class Channel(str):
+    WA = "wa"
+    EMAIL = "email"
+    TG = "tg"
+
+class CampaignStatus(str):
+    DRAFT = "draft"
+    SCHEDULED = "scheduled"
+    RUNNING = "running"
+    DONE = "done"
+    FAILED = "failed"
+
+class Campaign(Base):
+    __tablename__ = "campaigns"
+
+    company_id = sa.Column(sa.ForeignKey("companies.id", ondelete="CASCADE"), nullable=False, index=True)
+    channel = sa.Column(sa.Enum(Channel, name="campaign_channel"), nullable=False)
+    title = sa.Column(sa.String(255), nullable=True)
+    template = sa.Column(sa.Text, nullable=False)       # текст/шаблон
+    segment = sa.Column(sa.Text, nullable=True)         # JSON-условия сегментации
+    scheduled_at = sa.Column(sa.DateTime(timezone=True), nullable=True, index=True)
+    status = sa.Column(sa.Enum(CampaignStatus, name="campaign_status"), default=CampaignStatus.DRAFT, nullable=False, index=True)
+    daily_limit = sa.Column(sa.Integer, nullable=True, default=800)
+Логи отправок (подробности доставки):
+# app/models/campaign_log.py
+import sqlalchemy as sa
+from app.models.base import Base
+
+class CampaignLog(Base):
+    __tablename__ = "campaign_logs"
+
+    campaign_id = sa.Column(sa.ForeignKey("campaigns.id", ondelete="CASCADE"), nullable=False, index=True)
+    contact = sa.Column(sa.String(255), nullable=False)   # телефон/email/@user
+    status = sa.Column(sa.String(32), nullable=False)     # sent/failed/delivered/read/...
+    error = sa.Column(sa.String(512), nullable=True)
+________________________________________
+8.6. Аудит и события интеграций
+8.6.1. AuditLog
+# app/models/audit.py
+import sqlalchemy as sa
+from app.models.base import Base
+
+class AuditLog(Base):
+    __tablename__ = "audit_log"
+
+    user_id = sa.Column(sa.ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True)
+    action = sa.Column(sa.String(128), nullable=False)            # created/updated/deleted/import/export/login/...
+    entity_type = sa.Column(sa.String(64), nullable=False)        # product/order/payment/...
+    entity_id = sa.Column(sa.BigInteger, nullable=True)
+    old_value = sa.Column(sa.Text, nullable=True)                 # JSON (строкой)
+    new_value = sa.Column(sa.Text, nullable=True)
+    ip = sa.Column(sa.String(64), nullable=True)
+    user_agent = sa.Column(sa.String(255), nullable=True)
+Индексы: (user_id), (entity_type, entity_id), (action).
+8.6.2. WebhookEvent (для идемпотентности)
+# app/models/webhook_event.py
+import sqlalchemy as sa
+from app.models.base import Base
+
+class WebhookEvent(Base):
+    __tablename__ = "webhook_events"
+
+    provider = sa.Column(sa.String(64), nullable=False)            # tiptop/kaspi/...
+    event_id = sa.Column(sa.String(128), nullable=False, unique=True)
+    payload = sa.Column(sa.Text, nullable=False)                   # исходный JSON
+    processed = sa.Column(sa.Boolean, default=False, nullable=False)
+    processed_at = sa.Column(sa.DateTime(timezone=True), nullable=True)
+Индекс: (event_id UNIQUE).
+________________________________________
+8.7. Pydantic-схемы (DTO)
+Примеры основных схем (request/response):
+# app/schemas/product.py
+from pydantic import BaseModel, Field, condecimal
+from typing import Optional
+
+class ProductBase(BaseModel):
+    sku: str = Field(min_length=1, max_length=64)
+    name: str = Field(min_length=1, max_length=255)
+    description: Optional[str] = None
+    price: condecimal(max_digits=14, decimal_places=2)
+    min_price: Optional[condecimal(max_digits=14, decimal_places=2)] = None
+    max_price: Optional[condecimal(max_digits=14, decimal_places=2)] = None
+
+class ProductCreate(ProductBase):
+    pass
+
+class ProductUpdate(BaseModel):
+    name: Optional[str] = None
+    description: Optional[str] = None
+    price: Optional[condecimal(max_digits=14, decimal_places=2)] = None
+    min_price: Optional[condecimal(max_digits=14, decimal_places=2)] = None
+    max_price: Optional[condecimal(max_digits=14, decimal_places=2)] = None
+
+class ProductOut(ProductBase):
+    id: int
+    image_url: Optional[str] = None
+    is_active: bool
+
+    model_config = {"from_attributes": True}
+# app/schemas/order.py
+from pydantic import BaseModel, Field, condecimal
+from typing import List
+
+class OrderItemIn(BaseModel):
+    product_id: int
+    name: str
+    price: condecimal(max_digits=14, decimal_places=2)
+    qty: int = Field(ge=1)
+
+class OrderCreate(BaseModel):
+    customer_phone: str | None = None
+    customer_name: str | None = None
+    items: List[OrderItemIn]
+
+class OrderOut(BaseModel):
+    id: int
+    status: str
+    total_amount: condecimal(max_digits=14, decimal_places=2)
+    currency: str
+    items: List[OrderItemIn]
+
+    model_config = {"from_attributes": True}
+# app/schemas/payment.py
+from pydantic import BaseModel, condecimal
+
+class PaymentCreate(BaseModel):
+    order_id: int
+    amount: condecimal(max_digits=14, decimal_places=2)
+    currency: str = "KZT"
+
+class PaymentOut(BaseModel):
+    id: int
+    provider_invoice_id: str
+    status: str
+    receipt_url: str | None = None
+
+    model_config = {"from_attributes": True}
+________________________________________
+8.8. Ограничения, проверки и бизнес-правила
+•	Product.price должен удовлетворять диапазону, если задан min_price/max_price:
+min_price <= price <= max_price. Валидация — в Pydantic-схеме и/или в сервисе.
+•	Order.total_amount — пересчитывается из OrderItem (на уровне сервиса), не доверять входящему значению.
+•	Удаление товара с привязкой к OrderItem — запрещено (RESTRICT) или мягкое удаление deleted_at.
+•	ProductStock.qty — неотрицательное целое; перемещения между складами — в транзакции.
+•	Payment.provider_invoice_id — уникален, используется как идемпотентный ключ.
+•	Campaign.daily_limit — соблюдается при планировании рассылки; ночной режим (22:00–08:00) учитывается в воркерах.
+________________________________________
+8.9. Alembic: версии и пример начальной миграции
+Инициализация:
+alembic init alembic
+alembic.ini: указать sqlalchemy.url или использовать env-конфиг.
+alembic/env.py (фрагмент):
+from logging.config import fileConfig
+from sqlalchemy import pool
+from sqlalchemy.engine import Connection
+from sqlalchemy import create_engine
+from alembic import context
+from app.models.base import Base  # импорт метадаты
+from app.models import user, company, product, warehouse, order, payment, campaign, campaign_log, otp, audit, webhook_event
+
+config = context.config
+if config.config_file_name is not None:
+    fileConfig(config.config_file_name)
+
+target_metadata = Base.metadata
+
+def run_migrations_offline():
+    context.configure(url=config.get_main_option("sqlalchemy.url"), target_metadata=target_metadata, literal_binds=True)
+    with context.begin_transaction():
+        context.run_migrations()
+
+def run_migrations_online():
+    connectable = create_engine(config.get_main_option("sqlalchemy.url"), poolclass=pool.NullPool)
+    with connectable.connect() as connection:
+        context.configure(connection=connection, target_metadata=target_metadata)
+        with context.begin_transaction():
+            context.run_migrations()
+
+if context.is_offline_mode():
+    run_migrations_offline()
+else:
+    run_migrations_online()
+Пример ревизии:
+alembic revision -m "init schema"
+alembic upgrade head
+В ревизии создаются все таблицы, перечисленные выше, с индексами и ограничениями.
+________________________________________
+8.10. Индексация и производительность
+Рекомендации по индексам:
+•	users(phone), users(email).
+•	products(company_id, sku) UNIQUE, products(name), products(price).
+•	orders(company_id), orders(status), orders(external_id), orders(created_at).
+•	payments(provider_invoice_id) UNIQUE, payments(status).
+•	campaigns(company_id, scheduled_at, status).
+•	audit_log(entity_type, entity_id).
+Использовать partially indexed поля при soft-delete: индексы вида WHERE deleted_at IS NULL для ключевых выборок.
+________________________________________
+8.11. Мульти-арендность (если включена)
+•	Все бизнес-сущности привязываются к company_id.
+•	Фильтры на уровне сервисов/репозиториев всегда учитывают company_id текущего пользователя.
+•	Уникальные ограничения (SKU и др.) задаются в границах компании.
+________________________________________
+8.12. Политика удаления
+•	По умолчанию: soft-delete — заполнение deleted_at, скрытие из выборок.
+•	Жёсткое удаление — только для служебных таблиц (otp_attempts, webhook_events) по ретеншн-периоду.
+________________________________________
+8.13. Конвенции сериализации
+•	Все API-ответы используют Pydantic-схемы с model_config = {"from_attributes": True}.
+•	Денежные поля — Decimal/condecimal, на фронте форматирование по локали KZT.
+•	Даты — ISO8601 (UTC).
+________________________________________
+8.14. Проверки целостности и транзакции
+•	Создание заказа: одна транзакция → вставка Order и OrderItems, пересчёт суммы, резерв остатков.
+•	Обработка webhook платежа: одна транзакция → проверка идемпотентности → апдейт Payment и Order.status.
+•	Перемещение запасов: транзакция с блокировкой строк в product_stocks (SELECT FOR UPDATE).
+________________________________________
+8.15. Расширяемость
+•	Добавление новых каналов коммуникаций: новая константа в Channel, логика в воркерах, минимальные изменения схем.
+•	Новые статусы заказов/платежей: расширение ENUM и миграция Alembic (в PG ENUM можно ALTER TYPE ADD VALUE).
+•	Новые интеграции: дополнительная таблица integration_credentials (если требуется хранение ключей на компанию).
+
+Часть 9/20 — Реализация frontend (React + MUI)
+9.1. Общие положения
+Frontend реализуется как SPA на React с использованием Material UI (MUI).
+Основные требования:
+•	Чёткая модульная структура (страницы, компоненты, сервисы, состояние).
+•	Единый HTTP-клиент (axios) с интерцепторами токена и обработкой ошибок.
+•	Роутинг (React Router) с приватными маршрутами и проверкой ролей.
+•	Унифицированные формы (React Hook Form + Zod/Yup), таблицы (MUI DataGrid).
+•	Опционально — i18n (react-i18next).
+•	Сборка: Vite (предпочтительно) для скорости и .env-конфигураций.
+________________________________________
+9.2. Структура каталога frontend/
+frontend/
+├── src/
+│   ├── app/
+│   │   ├── routes.jsx              # корневой роутинг
+│   │   └── store.ts                # (опц.) Redux Toolkit store
+│   ├── components/
+│   │   ├── layout/
+│   │   │   ├── AppLayout.jsx       # верхний бар, боковое меню, контент
+│   │   │   └── NavItems.jsx
+│   │   ├── forms/
+│   │   │   ├── TextFieldControl.jsx
+│   │   │   └── SelectControl.jsx
+│   │   ├── tables/
+│   │   │   ├── DataTable.jsx
+│   │   │   └── ProductGrid.jsx
+│   │   ├── feedback/
+│   │   │   ├── SnackbarProvider.jsx
+│   │   │   └── ConfirmDialog.jsx
+│   │   └── upload/
+│   │       └── ImageUploader.jsx
+│   ├── context/
+│   │   └── AuthContext.jsx         # сессия, токены, роли
+│   ├── hooks/
+│   │   ├── useAuth.js
+│   │   └── usePagination.js
+│   ├── pages/
+│   │   ├── Auth/
+│   │   │   ├── Login.jsx
+│   │   │   └── OtpVerify.jsx
+│   │   ├── Dashboard/
+│   │   │   └── Dashboard.jsx
+│   │   ├── Products/
+│   │   │   ├── ProductsList.jsx
+│   │   │   ├── ProductForm.jsx
+│   │   │   └── ImportExport.jsx
+│   │   ├── Orders/
+│   │   │   ├── OrdersList.jsx
+│   │   │   └── OrderView.jsx
+│   │   ├── Warehouses/
+│   │   │   ├── WarehousesList.jsx
+│   │   │   └── MoveStock.jsx
+│   │   ├── Analytics/
+│   │   │   └── AnalyticsPage.jsx
+│   │   ├── Billing/
+│   │   │   ├── Plans.jsx
+│   │   │   └── PaymentsHistory.jsx
+│   │   ├── Campaigns/
+│   │   │   ├── CampaignsList.jsx
+│   │   │   └── CampaignForm.jsx
+│   │   └── Settings/
+│   │       └── Settings.jsx
+│   ├── services/
+│   │   ├── api.js                  # axios instance + интерцепторы
+│   │   ├── auth.service.js
+│   │   ├── products.service.js
+│   │   ├── orders.service.js
+│   │   ├── warehouses.service.js
+│   │   ├── analytics.service.js
+│   │   ├── billing.service.js
+│   │   └── campaigns.service.js
+│   ├── theme/
+│   │   └── muiTheme.js
+│   ├── utils/
+│   │   ├── formatters.js
+│   │   └── guards.jsx              # PrivateRoute / RoleGuard
+│   ├── i18n/                       # (опц.) локализация
+│   ├── main.jsx
+│   └── App.jsx
+├── index.html
+├── package.json
+└── vite.config.ts
+________________________________________
+9.3. Роутинг и защита маршрутов
+React Router организует публичные и приватные разделы:
+•	Публичные: /login, /otp (верификация).
+•	Приватные: /dashboard, /products, /orders, /analytics, /billing, /campaigns, /warehouses, /settings.
+Пример guards.jsx
+import { Navigate } from "react-router-dom";
+import { useAuth } from "../hooks/useAuth";
+
+export function PrivateRoute({ children }) {
+  const { isAuthenticated } = useAuth();
+  return isAuthenticated ? children : <Navigate to="/login" replace />;
+}
+
+export function RoleGuard({ roles = [], children }) {
+  const { user } = useAuth();
+  if (!user) return <Navigate to="/login" replace />;
+  return roles.includes(user.role) ? children : <Navigate to="/dashboard" replace />;
+}
+Пример routes.jsx
+import { createBrowserRouter } from "react-router-dom";
+import AppLayout from "../components/layout/AppLayout";
+import Login from "../pages/Auth/Login";
+import OtpVerify from "../pages/Auth/OtpVerify";
+import Dashboard from "../pages/Dashboard/Dashboard";
+import ProductsList from "../pages/Products/ProductsList";
+import OrdersList from "../pages/Orders/OrdersList";
+import AnalyticsPage from "../pages/Analytics/AnalyticsPage";
+import { PrivateRoute, RoleGuard } from "../utils/guards";
+
+export const router = createBrowserRouter([
+  { path: "/login", element: <Login /> },
+  { path: "/otp", element: <OtpVerify /> },
+  {
+    path: "/",
+    element: (
+      <PrivateRoute>
+        <AppLayout />
+      </PrivateRoute>
+    ),
+    children: [
+      { path: "dashboard", element: <Dashboard /> },
+      {
+        path: "products",
+        element: (
+          <RoleGuard roles={["admin", "manager"]}>
+            <ProductsList />
+          </RoleGuard>
+        )
+      },
+      { path: "orders", element: <OrdersList /> },
+      { path: "analytics", element: <AnalyticsPage /> },
+      // ...другие страницы
+    ]
+  }
+]);
+________________________________________
+9.4. Состояние и контексты
+AuthContext
+•	Хранит user, accessToken (опц. — refreshToken), методы login, verifyOtp, logout.
+•	Снимает/устанавливает токены, сохраняет в localStorage или использует HttpOnly cookie для повышенной безопасности (в этом случае axios интерцептор не читает localStorage, а полагается на cookie-based auth).
+import { createContext, useContext, useState, useEffect } from "react";
+import { authService } from "../services/auth.service";
+
+const AuthCtx = createContext(null);
+export const useAuth = () => useContext(AuthCtx);
+
+export function AuthProvider({ children }) {
+  const [user, setUser] = useState(null);
+  const [accessToken, setToken] = useState(null);
+
+  useEffect(() => {
+    const t = localStorage.getItem("accessToken");
+    if (t) setToken(t);
+    const u = localStorage.getItem("user");
+    if (u) setUser(JSON.parse(u));
+  }, []);
+
+  const login = async (phone) => authService.login(phone); // отправка OTP
+  const verifyOtp = async (phone, code) => {
+    const { token, user } = await authService.verifyOtp(phone, code);
+    setToken(token);
+    setUser(user);
+    localStorage.setItem("accessToken", token);
+    localStorage.setItem("user", JSON.stringify(user));
+  };
+  const logout = () => {
+    setUser(null);
+    setToken(null);
+    localStorage.removeItem("accessToken");
+    localStorage.removeItem("user");
+  };
+
+  return (
+    <AuthCtx.Provider value={{ user, accessToken, isAuthenticated: !!accessToken, login, verifyOtp, logout }}>
+      {children}
+    </AuthCtx.Provider>
+  );
+}
+________________________________________
+9.5. HTTP-клиент (axios) и интерцепторы
+Единый инстанс в services/api.js:
+import axios from "axios";
+
+const API_URL = import.meta.env.VITE_API_URL || "http://localhost:8000/api";
+
+export const api = axios.create({
+  baseURL: API_URL,
+  withCredentials: false // если используем HttpOnly cookie — true
+});
+
+api.interceptors.request.use((config) => {
+  const token = localStorage.getItem("accessToken");
+  if (token) config.headers.Authorization = `Bearer ${token}`;
+  return config;
+});
+
+api.interceptors.response.use(
+  (res) => res,
+  (err) => {
+    // централизованная обработка 401/403/5xx
+    if (err.response?.status === 401) {
+      // например, редирект на /login
+    }
+    return Promise.reject(err);
+  }
+);
+________________________________________
+9.6. Сервисные модули
+Примеры:
+// auth.service.js
+import { api } from "./api";
+
+export const authService = {
+  login: (phone) => api.post("/auth/login", { phone }),
+  verifyOtp: (phone, code) => api.post("/auth/verify", { phone, code }).then(r => r.data),
+  refresh: () => api.post("/auth/refresh")
+};
+
+// products.service.js
+export const productsService = {
+  list: (params) => api.get("/products", { params }).then(r => r.data),
+  create: (payload) => api.post("/products", payload).then(r => r.data),
+  update: (id, payload) => api.patch(`/products/${id}`, payload).then(r => r.data),
+  remove: (id) => api.delete(`/products/${id}`),
+  uploadImage: (id, file) => {
+    const form = new FormData();
+    form.append("file", file);
+    return api.post(`/products/${id}/image`, form).then(r => r.data);
+  },
+  importExcel: (file) => {
+    const form = new FormData();
+    form.append("file", file);
+    return api.post("/products/import", form);
+  },
+  exportExcel: () => api.get("/products/export", { responseType: "blob" })
+};
+________________________________________
+9.7. Формы, валидация и UX-паттерны
+•	React Hook Form для управления формами.
+•	Zod или Yup для схем валидации.
+•	Поля форм вынесены в компоненты (TextFieldControl, SelectControl) с интеграцией RHF.
+•	Единый компонент ConfirmDialog для подтверждений (удаление, важные операции).
+•	Стандартизированные уведомления через SnackbarProvider.
+// TextFieldControl.jsx (пример)
+import { Controller } from "react-hook-form";
+import { TextField } from "@mui/material";
+
+export default function TextFieldControl({ name, control, label, ...rest }) {
+  return (
+    <Controller
+      name={name}
+      control={control}
+      render={({ field, fieldState }) => (
+        <TextField
+          {...field}
+          label={label}
+          error={!!fieldState.error}
+          helperText={fieldState.error?.message}
+          fullWidth
+          {...rest}
+        />
+      )}
+    />
+  );
+}
+________________________________________
+9.8. Таблицы и гриды (MUI DataGrid)
+Требования:
+•	Пагинация (серверная), сортировка, фильтры.
+•	Постраничная загрузка (page, pageSize, sort, filters).
+•	Массовые действия (bulk): удалить, изменить статус.
+•	Виртуализация для производительности.
+// ProductsList.jsx (фрагмент)
+import { DataGrid } from "@mui/x-data-grid";
+import { useEffect, useState } from "react";
+import { productsService } from "../../services/products.service";
+
+export default function ProductsList() {
+  const [rows, setRows] = useState([]);
+  const [pagination, setPagination] = useState({ page: 0, pageSize: 25, rowCount: 0 });
+  const [loading, setLoading] = useState(false);
+
+  const load = async () => {
+    setLoading(true);
+    const data = await productsService.list({ page: pagination.page + 1, page_size: pagination.pageSize });
+    setRows(data.items);
+    setPagination((p) => ({ ...p, rowCount: data.total }));
+    setLoading(false);
+  };
+
+  useEffect(() => { load(); }, [pagination.page, pagination.pageSize]);
+
+  const columns = [
+    { field: "sku", headerName: "SKU", flex: 1 },
+    { field: "name", headerName: "Название", flex: 2 },
+    { field: "price", headerName: "Цена", flex: 1, valueFormatter: (v) => `${v.value} ₸` },
+    { field: "stock", headerName: "Остаток", flex: 1 },
+  ];
+
+  return (
+    <DataGrid
+      rows={rows}
+      columns={columns}
+      loading={loading}
+      paginationMode="server"
+      paginationModel={pagination}
+      onPaginationModelChange={setPagination}
+      disableRowSelectionOnClick
+      autoHeight
+    />
+  );
+}
+________________________________________
+9.9. Загрузка изображений (Cloudinary)
+Два подхода:
+1.	Direct Upload через виджет Cloudinary → вернуть secure_url и public_id; отправить их в API SmartSell для сохранения в продукте.
+2.	Отправка файла на наш /products/{id}/image → сервер загружает в Cloudinary и сохраняет ответ.
+Компонент ImageUploader.jsx должен:
+•	показывать предпросмотр;
+•	проверять формат/размер;
+•	отображать прогресс;
+•	возвращать secure_url наверх в форму.
+________________________________________
+9.10. Аналитика и графики
+•	Графики продаж/выручки/остатков на Recharts или react-chartjs-2.
+•	Фильтры периода (дата-пикеры), быстрые диапазоны: 7/30/90 дней.
+•	Экспорт данных (CSV/XLSX/PDF) — через API.
+// AnalyticsPage.jsx (очень укрупнённо)
+import { Line } from "react-chartjs-2";
+export default function AnalyticsPage() {
+  const data = { labels: ["Пн","Вт","Ср"], datasets: [{ label: "Выручка", data: [100000, 120000, 90000] }] };
+  return <Line data={data} />;
+}
+________________________________________
+9.11. Биллинг и платежи (TipTop Pay)
+•	Страница Plans: выбор тарифа (Start/Pro/Business), кнопка «Оплатить».
+•	При нажатии → вызов backend /payments/create → открытие виджета TipTop Pay.
+•	Обработка результатов: успешный платёж → уведомление, обновление статуса подписки.
+________________________________________
+9.12. Рассылки (Campaigns)
+•	Список кампаний, форма создания/редактирования: канал (WA/Email/TG), текст/шаблон, сегмент (JSON-условия), время запуска.
+•	Ограничения: дневной лимит 800, ночной режим (22:00–08:00).
+•	Логи отправок: таблица по контактам (статус, ошибка, время).
+________________________________________
+9.13. Доступность (a11y) и UX-детали
+•	Контрасты и масштабирование шрифтов (MUI Theme).
+•	Навигация с клавиатуры: tabIndex, aria-* атрибуты.
+•	Состояния загрузки (Skeleton), пустые состояния, ошибки с понятными сообщениями.
+•	Единые подтверждения и предупреждения для разрушительных операций.
+________________________________________
+9.14. Тема и стили
+Единый MUI Theme:
+•	Палитра (light/dark).
+•	Типографика (заголовки/текст).
+•	Размеры компонентов, отступы.
+•	Кастомные варианты кнопок для ключевых действий (например, «Оплатить», «Сохранить», «Удалить»).
+// muiTheme.js
+import { createTheme } from "@mui/material/styles";
+export const theme = createTheme({
+  palette: { mode: "light", primary: { main: "#1976d2" } },
+  components: { MuiButton: { defaultProps: { variant: "contained" } } }
+});
+________________________________________
+9.15. Конфигурация окружений (Vite)
+•	.env файлы:
+o	.env.development — VITE_API_URL=http://localhost:8000/api
+o	.env.production — VITE_API_URL=https://api.smartsell.kz/api
+Секреты не хранить в фронтенде (он публичен). Критичные ключи только на сервере.
+________________________________________
+9.16. Безопасность фронтенда
+•	Хранение токена: предпочтительно HttpOnly cookie (если принимается политика сервера); иначе localStorage с повышенной осторожностью.
+•	CSP заголовки со стороны прокси (Nginx/Caddy).
+•	Запрет inline-скриптов, eval.
+•	Не логировать личные данные в консоль.
+•	Ограничивать доступ к приватным страницам через Guards + проверка на API.
+________________________________________
+9.17. Тестирование
+•	Unit: компонентные тесты (Jest + React Testing Library).
+•	Integration: мок оси/axios, проверка взаимодействия форм с сервисами.
+•	E2E: Playwright/Cypress — критические сценарии (логин, создание товара, оплата, рассылка).
+________________________________________
+9.18. Производительность
+•	Разделение кода (lazy load страниц).
+•	Мемоизация тяжёлых компонентов (React.memo, useMemo, useCallback).
+•	Виртуализация таблиц.
+•	Кэш запросов (опц. — React Query/TanStack Query).
+________________________________________
+9.19. Сборка и деплой
+•	Сборка vite build → артефакт (статические файлы).
+•	Раздача статики через Nginx/Caddy (gzip/brotli).
+•	Настройка прокси /api → app:8000.
+•	Версионирование релизов; кеш-бастер (hash в имени файлов).
+________________________________________
+9.20. Обработка ошибок и телеметрия
+•	Глобальный перехват ошибок (ErrorBoundary) для UI.
+•	Логи фронта (Sentry/аналоги) — опционально.
+•	Метрики производительности (Web Vitals) — опционально.
+
+Часть 10/20 — Регистрация и OTP (Mobizon), аутентификация (JWT)
+10.1. Цели и требования
+•	Регистрация и вход по номеру телефона с подтверждением OTP (через Mobizon).
+•	Двухэтапный поток:
+1.	запрос кода (OTP) → SMS;
+2.	верификация кода → выдача JWT (access[, refresh]).
+•	Совместимость с ролями (admin, manager, storekeeper, analyst) и мульти-арендностью (опц. company_id).
+•	Защита от злоупотреблений: rate-limit, анти-брутфорс, TTL кода, ограничение попыток.
+•	Безопасное хранение: паролей (если есть), OTP-кодов (в виде hash), токенов (минимум в памяти, не логировать).
+•	Возможность повторной верификации (re-OTP) для чувствительных операций (смена платежных реквизитов и т.п.).
+________________________________________
+10.2. Пользовательские потоки (UX)
+Поток A: первичная регистрация
+1.	Пользователь вводит телефон на странице Login.
+2.	Нажимает «Получить код» → фронт вызывает POST /api/auth/login.
+3.	Получает SMS с 6-значным кодом. На фронте отображается форма ввода кода и таймер (5 минут).
+4.	Вводит код → POST /api/auth/verify.
+5.	При успехе — получает access (и при необходимости refresh) токен, профиль пользователя, роль.
+6.	Редирект в /dashboard.
+Поток B: повторный вход
+•	Аналогично, но без ввода регистрационных полей — только телефон → код → верификация.
+Поток C: повторная проверка (re-OTP)
+•	При выполнении «чувствительных» действий (настройка платежей, экспорт базы) фронт вызывает /api/auth/reverify (или тот же /verify с иным purpose), пользователь подтверждает код.
+________________________________________
+10.3. API (FastAPI, app/routers/auth.py)
+10.3.1. POST /api/auth/login — запрос OTP
+Запрос
+{ "phone": "+77001234567", "purpose": "login" }
+•	purpose ∈ {login, reverify, change_sensitive_settings} — опционально, по умолчанию login.
+Логика
+•	Нормализация телефона (E.164).
+•	Проверка rate-limit: ≤ 5 SMS/час на номер, ≤ 10/сутки/IP.
+•	Генерация 6-значного кода, TTL=300 сек.
+•	Сохранение hash кода (bcrypt/argon2id) в otp_attempts, + счётчики попыток/отправок.
+•	Отправка через Mobizon (см. §10.6).
+•	Ответ без деталей (не раскрывать, существует ли пользователь).
+Ответ
+{ "status": "ok", "ttl": 300 }
+10.3.2. POST /api/auth/verify — проверка кода и выдача JWT
+Запрос
+{ "phone": "+77001234567", "code": "123456", "purpose": "login" }
+Логика
+•	Найти активную запись в otp_attempts для телефона и purpose с expires_at > now().
+•	Сравнить code с code_hash.
+•	Уменьшить attempts_left; при 0 → блок до конца TTL.
+•	Если проверка ок:
+o	Создать пользователя/привязать к company_id, если новый (минимальный профиль).
+o	Выдать JWT: access (например, 30 мин), опц. refresh (7–30 дней).
+o	Очистить/пометить использованную запись OTP.
+•	Логировать событие в audit_log (тип login).
+Ответ
+{
+  "access_token": "<JWT>",
+  "token_type": "bearer",
+  "expires_in": 1800,
+  "user": {
+    "id": 123,
+    "phone": "+77001234567",
+    "role": "manager",
+    "company_id": 45
+  }
+}
+10.3.3. POST /api/auth/refresh — обновление access по refresh (опц.)
+Запрос
+{ "refresh_token": "<JWT_REFRESH>" }
+Ответ
+{ "access_token": "<JWT>", "token_type": "bearer", "expires_in": 1800 }
+10.3.4. POST /api/auth/logout — инвалидация refresh (опц.)
+•	Чёрный список/ротация refresh-токенов.
+•	Для cookie-схемы — зачищает cookie.
+________________________________________
+10.4. Модели БД (акценты)
+10.4.1. otp_attempts
+Поля:
+•	phone (string, idx),
+•	purpose (string),
+•	code_hash,
+•	expires_at (tz),
+•	attempts_left (int, default=5),
+•	sent_count_hour (int), sent_count_day (int),
+•	created_at, updated_at.
+Индексы: (phone, purpose, expires_at).
+10.4.2. users
+Поля: phone (UNIQUE), email (UNIQUE, nullable), role (enum), company_id (nullable), is_active (bool), created_at, …
+10.4.3. audit_log
+Фиксирует login, verify, reverify, IP, user-agent, user_id.
+________________________________________
+10.5. Схемы (Pydantic, app/schemas/auth.py)
+from pydantic import BaseModel, Field
+
+class LoginRequest(BaseModel):
+    phone: str = Field(min_length=5, max_length=32)
+    purpose: str | None = "login"
+
+class VerifyRequest(BaseModel):
+    phone: str
+    code: str = Field(min_length=4, max_length=8)
+    purpose: str | None = "login"
+
+class TokenResponse(BaseModel):
+    access_token: str
+    token_type: str = "bearer"
+    expires_in: int
+    user: dict
+________________________________________
+10.6. Интеграция Mobizon (OTP) (app/services/mobizon_service.py)
+•	HTTP-клиент: httpx.AsyncClient (таймаут, ретраи).
+•	Шаблон текста: «Код подтверждения SmartSell: 123456. Действует 5 минут.»
+•	Локализация: RU/KZ (опц.).
+•	Логирование только статуса/идентификаторов отправки, не текста кода.
+async def send_otp(phone: str, text: str) -> dict:
+    payload = {"recipient": phone, "text": text, "from": "SmartSell"}
+    # Вызов Mobizon API (документация провайдера); возвращать json
+________________________________________
+10.7. Антиспам и защита
+•	Rate-limit:
+o	на POST /auth/login: ≤ 1 запрос / 30 сек на номер; ≤ 5 SMS/час; ≤ 10/сутки/IP.
+o	на POST /auth/verify: ≤ 10 попыток на одно окно TTL; после — блок до обновления.
+•	TTL: 300 сек (5 мин), конфигурируемо.
+•	Hash кода: хранить только code_hash, в ответах не светить детали.
+•	IP-контроль: хранить ip/user-agent в otp_attempts для аномалий.
+•	Капча (опц.) при частых запросах с одного IP/устройства.
+________________________________________
+10.8. JWT и безопасность (app/core/security.py)
+•	Библиотека: python-jose или fastapi-jwt-auth.
+•	Алгоритм: HS256 (для простоты) или RS256 (ключевая пара).
+•	Клеймы:
+o	sub = user_id,
+o	role,
+o	company_id (если мульти-арендность),
+o	exp — срок жизни.
+•	Access: 15–60 мин; Refresh: 7–30 дней.
+•	Хранение на фронте:
+o	предпочтительно: HttpOnly, Secure, SameSite cookies (сервер выставляет Set-Cookie);
+o	допустимо: localStorage (пониженная безопасность; нужны CSP, защита от XSS).
+Зависимости FastAPI
+from fastapi import Depends, HTTPException
+from jose import jwt, JWTError
+
+def get_current_user(...):
+    # извлечь и проверить access из Authorization: Bearer
+    # поднять 401 при ошибке, 403 при недостатке прав
+________________________________________
+10.9. Фронтенд: экраны и UX-детали
+10.9.1. Страница Login
+•	Поле phone с маской (например, +7 (700) 123-45-67).
+•	Кнопка «Получить код» → вызов authService.login(phone).
+•	Дизейбл кнопки на 30 сек (локальный rate-limit), показать таймер до повтора.
+•	Обработка ошибок: «Слишком много попыток, попробуйте позже», «Неверный номер».
+10.9.2. Страница OtpVerify
+•	Поле ввода 6-значного кода (один input или 6 ячеек).
+•	Таймер «Код действует: 04:59»; кнопка «Отправить код повторно» — доступна после 60 сек.
+•	При вводе → authService.verifyOtp(phone, code); успех → сохранить токены/профиль, редирект.
+10.9.3. Общее
+•	Международный формат хранения; локальное отображение по маске.
+•	Сообщения об ошибках — без утечки наличия/отсутствия аккаунта («Код отправлен, если номер зарегистрирован» — обсуждаемо; в нашем случае допустим прямой ответ, так как B2B).
+•	Кнопка «Выйти» — очищает токены, редирект на /login.
+________________________________________
+10.10. Пример кода (бэкенд, укрупнённо)
+# app/routers/auth.py
+from fastapi import APIRouter, Depends, HTTPException
+from app.schemas.auth import LoginRequest, VerifyRequest, TokenResponse
+from app.services.mobizon_service import send_otp
+from app.core.security import create_access_token, create_refresh_token
+from app.core.db import get_db
+from sqlalchemy.ext.asyncio import AsyncSession
+from datetime import datetime, timedelta, timezone
+from app.models.otp import OtpAttempt
+from app.models.user import User
+
+router = APIRouter()
+
+@router.post("/login")
+async def login(payload: LoginRequest, db: AsyncSession = Depends(get_db)):
+    phone = normalize_phone(payload.phone)
+    # rate-limit checks...
+    code = generate_otp()
+    code_hash = hash_code(code)
+    expires = datetime.now(timezone.utc) + timedelta(minutes=5)
+
+    attempt = OtpAttempt(phone=phone, code_hash=code_hash, expires_at=expires, attempts_left=5)
+    db.add(attempt)
+    await db.commit()
+
+    await send_otp(phone, f"Код подтверждения SmartSell: {code}. Действует 5 минут.")
+    return {"status": "ok", "ttl": 300}
+
+@router.post("/verify", response_model=TokenResponse)
+async def verify(payload: VerifyRequest, db: AsyncSession = Depends(get_db)):
+    phone = normalize_phone(payload.phone)
+    attempt = await find_active_attempt(db, phone)
+    if not attempt or attempt.expires_at < datetime.now(timezone.utc):
+        raise HTTPException(400, "Код истёк или не найден")
+
+    if not verify_code(payload.code, attempt.code_hash):
+        await decrement_attempts(db, attempt)
+        raise HTTPException(400, "Неверный код")
+
+    user = await get_or_create_user(db, phone)
+    access = create_access_token({"sub": str(user.id), "role": user.role, "company_id": user.company_id})
+    refresh = create_refresh_token({"sub": str(user.id)})
+
+    await mark_attempt_used(db, attempt)
+
+    return {
+        "access_token": access,
+        "token_type": "bearer",
+        "expires_in": 1800,
+        "user": {"id": user.id, "phone": user.phone, "role": user.role, "company_id": user.company_id}
+    }
+________________________________________
+10.11. Обработка ошибок и аудит
+•	Все 4xx/5xx логируются в JSON с корреляционным ID (trace id).
+•	Аудит: успешные и неуспешные входы, re-OTP, смена критичных настроек.
+•	Блокировки/разблокировки номера по превышению лимитов — отдельные записи в audit_log.
+________________________________________
+10.12. Политика повторной отправки и сброса
+•	Повторная отправка: разрешить не чаще 1 раза в 60 сек, в пределах общего лимита/час/сутки.
+•	Сброс счётчиков:
+o	sent_count_hour — каждые 60 минут;
+o	sent_count_day — каждые 24 часа;
+o	очистка устаревших записей otp_attempts job-ом (крон/планировщик).
+________________________________________
+10.13. Тестирование
+•	Юнит-тесты генерации/валидации кода, нормализации телефона, rate-limit логики.
+•	Интеграционные тесты API:
+o	нормальный сценарий (login → verify);
+o	неверный код;
+o	истекший код;
+o	превышение лимитов;
+o	повторная отправка;
+o	повторная верификация (re-OTP).
+•	Моки Mobizon-API (фиксированные ответы/ошибки).
+________________________________________
+10.14. Безопасность и соответствие
+•	Не хранить и не логировать исходные OTP-коды.
+•	В продакшене — включён TLS (HTTPS) на всём пути.
+•	Секреты Mobizon, JWT-ключи — только в переменных окружения/менеджере секретов.
+•	Удаление/анонимизация персональных данных по запросу пользователя (Закон РК о ПД).
+
+Часть 11/20 — Управление товарами и медиа
+11.1. Цели и охват
+Модуль каталога обеспечивает полный жизненный цикл товара:
+•	CRUD операции над товарами;
+•	хранение и обновление медиа (изображения) через Cloudinary;
+•	импорт/экспорт каталога в Excel (xlsx);
+•	бизнес-правила ценообразования (мин/макс, демпинг);
+•	предзаказы (до 30 дней);
+•	исключение «дружественных магазинов» из сравнений цен;
+•	управление остатками в связке со складами (см. Часть 14/20).
+________________________________________
+11.2. Сущности и основные поля
+11.2.1. Product (см. Часть 8/20)
+Ключевые поля:
+•	company_id — арендатор (если мульти-арендность);
+•	sku — артикул (уникален в рамках компании);
+•	name, description;
+•	price, min_price, max_price (Decimal, 14,2);
+•	image_url, image_public_id (Cloudinary);
+•	is_active (bool);
+•	связи: ProductStock (остатки по складам), OrderItem (история продаж).
+Правила:
+•	Если заданы min_price/max_price, то всегда min_price ≤ price ≤ max_price.
+•	Изменение sku допустимо, если не нарушает уникальность.
+•	Удаление: по умолчанию soft-delete через deleted_at.
+11.2.2. FriendlyStoreRule (опц., если нужна таблица)
+Позволяет задать список «дружественных» магазинов/источников, которые не учитываются при сравнении/демпинге.
+Поля: company_id, external_store_id (или URL/регэксп), comment.
+________________________________________
+11.3. API (FastAPI, app/routers/products.py)
+Пространство: /api/products
+11.3.1. Список товаров
+GET /api/products
+•	Параметры: page (1..), page_size (≤100), query (поиск по sku|name), is_active, диапазоны price_from/price_to, сортировка sort (name.asc, price.desc, created_at.desc и т.п.).
+•	Ответ:
+{
+  "items": [ { "id":1, "sku":"A-100", "name":"Товар", "price": 1000.00, "image_url": "...", "is_active": true } ],
+  "total": 523,
+  "page": 1,
+  "page_size": 25
+}
+11.3.2. Создание товара
+POST /api/products
+•	Вход: ProductCreate (см. Часть 8/20).
+•	Проверки:
+o	уникальность sku в рамках company_id;
+o	валидность цен (диапазон);
+o	нормализация строк (обрезка пробелов, лимиты длины).
+•	Ответ: ProductOut.
+11.3.3. Получение товара
+GET /api/products/{id}
+•	Возвращает детальную карточку товара, включая min/max/price, image_url, остатки (опц. с флагом include_stocks=true).
+11.3.4. Обновление товара (частичное)
+PATCH /api/products/{id}
+•	Вход: ProductUpdate.
+•	Логика: частичный апдейт; пересчёт/валидация цен; аудит изменений.
+•	Ответ: ProductOut.
+11.3.5. Мягкое удаление
+DELETE /api/products/{id}
+•	Ставит deleted_at и is_active=false.
+•	Если есть связанные OrderItem, физическое удаление запрещено (только soft-delete).
+11.3.6. Массовые операции
+POST /api/products/bulk
+•	Операции: массовая активация/деактивация, изменение цен (процентом/абсолютно), перенос в категории (если есть модуль категорий).
+•	Ограничить размер батча (например, ≤1000 id).
+•	Логировать в audit_log с указанием списка id.
+________________________________________
+11.4. Медиа: интеграция с Cloudinary
+11.4.1. Подходы к загрузке
+1.	Direct Upload (рекомендуется):
+o	На фронтенде — виджет Cloudinary; файл попадает прямо в Cloudinary.
+o	Возвращаются secure_url и public_id.
+o	Фронт отправляет PATCH /api/products/{id} с этими полями.
+o	Плюсы: меньше нагрузка на наш app, быстрее, безопаснее.
+2.	Через наш сервер (альтернатива):
+o	POST /api/products/{id}/image с multipart/form-data.
+o	app/services/cloudinary_service.py заливает файл в Cloudinary.
+o	Сохраняем secure_url, public_id в Product.
+11.4.2. Эндпоинты
+•	POST /api/products/{id}/image
+o	Вход: файл (file), опц. folder (по компании/среде).
+o	Проверки: расширение (jpg/png/webp), размер ≤ 5 МБ, тип image/*.
+o	Ответ:
+•	{ "image_url": "https://res.cloudinary.com/.../image.jpg", "image_public_id": "smartsell/abc123" }
+•	DELETE /api/products/{id}/image
+o	Удаляет из Cloudinary по public_id, обнуляет поля в Product.
+o	В случае недоступности Cloudinary — мягкая деградация (логировать ошибку, дать повторить).
+11.4.3. Трансформации и миниатюры
+•	На фронте использовать Cloudinary URL-параметры для уменьшенных превью (w=300,h=300,c=fill,q=auto).
+•	Оригинал хранить без перекодирования (для карточки товара — резайзить через CDN).
+________________________________________
+11.5. Импорт/экспорт Excel
+11.5.1. Экспорт
+GET /api/products/export
+•	Параметры: те же фильтры, что и в списке (query, is_active, диапазоны цен).
+•	Выход: файл .xlsx с колонками:
+o	SKU, Name, Description, Price, MinPrice, MaxPrice, ImageURL, IsActive, CreatedAt, UpdatedAt.
+•	Требования:
+o	Локаль чисел — точка как разделитель дробной части.
+o	Кодировка — UTF-8.
+o	Дата/время — ISO 8601 (UTC) или локаль проекта (с указанием тайм-зоны).
+11.5.2. Импорт
+POST /api/products/import (multipart, file)
+•	Ожидаемый формат: xlsx с колонками выше (порядок не критичен, сопоставление по заголовкам).
+•	Режим: upsert по SKU в границах company_id.
+•	Правила:
+o	Пустые SKU — строка пропускается.
+o	Price обязателен; если MinPrice/MaxPrice заданы, проверить интервал.
+o	ImageURL не обязателен (если загружается через Cloudinary отдельно).
+o	IsActive пусто → по умолчанию true.
+•	Ошибки:
+o	Формат файла не xlsx → 400.
+o	Некорректные значения → вернуть JSON с массивом строк-ошибок (строка, колонка, причина).
+•	Результат:
+{
+  "inserted": 120,
+  "updated": 85,
+  "skipped": 7,
+  "errors": [
+    { "row": 15, "column": "Price", "message": "Value must be >= 0" }
+  ]
+}
+11.5.3. Производительность
+•	Потоковая обработка: читать xlsx партиями (например, openpyxl или pandas в чанках).
+•	Транзакции — по батчам (например, 500 строк).
+•	Ограничение размера файла (например, ≤ 10 МБ) и количества строк (например, ≤ 50 000).
+________________________________________
+11.6. Демпинг цен и «дружественные магазины»
+11.6.1. Сбор цен конкурентов (внешний контур)
+•	Источник: Kaspi/другие площадки (если доступно API или выгрузка).
+•	Пайплайн интеграции должен обновлять таблицу competitor_prices:
+o	company_id, sku/external_sku, store_id|store_url, price, currency, fetched_at.
+•	Индексация по (company_id, sku, fetched_at desc).
+11.6.2. Исключения («дружественные магазины»)
+•	Таблица friendly_store_rules: список store_id|url_pattern, который исключать из сравнения.
+•	При расчёте демпинга фильтровать эти записи.
+11.6.3. Расчёт рекомендуемой цены
+•	Правило: target_price = max(min_price || 0, min(competitor_min_price - delta, max_price || INF)).
+•	delta — шаг снижения (например, 1–50 ₸ или процент).
+•	Если competitor_min_price отсутствует → не менять price.
+•	Никогда не опускать цену ниже min_price.
+•	Никогда не поднимать выше max_price (если задан).
+11.6.4. Применение цен
+•	Ручной/автоматический режим (флаг в настройках компании).
+•	При автоматическом: периодический job (APScheduler), который:
+o	пересчитывает target_price,
+o	применяет price товарам, где price != target_price, логирует изменения (аудит),
+o	ограничивает количество изменений за период (например, не более 2 раз/сутки по SKU).
+•	Обязательно аудит (кто/когда/что, старое/новое значение).
+________________________________________
+11.7. Предзаказы (pre-orders)
+11.7.1. Логика
+•	Для товара можно включить режим предзаказа на срок не более 30 дней.
+•	Поля (в Product или отдельной таблице product_preorders):
+o	is_preorder_enabled (bool),
+o	preorder_until (datetime, tz),
+o	опц. preorder_deposit (Decimal) — сумма предоплаты,
+o	опц. preorder_note — текст условия.
+11.7.2. Проверки
+•	preorder_until > now() и ≤ now()+30d.
+•	Если preorder_deposit задан — 0 ≤ deposit ≤ price.
+•	При оформлении заказа в период предзаказа:
+o	если требуется предоплата — создаётся платёж на депозит;
+o	остатки на складе могут быть нулевыми (резерв предзаказа логически отделён от ProductStock).
+11.7.3. UX
+•	На фронте товар помечается «Предзаказ до <дата>».
+•	Кнопка «Предзаказать»; подсказка об условиях (депозит, срок отгрузки).
+•	В заказе статус — например, confirmed до даты отгрузки; при поступлении — переход в обычный флоу.
+________________________________________
+11.8. Валидация и бизнес-правила
+•	SKU — обязательный, уникален в рамках company_id; ограничение длины ≤ 64.
+•	name — обязателен, ≤ 255 символов.
+•	price — ≥ 0; если заданы min_price/max_price, то min_price ≤ price ≤ max_price.
+•	Изображения — только jpg|jpeg|png|webp, размер ≤ 5 МБ.
+•	Импорт:
+o	пропуск строк с пустым SKU или невалидным Price;
+o	нормализация чисел/строк;
+o	лог ошибок построчно.
+•	Предзаказы — строго соблюдать лимит 30 дней.
+•	Демпинг — учитывать исключения; не опускать ниже min_price.
+________________________________________
+11.9. Ошибки и коды ответов
+•	400 Bad Request: валидация входных данных, неподдерживаемый формат файла, несоответствие цен.
+•	401 Unauthorized: отсутствует/некорректный JWT.
+•	403 Forbidden: недостаточно прав (роль).
+•	404 Not Found: товар не найден/удалён.
+•	409 Conflict: уникальность SKU нарушена.
+•	413 Payload Too Large: превышен размер изображения/Excel.
+•	422 Unprocessable Entity: детализированные ошибки Pydantic.
+•	500 Internal Server Error: общий сбой (логировать c correlation id).
+________________________________________
+11.10. Аудит и логирование
+•	Любые изменения товара: created/updated/deleted/image_uploaded/image_deleted/price_changed/bulk_updated/import/export.
+•	Поля old_value/new_value в audit_log хранить в JSON (строка).
+•	Для импорта — отдельный сводный лог с количеством вставок/обновлений/ошибок.
+________________________________________
+11.11. Производительность и масштабирование
+•	Индексы: products(company_id, sku), products(name), products(price), products(deleted_at NULLS FIRST).
+•	Пагинация — только серверная; лимиты page_size.
+•	Массовые изменения — батчами; транзакции по партиям.
+•	Кэширование (опц.) часто запрашиваемых выборок (например, список активных товаров) на короткое время.
+________________________________________
+11.12. Тестирование
+•	Unit: валидация цен, нормализация строк, разбор Excel, фильтрация «дружественных магазинов», расчёт демпинга.
+•	Integration: загрузка изображений (моки Cloudinary), импорт/экспорт Excel (малые и средние файлы), CRUD.
+•	E2E: сценарии UI — создание/редактирование товара, загрузка фото, импорт файла, проверка отображения в списке.
+________________________________________
+11.13. Безопасность
+•	Проверка ролей: создавать/редактировать товары могут admin|manager.
+•	Ограничение размеров загрузок и типов файлов.
+•	Зашита от дубликатов (идемпотентность при повторных запросах — опц. по sku).
+•	Не хранить бинарные изображения в БД; только ссылки.
+•	При удалении изображения — проверять принадлежность product.company_id текущему пользователю.
+________________________________________
+11.14. Примеры запросов
+Создание товара
+POST /api/products
+Authorization: Bearer <token>
+Content-Type: application/json
+
+{
+  "sku": "SKU-101",
+  "name": "Кофта женская",
+  "description": "Хлопок 100%",
+  "price": 14990.00,
+  "min_price": 13990.00,
+  "max_price": 16990.00
+}
+Загрузка изображения (через сервер)
+POST /api/products/42/image
+Authorization: Bearer <token>
+Content-Type: multipart/form-data
+
+file=@/path/to/photo.webp
+Импорт Excel
+POST /api/products/import
+Authorization: Bearer <token>
+Content-Type: multipart/form-data
+
+file=@/path/to/catalog.xlsx
+________________________________________
+11.15. Псевдокод реализации ключевых частей
+# app/services/pricing_service.py
+async def compute_target_price(product, competitor_prices, delta=10):
+    relevant = [p for p in competitor_prices if not is_friendly_store(p.store_id, p.store_url)]
+    if not relevant:
+        return product.price
+    comp_min = min(p.price for p in relevant)
+    target = comp_min - delta
+    if product.min_price is not None:
+        target = max(target, product.min_price)
+    if product.max_price is not None:
+        target = min(target, product.max_price)
+    return round_decimal(target)
+
+# app/routers/products.py (фрагмент)
+@router.post("/import")
+async def import_products(file: UploadFile, db: AsyncSession = Depends(get_db), user=Depends(current_user)):
+    if not file.filename.endswith(".xlsx"):
+        raise HTTPException(400, "Only .xlsx allowed")
+    # parse in chunks, validate, upsert by (company_id, sku)
+    # return summary JSON
+
+Часть 12/20 — Интеграция с Kaspi
+12.1. Цели интеграции
+•	Получение и обновление заказов из Kaspi.
+•	Управление статусами заказов (подтверждение, отмена, выполнение).
+•	Экспорт каталога в формате XML/CSV-фидов.
+•	Поддержка планировщика (регулярная синхронизация).
+•	Обеспечение устойчивости: ретраи, идемпотентность, логирование.
+________________________________________
+12.2. API Kaspi
+Kaspi предоставляет API для партнёров (магазинов) с функциями:
+•	Получение списка заказов по статусам.
+•	Подтверждение/отмена заказов.
+•	Обновление статуса доставки.
+•	Получение/выгрузка каталога.
+Аутентификация: API-ключ магазина (хранить в integration_credentials или в company).
+________________________________________
+12.3. Архитектура интеграции
+12.3.1. Модули в app/services/kaspi_service.py
+•	fetch_orders() — запрос заказов по статусам.
+•	update_order_status() — подтверждение/отмена.
+•	generate_feed() — построение XML/CSV каталога.
+•	sync_orders_job() — задача планировщика (каждые 5–15 мин).
+12.3.2. Таблицы
+•	orders и order_items (см. Часть 8/20).
+•	Доп. поле external_id (id из Kaspi).
+•	Индексы (company_id, external_id UNIQUE).
+________________________________________
+12.4. Получение заказов
+Эндпоинт
+POST /api/kaspi/sync-orders (для ручного запуска).
+Логика:
+1.	Для каждой компании с активной интеграцией Kaspi:
+o	Подтянуть ключ API из настроек.
+o	Вызвать GET /orders?status=new|processing (через httpx).
+o	Для каждого заказа:
+	Проверить по external_id — если нет, создать.
+	Если есть, обновить поля (статус, сумма, позиции).
+o	Зафиксировать изменения в транзакции.
+Пример результата
+{
+  "fetched": 23,
+  "created": 17,
+  "updated": 6
+}
+________________________________________
+12.5. Обновление статусов заказов
+Эндпоинт
+POST /api/orders/{id}/status
+Вход:
+{ "status": "confirmed" }
+Логика:
+•	Проверить, есть ли external_id.
+•	Вызвать Kaspi API POST /orders/{external_id}/status с новым статусом.
+•	При успехе обновить запись в orders.
+•	Логировать в audit_log.
+Поддерживаемые статусы: confirmed, canceled, shipped, completed.
+________________________________________
+12.6. Экспорт каталога (фид)
+Эндпоинт
+GET /api/kaspi/feed.xml или /api/kaspi/feed.csv.
+Формат:
+•	Поля: SKU, Name, Price, Availability, ImageURL, Description, Category.
+•	Сбор из products и product_stocks.
+Генерация
+•	Периодическая (каждые 6–12 часов) + по запросу.
+•	Хранение последнего сгенерированного файла на диске/S3.
+•	Публикация по URL (/static/feeds/company_{id}.xml).
+Пример (XML):
+<products>
+  <product>
+    <sku>SKU-1001</sku>
+    <name>Смартфон A1</name>
+    <price>149990</price>
+    <availability>5</availability>
+    <image>https://res.cloudinary.com/.../a1.jpg</image>
+    <category>Телефоны</category>
+  </product>
+</products>
+________________________________________
+12.7. Планировщик задач
+Используется APScheduler (или Celery beat) в app/workers/tasks.py.
+Задачи:
+•	sync_orders_job() — каждые 10 минут:
+o	Получить новые/обновлённые заказы.
+o	Обновить статусы.
+•	generate_feed_job() — каждые 6 часов:
+o	Сформировать и сохранить фид.
+•	Логировать результаты в таблицу job_logs.
+________________________________________
+12.8. Устойчивость и ошибки
+•	Ретраи: 3 попытки с экспоненциальной задержкой (1с, 5с, 30с).
+•	Идемпотентность: проверка по external_id.
+•	Лимиты: не чаще 1 запроса/секунда/компания.
+•	Таймауты: httpx с timeout=10s.
+•	Ошибки:
+o	недоступен API → статус «sync_failed» в job_logs;
+o	неверный ключ → пометить интеграцию как «disabled».
+________________________________________
+12.9. Фронтенд (React)
+Раздел «Заказы»
+•	Таблица заказов с колонками: ID, external_id, телефон клиента, сумма, статус.
+•	Кнопки: «Подтвердить», «Отменить», «Отгрузить», «Завершить».
+•	Фильтры по статусу (pending, confirmed, canceled, completed).
+•	Детальная карточка заказа: товары, количество, сумма, история изменений.
+Раздел «Фиды»
+•	Кнопка «Сгенерировать фид».
+•	Ссылка для скачивания feed.xml/feed.csv.
+•	Отображение даты последней генерации.
+________________________________________
+12.10. Бизнес-правила
+•	Заказы из Kaspi не могут быть удалены вручную, только изменён статус.
+•	Если заказ отменён в Kaspi — статус в SmartSell обновляется автоматически.
+•	При конфликте статусов приоритет у Kaspi.
+•	Фид должен включать только активные товары (is_active=true).
+•	Остатки = сумма по складам (ProductStock).
+________________________________________
+12.11. Аудит и мониторинг
+•	Логировать все изменения заказов (audit_log).
+•	Логировать каждый запуск синхронизации (job_logs: успешные, ошибки).
+•	Метрики Prometheus:
+o	количество новых заказов;
+o	количество ошибок синхронизации;
+o	время отклика Kaspi API.
+________________________________________
+12.12. Тестирование
+•	Unit: разбор ответа Kaspi, преобразование в Order.
+•	Integration: мок API Kaspi, проверка синхронизации.
+•	E2E: сценарий: заказ появился в Kaspi → синхронизация → заказ отображается в SmartSell → статус обновлён.
+
+Часть 13/20 — Управление заказами, платежами и накладными (PDF, WhatsApp/Email)
+13.1. Цели и охват
+Модуль обеспечивает:
+•	полный жизненный цикл заказа (создание, просмотр, обновление, статусы, позиции);
+•	интеграцию платежей (инициация, приём webhooks от TipTop Pay, возвраты, идемпотентность);
+•	генерацию накладных (PDF), в том числе склейку нескольких PDF;
+•	отправку накладных и чеков по WhatsApp и Email;
+•	аудит действий и защиту от повторной обработки событий.
+________________________________________
+13.2. Сущности БД (акценты)
+Используются модели из Части 8/20: Order, OrderItem, Payment. Дополнительно:
+13.2.1. Таблица invoices
+Для хранения метаданных накладных и ссылок на PDF.
+# app/models/invoice.py
+import sqlalchemy as sa
+from app.models.base import Base
+
+class Invoice(Base):
+    __tablename__ = "invoices"
+
+    order_id = sa.Column(sa.ForeignKey("orders.id", ondelete="CASCADE"), nullable=False, index=True)
+    number = sa.Column(sa.String(64), nullable=False, index=True)  # человеко-читаемый номер
+    pdf_url = sa.Column(sa.String(1024), nullable=True)            # ссылка на объект (S3/диск)
+    total_amount = sa.Column(sa.Numeric(14, 2), nullable=False)
+    currency = sa.Column(sa.String(8), default="KZT", nullable=False)
+
+    __table_args__ = (sa.UniqueConstraint("order_id", name="uq_invoice_order"),)
+13.2.2. Таблица document_blobs (опц.)
+Если требуется хранить бинарники локально/в БД для небольших документов.
+# app/models/document_blob.py
+import sqlalchemy as sa
+from app.models.base import Base
+
+class DocumentBlob(Base):
+    __tablename__ = "document_blobs"
+    key = sa.Column(sa.String(128), unique=True, nullable=False)  # имя файла/ключ
+    content_type = sa.Column(sa.String(64), nullable=False)       # application/pdf
+    size = sa.Column(sa.Integer, nullable=False)
+    storage = sa.Column(sa.String(32), default="s3", nullable=False)  # s3/local
+    url = sa.Column(sa.String(2048), nullable=True)               # presigned/full URL
+________________________________________
+13.3. Жизненный цикл заказа
+13.3.1. Статусы (повтор, см. Часть 8/20)
+pending → confirmed → paid → shipped → completed
+Побочные ветки: canceled, refunded.
+13.3.2. Правила переходов
+•	pending → confirmed (вручную или авто после проверки доступности);
+•	confirmed → paid (после успешного webhook оплаты);
+•	paid → shipped (оформление отгрузки/накладной);
+•	shipped → completed (подтверждение доставки/получения);
+•	отмена (canceled) возможна до shipped; возврат (refunded) — только из paid или shipped (частичный/полный).
+13.3.3. Пересчёт сумм
+Сумма заказа всегда вычисляется из OrderItem.price * qty на стороне services/orders_service.py. Входящим значениям от фронта не доверять.
+________________________________________
+13.4. REST API (FastAPI, app/routers/orders.py)
+Базовый префикс: /api/orders.
+13.4.1. Список заказов
+GET /api/orders?status=&from=&to=&page=1&page_size=25&query=...
+•	Фильтры: по статусу, диапазону дат created_at, источнику (внутренний/Kaspi), телефону клиента.
+•	Ответ: пагинированный список OrderOut с краткими полями (id, external_id, status, total_amount, created_at).
+13.4.2. Создание заказа
+POST /api/orders
+{
+  "customer_phone": "+77001234567",
+  "customer_name": "Иван",
+  "items": [
+    { "product_id": 101, "name": "Товар", "price": 14990.00, "qty": 2 }
+  ]
+}
+•	Валидация наличия товаров и доступности на складах (если требуется резерв до оплаты).
+•	Пересчёт суммы и запись Order + OrderItem транзакционно.
+•	Ответ: OrderOut с id, status=pending.
+13.4.3. Просмотр заказа
+GET /api/orders/{id}
+•	Полная карточка: позиции, суммы, платежи, накладные, история аудита (опц.).
+13.4.4. Обновление статуса
+POST /api/orders/{id}/status
+{ "status": "confirmed" }
+•	Проверка допустимости перехода; логирование в audit_log.
+13.4.5. Добавление позиций / обновление qty
+POST /api/orders/{id}/items / PATCH /api/orders/{id}/items/{itemId}
+•	Разрешено только до оплаты/отгрузки.
+•	Пересчёт total_amount и аудит.
+13.4.6. Отмена заказа
+POST /api/orders/{id}/cancel
+•	Указание причины отмены, аудит, возврат резервов/оплаты (если была).
+________________________________________
+13.5. Платежи (TipTop Pay) — app/routers/payments.py
+13.5.1. Инициация платежа
+POST /api/payments/create
+{ "order_id": 123, "amount": 29980.00, "currency": "KZT", "idempotency_key": "order-123-v1" }
+•	Проверка: заказ принадлежит компании пользователя; статус допускает оплату (pending|confirmed).
+•	Генерация provider_invoice_id (или получение от провайдера).
+•	Запись Payment{status=new} с уникальным provider_invoice_id (идемпотентность).
+•	Вызов сервиса TipTop Pay (services/tiptop_service.py) → вернуть фронту параметры для открытия виджета/редиректа.
+Ответ
+{
+  "payment_id": 555,
+  "provider_invoice_id": "tt-2025-0001",
+  "redirect_url": "https://pay.tippay.kz/...",
+  "expires_in": 900
+}
+13.5.2. Webhook от TipTop Pay
+POST /api/webhooks/tiptop
+•	Проверка подписи/секрета, TTL сообщения.
+•	Идемпотентность по provider_invoice_id/event_id: запись/проверка в WebhookEvent.
+•	Транзакция:
+o	обновить Payment.status → success|failed|refund;
+o	при success: Order.status = paid; создать/обновить Invoice (при необходимости чек от провайдера);
+o	при refund: Order.status = refunded;
+•	Логирование в аудит.
+Ответ провайдеру: 200 OK только после успешной транзакции на нашей стороне. При повторе события — 200 OK, но без повторной бизнес-логики.
+13.5.3. Возвраты (refunds)
+POST /api/payments/{id}/refund
+{ "amount": 14990.00, "reason": "Отмена позиции" }
+•	Проверка: возврат ≤ оплаченной суммы; роль (admin).
+•	Вызов API провайдера; обновление статусов Payment и Order (частичный возврат может не менять Order.status на refunded, хранить поле refunded_amount в payments или orders).
+________________________________________
+13.6. Накладные (PDF) — генерация и склейка
+13.6.1. Генерация PDF
+POST /api/orders/{id}/invoice
+•	Формирует накладную на основе текущего состава заказа.
+•	Генерация PDF (например, WeasyPrint/ReportLab/wkhtmltopdf) в сервисе utils/pdf.py.
+•	Именование: INV-{YYYYMMDD}-{order_id}.pdf.
+•	Хранение: локально или в S3/совместимом хранилище; получение pdf_url.
+•	Создать/обновить запись Invoice (уникальная на заказ).
+Шаблон включает:
+•	Реквизиты компании (BIN/IIN, адрес, телефон, e-mail).
+•	Данные клиента (имя, телефон).
+•	Табличную часть (позиции: SKU, Название, Кол-во, Цена, Сумма).
+•	Итоги (сумма по позициям, скидки/доставка, общая сумма).
+•	Подписи/печати (опц.), штрих/QR-код с номером заказа.
+13.6.2. Склейка нескольких PDF
+POST /api/invoices/merge
+{ "invoice_ids": [10, 11, 12] }
+•	Сервис utils/pdf.py объединяет PDF в один файл (PyPDF2/pypdf).
+•	Именование: INV-MERGED-{timestamp}.pdf.
+•	Возвращает pdf_url на объединённый документ.
+•	В аудит — запись invoices_merged с перечислением исходных накладных.
+________________________________________
+13.7. Отправка накладных по WhatsApp/Email
+13.7.1. WhatsApp
+POST /api/orders/{id}/send/whatsapp
+{ "phone": "+77001234567", "invoice_id": 10, "message": "Спасибо за покупку! Ваша накладная во вложении." }
+•	Интеграция через бизнес-аккаунт WA (через провайдера/официальный API).
+•	Логика:
+o	Получить pdf_url накладной; если требуются вложения, сгенерировать доступный URL (presigned).
+o	Отправить сообщение и файл; обработать ответ провайдера.
+o	Записать в campaign_logs или отдельную таблицу message_logs (статус отправки, ошибка).
+•	Ограничения: дневной лимит сообщений (см. Часть 17/20), ночной режим.
+13.7.2. Email
+POST /api/orders/{id}/send/email
+{
+  "email": "client@example.com",
+  "subject": "Накладная по заказу №123",
+  "body": "Добрый день! Во вложении накладная. Спасибо за покупку.",
+  "invoice_id": 10
+}
+•	SMTP/SendGrid/иное.
+•	Вложение: скачивание PDF и отправка как attachment либо прямая ссылка (если политика безопасности позволяет).
+•	Логирование отправки/ошибок, повторные попытки при сбое.
+________________________________________
+13.8. Идемпотентность и защита от дублей
+•	Платежи: уникальный provider_invoice_id (см. Часть 8/20), повторный вызов create с тем же idempotency_key возвращает прежний результат.
+•	Webhooks: таблица webhook_events (см. Часть 8/20). При повторной доставке — обнаружение и пропуск бизнес-логики.
+•	Генерация накладной: если у заказа уже есть Invoice, повторный вызов возвращает имеющуюся, если состав заказа не менялся. При изменении состава — новая версия с суффиксом -v2.
+________________________________________
+13.9. Валидация и бизнес-правила
+•	Изменение состава заказа после оплаты — запрещено. Допустим частичный возврат и добавочная накладная.
+•	Отмена оплаченного заказа — только через возврат платежа.
+•	Генерация накладной — только для paid|shipped|completed.
+•	Отправка накладных — только при наличии PDF и корректного контакта (телефон/email).
+•	Роли:
+o	admin — полный доступ;
+o	manager — создание/редактирование заказов, отправка документов;
+o	analyst — read-only;
+o	storekeeper — отгрузка, печать накладных.
+________________________________________
+13.10. Ошибки и коды ответов
+•	400 Bad Request — неверные данные, попытка оплатить нулевой заказ, некорректный переход статуса.
+•	401 Unauthorized — нет/просрочен JWT.
+•	403 Forbidden — недостаточно прав (роль/компания).
+•	404 Not Found — заказ/накладная/платёж не найдены.
+•	409 Conflict — идемпотентный конфликт, повтор webhook, дублирующий provider_invoice_id.
+•	422 Unprocessable Entity — детальная валидация Pydantic.
+•	500 Internal Server Error — сбой (лог с correlation id).
+________________________________________
+13.11. Наблюдаемость и аудит
+•	Аудит-события: order_created, order_status_changed, payment_initiated, payment_succeeded, payment_failed, refund_created, invoice_generated, invoices_merged, invoice_sent_whatsapp, invoice_sent_email, webhook_received.
+•	Метрики:
+o	конверсия confirmed → paid;
+o	среднее время от payment_initiated до payment_succeeded;
+o	доля возвратов;
+o	ошибки отправок WA/Email;
+o	время генерации PDF.
+________________________________________
+13.12. Фронтенд (React + MUI)
+13.12.1. Страница «Заказы»
+•	Таблица заказов: фильтры по статусу/дате/телефону; быстрые действия (подтвердить/отменить).
+•	Карточка заказа:
+o	вкладки: «Позиции», «Платежи», «Накладные», «История»;
+o	кнопки: «Инициировать оплату», «Сгенерировать накладную», «Отправить в WhatsApp/Email»;
+o	отображение чеков/ссылок на провайдера.
+13.12.2. Диалог оплаты
+•	После create — открыть виджет TipTop Pay (redirect или iframe/SDK).
+•	Отобразить статусы: «Ожидание оплаты», «Успех», «Ошибка»; слушать события/проверять статус по API (опц. polling).
+13.12.3. Диалог отправки документов
+•	Выбор канала (WA/Email), ввод контактов, предпросмотр письма/сообщения, кнопка «Отправить».
+________________________________________
+13.13. Примеры запросов
+Инициация платежа
+POST /api/payments/create
+Authorization: Bearer <token>
+Content-Type: application/json
+
+{
+  "order_id": 123,
+  "amount": 29980.00,
+  "currency": "KZT",
+  "idempotency_key": "order-123-v1"
+}
+Webhook оплаты (от провайдера → к нам)
+POST /api/webhooks/tiptop
+X-Signature: <hmac>
+Content-Type: application/json
+
+{
+  "event_id": "evt_001",
+  "provider_invoice_id": "tt-2025-0001",
+  "status": "success",
+  "amount": 29980.00,
+  "currency": "KZT"
+}
+Генерация накладной
+POST /api/orders/123/invoice
+Authorization: Bearer <token>
+Склейка накладных
+POST /api/invoices/merge
+Authorization: Bearer <token>
+Content-Type: application/json
+
+{ "invoice_ids": [10, 11, 12] }
+Отправка по Email
+POST /api/orders/123/send/email
+Authorization: Bearer <token>
+Content-Type: application/json
+
+{
+  "email": "client@example.com",
+  "subject": "Накладная №INV-20250913-123",
+  "body": "Добрый день! Во вложении ваша накладная.",
+  "invoice_id": 10
+}
+________________________________________
+13.14. Псевдокод ключевых операций
+# app/services/payments_service.py
+async def handle_tiptop_webhook(payload, db):
+    event_id = payload["event_id"]
+    if await is_duplicate_event(db, event_id):
+        return  # идемпотентность
+
+    payment = await find_payment_by_provider_id(db, payload["provider_invoice_id"])
+    if not payment:
+        # опционально — создать «подвисший» платеж и связать по order_id из payload
+        raise ValueError("Payment not found")
+
+    async with db.begin():
+        if payload["status"] == "success":
+            payment.status = "success"
+            order = await db.get(Order, payment.order_id, with_for_update=True)
+            order.status = "paid"
+            await ensure_invoice_exists(order, payment)
+        elif payload["status"] == "refund":
+            payment.status = "refund"
+            # обновить order/refunded_amount
+        else:
+            payment.status = "failed"
+
+        await log_webhook_event(db, event_id, payload)
+        await write_audit(db, action="payment_"+payload["status"], entity_type="order", entity_id=payment.order_id)
+# app/utils/pdf.py
+def generate_invoice_pdf(order: Order) -> bytes:
+    # рендер HTML-шаблона и конверсия в PDF (weasyprint/wkhtmltopdf)
+    # вернуть бинарник PDF
+________________________________________
+13.15. Тестирование
+•	Unit:
+o	расчёт сумм заказа, валидация переходов статусов;
+o	идемпотентность платежей/webhooks;
+o	генерация PDF (валидный файл, корректные поля).
+•	Integration:
+o	полный цикл: создать заказ → инициировать платеж → смоделировать webhook → проверить статусы заказ/платёж → сгенерировать накладную → отправить по Email/WA (с моками провайдеров).
+•	E2E:
+o	пользовательский сценарий на фронте от создания заказа до получения накладной.
+________________________________________
+13.16. Безопасность и соответствие
+•	Проверка ролей на всех эндпоинтах (Depends + claims).
+•	Не логировать платёжные реквизиты клиента, только статусы/идентификаторы.
+•	Подпись/секрет и TTL для webhooks; защита от повторов.
+•	Шифрование хранения ссылок на документы, если требуется закрытый доступ; presigned URLs с коротким TTL для загрузок.
+
+Часть 14/20 — Склады и логистика
+14.1. Цели и охват
+Модуль складов обеспечивает:
+•	управление остатками товаров на разных складах;
+•	поддержку мультискладской структуры (магазины, центральный склад, филиалы);
+•	операции прихода/расхода/перемещения;
+•	интеграцию с заказами и демпингом (актуальные остатки);
+•	синхронизацию с Kaspi (остатки → фид);
+•	отчёты по движению и текущим остаткам.
+________________________________________
+14.2. Сущности и таблицы
+14.2.1. warehouses
+•	id
+•	company_id
+•	name (строка, уникальная в рамках компании)
+•	address
+•	is_active (bool)
+•	created_at, updated_at
+14.2.2. product_stocks
+•	id
+•	product_id
+•	warehouse_id
+•	qty (кол-во, Decimal(14,3))
+•	reserved_qty (под заказы, ожидающие оплаты/отгрузки)
+•	updated_at
+Индекс (product_id, warehouse_id) — уникальный.
+14.2.3. stock_movements
+Журнал операций (приход, расход, перемещение).
+•	id
+•	company_id
+•	product_id
+•	warehouse_from (nullable)
+•	warehouse_to (nullable)
+•	qty
+•	type (in, out, transfer)
+•	reason (строка/enum: заказ, возврат, инвентаризация и т.д.)
+•	created_by
+•	created_at
+________________________________________
+14.3. API (FastAPI, app/routers/warehouses.py)
+14.3.1. Список складов
+GET /api/warehouses
+•	Возвращает активные склады компании.
+•	Ответ:
+[{ "id":1, "name":"Центральный склад", "address":"г. Алматы, ул. ...", "is_active":true }]
+14.3.2. Создание склада
+POST /api/warehouses
+{ "name":"Склад 2", "address":"ул. Абая 10" }
+14.3.3. Обновление склада
+PATCH /api/warehouses/{id}
+14.3.4. Список остатков по складу
+GET /api/warehouses/{id}/stocks
+•	Ответ: массив товаров с qty и reserved_qty.
+14.3.5. Перемещение товара
+POST /api/warehouses/transfer
+{ "product_id": 123, "from": 1, "to": 2, "qty": 10 }
+•	Уменьшить qty на складе-источнике, увеличить на складе-приёмнике.
+•	Записать в stock_movements.
+14.3.6. Приход/расход
+POST /api/warehouses/movement
+{ "product_id": 123, "warehouse_id": 1, "qty": 50, "type": "in", "reason": "поступление от поставщика" }
+________________________________________
+14.4. Бизнес-правила
+•	Остатки = qty – reserved_qty.
+•	При создании заказа → резервировать qty на складе.
+•	При отмене заказа → снимать резерв.
+•	При оплате заказа → уменьшать qty (перевод из резерва в расход).
+•	При возврате → создавать приход.
+•	При перемещении qty не может быть отрицательным на складе-источнике.
+•	Склад можно деактивировать только если все остатки = 0.
+________________________________________
+14.5. Интеграция с Kaspi
+•	В фиде (см. Часть 12/20) указывать количество (availability) = сумма по активным складам.
+•	При синхронизации заказов из Kaspi → резервировать qty на основном складе.
+•	Поддержка правил: по умолчанию резерв с «основного» склада, или с ближайшего по приоритету.
+________________________________________
+14.6. Отчёты
+14.6.1. Текущие остатки
+GET /api/reports/stocks
+•	Возвращает по каждому продукту общее количество, в резерве, доступно.
+•	С фильтрацией по складам и категориям.
+14.6.2. Движение товаров
+GET /api/reports/stock-movements?from=&to=&type=
+•	Список операций за период.
+•	Агрегация: приход/расход/перемещение.
+14.6.3. Топ-движение
+Отчёт по товарам с наибольшим оборотом за период.
+________________________________________
+14.7. Фронтенд (React + MUI)
+14.7.1. Раздел «Склады»
+•	Список складов (таблица), кнопка «Добавить».
+•	Карточка склада → остатки.
+•	Действия: редактировать, деактивировать.
+14.7.2. Раздел «Остатки»
+•	Таблица по товарам: SKU, Название, Остаток, Резерв, Доступно.
+•	Фильтры: по складу, категории, активности.
+•	Кнопки: «Приход», «Расход», «Перемещение».
+14.7.3. Раздел «Отчёты»
+•	Диаграмма движения товаров.
+•	Таблицы по приходу/расходу за выбранный период.
+________________________________________
+14.8. Ошибки и коды ответов
+•	400 — qty < 0, попытка перемещения при недостаточном остатке.
+•	401 — нет токена.
+•	403 — нет прав (например, роль не storekeeper|admin).
+•	404 — склад/товар не найден.
+•	409 — конфликт параллельных операций (решается транзакцией + блокировкой строки).
+________________________________________
+14.9. Тестирование
+•	Unit: приход, расход, перемещение, резервирование/отмена резерва.
+•	Integration: связка заказа → резерв → оплата → списание.
+•	E2E: сценарий: пользователь оформляет заказ, товар резервируется, после оплаты уменьшается остаток.
+________________________________________
+14.10. Безопасность и аудит
+•	Все изменения остатков логируются в stock_movements и audit_log.
+•	Роли:
+o	admin — полный доступ;
+o	storekeeper — операции складского учёта;
+o	manager — просмотр остатков, без изменения.
+•	Валидация на уровне транзакции: проверка qty перед изменением.
+
+Часть 15/20 — Сотрудники и роли
+15.1. Цели
+•	Управление пользователями внутри компании.
+•	Создание учётных записей для сотрудников (номер телефона, пароль опц., роль).
+•	Гибкая настройка прав доступа (по ролям и чекбоксам).
+•	Аудит действий сотрудников.
+________________________________________
+15.2. Сущности и таблицы
+15.2.1. users
+•	id
+•	company_id
+•	phone (уникален)
+•	password_hash (если используется пароль, bcrypt/argon2id; при OTP можно null)
+•	role (admin, manager, storekeeper, analyst, custom)
+•	is_active (bool)
+•	created_at, updated_at
+15.2.2. user_permissions
+Если нужно хранить детализированные доступы (чекбоксы).
+•	id
+•	user_id
+•	permission_key (строка, напр. products.view, products.edit, orders.cancel)
+•	value (bool)
+Индекс (user_id, permission_key) уникален.
+________________________________________
+15.3. Базовые роли
+•	admin — полный доступ ко всем модулям.
+•	manager — управление товарами и заказами, без доступа к настройкам.
+•	storekeeper — складские операции (остатки, перемещения).
+•	analyst — просмотр отчётов, аналитики.
+•	custom — кастомная роль, права задаются вручную (через чекбоксы).
+________________________________________
+15.4. API (FastAPI, app/routers/users.py)
+15.4.1. Список пользователей
+GET /api/users
+•	Пагинация, фильтры по роли/активности.
+15.4.2. Создание пользователя
+POST /api/users
+{
+  "phone": "+77001234567",
+  "role": "manager",
+  "permissions": {
+    "products.view": true,
+    "products.edit": false
+  }
+}
+•	Валидация: уникальность номера телефона в рамках компании.
+•	Если роль = custom, сохраняются чекбоксы в user_permissions.
+•	Если role ∈ {admin, manager, …} — права подтягиваются из шаблона.
+15.4.3. Обновление пользователя
+PATCH /api/users/{id}
+•	Изменение роли, статуса, списка permissions.
+15.4.4. Деактивация
+DELETE /api/users/{id}
+•	Фактически is_active=false.
+15.4.5. Проверка доступа
+В middleware:
+•	Распарсить JWT → claims role, user_id.
+•	Если роль стандартная → доступ из матрицы.
+•	Если custom → запросить user_permissions.
+•	На эндпоинтах → зависимость Depends(check_permission("products.edit")).
+________________________________________
+15.5. Фронтенд (React + MUI)
+15.5.1. Раздел «Сотрудники»
+•	Таблица: ФИО (опц.), телефон, роль, статус.
+•	Кнопки: «Создать», «Редактировать», «Деактивировать».
+15.5.2. Форма создания/редактирования
+•	Поля: телефон, роль (dropdown), активность (чекбокс).
+•	Если роль = custom → показывается матрица прав (таблица с чекбоксами).
+15.5.3. Матрица прав (пример)
+•	Товары: просмотр, редактирование, удаление, импорт/экспорт.
+•	Заказы: просмотр, подтверждение, отмена, возвраты.
+•	Склады: приход, расход, перемещение.
+•	Аналитика: просмотр графиков, выгрузка.
+•	Настройки: управление тарифами, сотрудниками, API-ключами.
+________________________________________
+15.6. Бизнес-правила
+•	У каждой компании минимум 1 admin.
+•	admin может создавать других сотрудников, назначать роли.
+•	custom права гибко задаются и сохраняются.
+•	При входе пользователь получает JWT с role и permissions (опц.).
+•	Ограничение: сотрудник не может понизить свои права ниже текущих (только другой admin).
+________________________________________
+15.7. Аудит
+•	Все действия сотрудников логируются в audit_log:
+o	user_created, user_updated, user_deactivated;
+o	операции над заказами, товарами, складами.
+•	Поля аудита: user_id, action, entity_type, entity_id, timestamp.
+________________________________________
+15.8. Ошибки и коды ответов
+•	400 — неверные данные (роль не существует, permission key невалиден).
+•	401 — неавторизован.
+•	403 — нет доступа (роль/permission).
+•	404 — пользователь не найден.
+•	409 — дублирование телефона.
+________________________________________
+15.9. Тестирование
+•	Unit: проверка матрицы ролей, загрузка permissions.
+•	Integration: создание пользователя с custom-правами → доступ только к разрешённым эндпоинтам.
+•	E2E: сценарий — admin создаёт сотрудника, назначает права, сотрудник входит и видит ограниченный набор функций.
+________________________________________
+15.10. Безопасность
+•	Пароли (если есть) хранить только в hash (bcrypt/argon2id).
+•	При входе через OTP можно без пароля, но только для подтверждённого телефона.
+•	Доступы проверяются на уровне API и фронта.
+•	Минимизировать набор прав по умолчанию (principle of least privilege).
+
+Часть 16/20 — Аналитика и отчёты
+16.1. Цели
+•	Предоставление бизнес-аналитики продавцам и администраторам.
+•	Отслеживание ключевых метрик: продажи, категории, клиенты.
+•	Визуализация (графики, таблицы).
+•	Экспорт отчётов (Excel/PDF).
+________________________________________
+16.2. Метрики и KPI
+16.2.1. Продажи
+•	Общий оборот (сумма заказов completed|paid).
+•	Количество заказов.
+•	Средний чек = оборот / кол-во заказов.
+•	Продажи по дням/неделям/месяцам.
+16.2.2. Клиенты
+•	Количество уникальных клиентов (по телефону/email).
+•	Повторные клиенты (≥2 заказов).
+•	Доля повторных клиентов = повторные / все.
+•	Среднее время между заказами.
+16.2.3. Категории
+•	Продажи по категориям товаров.
+•	Топ-категории (по выручке/кол-ву).
+•	Топ-товары внутри категории.
+16.2.4. Склады
+•	Оборот по складам.
+•	Товары с минимальными остатками.
+•	Топ-товары по движению.
+________________________________________
+16.3. API (FastAPI, app/routers/analytics.py)
+16.3.1. Продажи
+GET /api/analytics/sales?from=&to=&interval=day|week|month
+{
+  "labels": ["2025-09-01","2025-09-02"],
+  "data": [120000, 85000],
+  "total": 205000,
+  "avg_check": 10250
+}
+16.3.2. Повторные клиенты
+GET /api/analytics/customers/repeat?from=&to=
+{
+  "unique_customers": 150,
+  "repeat_customers": 45,
+  "repeat_rate": 0.3
+}
+16.3.3. Категории
+GET /api/analytics/categories?from=&to=
+[
+  { "category":"Телефоны", "sales": 500000, "orders": 120 },
+  { "category":"Ноутбуки", "sales": 300000, "orders": 45 }
+]
+16.3.4. Склады
+GET /api/analytics/warehouses?from=&to=
+[
+  { "warehouse":"Центральный", "sales": 400000 },
+  { "warehouse":"Филиал 1", "sales": 150000 }
+]
+16.3.5. Экспорт отчёта
+GET /api/analytics/export?format=xlsx|pdf&type=sales&from=&to=
+•	Генерация Excel или PDF.
+•	Возврат file_url для скачивания.
+________________________________________
+16.4. Визуализация (фронтенд, React + Recharts)
+16.4.1. Дашборд
+•	Карточки: оборот, заказы, средний чек, повторные клиенты.
+•	График продаж по дням/неделям.
+•	Диаграмма категорий (pie chart).
+16.4.2. Раздел «Клиенты»
+•	Таблица: список клиентов, кол-во заказов, сумма.
+•	Фильтр: новые vs повторные.
+16.4.3. Раздел «Категории»
+•	Таблица: продажи по категориям.
+•	Диаграмма: топ-категории.
+16.4.4. Раздел «Склады»
+•	График оборота по складам.
+•	Таблица: остатки, минимальные резервы.
+________________________________________
+16.5. Бизнес-правила
+•	В отчёты включаются только заказы со статусами paid|completed.
+•	Отменённые/возвращённые исключаются.
+•	В повторных клиентах уникальность определяется по телефону или email.
+•	Категории берутся из справочника категорий (см. ТЗ по товарам).
+________________________________________
+16.6. Производительность
+•	Индексы по orders.created_at, orders.customer_phone.
+•	Предварительная агрегация (materialized views или фоновые джобы для крупных объёмов).
+•	Кэширование отчётов на короткий срок (например, 5–10 мин).
+________________________________________
+16.7. Ошибки и коды
+•	400 — неверный формат даты или параметров.
+•	401 — неавторизован.
+•	403 — нет прав (analyst|admin).
+•	500 — ошибка агрегации.
+________________________________________
+16.8. Тестирование
+•	Unit: корректность расчётов (средний чек, repeat rate).
+•	Integration: выборка заказов из БД за период.
+•	E2E: сценарий: клиент сделал 3 заказа → UI показывает repeat rate=100%.
+________________________________________
+16.9. Безопасность
+•	Ограничение доступа: только admin|analyst.
+•	При экспорте Excel/PDF генерировать presigned URL с TTL (например, 1 час).
+•	Логировать запросы к аналитике для аудита.
+
+Часть 17/20 — Биллинг и тарифы
+17.1. Цели
+•	Управление тарифами платформы (Start, Pro, Business).
+•	Подписка и оплата через TipTop Pay.
+•	Автоматическое ограничение функционала по тарифу.
+•	Генерация и хранение фискальных чеков.
+•	Безопасное хранение и ротация платёжных ключей.
+________________________________________
+17.2. Тарифные планы
+17.2.1. Start
+•	1 магазин.
+•	До 500 товаров.
+•	Основные функции: каталог, заказы, накладные.
+•	Цена: 10 000 ₸/мес.
+17.2.2. Pro
+•	До 5 магазинов.
+•	До 5000 товаров.
+•	Все функции Start + склады, демпинг, аналитика.
+•	Цена: 25 000 ₸/мес.
+17.2.3. Business
+•	Неограниченно магазинов.
+•	Неограниченно товаров.
+•	Все функции Pro + API-доступ, рассылки, кастомные роли.
+•	Цена: 50 000 ₸/мес.
+________________________________________
+17.3. Таблицы
+17.3.1. subscriptions
+•	id
+•	company_id
+•	plan (start|pro|business)
+•	status (active|expired|pending)
+•	started_at, expires_at
+•	payment_id (связь с последним платежом)
+17.3.2. billing_payments
+•	id
+•	company_id
+•	amount
+•	currency (KZT)
+•	status (pending|success|failed)
+•	provider_invoice_id
+•	created_at, updated_at
+17.3.3. fiscal_receipts
+•	id
+•	payment_id
+•	receipt_number
+•	pdf_url
+•	created_at
+________________________________________
+17.4. API (FastAPI, app/routers/billing.py)
+17.4.1. Получить текущую подписку
+GET /api/billing/subscription
+{ "plan": "pro", "status": "active", "expires_at": "2025-10-13T00:00:00Z" }
+17.4.2. Выбрать тариф
+POST /api/billing/choose
+{ "plan": "business" }
+•	Создаётся запись subscription{status=pending}.
+•	Запускается инициирование платежа.
+17.4.3. Инициация оплаты
+POST /api/billing/pay
+{ "plan": "pro", "period": "1m" }
+•	Расчёт суммы (например, 25 000 ₸).
+•	Вызов TipTop Pay API → возврат redirect_url.
+•	Создание billing_payments{status=pending}.
+17.4.4. Webhook TipTop Pay
+POST /api/webhooks/tiptop-billing
+•	Проверка подписи.
+•	При success:
+o	billing_payments.status=success
+o	subscriptions.status=active
+o	expires_at = started_at + 1 месяц
+o	Генерация фискального чека.
+________________________________________
+17.5. Ограничение функционала по тарифу
+•	Middleware проверяет subscription.plan.
+•	Примеры:
+o	Start: запрет добавления более 500 товаров; 1 магазин.
+o	Pro: запрет > 5 магазинов.
+o	Business: нет ограничений.
+•	Если превышено → 403 Forbidden с сообщением: «Ваш тариф не позволяет добавить больше товаров. Обновите тариф».
+________________________________________
+17.6. Фискальные чеки
+•	После успешного платежа интеграция с фискальным регистратором (API ККМ/TipTop Pay).
+•	Получение номера чека и PDF.
+•	Хранение в fiscal_receipts.
+•	Доступ через GET /api/billing/receipts/{id}.
+•	Отправка по Email/WhatsApp клиенту.
+________________________________________
+17.7. Безопасность ключей
+•	API-ключи TipTop Pay хранить в HashiCorp Vault или AWS/GCP Secret Manager.
+•	В БД — только идентификаторы ключей.
+•	Доступ к ключам ограничен сервисами billing_service.
+•	Ротация ключей — раз в 3–6 месяцев.
+________________________________________
+17.8. Фронтенд (React + MUI)
+17.8.1. Раздел «Тарифы»
+•	Карточки: Start, Pro, Business.
+•	Кнопка «Подключить».
+•	Отображение текущего тарифа и даты окончания.
+17.8.2. Раздел «Платежи»
+•	Таблица: сумма, статус, дата.
+•	Ссылка «Скачать чек (PDF)».
+17.8.3. Уведомления
+•	При окончании подписки за 7 дней → Email + баннер в UI.
+•	При блокировке (подписка expired) → отключение функций, редирект в раздел «Тарифы».
+________________________________________
+17.9. Ошибки и коды
+•	400 — тариф не существует.
+•	401 — неавторизован.
+•	403 — превышение лимита тарифа.
+•	404 — подписка не найдена.
+•	409 — попытка повторной оплаты без завершения предыдущей.
+•	500 — ошибка провайдера.
+________________________________________
+17.10. Тестирование
+•	Unit: расчёт цены, ограничение по лимитам.
+•	Integration: webhook TipTop Pay, фискальный чек.
+•	E2E: сценарий: выбор тарифа → оплата → подписка активируется → доступ к функциям.
+________________________________________
+17.11. Безопасность
+•	Все платежи только через TipTop Pay (никаких прямых реквизитов).
+•	Проверка подписей webhook.
+•	Presigned URL для чеков с TTL (например, 24 часа).
+•	Лимит количества попыток оплаты.
+
+Часть 18/20 — Рассылки
+18.1. Цели
+•	Массовые рассылки для клиентов через WhatsApp, Email, Telegram.
+•	Поддержка шаблонов сообщений (персонализация).
+•	Планирование отправки (отложенные, периодические).
+•	Ночной режим (отключение с 22:00 до 08:00, настраиваемое).
+•	Логирование и аналитика доставки.
+________________________________________
+18.2. Сущности и таблицы
+18.2.1. campaigns
+•	id
+•	company_id
+•	channel (whatsapp|email|telegram)
+•	template_id
+•	status (scheduled|running|completed|failed)
+•	scheduled_at
+•	created_at
+18.2.2. messages
+•	id
+•	campaign_id
+•	recipient (телефон/email/chat_id)
+•	status (pending|sent|delivered|failed)
+•	error (nullable)
+•	sent_at, delivered_at
+18.2.3. templates
+•	id
+•	company_id
+•	channel
+•	name
+•	content (JSON с плейсхолдерами)
+________________________________________
+18.3. API (FastAPI, app/routers/campaigns.py)
+18.3.1. Создать рассылку
+POST /api/campaigns
+{
+  "channel": "whatsapp",
+  "template_id": 5,
+  "recipients": ["+77001234567","+77007654321"],
+  "scheduled_at": "2025-09-14T20:00:00Z"
+}
+•	Проверка тарифа: рассылки доступны только в Business.
+•	Сохраняется campaign, создаются записи messages.
+18.3.2. Получить список рассылок
+GET /api/campaigns
+•	Фильтры: по статусу, дате, каналу.
+18.3.3. Детали рассылки
+GET /api/campaigns/{id}
+•	Возвращает список сообщений и их статусы.
+18.3.4. Управление шаблонами
+•	POST /api/templates — создать шаблон.
+•	GET /api/templates — список шаблонов.
+•	PATCH /api/templates/{id} — обновить.
+________________________________________
+18.4. Интеграция по каналам
+18.4.1. WhatsApp
+•	Используется официальный Business API или провайдер.
+•	Поддержка шаблонных сообщений.
+•	Отправка через services/whatsapp_service.py.
+•	Ограничения: лимит сообщений в сутки (на уровне провайдера).
+18.4.2. Email
+•	SMTP/SendGrid.
+•	Поддержка HTML-шаблонов.
+•	Вложения (PDF, изображения).
+18.4.3. Telegram
+•	Через бота (telegram_service.py).
+•	Отправка текстов, ссылок, документов.
+________________________________________
+18.5. Планировщик и ночной режим
+•	Используется APScheduler.
+•	При создании рассылки с scheduled_at → задача откладывается.
+•	Ночной режим:
+o	По умолчанию 22:00–08:00 (локальное время).
+o	Можно изменить в настройках компании.
+o	Если сообщение запланировано на ночь → переносится на 08:00.
+________________________________________
+18.6. Персонализация шаблонов
+Формат шаблона (JSON):
+{
+  "text": "Здравствуйте, {{name}}! Ваш заказ №{{order_id}} готов."
+}
+При отправке:
+•	Подставляются значения из контекста (поля клиента, заказа).
+•	В случае отсутствия переменной → оставлять пустое значение или дефолт.
+________________________________________
+18.7. Аналитика и отчёты
+18.7.1. Метрики
+•	количество отправленных сообщений;
+•	количество доставленных;
+•	количество ошибок;
+•	CTR (для email/telegram по кликам).
+18.7.2. API
+GET /api/campaigns/{id}/stats
+{ "sent": 1000, "delivered": 950, "failed": 50, "ctr": 0.12 }
+________________________________________
+18.8. Фронтенд (React + MUI)
+18.8.1. Раздел «Рассылки»
+•	Таблица кампаний: канал, статус, дата.
+•	Кнопка «Создать рассылку».
+18.8.2. Форма создания
+•	Поля: выбор канала, шаблон, список получателей (или импорт CSV).
+•	Дата/время отправки (планировщик).
+•	Чекбокс «Персонализировать сообщение».
+18.8.3. Детали кампании
+•	Таблица получателей и статусов.
+•	График доставки (sent vs delivered).
+________________________________________
+18.9. Бизнес-правила
+•	Доступ к рассылкам только у admin и manager.
+•	Рассылки ограничены тарифом Business.
+•	Email/WhatsApp-адреса проверяются (валидатор формата).
+•	При превышении лимитов провайдера рассылка ставится в статус failed.
+________________________________________
+18.10. Ошибки и коды
+•	400 — неверные данные (невалидные номера/email).
+•	401 — неавторизован.
+•	403 — тариф не позволяет.
+•	404 — кампания/шаблон не найдены.
+•	500 — ошибка провайдера.
+________________________________________
+18.11. Тестирование
+•	Unit: рендер шаблонов с переменными.
+•	Integration: моки WhatsApp/SMTP/Telegram API.
+•	E2E: сценарий: создать кампанию → запланировать на утро → проверить доставку → выгрузить статистику.
+________________________________________
+18.12. Безопасность
+•	Хранить только технические логи (не содержимое сообщений).
+•	Лимитировать количество получателей за кампанию (например, ≤10 000).
+•	Presigned URL для вложений (PDF чеков, накладных).
+•	Отправка через HTTPS.
+
+Часть 19/20 — Инфраструктура
+19.1. Цели
+•	Обеспечение стабильной работы платформы SmartSell.
+•	Контейнеризация сервисов (Docker).
+•	Автоматический деплой (CI/CD через GitHub Actions).
+•	Мониторинг и алертинг.
+•	Резервное копирование БД.
+•	Централизованное логирование.
+________________________________________
+19.2. Архитектура окружений
+19.2.1. Dev
+•	Локальная разработка.
+•	Запуск через docker-compose.
+•	Hot reload (FastAPI + React).
+19.2.2. Staging
+•	Почти идентично Prod.
+•	Используется для тестирования перед релизом.
+•	Отдельные ключи API.
+19.2.3. Prod
+•	Kubernetes (или Docker Swarm).
+•	Отдельные узлы для app (FastAPI) и frontend.
+•	База PostgreSQL на управляемом сервисе (например, Yandex Managed PostgreSQL или аналог).
+________________________________________
+19.3. Docker
+19.3.1. Backend (FastAPI)
+Dockerfile
+FROM python:3.11-slim
+WORKDIR /app
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+COPY . .
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+19.3.2. Frontend (React)
+Dockerfile
+FROM node:20-alpine as build
+WORKDIR /frontend
+COPY package.json package-lock.json ./
+RUN npm install
+COPY . .
+RUN npm run build
+
+FROM nginx:stable-alpine
+COPY --from=build /frontend/dist /usr/share/nginx/html
+19.3.3. docker-compose (Dev)
+version: "3.9"
+services:
+  backend:
+    build: ./app
+    ports: ["8000:8000"]
+    env_file: .env.dev
+    volumes: ["./app:/app"]
+  frontend:
+    build: ./frontend
+    ports: ["3000:80"]
+  db:
+    image: postgres:15
+    env_file: .env.dev
+    volumes:
+      - db_data:/var/lib/postgresql/data
+volumes:
+  db_data:
+________________________________________
+19.4. CI/CD (GitHub Actions)
+.github/workflows/deploy.yml
+name: Deploy
+on:
+  push:
+    branches: [main]
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+      - name: Build backend
+        run: docker build -t smartsell-backend ./app
+      - name: Build frontend
+        run: docker build -t smartsell-frontend ./frontend
+      - name: Push images
+        run: |
+          docker tag smartsell-backend registry/smartsell-backend:${{ github.sha }}
+          docker push registry/smartsell-backend:${{ github.sha }}
+•	После пуша в main → собираются образы → отправка в Registry → деплой в Kubernetes.
+________________________________________
+19.5. Мониторинг и алертинг
+19.5.1. Метрики
+•	Prometheus (экспортеры: FastAPI, PostgreSQL).
+•	Grafana — дашборды (RPS, ошибки 5xx, время ответа).
+19.5.2. Логи
+•	Loki + Grafana.
+•	Формат JSON для всех сервисов.
+•	Корреляция по trace_id.
+19.5.3. Алерты
+•	Alertmanager (интеграция с Telegram/Email).
+•	Триггеры:
+o	ошибки 5xx > 5% за 5 мин;
+o	рост времени ответа > 2 сек;
+o	падение сервиса;
+o	место в БД < 20%.
+________________________________________
+19.6. Бэкапы
+•	PostgreSQL — ежедневный dump через pg_dump → хранение в S3/облаке (7–30 дней).
+•	Восстановление — тестировать ежемесячно.
+•	Критичные данные (чек-листы, документы) — отдельное резервирование.
+________________________________________
+19.7. Логирование
+•	Все сервисы пишут логи в stdout (Docker best practice).
+•	Централизация через Loki/Elastic.
+•	Хранение логов min 30 дней.
+•	Чувствительные данные (пароли, токены, OTP) — маскировать.
+________________________________________
+19.8. Безопасность инфраструктуры
+•	Секреты — только в Secret Manager или Kubernetes Secrets.
+•	HTTPS (Let's Encrypt, cert-manager).
+•	Ограничение доступа к staging (VPN или IP whitelist).
+•	Регулярные обновления образов (Dependabot).
+•	Fail2ban/Firewall на входные узлы.
+________________________________________
+19.9. Тестирование инфраструктуры
+•	Smoke-тесты после деплоя (curl /health).
+•	Нагрузочные тесты (locust/jmeter).
+•	Chaos testing (имитация падения контейнеров).
+
+Часть 20/20 — Безопасность и соответствие
+20.1. Цели
+•	Гарантия безопасности данных пользователей и компаний.
+•	Соответствие законодательству РК (персональные данные) и международным практикам (GDPR-подобный подход).
+•	Минимизация рисков утечек и инцидентов.
+•	Обеспечение идемпотентности и защиты от повторов в API.
+________________________________________
+20.2. Шифрование
+20.2.1. Данные в движении
+•	Весь трафик — только по HTTPS (TLS 1.2+).
+•	HSTS включён.
+•	Внутренние сервисы (API, БД) — через TLS или внутри защищённой сети.
+20.2.2. Данные в покое
+•	БД PostgreSQL — шифрование на уровне диска (cloud-managed encryption).
+•	Файлы (PDF, Excel) — хранение в S3/аналогах с шифрованием (AES-256).
+•	Секреты (API-ключи) — только в Secret Manager, без хранения в коде.
+________________________________________
+20.3. Персональные данные
+20.3.1. Минимизация
+•	Хранить только необходимые поля (телефон, email).
+•	Не хранить платежные реквизиты покупателей (все через TipTop Pay).
+20.3.2. Политика удаления
+•	Пользователь может запросить удаление данных.
+•	Логическая анонимизация: удаление персональных полей, сохранение обезличенной статистики.
+20.3.3. Локальное законодательство
+•	Закон РК «О персональных данных и их защите».
+•	Требования: хранение ПД на территории РК (если требуется, БД размещается в локальном дата-центре).
+________________________________________
+20.4. Идемпотентность
+20.4.1. Платежи
+•	Использование idempotency_key при инициировании платежей.
+•	Webhooks фиксируются в webhook_events → повторные события игнорируются.
+20.4.2. API-операции
+•	POST-операции, изменяющие данные, могут принимать X-Idempotency-Key.
+•	В таблице idempotency_records хранится результат.
+________________________________________
+20.5. Аудит и логирование
+20.5.1. Аудит
+•	Все критичные действия (создание заказа, изменение цен, платеж, накладные) логируются в audit_log.
+•	Поля: user_id, action, entity_type, entity_id, old_value, new_value, timestamp.
+20.5.2. Логирование
+•	Логи в JSON.
+•	Чувствительные данные (OTP, пароли, ключи) маскируются.
+•	Хранение: min 30 дней, max 1 год для аудита.
+________________________________________
+20.6. Контроль доступа
+•	JWT + роли + чекбоксы (см. Часть 15/20).
+•	MFA (через OTP).
+•	Principle of Least Privilege — доступ по минимуму.
+•	Отдельные права на API-ключи (например, ключ только для аналитики).
+________________________________________
+20.7. Бэкапы и отказоустойчивость
+•	Ежедневные бэкапы БД (pg_dump, retention 30 дней).
+•	Хранение бэкапов в S3 (с шифрованием).
+•	DR-план: возможность поднять копию БД на другом регионе в течение 4 часов.
+•	Тестовое восстановление — ежемесячно.
+________________________________________
+20.8. Соответствие и сертификация
+•	ISO-подобные практики: управление инцидентами, контроль доступа, аудит.
+•	Поддержка GDPR-подобных требований: право на удаление, прозрачность.
+•	Локальная сертификация (КЗ): соответствие требованиям по защите ПД.
+________________________________________
+20.9. Тестирование безопасности
+•	Unit: проверка маскирования.
+•	Integration: тесты идемпотентности, двойных платежей.
+•	Pentest: внешние тесты раз в полгода.
+•	OWASP Top-10: SQL Injection, XSS, CSRF, RCE, IDOR — регулярная проверка.
+________________________________________
+20.10. Инцидент-менеджмент
+•	Мониторинг аномалий в логах.
+•	SLA на реакцию: 1 час для критичных, 24 ч для средних.
+•	Уведомления админов через Telegram/Email.
+•	Журнал инцидентов с анализом и планом предотвращения повторов.
+________________________________________
+20.11. Безопасность фронтенда
+•	CSP (Content Security Policy).
+•	XSS-протекция (escape/санитизация данных).
+•	CSRF-токены для POST-запросов (если используется cookie-аутентификация).
+•	HttpOnly, Secure, SameSite cookies.
+________________________________________
+20.12. Роли и ответственность
+•	Администратор системы — настройка доступа, аудит.
+•	DevOps — обновление инфраструктуры, бэкапы.
+•	Security officer — мониторинг инцидентов, проведение pentest.
+•	Разработчики — исправление уязвимостей в коде.
+SmartSell v16 – Подробное пошаговое техническое описание всех функций
+Документ содержит полное описание процессов в платформе SmartSell: от авторизации до управления складом.
+1. Название проекта
+•	• SmartSell — облачная платформа для управления товарами, заказами, накладными, аналитикой и интеграциями с маркетплейсами.
+
+2. Цель проекта
+•	• Автоматизация управления онлайн-магазином, включая каспи-интеграцию, демпинг, аналитику, WhatsApp-рассылки, экспорт/импорт и контроль сотрудников.
+
+3. Регистрация и авторизация
+•	• Пользователь заходит на страницу регистрации.
+•	• Вводит номер телефона в формате +7XXXXXXXXXX.
+•	• Придумывает пароль (не менее 6 символов).
+•	• Получает код подтверждения в mobizon.kz (OTP)
+•	• Вводит код — аккаунт создаётся.
+•	• При входе: вводит номер и пароль.
+•	• При 5 неудачных попытках — блокировка 15 минут.
+•	• Пробный доступ (тариф Pro) — предоставляется на 15 дней.
+•	• После 15 дней — выбор тарифа, с предупреждением об отключении части функций при переходе на Start.
+•	• Пароли хранятся зашифрованно (bcrypt).
+•	• Сброс пароля по коду → немедленная смена.
+•	1. Пользователь нажимает на ссылку «Забыли пароль?» на странице входа.
+•	2. Открывается окно восстановления доступа.
+•	3. Пользователь вводит свой номер телефона, зарегистрированный в системе.
+•	4. На указанный номер отправляется одноразовый код (OTP) через mobizon.kz.
+•	5. Код действителен в течение 5 минут.
+•	6. Пользователь вводит полученный код.
+•	7. После успешного подтверждения открывается форма ввода нового пароля.
+•	8. Пользователь вводит новый пароль дважды (ввод + подтверждение).
+•	9. Новый пароль должен содержать не менее 6 символов.
+•	10. После подтверждения — система автоматически авторизует пользователя с новым паролем.
+•	11. Все действия фиксируются в логах безопасности с отметкой времени и IP.
+
+4. Таблица товаров и управление
+•	• Товары синхронизируются с Kaspi по API.
+•	• Отображаются колонки: фото, название, остаток, цена, статус, демпинг, предзаказ, позиция.
+•	• Для каждого товара отображается: позиция среди конкурентов (например, 3 из 15).
+•	• Включение/отключение демпинга — кнопка в строке товара → открывается окно настроек (мин/макс цена,).
+•	• Предзаказ: отображается как 📦, при остатке = 0 автоматически активируется (в Business).
+•	• Ограничения по действиям сотрудников (редактировать цену, остаток, фото и т.д.).
+•	• Фиксация истории изменений.
+•	• Управление дружественными магазинами (store_id) — исключаются из сравнения и из демпинга.
+•	• Видимость: какие магазины участвуют в демпинге по каждой карточке.
+•	• Возможность указать срок доставки до 30 дней.
+
+5. Добавление и управление сотрудниками
+•	• Только 2 роли: Администратор и Сотрудник.
+•	• Администратор заходит в настройки → вкладка 'Сотрудники'.
+•	• Нажимает 'Добавить пользователя'.
+•	• Вводит номер телефона и задаёт пароль.
+•	• Выбирает права доступа: просмотр/редактирование/категории/остатки/цены и т.д.
+•	• Может удалить или деактивировать сотрудника в любое время.
+•	• Все действия логируются.
+6. Работа с накладными
+•	• Накладные синхронизируются и берутся с Kaspi.
+•	• Можно выбрать несколько накладных → склеить в один файл.
+•	• При отправке или печати на обычном принтере формата А4 можно задать: сколько накладных на лист A4.
+•	• Выбранные накладные или склеенные накладные можно отправить через WhatsApp, Telegram или Email.
+•	• Поддержка термопечати и обычной печать
+•	  История заказов
+7. Склады и логистика
+•	• Вкладка 'Склады' доступна всем тарифам.
+•	• При добавлении склада указывается: город, район, улица, дом, квартира.
+•	• Продавец указывает часы работы, обеденный перерыв вручную или с помощью ползунков.
+•	• Склады участвуют в логике Kaspi как точка самовывоза/отгрузки.
+9. Повторные клиенты
+•	• Отслеживаются по ID номеру в каспи магазине, полученному из Kaspi API.
+•	• Формируется история: кол-во заказов, суммы, последний заказ.
+•	• Сегментация: Новый, Повторный, Постоянный, VIP.
+•	• Функция доступна только в тарифе Business.
+10. Безопасность и ограничения
+•	• Все пароли шифруются (bcrypt),  логирование действий, защита от повторных пробных регистраций.
+•	• IP-адреса и устройства логируются, но не ограничивают повторный доступ.
+•	• Ограничение пробного доступа: только один раз на BIN/store_id.
+11. Поддержка и контакты
+•	• На платформе отображается кнопка 'Поддержка'.
+•	• По нажатию — открывается WhatsApp-чат с техподдержкой SmartSell.
+
+12. Тарифы
+•	• Start — ₸9 900: 50 товаров в демпинге, фильтры, склады, накладные, без аналитики повторов, WhatsApp рассылка отдельно  ₸10 000.
+•	• Pro — ₸23 900: 300 товаров в демпинге, предзаказ, расширенные фильтры, WhatsApp рассылка
+₸5 000, отчёты.
+•	• Business — ₸33 900: всё включено, безлимит, WhatsApp входит в тариф, авто-предзаказ, история цен, склады, повторные клиенты.
+•	• Один магазин (по store_id или BIN) может получить только один 15-дневный бесплатный период по тарифу про.
+•	• Регистрация с другого номера, но для того же магазина — не даёт вторую бесплатку.
+•	• IP и устройство фиксируются только для логов (не используются для ограничения).
+
+13. Фильтрация
+•	• Автофильтры по категориям, брендам, статусам, ценам, остаткам (данные из Kaspi API).
+•	• Отображается для всех товаров
+
+14. Импорт и экспорт
+•	• Импорт из Excel: название, цена, остаток, фото, ID карточки Kaspi.
+•	• Экспорт в Excel по фильтрам.
+•	• Проверка ошибок перед импортом.
+
+15. Аналитика и отчёты
+•	• Графики по продажам, выручке, остаткам.
+•	• Популярные товары, динамика по категориям.
+•	• Планируется: Яндекс Метрика, история цен, график цен, отказные товары, полный анализ обезличенный
+
+
+
+18. Скрытие товаров
+Функция скрыть позволяет продавцу временно скрыть товар с витрины, не удаляя его, а также восстановить его позднее.
+•	• В таблице товаров появляется кнопка «Скрыть».
+•	• При скрытии товар перемещается в отдельную вкладку «Скрытые товары».
+•	• В скрытых товарах можно редактировать  цену, остаток и статус внутри платформы SmartSell активный или скрытый.
+•	• Можно восстановить товар обратно в активные одним кликом «Активировать».
+•	• Скрытые товары  участвуют в демпинге и  синхронизируются с Kaspi.
+•	• Вкладка 'Скрытые товары' доступна в навигации рядом с Товарами, Демпингом и Предзаказом.
+19. Аналитика: отчёты по категориям
+Функция аналитики по категориям помогает продавцу понять, какие группы товаров приносят больше всего заказов и выручки.
+•	• В разделе «Аналитика» добавляется вкладка «По категориям».
+•	• Выводится график: количество заказов и общая выручка по категориям.
+•	• Таблица топ-10 категорий, сортировка по выручке, количеству заказов или дате.
+•	• Поддержка фильтрации по периоду: за день, неделю, месяц, произвольные даты.
+•	• Основано на данных заказов из Kaspi API (category_name и product_code).
+•	• Возможность экспортировать отчёт в Excel.
+
+SmartSell — Дополнение к ТЗ
+2. Система уведомлений
+- Email / WhatsApp / Telegram уведомления:
+  * О скором окончании тарифа.
+  * О поступлении оплаты.
+  * Об ошибках при отправке WA-сообщений.
+
+3. История и аналитика
+- Полная история всех платежей (тарифы, WA, пополнения).
+- Фильтры по типу операции, периоду, статусу.
+- Экспорт в Excel.
+- Графики пополнений и расходов по месяцам.
+4. Права доступа
+- Роли: администратор / сотрудник.
+- Админ: менять тариф, видеть всю историю.
+- Сотрудник: не меняет тариф, не видит историю.
+5. Счета и повторные оплаты
+- Первый раз оплата — создание тарифа.
+- Перед окончанием тарифа: автоматическая генерация нового счёта.
+- Отправка ссылки на оплату (email/WhatsApp).
+6. UI и UX доработки
+- Модалка выбора тарифа: вкладки QR/карта .
+- Встроенный  QR от компании выбранный для оплаты.
+- Уведомления в интерфейсе  тарифе.
+7. Админ-панель
+- Просмотр всех магазинов, тарифов .
+- Редактирование тарифов.
+- Блокировка WA-рассылок.
+- Отчёты по платежам и расходам.
+8. Логирование и безопасность
+- Логирование всех действий пользователей.
+- Подпись запросов в выбранном компании (webhook).
+- Идемпотентность операций (по provider_invoice_id).
+9. Импорт и экспорт данных
+- Экспорт истории платежей, рассылок, тарифов.
+- Импорт тарифных планов, шаблонов WA.
+10. WA тарифы (фиксированные пакеты)
+- Опция фиксированных тарифов на WA (N сообщений в месяц).
+Раздел Billing
+1. Система тарифов
+Планы: 3, 6, 12 месяцев.
+Скидки от базовой цены P:
+ - 3 месяца: 5% (цена = 3 * P * 0.95)
+ - 6 месяцев: 10% (цена = 6 * P * 0.90)
+ - 12 месяцев: 15% (цена = 12 * P * 0.85)
+Валюта: KZT (цены в тыйынах). Округление банковское.
+Автоматический перерасчёт при смене тарифа: кредит за неиспользованные дни, стоимость нового плана, итоговая сумма к оплате или возврат в кошелёк.
+3. Пополнение кошелька через PayBox
+В кабинете кнопка 'Пополнить баланс' с быстрыми суммами (5000, 10000, 20000 ₸) + 'Другая сумма'.
+Создание нового инвойса TipTopPay (API), отображение QR и кнопки 'Открыть страницу оплаты'.
+Повторное пополнение — таким же способом.
+TipTopPay webhook: проверка подписи, зачисление суммы на баланс при статусе success.
+4. Оплата тарифов: выбор способа
+При нажатии 'Оплатить':
+ - Вариант 1 — списать с кошелька (если хватает — активация тарифа; если нет — предложить оплатить недостающую сумму через TipTopPay).
+ - Вариант 2 — оплатить картой/QR через TipTopPay (создание инвойса, показ QR, после webhook — активация тарифа).
+5. Изменение тарифа
+Перерасчёт стоимости (proration): кредит остатка, стоимость нового плана, сумма к оплате/возврат.
+Если due > 0 — списать с кошелька или оплатить через TipTopPay
+Если due = 0 — активация нового плана.
+Если due < 0 — зачислить на кошелёк.
+6. UI
+Экран 'Тарифы': карточки 3/6/12 мес (цена со скидкой), кнопка 'Оплатить' → модалка с выбором способа.
+Экран 'Баланс': баланс, кнопки быстрого пополнения, история транзакций.
+Экран 'История подписок': активный тариф, дата окончания, кнопка 'Изменить план'.
+Техническое задание: Серая схема WhatsApp для SmartSell (обновление)
+1. Цель
+Массовые и триггерные рассылки строго от бизнес-номеров магазинов через автоматизацию WhatsApp Web, только статусные сообщения по фиксированным шаблонам, с ночным окном, скрытым троттлингом, и поддержкой регулируемых отложенных сообщений.
+2. Бизнес-правила
+1) Только WhatsApp Business App. Личные аккаунты запрещены.
+2) Шаблоны – только статусные, неизменяемые продавцом, локализация управляется платформой.
+3) Отложенные сообщения: продавец может включать/выключать, устанавливать время отправки вручную от 1 минуты до 12 часов. Время вводится вручную (часы/минуты) или выбирается роликом.
+4) Ночной режим: включается/выключается кнопкой. По умолчанию 22:00–08:00, но продавец может менять время в формате часы/минуты вручную или роликом.
+5) Лимит 800 сообщений в день с отображением счётчика в интерфейсе.
+6) Случайные интервалы 3–7 сек между сообщениями, о чём продавец не знает.
+7) Ограничение только на бизнес WhatsApp.
+8) Поддерживаются статусы: отправлено, ошибка, прочитано (Webhook).
+9) История отправок.
+10) Сообщения в ночное время откладываются автоматически если включен.
+11) При обновлении статуса заказа (из Kaspi) запускается шаблонная рассылка.
+12) Финальное сообщение: доставлено + благодарность + ссылка на карточку Kaspi для отзыва.
+
+
+3. Поток онбординга
+1) Продавец заходит в раздел Каналы → WhatsApp → Подключить (серый).
+2) Сканирует QR через WhatsApp Business App.
+3) Платформа проверяет бизнес-аккаунт, сохраняет сессию.
+4) Предоставляется доступ к настройкам: ночной режим, язык, резервный номер, отложенные сообщения.
+5) Если личный WA – блок сессии.
+4. Очереди и троттлинг
+Сообщения планируются с учётом ночного режима, лимитов и отложенных настроек. Интервалы между отправками случайные (3–7 секунд), каждые 30–50 сообщений в течении 7 мин – пауза 5–15 минут.
+5. UI
+•	– Статус сессии (ONLINE/OFFLINE/REAUTH).
+•	– Счётчик X/800 сообщений в день.
+– Переключатель ночного режима (с возможностью изменения времени вручную или роликом).
+– Настройки отложенных сообщений (вкл/выкл, установка времени вручную или роликом).
+– Язык.
+– Резервный номер.
+– Журнал отправок.
+– Просмотр шаблонов без возможности редактирования.
+6. Шаблоны
+Хранятся на платформе. Пример:
+RU: Здравствуйте, {{name}}! Ваш заказ {{order_id}} готов к выдаче.
+KZ: Сәлеметсіз бе, {{name}}! Сіздің {{order_id}} тапсырысыңыз дайын.
+EN: Hello, {{name}}! Your order {{order_id}} is ready for pickup.

@@ -1,0 +1,254 @@
+# =========================
+#        Python core
+# =========================
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.sqlite3
+*.so
+
+# extra python cache/temp
+*.rej
+*.orig
+*.patch
+*.pyc
+*.pyd
+*.pdb
+
+# =========================
+#  Packaging / build out
+# =========================
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+pip-wheel-metadata/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# =========================
+#       PyInstaller
+# =========================
+*.manifest
+*.spec
+
+# =========================
+#     Installer logs
+# =========================
+pip-log.txt
+pip-delete-this-directory.txt
+
+# =========================
+#  Tests / Coverage / QA
+# =========================
+htmlcov/
+.tox/
+.nox/
+.coverage
+.coverage.*
+.cache
+nosetests.xml
+coverage.xml
+coverage/
+*.cover
+.pytest_cache/
+hypothesis/
+.mypy_cache/
+.ruff_cache/
+.pytype/
+.pyre/
+.benchmarks/
+
+# =========================
+#     Virtual envs
+# =========================
+.env
+.env.*
+.venv/
+venv/
+ENV/
+env.bak/
+venv.bak/
+.python-version
+.envrc
+
+# =========================
+#         IDE
+# =========================
+.vscode/
+.idea/
+*.swp
+*.swo
+*.code-workspace
+.fleet/
+
+# IntelliJ/IDEA specifics (дополнительно, без удаления твоего блока)
+.idea/**/workspace.xml
+.idea/**/tasks.xml
+.idea/**/usage.statistics.xml
+.idea/**/dictionaries
+.idea/**/shelf
+.idea/**/httpRequests
+.idea/**/dataSources/
+.idea/**/dataSources.local.xml
+
+# =========================
+#       OS-specific
+# =========================
+.DS_Store
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+.Spotlight-V100
+.Trashes
+
+# =========================
+#   Logs & local DB files
+# =========================
+logs/
+*.log
+*.log.*
+*.db
+*.sqlite
+*.sqlite3
+*.sqlite-wal
+*.sqlite-shm
+test.db
+
+# Dockerized DB volumes / caches
+pgdata/
+postgres-data/
+db_data/
+docker/**/data/
+dump.rdb        # Redis dump
+
+# =========================
+#        Frontend
+# =========================
+# глобально игнорим любые node_modules / dist и артефакты сборки
+**/node_modules/
+node_modules/
+**/dist/
+**/.parcel-cache/
+**/.cache/
+
+# фреймворки
+**/.next/
+**/.nuxt/
+**/.vercel/
+**/.svelte-kit/
+**/.turbo/
+**/.angular/
+**/.output/
+**/.vite/
+
+# lock-файлы (сохраняем твоё решение не коммитить package-lock в frontend)
+pnpm-lock.yaml
+yarn.lock
+# при желании можно убрать эти строки и начать фиксировать lock-файлы для репродьюс билда
+
+# конкретно для папки frontend (как было у тебя)
+frontend/node_modules/
+frontend/dist/
+frontend/.env.local
+frontend/.env.development.local
+frontend/.env.test.local
+frontend/.env.production.local
+frontend/npm-debug.log*
+frontend/yarn-debug.log*
+frontend/yarn-error.log*
+frontend/package-lock.json   # при желании репродьюс билдов — лучше КОММИТИТЬ этот файл
+
+# =========================
+#     Project specific
+# =========================
+uploads/
+media/
+storage/
+data/
+local/
+local2/
+
+# =========================
+#         Docker
+# =========================
+docker-compose.override.yml
+docker/.env
+docker/.env.*
+
+# =========================
+#      DB dumps / backups
+# =========================
+*.sql
+*.dump
+*.tar
+*.bak
+*.backup
+
+# =========================
+#     Temporary files
+# =========================
+*.tmp
+*.temp
+temp/
+tmp/
+
+# =========================
+#     SSL certificates
+# =========================
+*.pem
+*.crt
+*.key
+
+# =========================
+#       Jupyter etc
+# =========================
+.ipynb_checkpoints/
+.profile
+
+# --- extra ignores (project hardening) ---
+# any virtualenvs with version suffixes
+venv*/
+**/venv*/
+**/.venv*/
+**/Scripts/
+
+# local sqlite/db files anywhere
+**/*.db
+**/*.sqlite
+**/*.sqlite3
+**/*.sqlite-wal
+**/*.sqlite-shm
+
+# local dev databases by name
+smartsell.db
+test.db
+
+# OS/PowerShell artifacts
+*.ps1
+*.bat
+*.cmd
+
+# Alembic bytecode cache (версии сами коммитим!)
+alembic/versions/__pycache__/
+
+# pytest junit xml (на случай CI)
+junit.xml
+
+# celery / rq (если появится)
+celerybeat-schedule
+*.pid
+*.pid.lock
