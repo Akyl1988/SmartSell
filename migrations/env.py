@@ -181,28 +181,32 @@ def _collect_bases() -> list[tuple[MetaData, str]]:
     _project_root_to_sys_path()
 
     # Кандидаты для поиска декларативной базы
+    # ПРИОРИТЕТ: app.models.base.Base — единственный источник истины
     base_candidates = [
-        "app.core.db:Base",       # основной путь проекта
-        "app.models:Base",        # если Base реэкспортируется
-        "app.db.base:Base",       # возможные исторические варианты
-        "app.db.models:Base",
-        "app.database:Base",
-        "models:Base",
+        "app.models.base:Base",   # ОСНОВНОЙ источник (единственный DeclarativeBase)
+        "app.models:Base",        # реэкспорт из __init__
+        "app.core.db:Base",       # fallback импорт (должен быть тот же Base)
     ]
 
-    # Принудительно импортируем пакет моделей — некоторые регистрируют таблицы побочно
-    for pkg in (
-        "app.models",
-        "app.models.user",
-        "app.models.product",
-        "app.models.billing",
-        "app.models.order",
-        "app.models.campaigns",
-    ):
-        try:
-            importlib.import_module(pkg)
-        except Exception:
-            pass
+    # Явно вызываем ensure_models_loaded() для загрузки всех моделей
+    try:
+        from app.models import ensure_models_loaded
+        ensure_models_loaded()
+        _debug("Модели загружены через ensure_models_loaded()")
+    except Exception as e:
+        _debug(f"ensure_models_loaded() не удалось: {e!r}")
+        # Fallback: прямой импорт критичных модулей
+        for pkg in (
+            "app.models",
+            "app.models.base",
+            "app.models.user",
+            "app.models.company",
+            "app.models.product",
+        ):
+            try:
+                importlib.import_module(pkg)
+            except Exception:
+                pass
 
     metas: list[tuple[MetaData, str]] = []
 
@@ -221,15 +225,16 @@ def _ensure_naming_convention(md: MetaData) -> None:
     """
     Если у MetaData нет naming_convention — зададим её для стабильных имён
     индексов/ограничений (важно для корректных диффов и даунгрейдов).
+    Синхронизировано с app.models.base.NAMING_CONVENTIONS.
     """
     if getattr(md, "naming_convention", None):
         return
     md.naming_convention = {
-        "ix": "ix_%(table_name)s_%(column_0_label)s",
-        "uq": "uq_%(table_name)s_%(column_0_name)s",
-        "ck": "ck_%(table_name)s_%(constraint_name)s",
-        "fk": "fk_%(table_name)s_%(column_0_name)s_%(referred_table_name)s",
-        "pk": "pk_%(table_name)s",
+        "ix": "ix__%(table_name)s__%(column_0_N_name)s",
+        "uq": "uq__%(table_name)s__%(column_0_N_name)s",
+        "ck": "ck__%(table_name)s__%(constraint_name)s",
+        "fk": "fk__%(table_name)s__%(column_0_N_name)s__%(referred_table_name)s",
+        "pk": "pk__%(table_name)s",
     }
 
 
@@ -281,7 +286,15 @@ def get_url_from_env_or_cfg() -> str:
 # ======================================================================
 
 _found_metas = _collect_bases()
-target_metadata, _meta_sources = _combine_metadata(_found_metas)
+# Явно используем единую MetaData из app.models.base.Base
+try:
+    from app.models.base import Base as _ModelsBase  # единый DeclarativeBase
+    target_metadata = _ModelsBase.metadata
+    _meta_sources = ["app.models.base:Base"]
+    _debug("Target metadata set to app.models.base.Base.metadata")
+except Exception:
+    # Fallback: комбинируем найденные метаданные (на случай ранней загрузки)
+    target_metadata, _meta_sources = _combine_metadata(_found_metas)
 
 if target_metadata is None:
     _debug(

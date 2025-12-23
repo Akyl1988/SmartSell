@@ -11,6 +11,11 @@ from typing import Any, Literal
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Path, Query, status
 from pydantic import BaseModel, Field, ValidationError, field_validator
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.core.db import get_db
+from app.core.security import get_current_user as get_current_user_security
+from app.models.user import User
 
 __all__ = ["router"]
 
@@ -298,48 +303,52 @@ class RateLimiter:
 rate_limiter = RateLimiter()
 
 
-# user context (заглушка)
-class UserCtx(BaseModel):
-    id: int
-    role: Literal["admin", "manager", "viewer"] = "manager"
-    username: str = "demo"
+async def _auth_user(
+    token_data: dict = Depends(get_current_user_security),
+    db: AsyncSession = Depends(get_db),
+) -> User:
+    sub = token_data.get("sub")
+    try:
+        user_id = int(sub)
+    except Exception:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Not authenticated")
 
-
-async def get_current_user() -> UserCtx:
-    # TODO: заменить на реальную вытяжку из JWT/сессии
-    return UserCtx(id=1, role="manager", username="demo")
+    user = await db.get(User, user_id)
+    if not user:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Not authenticated")
+    return user
 
 
 def require_role(*roles: str):
-    async def dep(user: UserCtx = Depends(get_current_user)):
-        if user.role not in roles:
-            raise HTTPException(status_code=403, detail="forbidden")
+    async def dep(user: User = Depends(_auth_user)):
+        if getattr(user, "role", None) not in roles:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="forbidden")
         return user
 
     return dep
 
 
-def _user_key(user: UserCtx) -> str:
-    return f"{user.id}:{user.username}:{user.role}"
+def _user_key(user: User) -> str:
+    return f"{getattr(user, 'id', '0')}:{getattr(user, 'username', '')}:{getattr(user, 'role', '')}"
 
 
 def limit_dep(bucket: str, limit: int, window: int):
-    async def _dep(user: UserCtx = Depends(get_current_user)):
+    async def _dep(user: User = Depends(_auth_user)):
         rate_limiter.check_limit((bucket, _user_key(user)), limit, window)
 
     return _dep
 
 
 def debounce_dep(bucket: str, seconds: int):
-    async def _dep(user: UserCtx = Depends(get_current_user)):
+    async def _dep(user: User = Depends(_auth_user)):
         rate_limiter.check_debounce((bucket, _user_key(user)), seconds)
 
     return _dep
 
 
-def ensure_owner_or_admin(camp_owner: str | None, user: UserCtx) -> None:
-    if user.role != "admin":
-        if (camp_owner or "").lower() != (user.username or "").lower():
+def ensure_owner_or_admin(camp_owner: str | None, user: User) -> None:
+    if getattr(user, "role", None) != "admin":
+        if (camp_owner or "").lower() != (getattr(user, "username", "") or "").lower():
             raise HTTPException(status_code=403, detail="only owner or admin")
 
 
@@ -666,7 +675,7 @@ router = APIRouter(prefix="/api/v1/campaigns", tags=["campaigns"])
     dependencies=[Depends(require_role("admin", "manager"))],
 )
 async def create_campaign(
-    campaign: Campaign = Body(...), user: UserCtx = Depends(get_current_user)
+    campaign: Campaign = Body(...), user: User = Depends(_auth_user)
 ):
     # owner, учитываем при уникальности
     owner = (campaign.owner or user.username or "").strip()
@@ -892,7 +901,7 @@ async def export_campaigns_fmt(fmt: CampaignExportFormat = Path(...)):
     ],
 )
 async def import_campaigns_bulk(
-    payload: list[Campaign] = Body(...), user: UserCtx = Depends(get_current_user)
+    payload: list[Campaign] = Body(...), user: User = Depends(_auth_user)
 ):
     imported = 0
     errors: list[dict[str, Any]] = []
@@ -958,7 +967,7 @@ async def import_campaigns_bulk(
     dependencies=[Depends(require_role("admin", "manager"))],
 )
 async def save_campaign_draft(
-    campaign: Campaign = Body(...), user: UserCtx = Depends(get_current_user)
+    campaign: Campaign = Body(...), user: User = Depends(_auth_user)
 ):
     owner = (campaign.owner or user.username or "").strip()
     if _title_exists(campaign.title, owner=owner):
@@ -1031,7 +1040,7 @@ async def get_campaign(campaign_id: int = Path(..., ge=1)):
     dependencies=[Depends(require_role("admin", "manager"))],
 )
 async def update_campaign(
-    campaign_id: int, campaign: Campaign = Body(...), user: UserCtx = Depends(get_current_user)
+    campaign_id: int, campaign: Campaign = Body(...), user: User = Depends(_auth_user)
 ):
     current = storage.get_campaign(campaign_id)
     if not current:
@@ -1083,7 +1092,7 @@ async def update_campaign(
     status_code=status.HTTP_204_NO_CONTENT,
     dependencies=[Depends(require_role("admin", "manager"))],
 )
-async def delete_campaign(campaign_id: int, user: UserCtx = Depends(get_current_user)):
+async def delete_campaign(campaign_id: int, user: User = Depends(_auth_user)):
     data = storage.get_campaign(campaign_id)
     if not data:
         return
@@ -1108,7 +1117,7 @@ def _message_recipient(m: Any) -> str | None:
     dependencies=[Depends(require_role("admin", "manager"))],
 )
 async def add_message_to_campaign(
-    campaign_id: int, message: Message = Body(...), user: UserCtx = Depends(get_current_user)
+    campaign_id: int, message: Message = Body(...), user: User = Depends(_auth_user)
 ):
     camp = _get_campaign_or_404(campaign_id)
     ensure_owner_or_admin(camp.owner, user)
@@ -1149,7 +1158,7 @@ async def update_campaign_message(
     campaign_id: int,
     message_id: int,
     message: Message = Body(...),
-    user: UserCtx = Depends(get_current_user),
+    user: User = Depends(_auth_user),
 ):
     camp = _get_campaign_or_404(campaign_id)
     ensure_owner_or_admin(camp.owner, user)
@@ -1178,7 +1187,7 @@ async def update_campaign_message(
     dependencies=[Depends(require_role("admin", "manager"))],
 )
 async def delete_campaign_message(
-    campaign_id: int, message_id: int, user: UserCtx = Depends(get_current_user)
+    campaign_id: int, message_id: int, user: User = Depends(_auth_user)
 ):
     camp = _get_campaign_or_404(campaign_id)
     ensure_owner_or_admin(camp.owner, user)
@@ -1197,7 +1206,7 @@ async def delete_campaign_message(
     dependencies=[Depends(require_role("admin", "manager"))],
 )
 async def upsert_message_by_recipient(
-    campaign_id: int, req: UpsertMessageRequest, user: UserCtx = Depends(get_current_user)
+    campaign_id: int, req: UpsertMessageRequest, user: User = Depends(_auth_user)
 ):
     camp = _get_campaign_or_404(campaign_id)
     ensure_owner_or_admin(camp.owner, user)
@@ -1233,7 +1242,7 @@ async def set_message_status(
     campaign_id: int,
     message_id: int,
     payload: UpdateMessageStatusRequest,
-    user: UserCtx = Depends(get_current_user),
+    user: User = Depends(_auth_user),
 ):
     camp = _get_campaign_or_404(campaign_id)
     ensure_owner_or_admin(camp.owner, user)
@@ -1265,7 +1274,7 @@ async def set_message_status(
     dependencies=[Depends(require_role("admin", "manager"))],
 )
 async def reset_message_to_pending(
-    campaign_id: int, message_id: int, user: UserCtx = Depends(get_current_user)
+    campaign_id: int, message_id: int, user: User = Depends(_auth_user)
 ):
     camp = _get_campaign_or_404(campaign_id)
     ensure_owner_or_admin(camp.owner, user)
@@ -1291,7 +1300,7 @@ async def reset_message_to_pending(
         Depends(limit_dep("clear-failed", 30, 60)),
     ],
 )
-async def clear_failed_messages(campaign_id: int, user: UserCtx = Depends(get_current_user)):
+async def clear_failed_messages(campaign_id: int, user: User = Depends(_auth_user)):
     camp = _get_campaign_or_404(campaign_id)
     ensure_owner_or_admin(camp.owner, user)
     before = len(camp.messages)
@@ -1315,7 +1324,7 @@ async def clear_failed_messages(campaign_id: int, user: UserCtx = Depends(get_cu
         Depends(limit_dep("mark-sent", 60, 60)),
     ],
 )
-async def mark_all_sent(campaign_id: int, user: UserCtx = Depends(get_current_user)):
+async def mark_all_sent(campaign_id: int, user: User = Depends(_auth_user)):
     camp = _get_campaign_or_404(campaign_id)
     ensure_owner_or_admin(camp.owner, user)
     changed = 0
@@ -1343,7 +1352,7 @@ async def mark_all_sent(campaign_id: int, user: UserCtx = Depends(get_current_us
     ],
 )
 async def bulk_update_message_status(
-    campaign_id: int, req: BulkStatusUpdateRequest, user: UserCtx = Depends(get_current_user)
+    campaign_id: int, req: BulkStatusUpdateRequest, user: User = Depends(_auth_user)
 ):
     camp = _get_campaign_or_404(campaign_id)
     ensure_owner_or_admin(camp.owner, user)
@@ -1371,7 +1380,7 @@ async def bulk_update_message_status(
     ],
 )
 async def bulk_delete_messages(
-    campaign_id: int, req: BulkDeleteRequest, user: UserCtx = Depends(get_current_user)
+    campaign_id: int, req: BulkDeleteRequest, user: User = Depends(_auth_user)
 ):
     camp = _get_campaign_or_404(campaign_id)
     ensure_owner_or_admin(camp.owner, user)
@@ -1397,7 +1406,7 @@ async def bulk_delete_messages(
     ],
 )
 async def bulk_add_messages(
-    campaign_id: int, req: BulkMessageAddRequest, user: UserCtx = Depends(get_current_user)
+    campaign_id: int, req: BulkMessageAddRequest, user: User = Depends(_auth_user)
 ):
     camp = _get_campaign_or_404(campaign_id)
     ensure_owner_or_admin(camp.owner, user)
@@ -1443,7 +1452,7 @@ async def bulk_add_messages(
     ],
 )
 async def bulk_upsert_messages(
-    campaign_id: int, req: BulkUpsertMessageRequest, user: UserCtx = Depends(get_current_user)
+    campaign_id: int, req: BulkUpsertMessageRequest, user: User = Depends(_auth_user)
 ):
     camp = _get_campaign_or_404(campaign_id)
     ensure_owner_or_admin(camp.owner, user)
@@ -1515,7 +1524,7 @@ async def get_campaign_stats(campaign_id: int):
     response_model=dict[str, Any],
     dependencies=[Depends(require_role("admin", "manager")), Depends(debounce_dep("send", 3))],
 )
-async def send_campaign(campaign_id: int, user: UserCtx = Depends(get_current_user)):
+async def send_campaign(campaign_id: int, user: User = Depends(_auth_user)):
     camp = _get_campaign_or_404(campaign_id)
     ensure_owner_or_admin(camp.owner, user)
     _audit("send_campaign", {"id": campaign_id})
@@ -1532,7 +1541,7 @@ async def send_campaign(campaign_id: int, user: UserCtx = Depends(get_current_us
         Depends(debounce_dep("send-async", 3)),
     ],
 )
-async def send_campaign_async(campaign_id: int, user: UserCtx = Depends(get_current_user)):
+async def send_campaign_async(campaign_id: int, user: User = Depends(_auth_user)):
     camp = _get_campaign_or_404(campaign_id)
     ensure_owner_or_admin(camp.owner, user)
     out = enqueue_send_campaign(campaign_id)
@@ -1552,7 +1561,7 @@ async def send_campaign_async(campaign_id: int, user: UserCtx = Depends(get_curr
 async def schedule_campaign(
     campaign_id: int,
     schedule: ScheduleRequest = Body(...),
-    user: UserCtx = Depends(get_current_user),
+    user: User = Depends(_auth_user),
 ):
     camp = _get_campaign_or_404(campaign_id)
     ensure_owner_or_admin(camp.owner, user)
@@ -1588,7 +1597,7 @@ async def schedule_campaign(
         Depends(debounce_dep("schedule-cancel", 3)),
     ],
 )
-async def cancel_campaign_schedule(campaign_id: int, user: UserCtx = Depends(get_current_user)):
+async def cancel_campaign_schedule(campaign_id: int, user: User = Depends(_auth_user)):
     camp = _get_campaign_or_404(campaign_id)
     ensure_owner_or_admin(camp.owner, user)
     camp.schedule = None
@@ -1621,7 +1630,7 @@ async def preview_send(campaign_id: int, recipients: list[str] = Body(default_fa
         Depends(limit_dep("resend-failed", 30, 60)),
     ],
 )
-async def resend_failed(campaign_id: int, user: UserCtx = Depends(get_current_user)):
+async def resend_failed(campaign_id: int, user: User = Depends(_auth_user)):
     camp = _get_campaign_or_404(campaign_id)
     ensure_owner_or_admin(camp.owner, user)
     count = 0
@@ -1653,7 +1662,7 @@ async def get_campaign_tags(campaign_id: int):
     dependencies=[Depends(require_role("admin", "manager"))],
 )
 async def add_tag_to_campaign(
-    campaign_id: int, tag_req: AddTagRequest = Body(...), user: UserCtx = Depends(get_current_user)
+    campaign_id: int, tag_req: AddTagRequest = Body(...), user: User = Depends(_auth_user)
 ):
     campaign = _get_campaign_or_404(campaign_id)
     ensure_owner_or_admin(campaign.owner, user)
@@ -1672,7 +1681,7 @@ async def add_tag_to_campaign(
     dependencies=[Depends(require_role("admin", "manager"))],
 )
 async def remove_tag_from_campaign(
-    campaign_id: int, tag: str = Path(..., min_length=1), user: UserCtx = Depends(get_current_user)
+    campaign_id: int, tag: str = Path(..., min_length=1), user: User = Depends(_auth_user)
 ):
     campaign = _get_campaign_or_404(campaign_id)
     ensure_owner_or_admin(campaign.owner, user)
@@ -1691,7 +1700,7 @@ async def remove_tag_from_campaign(
     dependencies=[Depends(require_role("admin", "manager"))],
 )
 async def set_tags_for_campaign(
-    campaign_id: int, req: SetTagsRequest, user: UserCtx = Depends(get_current_user)
+    campaign_id: int, req: SetTagsRequest, user: User = Depends(_auth_user)
 ):
     campaign = _get_campaign_or_404(campaign_id)
     ensure_owner_or_admin(campaign.owner, user)
@@ -1709,7 +1718,7 @@ async def set_tags_for_campaign(
     dependencies=[Depends(require_role("admin", "manager"))],
 )
 async def archive_campaign(
-    campaign_id: int, req: ArchiveRequest = Body(None), user: UserCtx = Depends(get_current_user)
+    campaign_id: int, req: ArchiveRequest = Body(None), user: User = Depends(_auth_user)
 ):
     data = storage.get_campaign(campaign_id)
     if not data:
@@ -1724,7 +1733,7 @@ async def archive_campaign(
     dependencies=[Depends(require_role("admin", "manager"))],
 )
 async def restore_campaign(
-    campaign_id: int, req: RestoreRequest = Body(None), user: UserCtx = Depends(get_current_user)
+    campaign_id: int, req: RestoreRequest = Body(None), user: User = Depends(_auth_user)
 ):
     data = storage.get_campaign(campaign_id)
     if not data:
@@ -1739,7 +1748,7 @@ async def restore_campaign(
     response_model=dict[str, Any],
     dependencies=[Depends(require_role("admin", "manager"))],
 )
-async def bulk_archive_campaigns(req: BulkDeleteRequest, user: UserCtx = Depends(get_current_user)):
+async def bulk_archive_campaigns(req: BulkDeleteRequest, user: User = Depends(_auth_user)):
     archived = 0
     for cid in req.ids:
         data = storage.get_campaign(cid)
@@ -1757,7 +1766,7 @@ async def bulk_archive_campaigns(req: BulkDeleteRequest, user: UserCtx = Depends
     response_model=dict[str, Any],
     dependencies=[Depends(require_role("admin", "manager"))],
 )
-async def bulk_restore_campaigns(req: BulkDeleteRequest, user: UserCtx = Depends(get_current_user)):
+async def bulk_restore_campaigns(req: BulkDeleteRequest, user: User = Depends(_auth_user)):
     restored = 0
     for cid in req.ids:
         data = storage.get_campaign(cid)
@@ -1775,7 +1784,7 @@ async def bulk_restore_campaigns(req: BulkDeleteRequest, user: UserCtx = Depends
     response_model=dict[str, Any],
     dependencies=[Depends(require_role("admin", "manager"))],
 )
-async def bulk_delete_campaigns(req: BulkDeleteRequest, user: UserCtx = Depends(get_current_user)):
+async def bulk_delete_campaigns(req: BulkDeleteRequest, user: User = Depends(_auth_user)):
     deleted = 0
     for cid in req.ids:
         data = storage.get_campaign(cid)

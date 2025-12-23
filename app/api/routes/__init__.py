@@ -51,6 +51,7 @@ auth_mod = _try_import("app.api.v1.auth")
 users_mod = _try_import("app.api.v1.users")
 products_mod = _try_import("app.api.v1.products")
 campaigns_mod = _try_import("app.api.v1.campaigns")
+analytics_mod = _try_import("app.api.v1.analytics")
 
 # Опциональные
 wallet = _try_import("app.api.v1.wallet")
@@ -64,6 +65,7 @@ products = products_mod
 campaigns = campaigns_mod
 billing = campaigns_mod  # исторический алиас
 kaspi = kaspi_mod  # ⬅ добавлено
+analytics = analytics_mod
 
 __all__ = [
     "auth",
@@ -74,6 +76,7 @@ __all__ = [
     "wallet",
     "payments",
     "kaspi",  # ⬅ добавлено
+    "analytics",
     "V1_ROUTERS",
     "register_v1_router",
     "register_optional_v1_router",
@@ -110,6 +113,8 @@ if products_mod and _router_or_none(products_mod):
 if campaigns_mod and _router_or_none(campaigns_mod):
     # в этом модуле prefix уже абсолютный '/api/v1/campaigns'
     V1_ROUTERS.append(("campaigns", campaigns_mod.router, True))
+if analytics_mod and _router_or_none(analytics_mod):
+    V1_ROUTERS.append(("analytics", analytics_mod.router, False))
 
 # Поддержка кошелька и платежей, если модули присутствуют
 if wallet and _router_or_none(wallet):

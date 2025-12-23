@@ -40,7 +40,7 @@ from sqlalchemy.ext.asyncio import (
     async_sessionmaker,
     create_async_engine,
 )
-from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
+from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.pool import NullPool
 
 logger = logging.getLogger(__name__)
@@ -70,10 +70,15 @@ except Exception:
 
 
 # -----------------------------------------------------------------------------
-# База декларативных моделей (SQLAlchemy 2.x)
+# Base импортируется из models (единая точка истины для DeclarativeBase)
 # -----------------------------------------------------------------------------
-class Base(DeclarativeBase):
-    pass
+try:
+    from app.models.base import Base
+except ImportError:
+    # Fallback на случай ранних импортов (до инициализации models пакета)
+    from sqlalchemy.orm import DeclarativeBase
+    class Base(DeclarativeBase):
+        pass
 
 
 __all__ = [

@@ -1694,29 +1694,6 @@ def create_app() -> FastAPI:
         except Exception as e:
             logger.warning("Products API router not mounted: %s", e)
 
-    # Старые/альтернативные роутеры, если используются в проекте
-    try:
-        from app.routers.products import router as products_router
-
-        app.include_router(
-            products_router,
-            prefix=f"{getattr(settings,'API_V1_STR','/api/v1').rstrip('/')}/products",
-            tags=["products-legacy"],
-        )
-    except Exception:
-        pass
-
-    try:
-        from app.routers.users import router as users_router
-
-        app.include_router(
-            users_router,
-            prefix=f"{getattr(settings,'API_V1_STR','/api/v1').rstrip('/')}/users",
-            tags=["users"],
-        )
-    except Exception:
-        pass
-
     # ----------------------------------------------------------------------------------
     # ✅ Легаси-алиас для /api/auth/*  → /api/v1/auth/*
     # ----------------------------------------------------------------------------------

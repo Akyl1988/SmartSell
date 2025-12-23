@@ -42,7 +42,7 @@ from app.core.db import get_async_db  # noqa — для совместимост
 # Доменные зависимости/схемы:
 from app.integrations.kaspi_adapter import KaspiAdapter, KaspiAdapterError
 from app.models import Product
-from app.models.kaspi_token import KaspiStoreToken
+from app.models.marketplace import KaspiStoreToken
 from app.schemas.kaspi import (
     KaspiTokenIn,
     KaspiTokenOut,

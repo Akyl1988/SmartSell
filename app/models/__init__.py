@@ -410,6 +410,9 @@ def _iter_model_modules_pkgutil() -> list[str]:
     """
     Авто-дискавери: найдём все *реальные* подмодули в пакете app.models.
     Возвращает список полных имен модулей: app.models.<name>
+    
+    ВАЖНО: исключаем модули с дублирующими таблицами:
+    - subscription.py (дубликат Subscription из billing.py)
     """
     modules: list[str] = []
     pkg = sys.modules.get("app.models")
@@ -418,10 +421,17 @@ def _iter_model_modules_pkgutil() -> list[str]:
     pkg_path = getattr(pkg, "__path__", None)
     if not pkg_path:
         return modules
+    
+    # Модули, которые содержат дубликаты таблиц и должны быть исключены
+    DUPLICATE_MODULES = {"subscription"}  # дубликат Subscription из billing.py
+    
     for _finder, name, ispkg in pkgutil.iter_modules(pkg_path):
         if ispkg:
             continue
         if name.startswith("_") or name in {"__pycache__"}:
+            continue
+        if name in DUPLICATE_MODULES:
+            logger.debug("Skipping duplicate module: app.models.%s", name)
             continue
         full = f"app.models.{name}"
         modules.append(full)
@@ -1229,8 +1239,8 @@ def _import_domains_in_order() -> None:
     preferred_order = [
         "app.models.user",  # 1) users сначала (FK для OTP)
         None,  # 2) слот для otp — ниже решаем по условию
-        "app.models.billing",  # 3) billing
-        "app.models.subscription",  # 4) отдельный модуль подписок — если есть
+        "app.models.billing",  # 3) billing (содержит Subscription и другие модели)
+        # ПРИМЕЧАНИЕ: app.models.subscription НЕ импортируем - это дубликат Subscription из billing
         # Базовые домены
         "app.models.company",
         "app.models.customer",
@@ -1370,41 +1380,21 @@ def _auto_import_core_models() -> None:
     _force_mapper_configuration()
 
 
-# Тёплый старт при импорте пакета (безопасно и идемпотентно)
-_auto_import_core_models()
+# ------------------------------------------------------------------------------
+# ВАЖНО: Автоматические импорты при загрузке пакета ОТКЛЮЧЕНЫ
+# ------------------------------------------------------------------------------
+# Теперь модели загружаются ТОЛЬКО явным вызовом ensure_models_loaded()
+# Это даёт полный контроль и предотвращает side-effects при импорте app.models
+#
+# ДЛЯ ЗАГРУЗКИ МОДЕЛЕЙ используйте:
+#   from app.models import ensure_models_loaded
+#   ensure_models_loaded()
+#
+# Alembic автоматически вызывает ensure_models_loaded() в migrations/env.py
+# ------------------------------------------------------------------------------
 
-# Ранний безопасный импорт (не ломает ленивые экспорты)
+# Минимальная инициализация (только заглушка для order, если нужна)
 try:
-    _import_domains_in_order()
     _maybe_install_orderitem_stub()
-except Exception as _early_import_err:
-    logger.debug("Early safe import failed: %s", _early_import_err)
-
-# Доп. страховка: явные импорты без экспорта, чтобы таблицы точно попали в общий Base.metadata
-try:
-    if not RUNTIME_OPTS["DISABLE_AUTOIMPORT"]:
-        from . import audit_log as _models_audit_log  # noqa: F401
-        from . import billing as _models_billing  # noqa: F401
-        from . import campaign as _models_campaign  # noqa: F401
-        from . import company as _models_company  # noqa: F401
-        from . import customer as _models_customer  # noqa: F401
-        from . import product as _models_product  # noqa: F401
-        from . import user as _models_user  # noqa: F401
-        from . import warehouse as _models_warehouse  # noqa: F401
-
-        # OTP подгружаем опционально, если ранее не была смэплена таблица otp_codes
-        if not _is_table_mapped("otp_codes"):
-            from . import otp as _models_otp  # noqa: F401
-        # order специально НЕ импортируем жёстко — если он битый, заглушка уже установлена выше
-except Exception as _implicit_import_err:
-    logger.debug("Optional side-imports failed: %s", _implicit_import_err)
-
-# Финальный авто-догрузчик (если есть _loader.py — используем его, иначе pkgutil).
-try:
-    if not RUNTIME_OPTS["DISABLE_AUTOIMPORT"]:
-        if _auto_import_all_models:
-            _auto_import_all_models(log=False)
-        else:
-            discover_and_import_all_model_modules(with_billing=False)
-except Exception as _auto_err:
-    logger.debug("auto-import models at package import failed: %s", _auto_err)
+except Exception as _stub_err:
+    logger.debug("OrderItem stub installation failed: %s", _stub_err)

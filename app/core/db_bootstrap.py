@@ -2,7 +2,8 @@ from __future__ import annotations
 import os
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
-from app.core.db import Base, engine as default_engine  # не трогаем существующую инфраструктуру
+from app.models.base import Base  # единый источник истины для DeclarativeBase
+from app.core.db import engine as default_engine  # только engine, не Base
 from app.core.logging import get_logger
 
 log = get_logger(__name__)

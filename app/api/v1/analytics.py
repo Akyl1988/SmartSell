@@ -1,4 +1,4 @@
-# app/routers/analytics.py
+# app/api/v1/analytics.py
 from __future__ import annotations
 
 """
@@ -8,19 +8,14 @@ Analytics router for business intelligence and reporting.
 from datetime import datetime, timedelta
 from decimal import Decimal
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import and_, desc, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-# DB dependency (db / database fallback)
-try:
-    from app.core.database import get_db  # type: ignore
-except Exception:
-    from app.core.db import get_db  # type: ignore
-
+from app.core.db import get_db
 from app.core.deps import api_rate_limit_dep, ensure_idempotency
 from app.core.errors import bad_request, server_error
-from app.core.security import require_analyst
+from app.core.security import get_current_user as get_current_user_security
 from app.models import Order, OrderItem, Product, User
 from app.schemas import (
     AnalyticsFilter,
@@ -37,6 +32,31 @@ router = APIRouter(prefix="/analytics", tags=["analytics"])
 
 
 # ---------- helpers ----------
+
+
+async def _auth_user(
+    token_data: dict = Depends(get_current_user_security),
+    db: AsyncSession = Depends(get_db),
+) -> User:
+    sub = token_data.get("sub")
+    try:
+        user_id = int(sub)
+    except Exception:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED, detail="Not authenticated"
+        )
+
+    user = await db.get(User, user_id)
+    if not user:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Not authenticated")
+    return user
+
+
+async def require_analyst(user: User = Depends(_auth_user)) -> User:
+    role = getattr(user, "role", None)
+    if role not in {"analyst", "admin", "manager"}:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="forbidden")
+    return user
 
 
 def _parse_dt_or_default(value: str | None, default: datetime) -> datetime:
