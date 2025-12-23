@@ -7,7 +7,6 @@ from httpx import AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.security import get_password_hash
-from app.main import app
 from app.models import Company, OtpAttempt, User
 from app.utils.otp import hash_otp_code
 
@@ -17,7 +16,7 @@ class TestAuth:
     """Test authentication endpoints"""
 
     @pytest.mark.asyncio
-    async def test_register_user(self):
+    async def test_register_user(self, async_client: AsyncClient):
         """Test user registration"""
 
         user_data = {
@@ -29,9 +28,8 @@ class TestAuth:
             "bin_iin": "123456789012",
         }
 
-        async with AsyncClient(app=app, base_url="http://test") as client:
-            # thanks to legacy alias this path must exist
-            response = await client.post("/api/auth/register", json=user_data)
+        # thanks to legacy alias this path must exist
+        response = await async_client.post("/api/auth/register", json=user_data)
 
         assert response.status_code == 200, response.text
         data = response.json()
@@ -41,7 +39,7 @@ class TestAuth:
         assert data.get("token_type") == "bearer"
 
     @pytest.mark.asyncio
-    async def test_register_duplicate_phone(self, db_session: AsyncSession):
+    async def test_register_duplicate_phone(self, async_client: AsyncClient, db_session: AsyncSession):
         """Test registration with duplicate phone"""
 
         # Create existing user
@@ -65,15 +63,14 @@ class TestAuth:
             "company_name": "New Company",
         }
 
-        async with AsyncClient(app=app, base_url="http://test") as client:
-            response = await client.post("/api/auth/register", json=user_data)
+        response = await async_client.post("/api/auth/register", json=user_data)
 
         assert response.status_code == 400, response.text
         detail = response.json().get("detail", "")
         assert "already" in detail.lower() or "exists" in detail.lower()
 
     @pytest.mark.asyncio
-    async def test_login_with_password(self, db_session: AsyncSession):
+    async def test_login_with_password(self, async_client: AsyncClient, db_session: AsyncSession):
         """Test login with password"""
 
         # Create user
@@ -93,8 +90,7 @@ class TestAuth:
         # Login
         login_data = {"phone": "+77001234567", "password": "password123"}
 
-        async with AsyncClient(app=app, base_url="http://test") as client:
-            response = await client.post("/api/auth/login", json=login_data)
+        response = await async_client.post("/api/auth/login", json=login_data)
 
         assert response.status_code == 200, response.text
         data = response.json()
@@ -103,7 +99,7 @@ class TestAuth:
         assert "refresh_token" in data
 
     @pytest.mark.asyncio
-    async def test_login_invalid_credentials(self, db_session: AsyncSession):
+    async def test_login_invalid_credentials(self, async_client: AsyncClient, db_session: AsyncSession):
         """Test login with invalid credentials"""
 
         # Create user
@@ -123,13 +119,12 @@ class TestAuth:
         # Login with wrong password
         login_data = {"phone": "+77001234567", "password": "wrongpassword"}
 
-        async with AsyncClient(app=app, base_url="http://test") as client:
-            response = await client.post("/api/auth/login", json=login_data)
+        response = await async_client.post("/api/auth/login", json=login_data)
 
         assert response.status_code == 401
 
     @pytest.mark.asyncio
-    async def test_login_with_otp(self, db_session: AsyncSession):
+    async def test_login_with_otp(self, async_client: AsyncClient, db_session: AsyncSession):
         """Test login with OTP"""
 
         # Create user
@@ -151,8 +146,7 @@ class TestAuth:
         # Login with OTP
         login_data = {"phone": "+77001234567", "otp_code": otp_code}
 
-        async with AsyncClient(app=app, base_url="http://test") as client:
-            response = await client.post("/api/auth/login", json=login_data)
+        response = await async_client.post("/api/auth/login", json=login_data)
 
         assert response.status_code == 200, response.text
         data = response.json()
@@ -161,22 +155,21 @@ class TestAuth:
         assert "refresh_token" in data
 
     @pytest.mark.asyncio
-    async def test_send_otp(self):
+    async def test_send_otp(self, async_client: AsyncClient):
         """Test sending OTP"""
 
         # В реальном тесте сервис Mobizon нужно мокать.
         # Здесь проверяем только, что эндпоинт существует и отвечает корректным кодом.
-        async with AsyncClient(app=app, base_url="http://test") as client:
-            response = await client.post(
-                "/api/auth/send-otp",
-                params={"phone": "+77001234567", "purpose": "login"},
-            )
+        response = await async_client.post(
+            "/api/auth/send-otp",
+            params={"phone": "+77001234567", "purpose": "login"},
+        )
 
         # В зависимости от конфигурации может вернуться 200 (успех) или 500 (ошибка внешнего сервиса).
         assert response.status_code in (200, 500)
 
     @pytest.mark.asyncio
-    async def test_refresh_token(self, db_session: AsyncSession):
+    async def test_refresh_token(self, async_client: AsyncClient, db_session: AsyncSession):
         """Test token refresh"""
 
         # Create user and get tokens first
@@ -196,14 +189,13 @@ class TestAuth:
         # Login to get tokens
         login_data = {"phone": "+77001234567", "password": "password123"}
 
-        async with AsyncClient(app=app, base_url="http://test") as client:
-            login_response = await client.post("/api/auth/login", json=login_data)
-            assert login_response.status_code == 200, login_response.text
-            tokens = login_response.json()
+        login_response = await async_client.post("/api/auth/login", json=login_data)
+        assert login_response.status_code == 200, login_response.text
+        tokens = login_response.json()
 
-            # Use refresh token
-            refresh_data = {"refresh_token": tokens["refresh_token"]}
-            response = await client.post("/api/auth/token/refresh", json=refresh_data)
+        # Use refresh token
+        refresh_data = {"refresh_token": tokens["refresh_token"]}
+        response = await async_client.post("/api/auth/token/refresh", json=refresh_data)
 
         assert response.status_code == 200, response.text
         data = response.json()
@@ -212,7 +204,7 @@ class TestAuth:
         assert "refresh_token" in data
 
     @pytest.mark.asyncio
-    async def test_get_current_user(self, db_session: AsyncSession):
+    async def test_get_current_user(self, async_client: AsyncClient, db_session: AsyncSession):
         """Test getting current user info"""
 
         # Create user and get token
@@ -234,14 +226,13 @@ class TestAuth:
         # Login to get token
         login_data = {"phone": "+77001234567", "password": "password123"}
 
-        async with AsyncClient(app=app, base_url="http://test") as client:
-            login_response = await client.post("/api/auth/login", json=login_data)
-            assert login_response.status_code == 200, login_response.text
-            tokens = login_response.json()
+        login_response = await async_client.post("/api/auth/login", json=login_data)
+        assert login_response.status_code == 200, login_response.text
+        tokens = login_response.json()
 
-            # Get user info
-            headers = {"Authorization": f"Bearer {tokens['access_token']}"}
-            response = await client.get("/api/auth/me", headers=headers)
+        # Get user info
+        headers = {"Authorization": f"Bearer {tokens['access_token']}"}
+        response = await async_client.get("/api/auth/me", headers=headers)
 
         assert response.status_code == 200, response.text
         data = response.json()
@@ -252,7 +243,7 @@ class TestAuth:
         assert data.get("role") == "admin"
 
     @pytest.mark.asyncio
-    async def test_change_password(self, db_session: AsyncSession):
+    async def test_change_password(self, async_client: AsyncClient, db_session: AsyncSession):
         """Test password change"""
 
         # Create user
@@ -272,49 +263,45 @@ class TestAuth:
         # Login to get token
         login_data = {"phone": "+77001234567", "password": "oldpassword"}
 
-        async with AsyncClient(app=app, base_url="http://test") as client:
-            login_response = await client.post("/api/auth/login", json=login_data)
-            assert login_response.status_code == 200, login_response.text
-            tokens = login_response.json()
+        login_response = await async_client.post("/api/auth/login", json=login_data)
+        assert login_response.status_code == 200, login_response.text
+        tokens = login_response.json()
 
-            # Change password
-            headers = {"Authorization": f"Bearer {tokens['access_token']}"}
-            password_data = {
-                "current_password": "oldpassword",
-                "new_password": "newpassword123",
-            }
+        # Change password
+        headers = {"Authorization": f"Bearer {tokens['access_token']}"}
+        password_data = {
+            "current_password": "oldpassword",
+            "new_password": "newpassword123",
+        }
 
-            response = await client.post(
-                "/api/auth/change-password", json=password_data, headers=headers
-            )
+        response = await async_client.post(
+            "/api/auth/change-password", json=password_data, headers=headers
+        )
 
         assert response.status_code == 200, response.text
 
         # Verify new password works
         login_data = {"phone": "+77001234567", "password": "newpassword123"}
 
-        async with AsyncClient(app=app, base_url="http://test") as client:
-            response = await client.post("/api/auth/login", json=login_data)
+        response = await async_client.post("/api/auth/login", json=login_data)
 
         assert response.status_code == 200, response.text
 
     @pytest.mark.asyncio
-    async def test_unauthorized_access(self):
+    async def test_unauthorized_access(self, async_client: AsyncClient):
         """Test accessing protected endpoint without token"""
 
-        async with AsyncClient(app=app, base_url="http://test") as client:
-            response = await client.get("/api/auth/me")
+        response = await async_client.get("/api/auth/me")
 
         assert response.status_code == 401
 
     @pytest.mark.asyncio
-    async def test_invalid_token(self):
+    async def test_invalid_token(self, async_client: AsyncClient):
         """Test accessing protected endpoint with invalid token"""
 
         headers = {"Authorization": "Bearer invalid_token"}
 
-        async with AsyncClient(app=app, base_url="http://test") as client:
-            response = await client.get("/api/auth/me", headers=headers)
+        response = await async_client.get("/api/auth/me", headers=headers)
 
         assert response.status_code == 401
 

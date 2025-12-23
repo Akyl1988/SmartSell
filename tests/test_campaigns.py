@@ -65,17 +65,20 @@ TestingSessionLocal = sessionmaker(
 )
 
 
-def override_get_db():
-    db = TestingSessionLocal()
-    try:
-        yield db
-    finally:
-        db.close()
-
-
-# Подменяем зависимость приложения на наш тестовый Session
-app.dependency_overrides[get_db] = override_get_db
-client = TestClient(app)
+@pytest.fixture
+def client():
+    """TestClient with dependency overrides."""
+    def override_get_db():
+        db = TestingSessionLocal()
+        try:
+            yield db
+        finally:
+            db.close()
+    
+    app.dependency_overrides[get_db] = override_get_db
+    with TestClient(app) as c:
+        yield c
+    app.dependency_overrides.clear()
 
 
 # ------------------ HELPERS ------------------
@@ -128,7 +131,7 @@ def setup_database():
 
 
 @pytest.fixture(scope="module")
-def seeded_campaign_id(setup_database) -> int | None:
+def seeded_campaign_id(setup_database, client) -> int | None:
     """
     Создаёт кампанию через публичный API и возвращает её id.
     Если ручка недоступна (404), вернём None — тесты с действиями будут skip.
@@ -163,7 +166,7 @@ def seeded_campaign_id(setup_database) -> int | None:
 
 # ------------------ CAMPAIGN CRUD ------------------
 @pytest.mark.parametrize("title", ["Test Campaign", "Promo Campaign"])
-def test_create_campaign(title, setup_database):
+def test_create_campaign(title, setup_database, client):
     payload = {
         "title": title,
         "description": f"{title} description",
@@ -188,7 +191,7 @@ def test_create_campaign(title, setup_database):
     assert msgs[0].get("status") == MessageStatus.PENDING.value
 
 
-def test_get_campaigns(setup_database):
+def test_get_campaigns(setup_database, client):
     resp = client.get("/api/v1/campaigns/")
     assert resp.status_code == 200, resp.text
     items, meta = _ensure_list_or_items_meta(resp.json())
@@ -197,7 +200,7 @@ def test_get_campaigns(setup_database):
     assert isinstance(items, list)
 
 
-def test_get_campaign_by_id(seeded_campaign_id):
+def test_get_campaign_by_id(seeded_campaign_id, client):
     if not seeded_campaign_id:
         pytest.skip("Campaign create/list API is not available")
     resp = client.get(f"/api/v1/campaigns/{seeded_campaign_id}")
@@ -206,7 +209,7 @@ def test_get_campaign_by_id(seeded_campaign_id):
     assert "title" in data and "description" in data
 
 
-def test_update_campaign(seeded_campaign_id):
+def test_update_campaign(seeded_campaign_id, client):
     if not seeded_campaign_id:
         pytest.skip("Campaign PUT API not available or campaign missing")
     payload = {
@@ -223,7 +226,7 @@ def test_update_campaign(seeded_campaign_id):
     assert data.get("description") == payload["description"]
 
 
-def test_delete_campaign_independent():
+def test_delete_campaign_independent(client):
     """
     Удаляем НЕ seeded-кампанию, чтобы не ломать остальные тесты.
     """
@@ -243,7 +246,7 @@ def test_delete_campaign_independent():
 
 
 # ------------------ TAGS / MESSAGES / STATS ------------------
-def test_campaign_tags(seeded_campaign_id):
+def test_campaign_tags(seeded_campaign_id, client):
     if not seeded_campaign_id:
         pytest.skip("Tags API not implemented for this campaign")
     payload = {"tag": "promo"}
@@ -255,7 +258,7 @@ def test_campaign_tags(seeded_campaign_id):
     assert "promo" in [t.lower() for t in tags]
 
 
-def test_add_message_to_campaign(seeded_campaign_id):
+def test_add_message_to_campaign(seeded_campaign_id, client):
     if not seeded_campaign_id:
         pytest.skip("Messages API not implemented for this campaign")
     payload = {
@@ -268,7 +271,7 @@ def test_add_message_to_campaign(seeded_campaign_id):
     assert _is_ok(resp, (200, 201)), resp.text
 
 
-def test_list_campaign_messages(seeded_campaign_id):
+def test_list_campaign_messages(seeded_campaign_id, client):
     if not seeded_campaign_id:
         pytest.skip("Messages listing not implemented for this campaign")
     resp = client.get(f"/api/v1/campaigns/{seeded_campaign_id}/messages")
@@ -277,7 +280,7 @@ def test_list_campaign_messages(seeded_campaign_id):
     assert isinstance(body, list) or (isinstance(body, dict) and "items" in body)
 
 
-def test_get_campaign_stats(seeded_campaign_id):
+def test_get_campaign_stats(seeded_campaign_id, client):
     if not seeded_campaign_id:
         pytest.skip("Stats not implemented for this campaign")
     resp = client.get(f"/api/v1/campaigns/{seeded_campaign_id}/stats")

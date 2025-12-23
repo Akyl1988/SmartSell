@@ -159,28 +159,26 @@ def test_e2e_models_happy_path(db_session, company, admin_user, product, warehou
 
 # ---------- HTTP SMOKE (если есть FastAPI-приложение) ----------
 @pytest.mark.anyio
-async def test_http_smoke_if_app_exists():
+async def test_http_smoke_if_app_exists(async_client):
     try:
         from app.main import create_app
     except Exception:
         pytest.skip("FastAPI app is not importable; skipping HTTP smoke.")
-    app = create_app()
 
     try:
         import httpx
     except Exception:
         pytest.skip("httpx is not installed; skipping HTTP smoke.")
 
-    async with httpx.AsyncClient(app=app, base_url="http://test") as ac:
-        # health/live/ready — адаптируйте под ваши эндпоинты
-        for path in ("/", "/health", "/live", "/ready"):
-            resp = await ac.get(path)
-            # допускаем, что некоторых маршрутов может не быть
-            assert resp.status_code in (200, 404)
-            if resp.status_code == 200:
-                # убедимся, что это JSON/текст — но без строгой схемы
-                _ = resp.text
+    # health/live/ready — адаптируйте под ваши эндпоинты
+    for path in ("/", "/health", "/live", "/ready"):
+        resp = await async_client.get(path)
+        # допускаем, что некоторых маршрутов может не быть
+        assert resp.status_code in (200, 404)
+        if resp.status_code == 200:
+            # убедимся, что это JSON/текст — но без строгой схемы
+            _ = resp.text
 
-        # Пример смоук-вызова API (если есть)
-        # resp = await ac.get("/api/v1/products?limit=1")
-        # assert resp.status_code in (200, 404)
+    # Пример смоук-вызова API (если есть)
+    # resp = await async_client.get("/api/v1/products?limit=1")
+    # assert resp.status_code in (200, 404)
