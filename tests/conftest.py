@@ -203,26 +203,26 @@ def _import_app_and_get_db() -> tuple[Any, Callable[..., AsyncIterator[AsyncSess
         raise RuntimeError(f"Cannot import FastAPI app from app.main: {e}") from e
 
     # РРјРїРѕСЂС‚ get_db
-    get_db = None
+    get_async_db_func = None
     # РќРѕРІС‹Р№ РїСѓС‚СЊ
     try:
-        from app.core.db import get_db as _get_db  # type: ignore
+        from app.core.db import get_async_db as _get_async_db  # type: ignore
 
-        get_db = _get_db
+        get_async_db_func = _get_async_db
     except Exception:
         pass
     # РЎС‚Р°СЂС‹Р№ РїСѓС‚СЊ (РґР»СЏ РѕР±СЂР°С‚РЅРѕР№ СЃРѕРІРјРµСЃС‚РёРјРѕСЃС‚Рё)
-    if get_db is None:
+    if get_async_db_func is None:
         try:
-            from app.core.database import get_db as _get_db  # type: ignore
+            from app.core.database import get_async_db as _get_async_db  # type: ignore
 
-            get_db = _get_db
+            get_async_db_func = _get_async_db
         except Exception as e:
             raise RuntimeError(
-                f"Cannot import get_db from app.core.db or app.core.database: {e}"
+                f"Cannot import get_async_db from app.core.db or app.core.database: {e}"
             ) from e
 
-    return app, get_db  # type: ignore[return-value]
+    return app, get_async_db_func  # type: ignore[return-value]
 
 
 def _import_all_models_once() -> bool:
@@ -556,8 +556,8 @@ async def _override_get_db() -> AsyncIterator[AsyncSession]:
 
 @pytest_asyncio.fixture
 async def async_client(test_db: None) -> AsyncIterator[AsyncClient]:
-    app, get_db = _import_app_and_get_db()
-    app.dependency_overrides[get_db] = _override_get_db  # type: ignore[index]
+    app, get_async_db = _import_app_and_get_db()
+    app.dependency_overrides[get_async_db] = _override_get_db  # type: ignore[index]
     async with AsyncClient(app=app, base_url="http://test") as client:
         try:
             yield client

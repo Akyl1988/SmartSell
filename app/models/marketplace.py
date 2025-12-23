@@ -225,9 +225,8 @@ class KaspiStoreToken(Base):
 
 class ProductMarketplacePrice(Base):
     __tablename__ = "product_marketplace_price"
-    __table_args__ = (
-        {'schema': 'public'},
-    )
+    __table_args__ = ()  # Removed schema='public' for SQLite compatibility
+    
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
     product_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
     marketplace: Mapped[str] = mapped_column(String(32), nullable=False)

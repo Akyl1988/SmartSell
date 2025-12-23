@@ -389,6 +389,8 @@ __all__ = [
     "discover_and_import_all_model_modules",
     # Dev helpers
     "reload_all_model_modules",
+    # Test helpers
+    "import_models_once",
 ]
 
 
@@ -509,6 +511,14 @@ def import_all_models() -> list[Any]:
 
     _force_mapper_configuration()
     return modules
+
+
+# ------------------------------------------------------------------------------
+# Simple one-shot import for tests
+# ------------------------------------------------------------------------------
+def import_models_once() -> None:
+    """Ensure all domain model modules are imported once (idempotent)."""
+    ensure_models_loaded()
 
 
 def _force_mapper_configuration() -> None:
