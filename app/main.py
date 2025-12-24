@@ -1698,66 +1698,13 @@ def create_app() -> FastAPI:
     # ✅ Легаси-алиас для /api/auth/*  → /api/v1/auth/*
     # ----------------------------------------------------------------------------------
     if not _has_path_prefix(app, "/api/auth"):
-        mounted = False
         try:
             from app.api.v1.auth import router as auth_v1_router  # type: ignore
 
-            v1_prefix = (getattr(auth_v1_router, "prefix", "") or "").strip()
-            if v1_prefix.startswith("/auth"):
-                app.include_router(auth_v1_router, prefix="/api", tags=["auth-legacy"])
-                mounted = True
-                logger.info("Mounted /api/auth from v1 router (prefix '/auth' + '/api').")
-        except Exception:
-            pass
-
-        if not mounted:
-            auth_alias = APIRouter(prefix="/api/auth", tags=["auth-legacy"])
-
-            # Важно: используем 307, чтобы сохранить метод/тело запроса
-            @auth_alias.post("/register")
-            async def _auth_register_alias() -> RedirectResponse:
-                return RedirectResponse(
-                    url=f"{getattr(settings,'API_V1_STR','/api/v1').rstrip('/')}/auth/register",
-                    status_code=307,
-                )
-
-            @auth_alias.post("/login")
-            async def _auth_login_alias() -> RedirectResponse:
-                return RedirectResponse(
-                    url=f"{getattr(settings,'API_V1_STR','/api/v1').rstrip('/')}/auth/login",
-                    status_code=307,
-                )
-
-            @auth_alias.post("/token/refresh")
-            async def _auth_refresh_alias() -> RedirectResponse:
-                return RedirectResponse(
-                    url=f"{getattr(settings,'API_V1_STR','/api/v1').rstrip('/')}/auth/refresh",
-                    status_code=307,
-                )
-
-            @auth_alias.get("/me")
-            async def _auth_me_alias() -> RedirectResponse:
-                return RedirectResponse(
-                    url=f"{getattr(settings,'API_V1_STR','/api/v1').rstrip('/')}/auth/me",
-                    status_code=307,
-                )
-
-            @auth_alias.post("/change-password")
-            async def _auth_change_password_alias() -> RedirectResponse:
-                return RedirectResponse(
-                    url=f"{getattr(settings,'API_V1_STR','/api/v1').rstrip('/')}/auth/change-password",
-                    status_code=307,
-                )
-
-            @auth_alias.post("/send-otp")
-            async def _auth_send_otp_alias() -> RedirectResponse:
-                return RedirectResponse(
-                    url=f"{getattr(settings,'API_V1_STR','/api/v1').rstrip('/')}/auth/request-otp",
-                    status_code=307,
-                )
-
-            app.include_router(auth_alias)
-            logger.info("Mounted /api/auth legacy alias via 307 redirects to /api/v1/auth/*")
+            app.include_router(auth_v1_router, prefix="/api", tags=["auth-legacy"])
+            logger.info("Mounted /api/auth via real v1 auth router (prefix '/api' + '/auth').")
+        except Exception as e:
+            logger.exception("Failed to mount /api/auth via v1 auth router: %s", e)
 
     # Static/media  — избегаем truthy-check на классе (mypy: truthy-function)
     try:  # pragma: no cover
