@@ -3,13 +3,9 @@ import json
 from decimal import Decimal
 
 import pytest
-from sqlalchemy import create_engine
-from sqlalchemy.orm import sessionmaker
 
 # Импорт моделей/утилит из проекта
 import app.models  # важно: прогревает маппинги
-from app.models import metadata_create_all
-from app.models.base import BaseModel
 from app.models.company import Company
 from app.models.product import Product
 from app.models.user import OTPCode, User, UserSession
@@ -20,19 +16,6 @@ from app.models.warehouse import (
     margin_report,
     movements_analytics,
 )
-
-
-# ---------- БАЗОВЫЕ ФИКСТУРЫ ДЛЯ МОДЕЛЕЙ ----------
-@pytest.fixture(scope="function")
-def db_session():
-    engine = create_engine("sqlite:///:memory:")
-    metadata_create_all(engine)
-    Session = sessionmaker(bind=engine)
-    s = Session()
-    try:
-        yield s
-    finally:
-        s.close()
 
 
 @pytest.fixture

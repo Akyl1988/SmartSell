@@ -4,7 +4,7 @@ from urllib.parse import urlparse
 
 import pytest
 from fastapi.testclient import TestClient
-from sqlalchemy import create_engine, text
+from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
 # ------------------ ENVIRONMENT ------------------
@@ -12,9 +12,9 @@ os.environ["TESTING"] = "1"
 
 # Пытаемся импортировать DI и Base из приложения
 try:
-    from app.core.database import Base, get_db
+    from app.core.database import get_db
 except ImportError:
-    from app.core.db import Base, get_db
+    from app.core.db import get_db
 
 from app.core.config import get_settings
 from app.main import app
@@ -57,28 +57,34 @@ engine = create_engine(
     future=True,
 )
 
-TestingSessionLocal = sessionmaker(
-    bind=engine,
-    autocommit=False,
-    autoflush=False,
-    expire_on_commit=False,
-)
-
-
 @pytest.fixture
-def client():
-    """TestClient with dependency overrides."""
+def client(test_db: None):
+    """TestClient with transactional DB override per-test."""
+
+    connection = engine.connect()
+    trans = connection.begin()
+    SessionLocal = sessionmaker(
+        bind=connection,
+        autocommit=False,
+        autoflush=False,
+        expire_on_commit=False,
+    )
+
     def override_get_db():
-        db = TestingSessionLocal()
+        db = SessionLocal()
         try:
             yield db
         finally:
             db.close()
-    
+
     app.dependency_overrides[get_db] = override_get_db
     with TestClient(app) as c:
-        yield c
-    app.dependency_overrides.clear()
+        try:
+            yield c
+        finally:
+            app.dependency_overrides.clear()
+            trans.rollback()
+            connection.close()
 
 
 # ------------------ HELPERS ------------------
@@ -98,40 +104,8 @@ def _ensure_list_or_items_meta(resp_json):
 
 
 # ------------------ MODULE FIXTURES ------------------
-@pytest.fixture(scope="module", autouse=True)
-def _module_cleanup():
-    # На входе — убедимся, что подключение рабочее (и время ожидания маленькое)
-    with engine.connect() as conn:
-        # На всякий случай включим небольшой statement_timeout
-        try:
-            conn.execute(text("SET statement_timeout TO 3000"))  # 3s
-        except Exception:
-            pass
-    yield
-    # После прогона: роняем схему и освобождаем пул
-    try:
-        Base.metadata.drop_all(bind=engine)
-    finally:
-        try:
-            engine.dispose()
-        except Exception:
-            pass
-
-
 @pytest.fixture(scope="module")
-def setup_database():
-    """
-    Создаём всю схему на отдельном тестовом движке.
-    Если у вас используются миграции — здесь лучше вызывать Alembic.
-    """
-    Base.metadata.create_all(bind=engine)
-    yield
-    # Можно выполнить TRUNCATE для ускорения следующих модулей,
-    # но мы drop_all делаем в _module_cleanup, так что не обязательно.
-
-
-@pytest.fixture(scope="module")
-def seeded_campaign_id(setup_database, client) -> int | None:
+def seeded_campaign_id(client) -> int | None:
     """
     Создаёт кампанию через публичный API и возвращает её id.
     Если ручка недоступна (404), вернём None — тесты с действиями будут skip.
@@ -166,7 +140,7 @@ def seeded_campaign_id(setup_database, client) -> int | None:
 
 # ------------------ CAMPAIGN CRUD ------------------
 @pytest.mark.parametrize("title", ["Test Campaign", "Promo Campaign"])
-def test_create_campaign(title, setup_database, client):
+def test_create_campaign(title, client):
     payload = {
         "title": title,
         "description": f"{title} description",
@@ -191,7 +165,7 @@ def test_create_campaign(title, setup_database, client):
     assert msgs[0].get("status") == MessageStatus.PENDING.value
 
 
-def test_get_campaigns(setup_database, client):
+def test_get_campaigns(client):
     resp = client.get("/api/v1/campaigns/")
     assert resp.status_code == 200, resp.text
     items, meta = _ensure_list_or_items_meta(resp.json())

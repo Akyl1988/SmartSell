@@ -3,32 +3,13 @@
 from datetime import datetime
 
 import pytest
-from sqlalchemy import create_engine
-from sqlalchemy.orm import sessionmaker
 
 # --- Импортируем модели и общую Base ---
 import app.models  # важно, чтобы подтянулись все ORM-классы
 from app.models.audit_log import AuditLog
-from app.models.base import Base, BaseModel
 from app.models.product import Product
 from app.models.user import OTPCode, User, UserSession
 from app.models.warehouse import StockMovement
-
-
-@pytest.fixture
-def db_session():
-    """Create test database session (SQLite in-memory)."""
-    engine = create_engine("sqlite:///:memory:")
-    # Используем ту же Base, что и все модели проекта
-    Base.metadata.create_all(bind=engine)
-    SessionLocal = sessionmaker(bind=engine)
-    session = SessionLocal()
-    try:
-        yield session
-    finally:
-        session.close()
-        # Внимание: НЕ вызываем clear_mappers(), чтобы не ломать глобальные мапперы.
-
 
 class TestUser:
     """Test User model."""

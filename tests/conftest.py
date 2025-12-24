@@ -29,6 +29,8 @@ from typing import Any, Dict, List, Optional, Set, Tuple
 
 import pytest
 import pytest_asyncio
+from alembic import command
+from alembic.config import Config
 
 # SQLAlchemy
 import sqlalchemy as sa
@@ -190,6 +192,17 @@ def _get_async_test_url() -> str:
     return url
 
 
+def _make_sync_test_url(async_url: str) -> str:
+    """Конвертируем asyncpg DSN в sync (psycopg2) для Alembic/psycopg2 задач."""
+    if async_url.startswith("postgresql+asyncpg://"):
+        return "postgresql+psycopg2://" + async_url.split("postgresql+asyncpg://", 1)[1]
+    if async_url.startswith("postgresql+psycopg2://"):
+        return async_url
+    if async_url.startswith("postgresql://"):
+        return async_url
+    return async_url.replace("postgresql+asyncpg", "postgresql+psycopg2")
+
+
 def _import_app_and_get_db() -> tuple[Any, Callable[..., AsyncIterator[AsyncSession]]]:
     """
     Р’РѕР·РІСЂР°С‰Р°РµС‚ (app, get_db). РџРѕРґРґРµСЂР¶РёРІР°РµС‚ РѕР±Р° СЂР°СЃРїРѕР»РѕР¶РµРЅРёСЏ:
@@ -279,6 +292,7 @@ def _bootstrap_minimal_models() -> None:
 # ======================================================================================
 
 TEST_DATABASE_URL = _get_async_test_url()
+SYNC_TEST_DATABASE_URL = _make_sync_test_url(TEST_DATABASE_URL)
 
 test_engine: AsyncEngine = create_async_engine(
     TEST_DATABASE_URL,
@@ -493,38 +507,80 @@ def _ensure_patch_create_all_for_postgres() -> None:
 # ======================================================================================
 
 
-@pytest_asyncio.fixture(scope="session")
-async def test_db() -> AsyncIterator[None]:
-    """
-    РЎРѕР·РґР°С‚СЊ Р’РЎР® СЃС…РµРјСѓ Р‘Р” РѕРґРёРЅ СЂР°Р· РїРµСЂРµРґ С‚РµСЃС‚Р°РјРё Рё СЃРЅРµСЃС‚Рё РµС‘ РїРѕСЃР»Рµ.
-    РўРѕР»СЊРєРѕ РґР»СЏ Postgres (РёРЅС‚РµРіСЂР°С†РёРѕРЅРЅС‹Рµ С‚РµСЃС‚С‹).
-    """
-    global _MODELS_IMPORTED_ONCE  # С„РёРєСЃ UnboundLocalError РІ СЌС‚РѕР№ РєРѕСЂСѓС‚РёРЅРµ С‚РѕР¶Рµ
+@pytest.fixture(scope="session")
+def test_db() -> Iterator[None]:
+    """Разворачиваем схему через Alembic upgrade head и откатываемся после тестов."""
+    global test_engine, sync_engine, TestingSessionLocal
 
-    _ensure_patch_create_all_for_postgres()
+    sync_url = SYNC_TEST_DATABASE_URL
+    os.environ["DATABASE_URL"] = sync_url
 
-    import app.models as m  # type: ignore
+    # Guard: operate only on test databases
+    if "test" not in sync_url.lower():
+        raise RuntimeError(f"Refusing to migrate non-test database URL: {sync_url}")
 
-    if not _MODELS_IMPORTED_ONCE:
-        # Р•СЃР»Рё import_* РЅРµРґРѕСЃС‚СѓРїРµРЅ вЂ” fallback РЅР° РјРёРЅРёРјР°Р»СЊРЅС‹Р№ bootstrap
-        if not _import_all_models_once():
-            _bootstrap_minimal_models()
-        _MODELS_IMPORTED_ONCE = True  # РѕС‚РјРµС‚РёС‚СЊ, С‡С‚Рѕ РґРѕРјРµРЅ Р·Р°РіСЂСѓР¶РµРЅ
-
-    async with test_engine.begin() as conn:
-        await conn.run_sync(lambda sync_conn: m.Base.metadata.create_all(bind=sync_conn))
-
+    # Dispose all existing engines before schema reset
     try:
-        if hasattr(m, "assert_relationships_resolved"):
-            m.assert_relationships_resolved()  # type: ignore[attr-defined]
-    except Exception as e:
-        raise RuntimeError(f"Model relationship/FK unresolved after create_all: {e}") from e
+        await_future = test_engine.dispose()
+        if hasattr(await_future, "__await__"):
+            asyncio.run(await_future)
+    except Exception:
+        pass
+    try:
+        sync_engine.dispose()
+    except Exception:
+        pass
+
+    # Reset public schema to avoid duplicates across runs
+    eng = sa.create_engine(sync_url, future=True)
+    with eng.connect() as conn:
+        conn = conn.execution_options(isolation_level="AUTOCOMMIT")
+        try:
+            conn.execute(text('DROP SCHEMA IF EXISTS public CASCADE'))
+        except Exception:
+            pass
+        conn.execute(text('CREATE SCHEMA IF NOT EXISTS public'))
+        # Best-effort default grants
+        try:
+            conn.execute(text('GRANT ALL ON SCHEMA public TO postgres'))
+            conn.execute(text('GRANT ALL ON SCHEMA public TO public'))
+        except Exception:
+            pass
+    eng.dispose()
+
+    cfg = Config("alembic.ini")
+    cfg.set_main_option("sqlalchemy.url", sync_url)
+
+    command.upgrade(cfg, "head")
+
+    # Re-create engines post-upgrade
+    test_engine = create_async_engine(
+        TEST_DATABASE_URL,
+        echo=False,
+        pool_pre_ping=True,
+        poolclass=NullPool,
+        future=True,
+    )
+    TestingSessionLocal = async_sessionmaker(
+        bind=test_engine,
+        class_=AsyncSession,
+        expire_on_commit=False,
+    )
+    sync_engine = sa.create_engine(
+        SYNC_DATABASE_URL,
+        pool_pre_ping=True,
+        poolclass=sa.pool.NullPool,
+        future=True,
+    )
 
     try:
         yield
     finally:
-        async with test_engine.begin() as conn:
-            await conn.run_sync(lambda sync_conn: m.Base.metadata.drop_all(bind=sync_conn))
+        try:
+            command.downgrade(cfg, "base")
+        except Exception:
+            # Если даунгрейд не удался, не роняем всю сессию тестов
+            pass
 
 
 # ======================================================================================
@@ -547,6 +603,7 @@ def event_loop() -> Iterator[asyncio.AbstractEventLoop]:
 
 
 async def _override_get_db() -> AsyncIterator[AsyncSession]:
+    global TestingSessionLocal
     async with TestingSessionLocal() as session:
         try:
             yield session
@@ -607,12 +664,6 @@ async def db_reset(async_db_session: AsyncSession) -> AsyncIterator[None]:
     sql = "TRUNCATE " + ", ".join(f'"{name}"' for name in tablenames) + " RESTART IDENTITY CASCADE"
     await async_db_session.execute(text(sql))
     await async_db_session.commit()
-
-
-@pytest_asyncio.fixture
-async def db_session(async_db_session: AsyncSession) -> AsyncIterator[AsyncSession]:
-    """Alias for async_db_session for backward compatibility."""
-    yield async_db_session
 
 
 # ======================================================================================
@@ -790,13 +841,7 @@ import os
 import sqlalchemy as sa
 from sqlalchemy.orm import sessionmaker
 
-# Р‘РµСЂС‘Рј sync-DSN: СЏРІРЅС‹Р№ TEST_DATABASE_URL_SYNC, РёРЅР°С‡Рµ DATABASE_URL.
-# РћР‘РЇР—РђРўР•Р›Р¬РќРћ СЃ sslmode=disable (С‡С‚РѕР±С‹ РЅРµ С‚СЂРµР±РѕРІР°С‚СЊ SSL Сѓ Р»РѕРєР°Р»СЊРЅРѕРіРѕ Postgres).
-SYNC_DATABASE_URL = (
-    os.getenv("TEST_DATABASE_URL_SYNC")
-    or os.getenv("DATABASE_URL")
-    or "postgresql+psycopg2://postgres:admin123@localhost:5432/SmartSellTest?sslmode=disable"
-)
+SYNC_DATABASE_URL = SYNC_TEST_DATABASE_URL
 
 sync_engine = sa.create_engine(
     SYNC_DATABASE_URL,
@@ -805,17 +850,21 @@ sync_engine = sa.create_engine(
     future=True,
 )
 
-SessionLocal = sessionmaker(bind=sync_engine, expire_on_commit=False, autoflush=False)
-
 
 @pytest.fixture
-def db_session():
-    """
-    РЎРРќРҐР РћРќРќРђРЇ СЃРµСЃСЃРёСЏ РґР»СЏ С‚РµСЃС‚РѕРІ, РєРѕС‚РѕСЂС‹Рµ Р¶РґСѓС‚ РёРјРµРЅРЅРѕ sync Session.
-    Р–РёРІС‘С‚ РІ РїСЂРµРґРµР»Р°С… С‚РµСЃС‚Р°, Р°РєРєСѓСЂР°С‚РЅРѕ Р·Р°РєСЂС‹РІР°РµС‚СЃСЏ.
-    """
-    with SessionLocal() as s:
-        yield s
+def db_session(test_db: None):
+    """СЃРёРЅС…СЂРѕРЅРЅР°СЏ Session Рё С‚СЂР°РЅР·Р°РєС†РёРѕРЅРЅС‹Р№ rollback РґР»СЏ РєР°Р¶РґРѕРіРѕ С‚РµСЃС‚Р°."""
+    global sync_engine
+    connection = sync_engine.connect()
+    trans = connection.begin()
+    SessionLocal = sessionmaker(bind=connection, expire_on_commit=False, autoflush=False)
+    session = SessionLocal()
+    try:
+        yield session
+    finally:
+        session.close()
+        trans.rollback()
+        connection.close()
 
 
 @pytest.fixture
