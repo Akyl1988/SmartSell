@@ -88,12 +88,6 @@ def upgrade() -> None:
         sa.CheckConstraint(
             "failed_login_attempts >= 0", name=op.f("ck__users__ck_user_failed_login_nonneg")
         ),
-        sa.ForeignKeyConstraint(
-            ["company_id"],
-            ["companies.id"],
-            name=op.f("fk__users__company_id__companies"),
-            ondelete="SET NULL",
-        ),
         sa.PrimaryKeyConstraint("id", name=op.f("pk__users")),
     )
     op.create_index("ix_users_active_role", "users", ["is_active", "role"], unique=False)
@@ -160,12 +154,6 @@ def upgrade() -> None:
         sa.CheckConstraint(
             "phone IS NULL OR length(phone) <= 32", name=op.f("ck__companies__ck_company_phone_len")
         ),
-        sa.ForeignKeyConstraint(
-            ["owner_id"],
-            ["users.id"],
-            name=op.f("fk__companies__owner_id__users"),
-            ondelete="SET NULL",
-        ),
         sa.PrimaryKeyConstraint("id", name=op.f("pk__companies")),
     )
     op.create_index(op.f("ix_companies_bin_iin"), "companies", ["bin_iin"], unique=True)
@@ -201,6 +189,31 @@ def upgrade() -> None:
     op.create_index(op.f("ix_companies_updated_at"), "companies", ["updated_at"], unique=False)
     op.create_index(
         "ix_company_active_plan", "companies", ["is_active", "subscription_plan"], unique=False
+    )
+
+    # Отдельно создаём взаимные FK после наличия обеих таблиц,
+    # чтобы избежать циклов при апгрейде.
+    op.create_foreign_key(
+        op.f("fk__users__company_id__companies"),
+        "users",
+        "companies",
+        ["company_id"],
+        ["id"],
+        ondelete="SET NULL",
+        use_alter=True,
+        deferrable=True,
+        initially="DEFERRED",
+    )
+    op.create_foreign_key(
+        op.f("fk__companies__owner_id__users"),
+        "companies",
+        "users",
+        ["owner_id"],
+        ["id"],
+        ondelete="SET NULL",
+        use_alter=True,
+        deferrable=True,
+        initially="DEFERRED",
     )
     op.create_table(
         "customers",
@@ -274,7 +287,7 @@ def upgrade() -> None:
         sa.Column("aggregate_type", sa.String(length=64), nullable=False),
         sa.Column("aggregate_id", sa.String(length=64), nullable=False),
         sa.Column("event_type", sa.String(length=64), nullable=False),
-        sa.Column("payload", app.models.types.JSONBCompat(), nullable=True),
+        sa.Column("payload", postgresql.JSONB(astext_type=sa.Text()), nullable=True),
         sa.Column("channel", sa.String(length=64), nullable=True),
         sa.Column("status", sa.String(length=16), nullable=False),
         sa.Column("attempts", sa.Integer(), nullable=False),
