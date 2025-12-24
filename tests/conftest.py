@@ -609,6 +609,12 @@ async def db_reset(async_db_session: AsyncSession) -> AsyncIterator[None]:
     await async_db_session.commit()
 
 
+@pytest_asyncio.fixture
+async def db_session(async_db_session: AsyncSession) -> AsyncIterator[AsyncSession]:
+    """Alias for async_db_session for backward compatibility."""
+    yield async_db_session
+
+
 # ======================================================================================
 # 8) РЎСЌРјРїР»С‹ Рё С„Р°Р±СЂРёРєРё РґРѕРјРµРЅРЅС‹С… СЃСѓС‰РЅРѕСЃС‚РµР№
 # ======================================================================================

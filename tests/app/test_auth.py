@@ -39,13 +39,13 @@ class TestAuth:
         assert data.get("token_type") == "bearer"
 
     @pytest.mark.asyncio
-    async def test_register_duplicate_phone(self, async_client: AsyncClient, db_session: AsyncSession):
+    async def test_register_duplicate_phone(self, async_client: AsyncClient, async_async_db_session: AsyncSession):
         """Test registration with duplicate phone"""
 
         # Create existing user
         company = Company(name="Existing Company")
-        db_session.add(company)
-        await db_session.flush()
+        async_db_session.add(company)
+        await async_db_session.flush()
 
         user = User(
             company_id=company.id,
@@ -53,8 +53,8 @@ class TestAuth:
             hashed_password=get_password_hash("password123"),
             role="admin",
         )
-        db_session.add(user)
-        await db_session.commit()
+        async_db_session.add(user)
+        await async_db_session.commit()
 
         # Try to register with same phone
         user_data = {
@@ -70,13 +70,13 @@ class TestAuth:
         assert "already" in detail.lower() or "exists" in detail.lower()
 
     @pytest.mark.asyncio
-    async def test_login_with_password(self, async_client: AsyncClient, db_session: AsyncSession):
+    async def test_login_with_password(self, async_client: AsyncClient, async_db_session: AsyncSession):
         """Test login with password"""
 
         # Create user
         company = Company(name="Test Company")
-        db_session.add(company)
-        await db_session.flush()
+        async_db_session.add(company)
+        await async_db_session.flush()
 
         user = User(
             company_id=company.id,
@@ -84,8 +84,8 @@ class TestAuth:
             hashed_password=get_password_hash("password123"),
             role="admin",
         )
-        db_session.add(user)
-        await db_session.commit()
+        async_db_session.add(user)
+        await async_db_session.commit()
 
         # Login
         login_data = {"phone": "+77001234567", "password": "password123"}
@@ -99,13 +99,13 @@ class TestAuth:
         assert "refresh_token" in data
 
     @pytest.mark.asyncio
-    async def test_login_invalid_credentials(self, async_client: AsyncClient, db_session: AsyncSession):
+    async def test_login_invalid_credentials(self, async_client: AsyncClient, async_db_session: AsyncSession):
         """Test login with invalid credentials"""
 
         # Create user
         company = Company(name="Test Company")
-        db_session.add(company)
-        await db_session.flush()
+        async_db_session.add(company)
+        await async_db_session.flush()
 
         user = User(
             company_id=company.id,
@@ -113,8 +113,8 @@ class TestAuth:
             hashed_password=get_password_hash("password123"),
             role="admin",
         )
-        db_session.add(user)
-        await db_session.commit()
+        async_db_session.add(user)
+        await async_db_session.commit()
 
         # Login with wrong password
         login_data = {"phone": "+77001234567", "password": "wrongpassword"}
@@ -124,24 +124,24 @@ class TestAuth:
         assert response.status_code == 401
 
     @pytest.mark.asyncio
-    async def test_login_with_otp(self, async_client: AsyncClient, db_session: AsyncSession):
+    async def test_login_with_otp(self, async_client: AsyncClient, async_db_session: AsyncSession):
         """Test login with OTP"""
 
         # Create user
         company = Company(name="Test Company")
-        db_session.add(company)
-        await db_session.flush()
+        async_db_session.add(company)
+        await async_db_session.flush()
 
         user = User(company_id=company.id, phone="+77001234567", role="admin")
-        db_session.add(user)
+        async_db_session.add(user)
 
         # Create OTP attempt
         otp_code = "123456"
         otp_attempt = OtpAttempt.create_new(
             phone="+77001234567", code_hash=hash_otp_code(otp_code), purpose="login"
         )
-        db_session.add(otp_attempt)
-        await db_session.commit()
+        async_db_session.add(otp_attempt)
+        await async_db_session.commit()
 
         # Login with OTP
         login_data = {"phone": "+77001234567", "otp_code": otp_code}
@@ -169,13 +169,13 @@ class TestAuth:
         assert response.status_code in (200, 500)
 
     @pytest.mark.asyncio
-    async def test_refresh_token(self, async_client: AsyncClient, db_session: AsyncSession):
+    async def test_refresh_token(self, async_client: AsyncClient, async_db_session: AsyncSession):
         """Test token refresh"""
 
         # Create user and get tokens first
         company = Company(name="Test Company")
-        db_session.add(company)
-        await db_session.flush()
+        async_db_session.add(company)
+        await async_db_session.flush()
 
         user = User(
             company_id=company.id,
@@ -183,8 +183,8 @@ class TestAuth:
             hashed_password=get_password_hash("password123"),
             role="admin",
         )
-        db_session.add(user)
-        await db_session.commit()
+        async_db_session.add(user)
+        await async_db_session.commit()
 
         # Login to get tokens
         login_data = {"phone": "+77001234567", "password": "password123"}
@@ -204,13 +204,13 @@ class TestAuth:
         assert "refresh_token" in data
 
     @pytest.mark.asyncio
-    async def test_get_current_user(self, async_client: AsyncClient, db_session: AsyncSession):
+    async def test_get_current_user(self, async_client: AsyncClient, async_db_session: AsyncSession):
         """Test getting current user info"""
 
         # Create user and get token
         company = Company(name="Test Company")
-        db_session.add(company)
-        await db_session.flush()
+        async_db_session.add(company)
+        await async_db_session.flush()
 
         user = User(
             company_id=company.id,
@@ -220,8 +220,8 @@ class TestAuth:
             first_name="Test",
             last_name="User",
         )
-        db_session.add(user)
-        await db_session.commit()
+        async_db_session.add(user)
+        await async_db_session.commit()
 
         # Login to get token
         login_data = {"phone": "+77001234567", "password": "password123"}
@@ -243,13 +243,13 @@ class TestAuth:
         assert data.get("role") == "admin"
 
     @pytest.mark.asyncio
-    async def test_change_password(self, async_client: AsyncClient, db_session: AsyncSession):
+    async def test_change_password(self, async_client: AsyncClient, async_db_session: AsyncSession):
         """Test password change"""
 
         # Create user
         company = Company(name="Test Company")
-        db_session.add(company)
-        await db_session.flush()
+        async_db_session.add(company)
+        await async_db_session.flush()
 
         user = User(
             company_id=company.id,
@@ -257,8 +257,8 @@ class TestAuth:
             hashed_password=get_password_hash("oldpassword"),
             role="admin",
         )
-        db_session.add(user)
-        await db_session.commit()
+        async_db_session.add(user)
+        await async_db_session.commit()
 
         # Login to get token
         login_data = {"phone": "+77001234567", "password": "oldpassword"}

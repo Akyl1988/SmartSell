@@ -280,7 +280,6 @@ async def register(user_data: UserCreate, request: Request, db: AsyncSession = D
             user_id=user.id,
             ip_address=client_info["ip_address"],
             user_agent=client_info["user_agent"],
-            note="registered_and_logged_in",
         )
 
         return TokenResponse(
