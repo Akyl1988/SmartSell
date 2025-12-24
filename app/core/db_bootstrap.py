@@ -9,13 +9,8 @@ from app.core.logging import get_logger
 log = get_logger(__name__)
 
 def bootstrap_database(engine=None) -> None:
-    """DEV-режим: создать таблицы, если их нет. Не трогает прод."""
-    if os.getenv("SMARTSELL_SKIP_ALEMBIC", "0") != "1":
-        log.info("DB bootstrap skipped (SMARTSELL_SKIP_ALEMBIC!=1)")
-        return
-    engine = engine or default_engine
-    log.info("Running metadata.create_all() (DEV only)")
-    Base.metadata.create_all(bind=engine)
+    """DEV-режим: создание схемы отключено, используйте Alembic."""
+    raise RuntimeError("Database schema must be managed by Alembic, not create_all")
 
 def ensure_seed_company(session: Session) -> int:
     """

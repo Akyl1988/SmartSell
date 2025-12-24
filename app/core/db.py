@@ -438,11 +438,7 @@ async def get_async_session() -> AsyncIterator[AsyncSession]:
 
 
 async def init_db_async(drop_all: bool = False) -> None:
-    eng = _get_async_engine()
-    async with eng.begin() as conn:
-        if drop_all:
-            await conn.run_sync(Base.metadata.drop_all)
-        await conn.run_sync(Base.metadata.create_all)
+    raise RuntimeError("Database schema must be managed by Alembic, not create_all")
 
 
 async def close_db_async() -> None:
@@ -570,14 +566,7 @@ def session_scope(use_routing: bool = False) -> Iterator[Session]:
 
 
 def init_db(create_all: bool = True) -> None:
-    if not create_all:
-        return
-    try:
-        Base.metadata.create_all(bind=_get_sync_engine())
-        logger.info("DB schema created (sync).")
-    except SQLAlchemyError as e:
-        logger.exception("create_all failed: %s", e)
-        raise
+    raise RuntimeError("Database schema must be managed by Alembic, not create_all")
 
 
 def drop_db(drop_all: bool = True) -> None:
