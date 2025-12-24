@@ -252,3 +252,17 @@ junit.xml
 celerybeat-schedule
 *.pid
 *.pid.lock
+# Temporary dev/debug scripts and outputs (analysis branch)
+analyze_migration.py
+create_alembic_version.py
+create_test_db.py
+fix_db_session.py
+list_tables.py
+rebuild_migration.py
+reset_test_db.py
+alembic_output.txt
+test_auth_final.txt
+test_auth_result.txt
+test_login_output.txt
+test_login_v2.txt
+full_test_output.txt

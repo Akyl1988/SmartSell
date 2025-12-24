@@ -1,7 +1,25 @@
 #!/usr/bin/env python3
 """
 Bootstrap test database schema manually using SQLAlchemy models.
-This bypasses Alembic's issues with circular FKs.
+
+⚠️  DEV/DEBUG ONLY - NOT FOR PRODUCTION OR CI TESTS ⚠️
+
+This script creates database schema using Base.metadata.create_all(),
+bypassing Alembic migrations. It was created to workaround circular FK
+issues in baseline migration during development.
+
+USAGE:
+- Local development only
+- Quick schema prototyping
+- Emergency DB recovery
+
+DO NOT USE:
+- In CI/CD pipelines
+- For production deployments
+- As replacement for proper Alembic migrations
+
+TODO: Fix baseline migration (7b7794c032f7) with deferred FK constraints
+      and retire this script.
 """
 
 import asyncio
