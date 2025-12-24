@@ -345,11 +345,11 @@ async def get_current_user(
     if not payload:
         # аудит провала — без user_id
         info = get_client_info(request)
-        with bind_context(**info):
-            try:
-                audit_logger.log_auth_failure(reason="invalid_token", **info)
-            except Exception:
-                pass
+        bind_context(**info)
+        try:
+            audit_logger.log_auth_failure(reason="invalid_token", **info)
+        except Exception:
+            pass
         raise AuthenticationError("Invalid or expired token", "INVALID_TOKEN")
 
     ctx = _auth_context_from_payload(token, payload)
@@ -361,15 +361,15 @@ async def get_current_user(
         raise AuthenticationError("User not found or inactive", "USER_NOT_FOUND")
 
     info = get_client_info(request)
-    with bind_context(user_id=getattr(user, "id", None), **info):
-        try:
-            audit_logger.log_auth_success(
-                user_id=getattr(user, "id", None),
-                ip_address=info["ip_address"],
-                user_agent=info["user_agent"],
-            )
-        except Exception:
-            pass
+    bind_context(user_id=getattr(user, "id", None), **info)
+    try:
+        audit_logger.log_auth_success(
+            user_id=getattr(user, "id", None),
+            ip_address=info["ip_address"],
+            user_agent=info["user_agent"],
+        )
+    except Exception:
+        pass
 
     # echo request/trace ids back if missing
     if info.get("request_id") and "X-Request-ID" not in response.headers:

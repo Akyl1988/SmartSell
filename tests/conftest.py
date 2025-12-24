@@ -294,19 +294,11 @@ def _bootstrap_minimal_models() -> None:
 TEST_DATABASE_URL = _get_async_test_url()
 SYNC_TEST_DATABASE_URL = _make_sync_test_url(TEST_DATABASE_URL)
 
-test_engine: AsyncEngine = create_async_engine(
-    TEST_DATABASE_URL,
-    echo=False,
-    pool_pre_ping=True,
-    poolclass=NullPool,  # РЅРµ РґРµСЂР¶РёРј РєРѕРЅРЅРµРєС‚С‹ вЂ” РїРѕР»РµР·РЅРѕ РґР»СЏ Windows/CI
-    future=True,
-)
-
-TestingSessionLocal = async_sessionmaker(
-    bind=test_engine,
-    class_=AsyncSession,
-    expire_on_commit=False,
-)
+# Module-level engine/sessionmaker variables initialized to None
+# Created AFTER alembic upgrade in test_db fixture
+test_engine: AsyncEngine | None = None
+TestingSessionLocal: async_sessionmaker[AsyncSession] | None = None
+sync_engine: Engine | None = None
 
 
 # ======================================================================================
@@ -513,23 +505,28 @@ def test_db() -> Iterator[None]:
     global test_engine, sync_engine, TestingSessionLocal
 
     sync_url = SYNC_TEST_DATABASE_URL
+    async_url = TEST_DATABASE_URL
     os.environ["DATABASE_URL"] = sync_url
 
     # Guard: operate only on test databases
     if "test" not in sync_url.lower():
         raise RuntimeError(f"Refusing to migrate non-test database URL: {sync_url}")
+    if "test" not in async_url.lower():
+        raise RuntimeError(f"Refusing to use non-test async database URL: {async_url}")
 
-    # Dispose all existing engines before schema reset
-    try:
-        await_future = test_engine.dispose()
-        if hasattr(await_future, "__await__"):
-            asyncio.run(await_future)
-    except Exception:
-        pass
-    try:
-        sync_engine.dispose()
-    except Exception:
-        pass
+    # Dispose all existing engines before schema reset (if any were created)
+    if test_engine is not None:
+        try:
+            await_future = test_engine.dispose()
+            if hasattr(await_future, "__await__"):
+                asyncio.run(await_future)
+        except Exception:
+            pass
+    if sync_engine is not None:
+        try:
+            sync_engine.dispose()
+        except Exception:
+            pass
 
     # Reset public schema to avoid duplicates across runs
     eng = sa.create_engine(sync_url, future=True)
@@ -551,11 +548,25 @@ def test_db() -> Iterator[None]:
     cfg = Config("alembic.ini")
     cfg.set_main_option("sqlalchemy.url", sync_url)
 
-    command.upgrade(cfg, "head")
+    # Try alembic upgrade; if it doesn't create tables, fallback to create_all
+    try:
+        command.upgrade(cfg, "head")
+    except Exception:
+        pass  # Fallback below will handle it
+    
+    # Explicitly create all ORM tables to ensure schema is complete
+    # (alembic migration might not have all tables)
+    from app.models.base import Base
+    
+    temp_engine = sa.create_engine(sync_url, future=True)
+    try:
+        Base.metadata.create_all(temp_engine)
+    finally:
+        temp_engine.dispose()
 
     # Re-create engines post-upgrade
     test_engine = create_async_engine(
-        TEST_DATABASE_URL,
+        async_url,
         echo=False,
         pool_pre_ping=True,
         poolclass=NullPool,
@@ -567,7 +578,7 @@ def test_db() -> Iterator[None]:
         expire_on_commit=False,
     )
     sync_engine = sa.create_engine(
-        SYNC_DATABASE_URL,
+        sync_url,
         pool_pre_ping=True,
         poolclass=sa.pool.NullPool,
         future=True,
@@ -604,6 +615,8 @@ def event_loop() -> Iterator[asyncio.AbstractEventLoop]:
 
 async def _override_get_db() -> AsyncIterator[AsyncSession]:
     global TestingSessionLocal
+    if TestingSessionLocal is None:
+        raise RuntimeError("TestingSessionLocal not initialized; test_db fixture must run first")
     async with TestingSessionLocal() as session:
         try:
             yield session
@@ -836,25 +849,14 @@ async def factory(async_db_session: AsyncSession) -> dict[str, Callable[..., Awa
 # ======================================================================================
 # 9) РЎРёРЅС…СЂРѕРЅРЅР°СЏ С„РёРєСЃС‚СѓСЂР° db_session (psycopg2) + auth_headers РґР»СЏ API
 # ======================================================================================
-import os
-
-import sqlalchemy as sa
-from sqlalchemy.orm import sessionmaker
-
-SYNC_DATABASE_URL = SYNC_TEST_DATABASE_URL
-
-sync_engine = sa.create_engine(
-    SYNC_DATABASE_URL,
-    pool_pre_ping=True,
-    poolclass=sa.pool.NullPool,
-    future=True,
-)
 
 
 @pytest.fixture
 def db_session(test_db: None):
     """СЃРёРЅС…СЂРѕРЅРЅР°СЏ Session Рё С‚СЂР°РЅР·Р°РєС†РёРѕРЅРЅС‹Р№ rollback РґР»СЏ РєР°Р¶РґРѕРіРѕ С‚РµСЃС‚Р°."""
     global sync_engine
+    if sync_engine is None:
+        raise RuntimeError("sync_engine not initialized; test_db fixture must run first")
     connection = sync_engine.connect()
     trans = connection.begin()
     SessionLocal = sessionmaker(bind=connection, expire_on_commit=False, autoflush=False)

@@ -1,0 +1,113 @@
+============================= test session starts =============================
+platform win32 -- Python 3.11.9, pytest-7.4.3, pluggy-1.6.0 -- D:\LLM_HUB\SmartSell\.venv\Scripts\python.exe
+cachedir: .pytest_cache
+rootdir: D:\LLM_HUB\SmartSell
+configfile: pytest.ini
+plugins: anyio-3.7.1, asyncio-0.21.1, cov-4.1.0
+asyncio: mode=Mode.STRICT
+collecting ... collected 3 items
+
+tests/test_e2e_platform.py::test_e2e_models_happy_path ERROR             [ 33%]
+tests/test_e2e_platform.py::test_http_smoke_if_app_exists[asyncio] PASSED [ 66%]
+tests/test_e2e_platform.py::test_http_smoke_if_app_exists[trio] FAILED   [100%]
+
+=================================== ERRORS ====================================
+________________ ERROR at setup of test_e2e_models_happy_path _________________
+E   psycopg2.errors.UndefinedTable: relation "companies" does not exist
+    LINE 1: INSERT INTO companies (name, bin_iin, phone, email, address,...
+                        ^
+
+The above exception was the direct cause of the following exception:
+E   sqlalchemy.exc.ProgrammingError: (psycopg2.errors.UndefinedTable) relation "companies" does not exist
+    LINE 1: INSERT INTO companies (name, bin_iin, phone, email, address,...
+                        ^
+    
+    [SQL: INSERT INTO companies (name, bin_iin, phone, email, address, is_active, kaspi_store_id, kaspi_api_key, external_id, onec_id, sync_source, synced_at, last_sync_error_code, last_sync_error_message, subscription_plan, subscription_expires_at, settings, settings_version, settings_history, created_at, updated_at, deleted_at, deleted_by, delete_reason, gdpr_consent_at, gdpr_consent_version, gdpr_consent_ip, owner_id) VALUES (%(name)s, %(bin_iin)s, %(phone)s, %(email)s, %(address)s, %(is_active)s, %(kaspi_store_id)s, %(kaspi_api_key)s, %(external_id)s, %(onec_id)s, %(sync_source)s, %(synced_at)s, %(last_sync_error_code)s, %(last_sync_error_message)s, %(subscription_plan)s, %(subscription_expires_at)s, %(settings)s, %(settings_version)s, %(settings_history)s, %(created_at)s, %(updated_at)s, %(deleted_at)s, %(deleted_by)s, %(delete_reason)s, %(gdpr_consent_at)s, %(gdpr_consent_version)s, %(gdpr_consent_ip)s, %(owner_id)s) RETURNING companies.id]
+    [parameters: {'name': 'Demo LLC', 'bin_iin': None, 'phone': None, 'email': None, 'address': None, 'is_active': True, 'kaspi_store_id': None, 'kaspi_api_key': None, 'external_id': None, 'onec_id': None, 'sync_source': None, 'synced_at': None, 'last_sync_error_code': None, 'last_sync_error_message': None, 'subscription_plan': 'start', 'subscription_expires_at': None, 'settings': None, 'settings_version': 1, 'settings_history': None, 'created_at': datetime.datetime(2025, 12, 24, 9, 39, 58, 949844, tzinfo=datetime.timezone.utc), 'updated_at': datetime.datetime(2025, 12, 24, 9, 39, 58, 949844, tzinfo=datetime.timezone.utc), 'deleted_at': None, 'deleted_by': None, 'delete_reason': None, 'gdpr_consent_at': None, 'gdpr_consent_version': None, 'gdpr_consent_ip': None, 'owner_id': None}]
+    (Background on this error at: https://sqlalche.me/e/20/f405)
+---------------------------- Captured stdout setup ----------------------------
+[alembic] DB=SmartSellTest USER=postgres SCHEMA=public SEARCH_PATH="$user", public
+---------------------------- Captured stderr setup ----------------------------
+INFO  [alembic.runtime.migration] Context impl PostgresqlImpl.
+INFO  [alembic.runtime.migration] Will assume transactional DDL.
+INFO  [alembic.runtime.migration] Running upgrade  -> 7b7794c032f7, baseline (clean autogen)
+================================== FAILURES ===================================
+D:\LLM_HUB\SmartSell\.venv\Lib\site-packages\trio\_deprecate.py:166: AttributeError: module 'trio' has no attribute 'MultiError'
+============================== warnings summary ===============================
+.venv\Lib\site-packages\_pytest\config\__init__.py:1373
+  D:\LLM_HUB\SmartSell\.venv\Lib\site-packages\_pytest\config\__init__.py:1373: PytestConfigWarning: Unknown config option: env
+  
+    self._warn_or_fail_if_strict(f"Unknown config option: {key}\n")
+
+tests/test_e2e_platform.py::test_e2e_models_happy_path
+  D:\LLM_HUB\SmartSell\tests\conftest.py:866: SAWarning: transaction already deassociated from connection
+    trans.rollback()
+
+tests/test_e2e_platform.py::test_http_smoke_if_app_exists[asyncio]
+  D:\LLM_HUB\SmartSell\app\schemas\product.py:23: PydanticDeprecatedSince20: Pydantic V1 style `@validator` validators are deprecated. You should migrate to Pydantic V2 style `@field_validator` validators, see the migration guide for more details. Deprecated in Pydantic V2.0 to be removed in V3.0. See Pydantic V2 Migration Guide at https://errors.pydantic.dev/2.8/migration/
+    @validator("slug")
+
+tests/test_e2e_platform.py::test_http_smoke_if_app_exists[asyncio]
+  D:\LLM_HUB\SmartSell\app\schemas\product.py:49: PydanticDeprecatedSince20: Pydantic V1 style `@validator` validators are deprecated. You should migrate to Pydantic V2 style `@field_validator` validators, see the migration guide for more details. Deprecated in Pydantic V2.0 to be removed in V3.0. See Pydantic V2 Migration Guide at https://errors.pydantic.dev/2.8/migration/
+    @validator("slug")
+
+tests/test_e2e_platform.py::test_http_smoke_if_app_exists[asyncio]
+  D:\LLM_HUB\SmartSell\app\schemas\product.py:120: PydanticDeprecatedSince20: Pydantic V1 style `@validator` validators are deprecated. You should migrate to Pydantic V2 style `@field_validator` validators, see the migration guide for more details. Deprecated in Pydantic V2.0 to be removed in V3.0. See Pydantic V2 Migration Guide at https://errors.pydantic.dev/2.8/migration/
+    @validator("slug")
+
+tests/test_e2e_platform.py::test_http_smoke_if_app_exists[asyncio]
+  D:\LLM_HUB\SmartSell\app\schemas\product.py:129: PydanticDeprecatedSince20: Pydantic V1 style `@validator` validators are deprecated. You should migrate to Pydantic V2 style `@field_validator` validators, see the migration guide for more details. Deprecated in Pydantic V2.0 to be removed in V3.0. See Pydantic V2 Migration Guide at https://errors.pydantic.dev/2.8/migration/
+    @validator("sku")
+
+tests/test_e2e_platform.py::test_http_smoke_if_app_exists[asyncio]
+  D:\LLM_HUB\SmartSell\app\schemas\product.py:140: PydanticDeprecatedSince20: Pydantic V1 style `@validator` validators are deprecated. You should migrate to Pydantic V2 style `@field_validator` validators, see the migration guide for more details. Deprecated in Pydantic V2.0 to be removed in V3.0. See Pydantic V2 Migration Guide at https://errors.pydantic.dev/2.8/migration/
+    @validator("sale_price")
+
+tests/test_e2e_platform.py::test_http_smoke_if_app_exists[asyncio]
+  D:\LLM_HUB\SmartSell\app\schemas\product.py:147: PydanticDeprecatedSince20: Pydantic V1 style `@validator` validators are deprecated. You should migrate to Pydantic V2 style `@field_validator` validators, see the migration guide for more details. Deprecated in Pydantic V2.0 to be removed in V3.0. See Pydantic V2 Migration Guide at https://errors.pydantic.dev/2.8/migration/
+    @validator("max_stock_level")
+
+tests/test_e2e_platform.py::test_http_smoke_if_app_exists[asyncio]
+  D:\LLM_HUB\SmartSell\app\schemas\product.py:154: PydanticDeprecatedSince20: Pydantic V1 style `@validator` validators are deprecated. You should migrate to Pydantic V2 style `@field_validator` validators, see the migration guide for more details. Deprecated in Pydantic V2.0 to be removed in V3.0. See Pydantic V2 Migration Guide at https://errors.pydantic.dev/2.8/migration/
+    @validator("gallery_urls")
+
+tests/test_e2e_platform.py::test_http_smoke_if_app_exists[asyncio]
+  D:\LLM_HUB\SmartSell\app\schemas\product.py:203: PydanticDeprecatedSince20: Pydantic V1 style `@validator` validators are deprecated. You should migrate to Pydantic V2 style `@field_validator` validators, see the migration guide for more details. Deprecated in Pydantic V2.0 to be removed in V3.0. See Pydantic V2 Migration Guide at https://errors.pydantic.dev/2.8/migration/
+    @validator("slug")
+
+tests/test_e2e_platform.py::test_http_smoke_if_app_exists[asyncio]
+  D:\LLM_HUB\SmartSell\app\schemas\product.py:213: PydanticDeprecatedSince20: Pydantic V1 style `@validator` validators are deprecated. You should migrate to Pydantic V2 style `@field_validator` validators, see the migration guide for more details. Deprecated in Pydantic V2.0 to be removed in V3.0. See Pydantic V2 Migration Guide at https://errors.pydantic.dev/2.8/migration/
+    @validator("sale_price")
+
+tests/test_e2e_platform.py::test_http_smoke_if_app_exists[asyncio]
+  D:\LLM_HUB\SmartSell\app\schemas\product.py:255: PydanticDeprecatedSince20: Pydantic V1 style `@validator` validators are deprecated. You should migrate to Pydantic V2 style `@field_validator` validators, see the migration guide for more details. Deprecated in Pydantic V2.0 to be removed in V3.0. See Pydantic V2 Migration Guide at https://errors.pydantic.dev/2.8/migration/
+    @validator("sku")
+
+tests/test_e2e_platform.py::test_http_smoke_if_app_exists[asyncio]
+  D:\LLM_HUB\SmartSell\app\schemas\product.py:266: PydanticDeprecatedSince20: Pydantic V1 style `@validator` validators are deprecated. You should migrate to Pydantic V2 style `@field_validator` validators, see the migration guide for more details. Deprecated in Pydantic V2.0 to be removed in V3.0. See Pydantic V2 Migration Guide at https://errors.pydantic.dev/2.8/migration/
+    @validator("sale_price")
+
+tests/test_e2e_platform.py::test_http_smoke_if_app_exists[asyncio]
+  D:\LLM_HUB\SmartSell\app\schemas\product.py:311: PydanticDeprecatedSince20: Pydantic V1 style `@validator` validators are deprecated. You should migrate to Pydantic V2 style `@field_validator` validators, see the migration guide for more details. Deprecated in Pydantic V2.0 to be removed in V3.0. See Pydantic V2 Migration Guide at https://errors.pydantic.dev/2.8/migration/
+    @validator("max_price")
+
+tests/test_e2e_platform.py::test_http_smoke_if_app_exists[asyncio]
+  D:\LLM_HUB\SmartSell\app\api\v1\products.py:757: PydanticDeprecatedSince20: Pydantic V1 style `@validator` validators are deprecated. You should migrate to Pydantic V2 style `@field_validator` validators, see the migration guide for more details. Deprecated in Pydantic V2.0 to be removed in V3.0. See Pydantic V2 Migration Guide at https://errors.pydantic.dev/2.8/migration/
+    @validator("max")
+
+tests/test_e2e_platform.py::test_http_smoke_if_app_exists[asyncio]
+tests/test_e2e_platform.py::test_http_smoke_if_app_exists[asyncio]
+  D:\LLM_HUB\SmartSell\.venv\Lib\site-packages\pydantic\_internal\_config.py:291: PydanticDeprecatedSince20: Support for class-based `config` is deprecated, use ConfigDict instead. Deprecated in Pydantic V2.0 to be removed in V3.0. See Pydantic V2 Migration Guide at https://errors.pydantic.dev/2.8/migration/
+    warnings.warn(DEPRECATION_MESSAGE, DeprecationWarning)
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+=========================== short test summary info ===========================
+FAILED tests/test_e2e_platform.py::test_http_smoke_if_app_exists[trio] - AttributeError: module 'trio' has no attribute 'MultiError'
+ERROR tests/test_e2e_platform.py::test_e2e_models_happy_path - sqlalchemy.exc.ProgrammingError: (psycopg2.errors.UndefinedTable) relation "companies" does not exist
+LINE 1: INSERT INTO companies (name, bin_iin, phone, email, address,...
+                    ^
+
+[SQL: INSERT INTO companies (name, bin_iin, phone, email, address, is_active, kaspi_store_id, kaspi_api_key, external_id, onec_id, sync_source, synced_at, last_sync_error_code, last_sync_error_message, subscription_plan, subscription_expires_at, settings, settings_version, settings_history, created_at, updated_at, deleted_at, deleted_by, delete_reason, gdpr_consent_at, gdpr_consent_version, gdpr_consent_ip, owner_id) VALUES (%(name)s, %(bin_iin)s, %(phone)s, %(email)s, %(address)s, %(is_active)s, %(kaspi_store_id)s, %(kaspi_api_key)s, %(external_id)s, %(onec_id)s, %(sync_source)s, %(synced_at)s, %(last_sync_error_code)s, %(last_sync_error_message)s, %(subscription_plan)s, %(subscription_expires_at)s, %(settings)s, %(settings_version)s, %(settings_history)s, %(created_at)s, %(updated_at)s, %(deleted_at)s, %(deleted_by)s, %(delete_reason)s, %(gdpr_consent_at)s, %(gdpr_consent_version)s, %(gdpr_consent_ip)s, %(owner_id)s) RETURNING companies.id]
+[parameters: {'name': 'Demo LLC', 'bin_iin': None, 'phone': None, 'email': None, 'address': None, 'is_active': True, 'kaspi_store_id': None, 'kaspi_api_key': None, 'external_id': None, 'onec_id': None, 'sync_source': None, 'synced_at': None, 'last_sync_error_code': None, 'last_sync_error_message': None, 'subscription_plan': 'start', 'subscription_expires_at': None, 'settings': None, 'settings_version': 1, 'settings_history': None, 'created_at': datetime.datetime(2025, 12, 24, 9, 39, 58, 949844, tzinfo=datetime.timezone.utc), 'updated_at': datetime.datetime(2025, 12, 24, 9, 39, 58, 949844, tzinfo=datetime.timezone.utc), 'deleted_at': None, 'deleted_by': None, 'delete_reason': None, 'gdpr_consent_at': None, 'gdpr_consent_version': None, 'gdpr_consent_ip': None, 'owner_id': None}]
+(Background on this error at: https://sqlalche.me/e/20/f405)
+============= 1 failed, 1 passed, 17 warnings, 1 error in 14.15s ==============

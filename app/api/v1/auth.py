@@ -31,7 +31,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
 from app.core.db import get_db
-from app.core.dependencies import auth_rate_limit, get_client_info
+from app.core.dependencies import auth_rate_limit, get_client_info, get_current_user
 from app.core.exceptions import AuthenticationError, ConflictError, SmartSellValidationError
 from app.core.logging import audit_logger
 from app.core.security import (
@@ -51,6 +51,7 @@ from app.schemas.user import (
     TokenResponse,
     UserCreate,
     UserLogin,
+    UserResponse,
 )
 
 router = APIRouter(prefix="/auth", tags=["Authentication"])
@@ -683,3 +684,32 @@ async def request_otp_alias(otp_request: OTPRequest, db: AsyncSession = Depends(
 @router.post("/otp/verify", response_model=SuccessResponse, dependencies=[Depends(auth_rate_limit)])
 async def verify_otp_alias(otp_verify: OTPVerify, db: AsyncSession = Depends(get_db)):
     return await verify_otp(otp_verify, db)  # type: ignore[arg-type]
+
+
+# =============================================================================
+# Protected endpoints
+# =============================================================================
+
+
+@router.get("/me", response_model=UserResponse)
+async def get_me(current_user: User = Depends(get_current_user)) -> UserResponse:
+    """
+    Get current authenticated user.
+    Returns user data (id, phone, email, role, company_id).
+    401 on invalid/missing token.
+    """
+    return UserResponse(
+        id=current_user.id,
+        username=current_user.username or "",
+        phone=current_user.phone or "",
+        email=current_user.email or "",
+        full_name=getattr(current_user, "full_name", None) or "",
+        company_name=getattr(current_user, "company_name", None) or "",
+        bin_iin=getattr(current_user, "bin_iin", None) or "",
+        is_active=getattr(current_user, "is_active", True),
+        is_verified=getattr(current_user, "is_verified", False),
+        is_superuser=getattr(current_user, "is_superuser", False),
+        last_login_at=getattr(current_user, "last_login_at", None),
+        created_at=getattr(current_user, "created_at", datetime.now(UTC)),
+        updated_at=getattr(current_user, "updated_at", datetime.now(UTC)),
+    )

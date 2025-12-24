@@ -1,0 +1,299 @@
+============================= test session starts =============================
+platform win32 -- Python 3.11.9, pytest-7.4.3, pluggy-1.6.0 -- C:\Users\Акыл\AppData\Local\Programs\Python\Python311\python.exe
+cachedir: .pytest_cache
+rootdir: D:\LLM_HUB\SmartSell
+configfile: pytest.ini
+plugins: anyio-3.7.1, asyncio-0.21.1, cov-4.1.0
+asyncio: mode=Mode.STRICT
+collecting ... {"level": "INFO", "time": "2025-12-24T10:35:46Z", "message": "build_info={\"project\": \"SmartSell\", \"version\": \"0.1.0\", \"environment\": \"development\", \"commit\": \"\", \"branch\": \"\", \"build_time\": \"\"}", "name": "root", "process": 18712, "pid": 18712, "module": "config"}
+{"level": "INFO", "time": "2025-12-24T10:35:46Z", "message": "config_summary={\"env\": \"development\", \"log_level\": \"INFO\", \"log_format\": \"json\", \"db_driver\": \"postgresql\", \"db_url\": \"postgresql://127.0.0.1:5432/smartsell_test\", \"public_url\": \"http://127.0.0.1:8000/\", \"uvicorn_workers\": 1, \"kaspi_encryption_enabled\": true, \"kaspi_script\": \"\", \"kaspi_shell_mode\": \"python\", \"exec_preview\": \"\", \"bridge_outbox\": \"\"}", "name": "app.core.config", "process": 18712, "pid": 18712, "module": "config"}
+collected 1 item
+
+INFO  [alembic.runtime.migration] Context impl PostgresqlImpl.
+INFO  [alembic.runtime.migration] Will assume transactional DDL.
+INFO  [alembic.runtime.migration] Running upgrade  -> 7b7794c032f7, baseline (clean autogen)
+tests/app/test_auth.py::TestAuth::test_register_user[asyncio] [alembic] DB=SmartSellTest USER=postgres SCHEMA=public SEARCH_PATH="$user", public
+2025-12-24 15:35:54 [info     ] Loaded router module app.api.v1.auth (235.8 ms)
+2025-12-24 15:35:54 [debug    ] Included router with base prefix '/api/v1': /auth
+2025-12-24 15:35:54 [info     ] Loaded router module app.api.v1.users (143.7 ms)
+2025-12-24 15:35:54 [debug    ] Included router with base prefix '/api/v1': /users
+2025-12-24 15:35:55 [info     ] Loaded router module app.api.v1.products (683.6 ms)
+2025-12-24 15:35:55 [debug    ] Included router with base prefix '/api/v1': /products
+2025-12-24 15:35:56 [info     ] Loaded router module app.api.v1.campaigns (532.5 ms)
+2025-12-24 15:35:56 [debug    ] Included router as-is (absolute v1 prefix): /api/v1/campaigns
+2025-12-24 15:35:56 [info     ] Loaded router module app.api.v1.kaspi (108.5 ms)
+2025-12-24 15:35:56 [debug    ] Included router as-is (absolute v1 prefix): /api/v1/kaspi
+2025-12-24 15:35:56 [info     ] API v1 mounted. prefix=/api/v1 registered=5 skipped=0
+2025-12-24 15:36:01 [warning  ] Redis rate-limit error; falling back to memory error=Timeout connecting to server
+ERROR [app.main] Unhandled error (rid=7f4b3bc2-b26b-48e0-a0e2-f33ae7d23772): argon2: no backends available -- recommend you install one (e.g. 'pip install argon2_cffi')
+Traceback (most recent call last):
+  File "C:\Users\Акыл\AppData\Local\Programs\Python\Python311\Lib\site-packages\anyio\streams\memory.py", line 98, in receive
+    return self.receive_nowait()
+           ^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\Акыл\AppData\Local\Programs\Python\Python311\Lib\site-packages\anyio\streams\memory.py", line 93, in receive_nowait
+    raise WouldBlock
+anyio.WouldBlock
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "C:\Users\Акыл\AppData\Local\Programs\Python\Python311\Lib\site-packages\starlette\middleware\base.py", line 78, in call_next
+    message = await recv_stream.receive()
+              ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\Акыл\AppData\Local\Programs\Python\Python311\Lib\site-packages\anyio\streams\memory.py", line 118, in receive
+    raise EndOfStream
+anyio.EndOfStream
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "D:\LLM_HUB\SmartSell\app\main.py", line 1024, in request_id_middleware
+    response = await call_next(request)
+               ^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\Акыл\AppData\Local\Programs\Python\Python311\Lib\site-packages\starlette\middleware\base.py", line 84, in call_next
+    raise app_exc
+  File "C:\Users\Акыл\AppData\Local\Programs\Python\Python311\Lib\site-packages\starlette\middleware\base.py", line 70, in coro
+    await self.app(scope, receive_or_disconnect, send_no_error)
+  File "C:\Users\Акыл\AppData\Local\Programs\Python\Python311\Lib\site-packages\starlette\middleware\base.py", line 108, in __call__
+    response = await self.dispatch_func(request, call_next)
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "D:\LLM_HUB\SmartSell\app\main.py", line 979, in security_headers_mw
+    response = await call_next(request)
+               ^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\Акыл\AppData\Local\Programs\Python\Python311\Lib\site-packages\starlette\middleware\base.py", line 84, in call_next
+    raise app_exc
+  File "C:\Users\Акыл\AppData\Local\Programs\Python\Python311\Lib\site-packages\starlette\middleware\base.py", line 70, in coro
+    await self.app(scope, receive_or_disconnect, send_no_error)
+  File "C:\Users\Акыл\AppData\Local\Programs\Python\Python311\Lib\site-packages\starlette\middleware\base.py", line 108, in __call__
+    response = await self.dispatch_func(request, call_next)
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "D:\LLM_HUB\SmartSell\app\main.py", line 952, in content_length_guard
+    return await call_next(request)
+           ^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\Акыл\AppData\Local\Programs\Python\Python311\Lib\site-packages\starlette\middleware\base.py", line 84, in call_next
+    raise app_exc
+  File "C:\Users\Акыл\AppData\Local\Programs\Python\Python311\Lib\site-packages\starlette\middleware\base.py", line 70, in coro
+    await self.app(scope, receive_or_disconnect, send_no_error)
+  File "C:\Users\Акыл\AppData\Local\Programs\Python\Python311\Lib\site-packages\starlette\middleware\gzip.py", line 24, in __call__
+    await responder(scope, receive, send)
+  File "C:\Users\Акыл\AppData\Local\Programs\Python\Python311\Lib\site-packages\starlette\middleware\gzip.py", line 44, in __call__
+    await self.app(scope, receive, self.send_with_gzip)
+  File "C:\Users\Акыл\AppData\Local\Programs\Python\Python311\Lib\site-packages\starlette\middleware\cors.py", line 83, in __call__
+    await self.app(scope, receive, send)
+  File "C:\Users\Акыл\AppData\Local\Programs\Python\Python311\Lib\site-packages\starlette\middleware\exceptions.py", line 79, in __call__
+    raise exc
+  File "C:\Users\Акыл\AppData\Local\Programs\Python\Python311\Lib\site-packages\starlette\middleware\exceptions.py", line 68, in __call__
+    await self.app(scope, receive, sender)
+  File "C:\Users\Акыл\AppData\Local\Programs\Python\Python311\Lib\site-packages\fastapi\middleware\asyncexitstack.py", line 20, in __call__
+    raise e
+  File "C:\Users\Акыл\AppData\Local\Programs\Python\Python311\Lib\site-packages\fastapi\middleware\asyncexitstack.py", line 17, in __call__
+    await self.app(scope, receive, send)
+  File "C:\Users\Акыл\AppData\Local\Programs\Python\Python311\Lib\site-packages\starlette\routing.py", line 718, in __call__
+    await route.handle(scope, receive, send)
+  File "C:\Users\Акыл\AppData\Local\Programs\Python\Python311\Lib\site-packages\starlette\routing.py", line 276, in handle
+    await self.app(scope, receive, send)
+  File "C:\Users\Акыл\AppData\Local\Programs\Python\Python311\Lib\site-packages\starlette\routing.py", line 66, in app
+    response = await func(request)
+               ^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\Акыл\AppData\Local\Programs\Python\Python311\Lib\site-packages\fastapi\routing.py", line 274, in app
+    raw_response = await run_endpoint_function(
+                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\Акыл\AppData\Local\Programs\Python\Python311\Lib\site-packages\fastapi\routing.py", line 191, in run_endpoint_function
+    return await dependant.call(**values)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "D:\LLM_HUB\SmartSell\app\api\v1\auth.py", line 238, in register
+    hashed_password = get_password_hash(user_data.password)
+                      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "D:\LLM_HUB\SmartSell\app\core\security.py", line 120, in get_password_hash
+    return pwd_context.hash(password)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\Акыл\AppData\Local\Programs\Python\Python311\Lib\site-packages\passlib\context.py", line 2258, in hash
+    return record.hash(secret, **kwds)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\Акыл\AppData\Local\Programs\Python\Python311\Lib\site-packages\passlib\handlers\argon2.py", line 664, in hash
+    cls._stub_requires_backend()
+  File "C:\Users\Акыл\AppData\Local\Programs\Python\Python311\Lib\site-packages\passlib\utils\handlers.py", line 2254, in _stub_requires_backend
+    cls.set_backend()
+  File "C:\Users\Акыл\AppData\Local\Programs\Python\Python311\Lib\site-packages\passlib\utils\handlers.py", line 2156, in set_backend
+    return owner.set_backend(name, dryrun=dryrun)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\Акыл\AppData\Local\Programs\Python\Python311\Lib\site-packages\passlib\utils\handlers.py", line 2176, in set_backend
+    raise default_error
+passlib.exc.MissingBackendError: argon2: no backends available -- recommend you install one (e.g. 'pip install argon2_cffi')
+INFO  [alembic.runtime.migration] Context impl PostgresqlImpl.
+INFO  [alembic.runtime.migration] Will assume transactional DDL.
+FAILED[alembic] DB=SmartSellTest USER=postgres SCHEMA=public SEARCH_PATH="$user", public
+
+
+================================== FAILURES ===================================
+____________________ TestAuth.test_register_user[asyncio] _____________________
+tests\app\test_auth.py:34: in test_register_user
+    assert response.status_code == 200, response.text
+E   AssertionError: {"detail":"internal_error","request_id":"7f4b3bc2-b26b-48e0-a0e2-f33ae7d23772"}
+E   assert 500 == 200
+E    +  where 500 = <Response [500 Internal Server Error]>.status_code
+------------------------------ Captured log call ------------------------------
+ERROR    app.main:main.py:1026 Unhandled error (rid=7f4b3bc2-b26b-48e0-a0e2-f33ae7d23772): argon2: no backends available -- recommend you install one (e.g. 'pip install argon2_cffi')
+Traceback (most recent call last):
+  File "C:\Users\Акыл\AppData\Local\Programs\Python\Python311\Lib\site-packages\anyio\streams\memory.py", line 98, in receive
+    return self.receive_nowait()
+           ^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\Акыл\AppData\Local\Programs\Python\Python311\Lib\site-packages\anyio\streams\memory.py", line 93, in receive_nowait
+    raise WouldBlock
+anyio.WouldBlock
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "C:\Users\Акыл\AppData\Local\Programs\Python\Python311\Lib\site-packages\starlette\middleware\base.py", line 78, in call_next
+    message = await recv_stream.receive()
+              ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\Акыл\AppData\Local\Programs\Python\Python311\Lib\site-packages\anyio\streams\memory.py", line 118, in receive
+    raise EndOfStream
+anyio.EndOfStream
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "D:\LLM_HUB\SmartSell\app\main.py", line 1024, in request_id_middleware
+    response = await call_next(request)
+               ^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\Акыл\AppData\Local\Programs\Python\Python311\Lib\site-packages\starlette\middleware\base.py", line 84, in call_next
+    raise app_exc
+  File "C:\Users\Акыл\AppData\Local\Programs\Python\Python311\Lib\site-packages\starlette\middleware\base.py", line 70, in coro
+    await self.app(scope, receive_or_disconnect, send_no_error)
+  File "C:\Users\Акыл\AppData\Local\Programs\Python\Python311\Lib\site-packages\starlette\middleware\base.py", line 108, in __call__
+    response = await self.dispatch_func(request, call_next)
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "D:\LLM_HUB\SmartSell\app\main.py", line 979, in security_headers_mw
+    response = await call_next(request)
+               ^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\Акыл\AppData\Local\Programs\Python\Python311\Lib\site-packages\starlette\middleware\base.py", line 84, in call_next
+    raise app_exc
+  File "C:\Users\Акыл\AppData\Local\Programs\Python\Python311\Lib\site-packages\starlette\middleware\base.py", line 70, in coro
+    await self.app(scope, receive_or_disconnect, send_no_error)
+  File "C:\Users\Акыл\AppData\Local\Programs\Python\Python311\Lib\site-packages\starlette\middleware\base.py", line 108, in __call__
+    response = await self.dispatch_func(request, call_next)
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "D:\LLM_HUB\SmartSell\app\main.py", line 952, in content_length_guard
+    return await call_next(request)
+           ^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\Акыл\AppData\Local\Programs\Python\Python311\Lib\site-packages\starlette\middleware\base.py", line 84, in call_next
+    raise app_exc
+  File "C:\Users\Акыл\AppData\Local\Programs\Python\Python311\Lib\site-packages\starlette\middleware\base.py", line 70, in coro
+    await self.app(scope, receive_or_disconnect, send_no_error)
+  File "C:\Users\Акыл\AppData\Local\Programs\Python\Python311\Lib\site-packages\starlette\middleware\gzip.py", line 24, in __call__
+    await responder(scope, receive, send)
+  File "C:\Users\Акыл\AppData\Local\Programs\Python\Python311\Lib\site-packages\starlette\middleware\gzip.py", line 44, in __call__
+    await self.app(scope, receive, self.send_with_gzip)
+  File "C:\Users\Акыл\AppData\Local\Programs\Python\Python311\Lib\site-packages\starlette\middleware\cors.py", line 83, in __call__
+    await self.app(scope, receive, send)
+  File "C:\Users\Акыл\AppData\Local\Programs\Python\Python311\Lib\site-packages\starlette\middleware\exceptions.py", line 79, in __call__
+    raise exc
+  File "C:\Users\Акыл\AppData\Local\Programs\Python\Python311\Lib\site-packages\starlette\middleware\exceptions.py", line 68, in __call__
+    await self.app(scope, receive, sender)
+  File "C:\Users\Акыл\AppData\Local\Programs\Python\Python311\Lib\site-packages\fastapi\middleware\asyncexitstack.py", line 20, in __call__
+    raise e
+  File "C:\Users\Акыл\AppData\Local\Programs\Python\Python311\Lib\site-packages\fastapi\middleware\asyncexitstack.py", line 17, in __call__
+    await self.app(scope, receive, send)
+  File "C:\Users\Акыл\AppData\Local\Programs\Python\Python311\Lib\site-packages\starlette\routing.py", line 718, in __call__
+    await route.handle(scope, receive, send)
+  File "C:\Users\Акыл\AppData\Local\Programs\Python\Python311\Lib\site-packages\starlette\routing.py", line 276, in handle
+    await self.app(scope, receive, send)
+  File "C:\Users\Акыл\AppData\Local\Programs\Python\Python311\Lib\site-packages\starlette\routing.py", line 66, in app
+    response = await func(request)
+               ^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\Акыл\AppData\Local\Programs\Python\Python311\Lib\site-packages\fastapi\routing.py", line 274, in app
+    raw_response = await run_endpoint_function(
+                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\Акыл\AppData\Local\Programs\Python\Python311\Lib\site-packages\fastapi\routing.py", line 191, in run_endpoint_function
+    return await dependant.call(**values)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "D:\LLM_HUB\SmartSell\app\api\v1\auth.py", line 238, in register
+    hashed_password = get_password_hash(user_data.password)
+                      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "D:\LLM_HUB\SmartSell\app\core\security.py", line 120, in get_password_hash
+    return pwd_context.hash(password)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\Акыл\AppData\Local\Programs\Python\Python311\Lib\site-packages\passlib\context.py", line 2258, in hash
+    return record.hash(secret, **kwds)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\Акыл\AppData\Local\Programs\Python\Python311\Lib\site-packages\passlib\handlers\argon2.py", line 664, in hash
+    cls._stub_requires_backend()
+  File "C:\Users\Акыл\AppData\Local\Programs\Python\Python311\Lib\site-packages\passlib\utils\handlers.py", line 2254, in _stub_requires_backend
+    cls.set_backend()
+  File "C:\Users\Акыл\AppData\Local\Programs\Python\Python311\Lib\site-packages\passlib\utils\handlers.py", line 2156, in set_backend
+    return owner.set_backend(name, dryrun=dryrun)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\Акыл\AppData\Local\Programs\Python\Python311\Lib\site-packages\passlib\utils\handlers.py", line 2176, in set_backend
+    raise default_error
+passlib.exc.MissingBackendError: argon2: no backends available -- recommend you install one (e.g. 'pip install argon2_cffi')
+============================== warnings summary ===============================
+C:\Users\Акыл\AppData\Local\Programs\Python\Python311\Lib\site-packages\_pytest\config\__init__.py:1373
+  C:\Users\Акыл\AppData\Local\Programs\Python\Python311\Lib\site-packages\_pytest\config\__init__.py:1373: PytestConfigWarning: Unknown config option: env
+  
+    self._warn_or_fail_if_strict(f"Unknown config option: {key}\n")
+
+tests/app/test_auth.py::TestAuth::test_register_user[asyncio]
+  D:\LLM_HUB\SmartSell\app\schemas\product.py:23: PydanticDeprecatedSince20: Pydantic V1 style `@validator` validators are deprecated. You should migrate to Pydantic V2 style `@field_validator` validators, see the migration guide for more details. Deprecated in Pydantic V2.0 to be removed in V3.0. See Pydantic V2 Migration Guide at https://errors.pydantic.dev/2.8/migration/
+    @validator("slug")
+
+tests/app/test_auth.py::TestAuth::test_register_user[asyncio]
+  D:\LLM_HUB\SmartSell\app\schemas\product.py:49: PydanticDeprecatedSince20: Pydantic V1 style `@validator` validators are deprecated. You should migrate to Pydantic V2 style `@field_validator` validators, see the migration guide for more details. Deprecated in Pydantic V2.0 to be removed in V3.0. See Pydantic V2 Migration Guide at https://errors.pydantic.dev/2.8/migration/
+    @validator("slug")
+
+tests/app/test_auth.py::TestAuth::test_register_user[asyncio]
+  D:\LLM_HUB\SmartSell\app\schemas\product.py:120: PydanticDeprecatedSince20: Pydantic V1 style `@validator` validators are deprecated. You should migrate to Pydantic V2 style `@field_validator` validators, see the migration guide for more details. Deprecated in Pydantic V2.0 to be removed in V3.0. See Pydantic V2 Migration Guide at https://errors.pydantic.dev/2.8/migration/
+    @validator("slug")
+
+tests/app/test_auth.py::TestAuth::test_register_user[asyncio]
+  D:\LLM_HUB\SmartSell\app\schemas\product.py:129: PydanticDeprecatedSince20: Pydantic V1 style `@validator` validators are deprecated. You should migrate to Pydantic V2 style `@field_validator` validators, see the migration guide for more details. Deprecated in Pydantic V2.0 to be removed in V3.0. See Pydantic V2 Migration Guide at https://errors.pydantic.dev/2.8/migration/
+    @validator("sku")
+
+tests/app/test_auth.py::TestAuth::test_register_user[asyncio]
+  D:\LLM_HUB\SmartSell\app\schemas\product.py:140: PydanticDeprecatedSince20: Pydantic V1 style `@validator` validators are deprecated. You should migrate to Pydantic V2 style `@field_validator` validators, see the migration guide for more details. Deprecated in Pydantic V2.0 to be removed in V3.0. See Pydantic V2 Migration Guide at https://errors.pydantic.dev/2.8/migration/
+    @validator("sale_price")
+
+tests/app/test_auth.py::TestAuth::test_register_user[asyncio]
+  D:\LLM_HUB\SmartSell\app\schemas\product.py:147: PydanticDeprecatedSince20: Pydantic V1 style `@validator` validators are deprecated. You should migrate to Pydantic V2 style `@field_validator` validators, see the migration guide for more details. Deprecated in Pydantic V2.0 to be removed in V3.0. See Pydantic V2 Migration Guide at https://errors.pydantic.dev/2.8/migration/
+    @validator("max_stock_level")
+
+tests/app/test_auth.py::TestAuth::test_register_user[asyncio]
+  D:\LLM_HUB\SmartSell\app\schemas\product.py:154: PydanticDeprecatedSince20: Pydantic V1 style `@validator` validators are deprecated. You should migrate to Pydantic V2 style `@field_validator` validators, see the migration guide for more details. Deprecated in Pydantic V2.0 to be removed in V3.0. See Pydantic V2 Migration Guide at https://errors.pydantic.dev/2.8/migration/
+    @validator("gallery_urls")
+
+tests/app/test_auth.py::TestAuth::test_register_user[asyncio]
+  D:\LLM_HUB\SmartSell\app\schemas\product.py:203: PydanticDeprecatedSince20: Pydantic V1 style `@validator` validators are deprecated. You should migrate to Pydantic V2 style `@field_validator` validators, see the migration guide for more details. Deprecated in Pydantic V2.0 to be removed in V3.0. See Pydantic V2 Migration Guide at https://errors.pydantic.dev/2.8/migration/
+    @validator("slug")
+
+tests/app/test_auth.py::TestAuth::test_register_user[asyncio]
+  D:\LLM_HUB\SmartSell\app\schemas\product.py:213: PydanticDeprecatedSince20: Pydantic V1 style `@validator` validators are deprecated. You should migrate to Pydantic V2 style `@field_validator` validators, see the migration guide for more details. Deprecated in Pydantic V2.0 to be removed in V3.0. See Pydantic V2 Migration Guide at https://errors.pydantic.dev/2.8/migration/
+    @validator("sale_price")
+
+tests/app/test_auth.py::TestAuth::test_register_user[asyncio]
+  D:\LLM_HUB\SmartSell\app\schemas\product.py:255: PydanticDeprecatedSince20: Pydantic V1 style `@validator` validators are deprecated. You should migrate to Pydantic V2 style `@field_validator` validators, see the migration guide for more details. Deprecated in Pydantic V2.0 to be removed in V3.0. See Pydantic V2 Migration Guide at https://errors.pydantic.dev/2.8/migration/
+    @validator("sku")
+
+tests/app/test_auth.py::TestAuth::test_register_user[asyncio]
+  D:\LLM_HUB\SmartSell\app\schemas\product.py:266: PydanticDeprecatedSince20: Pydantic V1 style `@validator` validators are deprecated. You should migrate to Pydantic V2 style `@field_validator` validators, see the migration guide for more details. Deprecated in Pydantic V2.0 to be removed in V3.0. See Pydantic V2 Migration Guide at https://errors.pydantic.dev/2.8/migration/
+    @validator("sale_price")
+
+tests/app/test_auth.py::TestAuth::test_register_user[asyncio]
+  D:\LLM_HUB\SmartSell\app\schemas\product.py:311: PydanticDeprecatedSince20: Pydantic V1 style `@validator` validators are deprecated. You should migrate to Pydantic V2 style `@field_validator` validators, see the migration guide for more details. Deprecated in Pydantic V2.0 to be removed in V3.0. See Pydantic V2 Migration Guide at https://errors.pydantic.dev/2.8/migration/
+    @validator("max_price")
+
+tests/app/test_auth.py::TestAuth::test_register_user[asyncio]
+  D:\LLM_HUB\SmartSell\app\api\v1\products.py:757: PydanticDeprecatedSince20: Pydantic V1 style `@validator` validators are deprecated. You should migrate to Pydantic V2 style `@field_validator` validators, see the migration guide for more details. Deprecated in Pydantic V2.0 to be removed in V3.0. See Pydantic V2 Migration Guide at https://errors.pydantic.dev/2.8/migration/
+    @validator("max")
+
+tests/app/test_auth.py::TestAuth::test_register_user[asyncio]
+tests/app/test_auth.py::TestAuth::test_register_user[asyncio]
+  C:\Users\Акыл\AppData\Local\Programs\Python\Python311\Lib\site-packages\pydantic\_internal\_config.py:291: PydanticDeprecatedSince20: Support for class-based `config` is deprecated, use ConfigDict instead. Deprecated in Pydantic V2.0 to be removed in V3.0. See Pydantic V2 Migration Guide at https://errors.pydantic.dev/2.8/migration/
+    warnings.warn(DEPRECATION_MESSAGE, DeprecationWarning)
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+=========================== short test summary info ===========================
+FAILED tests/app/test_auth.py::TestAuth::test_register_user[asyncio] - AssertionError: {"detail":"internal_error","request_id":"7f4b3bc2-b26b-48e0-a0e2-f33ae7d23772"}
+assert 500 == 200
+ +  where 500 = <Response [500 Internal Server Error]>.status_code
+======================= 1 failed, 16 warnings in 16.51s =======================
