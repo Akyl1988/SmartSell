@@ -24,13 +24,14 @@ import hashlib
 import secrets
 from datetime import UTC, datetime, timedelta
 
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Depends, Query, Request
+from pydantic import BaseModel, Field
 from sqlalchemy import select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
-from app.core.db import get_db
+from app.core.db import get_async_db as get_db
 from app.core.dependencies import auth_rate_limit, get_client_info, get_current_user
 from app.core.exceptions import AuthenticationError, ConflictError, SmartSellValidationError
 from app.core.logging import audit_logger
@@ -40,7 +41,7 @@ from app.core.security import (
     get_password_hash,
     verify_password,
 )
-from app.models.otp import OTPCode  # таблица otp_codes
+from app.models.otp import OTPCode, OtpAttempt  # таблица otp_codes и enterprise-OTP попытки
 from app.models.user import User, UserSession
 from app.schemas.base import SuccessResponse
 from app.schemas.user import (
@@ -53,6 +54,7 @@ from app.schemas.user import (
     UserLogin,
     UserResponse,
 )
+from app.utils.otp import verify_otp_hash
 
 router = APIRouter(prefix="/auth", tags=["Authentication"])
 
@@ -90,6 +92,10 @@ OTP_PURPOSE_VERIFY_FLAGS = {"registration", "register", "verify"}
 
 def _utcnow() -> datetime:
     return datetime.now(UTC)
+
+
+def _utcnow_naive() -> datetime:
+    return datetime.now(UTC).replace(tzinfo=None)
 
 
 def _normalize_phone(v: str | None) -> str:
@@ -257,24 +263,22 @@ async def register(user_data: UserCreate, request: Request, db: AsyncSession = D
         )
 
         if not AUTH_REGISTER_ISSUE_TOKENS:
-            # классический флоу — ждём верификации по OTP
             return SuccessResponse(
                 message="User registered successfully. Please verify your phone number.",
                 data={"user_id": user.id},
             )
 
-        # Выдаём токены сразу (часто так делают современные продукты)
         access_token, refresh_token = _issue_tokens_for_user(user.id)
         session = UserSession(
             user_id=user.id,
             refresh_token=hashlib.sha256(refresh_token.encode()).hexdigest(),
             ip_address=client_info["ip_address"],
             user_agent=client_info["user_agent"],
-            expires_at=_utcnow() + timedelta(days=settings.REFRESH_TOKEN_EXPIRE_DAYS),
+            expires_at=_utcnow_naive() + timedelta(days=settings.REFRESH_TOKEN_EXPIRE_DAYS),
             is_active=True,
         )
         db.add(session)
-        user.last_login_at = _utcnow()
+        user.last_login_at = _utcnow_naive()
         await db.commit()
 
         audit_logger.log_auth_success(
@@ -314,11 +318,13 @@ async def login(login_data: UserLogin, request: Request, db: AsyncSession = Depe
     """Аутентификация по телефону и паролю. Возвращает access/refresh токены."""
     client_info = get_client_info(request)
     phone = _normalize_phone(login_data.phone)
+    otp_code = (login_data.otp_code or "").strip()
+    via_otp = bool(otp_code)
 
     user = await _get_user_by_phone(db, phone)
 
     # Блокировка по неудачным попыткам
-    if user and user.locked_until and user.locked_until > _utcnow():
+    if user and user.locked_until and user.locked_until > _utcnow_naive():
         audit_logger.log_auth_failure(
             username=phone,
             ip_address=client_info["ip_address"],
@@ -326,20 +332,46 @@ async def login(login_data: UserLogin, request: Request, db: AsyncSession = Depe
         )
         raise AuthenticationError("Account is temporarily locked", "ACCOUNT_LOCKED")
 
-    # Проверка пароля
-    if not user or not verify_password(login_data.password, user.hashed_password):
-        if user:
-            user.failed_login_attempts = (user.failed_login_attempts or 0) + 1
-            if user.failed_login_attempts >= LOGIN_MAX_FAILS:
-                user.locked_until = _utcnow() + timedelta(minutes=LOGIN_LOCK_MINUTES)
-            await db.commit()
+    if via_otp:
+        if not user:
+            raise AuthenticationError("Invalid OTP code", "INVALID_OTP")
 
-        audit_logger.log_auth_failure(
-            username=phone,
-            ip_address=client_info["ip_address"],
-            reason="Invalid credentials",
+        res = await db.execute(
+            select(OtpAttempt)
+            .where(
+                OtpAttempt.phone == phone,
+                OtpAttempt.purpose == "login",
+                OtpAttempt.expires_at > _utcnow_naive(),
+                OtpAttempt.is_verified.is_(False),
+            )
+            .order_by(OtpAttempt.created_at.desc())
+            .limit(1)
         )
-        raise AuthenticationError("Invalid phone number or password", "INVALID_CREDENTIALS")
+        attempt = res.scalars().first()
+
+        if not attempt or not attempt.is_active:
+            raise AuthenticationError("Invalid OTP code", "INVALID_OTP")
+
+        if not attempt.verify_with_plain(otp_code, verify_otp_hash, auto_archive=False):
+            await db.commit()
+            raise AuthenticationError("Invalid OTP code", "INVALID_OTP")
+
+        await db.commit()
+    else:
+        password = login_data.password or ""
+        if not user or not verify_password(password, user.hashed_password):
+            if user:
+                user.failed_login_attempts = (user.failed_login_attempts or 0) + 1
+                if user.failed_login_attempts >= LOGIN_MAX_FAILS:
+                    user.locked_until = _utcnow_naive() + timedelta(minutes=LOGIN_LOCK_MINUTES)
+                await db.commit()
+
+            audit_logger.log_auth_failure(
+                username=phone,
+                ip_address=client_info["ip_address"],
+                reason="Invalid credentials",
+            )
+            raise AuthenticationError("Invalid phone number or password", "INVALID_CREDENTIALS")
 
     if not user.is_active:
         audit_logger.log_auth_failure(
@@ -357,12 +389,12 @@ async def login(login_data: UserLogin, request: Request, db: AsyncSession = Depe
         refresh_token=hashlib.sha256(refresh_token.encode()).hexdigest(),
         ip_address=client_info["ip_address"],
         user_agent=client_info["user_agent"],
-        expires_at=_utcnow() + timedelta(days=settings.REFRESH_TOKEN_EXPIRE_DAYS),
+            expires_at=_utcnow_naive() + timedelta(days=settings.REFRESH_TOKEN_EXPIRE_DAYS),
         is_active=True,
     )
     db.add(session)
 
-    user.last_login_at = _utcnow()
+    user.last_login_at = _utcnow_naive()
     user.failed_login_attempts = 0
     user.locked_until = None
 
@@ -394,7 +426,7 @@ async def refresh_token(refresh_data: RefreshTokenRequest, db: AsyncSession = De
         select(UserSession).where(
             UserSession.refresh_token == token_hash,
             UserSession.is_active.is_(True),
-            UserSession.expires_at > _utcnow(),
+            UserSession.expires_at > _utcnow_naive(),
         )
     )
     session = res.scalars().first()
@@ -419,6 +451,14 @@ async def refresh_token(refresh_data: RefreshTokenRequest, db: AsyncSession = De
     )
 
 
+@router.post("/token/refresh", response_model=TokenResponse)
+async def refresh_token_alias(
+    refresh_data: RefreshTokenRequest, db: AsyncSession = Depends(get_db)
+):
+    """Legacy alias for /auth/refresh used by tests/older clients."""
+    return await refresh_token(refresh_data, db)
+
+
 @router.post("/logout", response_model=SuccessResponse)
 async def logout(refresh_data: RefreshTokenRequest, db: AsyncSession = Depends(get_db)):
     """
@@ -441,6 +481,53 @@ async def logout(refresh_data: RefreshTokenRequest, db: AsyncSession = Depends(g
     return SuccessResponse(message="Logged out successfully")
 
 
+class ChangePasswordPayload(BaseModel):
+    current_password: str = Field(..., min_length=6)
+    new_password: str = Field(..., min_length=8)
+
+
+@router.post("/change-password", response_model=SuccessResponse)
+async def change_password(
+    payload: ChangePasswordPayload,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Change password for current user and revoke active refresh sessions."""
+    if not verify_password(payload.current_password, current_user.hashed_password):
+        raise AuthenticationError("Current password is incorrect", "INVALID_OLD_PASSWORD")
+
+    if payload.current_password == payload.new_password:
+        raise SmartSellValidationError("New password must be different", "PASSWORD_SAME")
+
+    new_hash = get_password_hash(payload.new_password)
+
+    # Persist password change + reset counters in a single UPDATE to avoid stale identity issues
+    await db.execute(
+        update(User)
+        .where(User.id == current_user.id)
+        .values(
+            hashed_password=new_hash,
+            failed_login_attempts=0,
+            locked_until=None,
+        )
+    )
+
+    await db.execute(
+        update(UserSession).where(UserSession.user_id == current_user.id).values(is_active=False)
+    )
+    await db.commit()
+
+    audit_logger.log_data_change(
+        user_id=current_user.id,
+        action="change_password",
+        resource_type="user",
+        resource_id=str(current_user.id),
+        changes={"password": "***"},
+    )
+
+    return SuccessResponse(message="Password changed successfully")
+
+
 # =============================================================================
 # OTP (request / verify)
 # =============================================================================
@@ -461,7 +548,7 @@ async def request_otp(otp_request: OTPRequest, db: AsyncSession = Depends(get_db
     phone = _normalize_phone(otp_request.phone)
     purpose = _normalize_purpose(otp_request.purpose)
 
-    now = _utcnow()
+    now = _utcnow_naive()
     ttl = timedelta(minutes=OTP_TTL_MINUTES)
 
     res = await db.execute(
@@ -544,7 +631,7 @@ async def verify_otp(otp_verify: OTPVerify, db: AsyncSession = Depends(get_db)):
     phone = _normalize_phone(otp_verify.phone)
     purpose = _normalize_purpose(otp_verify.purpose)
 
-    now = _utcnow()
+    now = _utcnow_naive()
 
     dev_master_ok = (
         DEBUG_MODE and DEBUG_OTP_CODE and (str(otp_verify.code).strip() == str(DEBUG_OTP_CODE))
@@ -612,7 +699,7 @@ async def reset_password(reset_data: PasswordReset, db: AsyncSession = Depends(g
     """Сброс пароля по OTP (purpose='reset')."""
     phone = _normalize_phone(reset_data.phone)
 
-    now = _utcnow()
+    now = _utcnow_naive()
     res = await db.execute(
         select(OTPCode).where(
             OTPCode.phone == phone,
@@ -681,6 +768,17 @@ async def request_otp_alias(otp_request: OTPRequest, db: AsyncSession = Depends(
     return await request_otp(otp_request, db)  # type: ignore[arg-type]
 
 
+@router.post("/send-otp", response_model=SuccessResponse, dependencies=[Depends(auth_rate_limit)])
+async def send_otp_alias(
+    phone: str = Query(...), 
+    purpose: str = Query("login"),
+    db: AsyncSession = Depends(get_db)
+):
+    """Алиас для /request-otp (backward compatibility) - принимает query параметры"""
+    otp_request = OTPRequest(phone=phone, purpose=purpose)  # type: ignore[arg-type]
+    return await request_otp(otp_request, db)  # type: ignore[arg-type]
+
+
 @router.post("/otp/verify", response_model=SuccessResponse, dependencies=[Depends(auth_rate_limit)])
 async def verify_otp_alias(otp_verify: OTPVerify, db: AsyncSession = Depends(get_db)):
     return await verify_otp(otp_verify, db)  # type: ignore[arg-type]
@@ -691,25 +789,23 @@ async def verify_otp_alias(otp_verify: OTPVerify, db: AsyncSession = Depends(get
 # =============================================================================
 
 
-@router.get("/me", response_model=UserResponse)
-async def get_me(current_user: User = Depends(get_current_user)) -> UserResponse:
-    """
-    Get current authenticated user.
-    Returns user data (id, phone, email, role, company_id).
-    401 on invalid/missing token.
-    """
-    return UserResponse(
-        id=current_user.id,
-        username=current_user.username or "",
-        phone=current_user.phone or "",
-        email=current_user.email or "",
-        full_name=getattr(current_user, "full_name", None) or "",
-        company_name=getattr(current_user, "company_name", None) or "",
-        bin_iin=getattr(current_user, "bin_iin", None) or "",
-        is_active=getattr(current_user, "is_active", True),
-        is_verified=getattr(current_user, "is_verified", False),
-        is_superuser=getattr(current_user, "is_superuser", False),
-        last_login_at=getattr(current_user, "last_login_at", None),
-        created_at=getattr(current_user, "created_at", datetime.now(UTC)),
-        updated_at=getattr(current_user, "updated_at", datetime.now(UTC)),
-    )
+@router.get("/me")
+async def get_me(current_user: User = Depends(get_current_user)) -> dict:
+    """Lightweight current-user profile with basic fields expected by tests."""
+    return {
+        "id": current_user.id,
+        "phone": current_user.phone,
+        "email": current_user.email,
+        "first_name": getattr(current_user, "first_name", None),
+        "last_name": getattr(current_user, "last_name", None),
+        "full_name": getattr(current_user, "full_name", None),
+        "company_name": getattr(current_user, "company_name", None),
+        "bin_iin": getattr(current_user, "bin_iin", None),
+        "role": getattr(current_user, "role", None),
+        "is_active": getattr(current_user, "is_active", True),
+        "is_verified": getattr(current_user, "is_verified", False),
+        "is_superuser": getattr(current_user, "is_superuser", False),
+        "last_login_at": getattr(current_user, "last_login_at", None),
+        "created_at": getattr(current_user, "created_at", datetime.now(UTC)),
+        "updated_at": getattr(current_user, "updated_at", datetime.now(UTC)),
+    }

@@ -35,9 +35,16 @@ import os
 import re
 from typing import Any
 
-from fastapi import APIRouter, Header, Request, Response, status
+from fastapi import APIRouter, Depends, Header, Request, Response, status
 from fastapi.responses import RedirectResponse
 from pydantic import BaseModel, Field
+
+from app.api.v1.auth import ChangePasswordPayload as V1ChangePasswordPayload  # reuse schema
+from app.api.v1.auth import change_password as v1_change_password
+from app.core.dependencies import get_current_user, get_db
+from app.core.schemas import SuccessResponse
+from app.models import User
+from sqlalchemy.ext.asyncio import AsyncSession
 
 logger = logging.getLogger(__name__)
 
@@ -234,6 +241,16 @@ if _AUTH_ALIAS_ENABLE_REDIRECTS:
     @router.post("/send-otp")
     async def _auth_send_otp_alias():
         return _redirect("/api/v1/auth/send-otp")
+
+
+# Прямой alias для /api/auth/change-password без редиректа (для тестов/legacy)
+@router.post("/change-password", response_model=SuccessResponse)
+async def change_password_alias(
+    payload: V1ChangePasswordPayload,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    return await v1_change_password(payload=payload, current_user=current_user, db=db)
 
 
 __all__ = ["router", "RegisterAccepted"]
