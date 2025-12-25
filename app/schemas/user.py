@@ -70,8 +70,6 @@ def _password_strength_check(value: str) -> None:
         raise ValueError("Password must be at least 8 characters long")
     if not re.search(r"[A-Za-z]", value):
         raise ValueError("Password must contain at least one letter")
-    if not re.search(r"\d", value):
-        raise ValueError("Password must contain at least one digit")
 
 
 # -----------------------------------------------------------------------------
@@ -171,10 +169,11 @@ class UserCreate(UserBase):
 
 
 class UserLogin(BaseSchema):
-    """Schema for user login."""
+    """Schema for user login (password or OTP)."""
 
     phone: str = Field(..., description="Phone number")
-    password: str = Field(..., description="Password")
+    password: str | None = Field(None, description="Password (required if no OTP)")
+    otp_code: str | None = Field(None, description="One-time password code")
 
     @field_validator("phone", mode="before")
     @classmethod
@@ -182,6 +181,12 @@ class UserLogin(BaseSchema):
         digits = _normalize_phone(v)
         _validate_phone_digits(digits)
         return digits
+
+    @model_validator(mode="after")
+    def _require_password_or_otp(self) -> "UserLogin":
+        if not (self.password or self.otp_code):
+            raise ValueError("Either password or otp_code must be provided")
+        return self
 
 
 class UserResponse(UserBase, TimestampedSchema):

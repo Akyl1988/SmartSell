@@ -39,7 +39,7 @@ class TestAuth:
         assert data.get("token_type") == "bearer"
 
     @pytest.mark.asyncio
-    async def test_register_duplicate_phone(self, async_client: AsyncClient, async_async_db_session: AsyncSession):
+    async def test_register_duplicate_phone(self, async_client: AsyncClient, async_db_session: AsyncSession):
         """Test registration with duplicate phone"""
 
         # Create existing user

@@ -30,6 +30,7 @@ from typing import Any
 
 from fastapi import Depends, HTTPException, Request, Response, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+from sqlalchemy import select
 
 # ------------------------------------------------------------------------------
 # Config (robust import with fallbacks)
@@ -296,14 +297,19 @@ def _auth_context_from_payload(token: str, payload: dict) -> AuthContext:
     )
 
 
-def _fetch_user(db, user_id: int):
+async def _fetch_user(db, user_id: int):
     """Fetch active user; return None if missing."""
     try:
         from app.models.user import User  # type: ignore
     except Exception:
-        # If model is not present, treat as missing user
         return None
+
     try:
+        if hasattr(db, "execute"):
+            res = await db.execute(
+                select(User).where(User.id == user_id, User.is_active.is_(True))
+            )
+            return res.scalars().first()
         return db.query(User).filter(User.id == user_id, User.is_active.is_(True)).first()
     except Exception:
         return None
@@ -325,7 +331,7 @@ async def get_current_user_optional(
     ctx = _auth_context_from_payload(token, payload)
     if ctx.user_id <= 0:
         return None
-    user = _fetch_user(db, ctx.user_id)
+    user = await _fetch_user(db, ctx.user_id)
     return user
 
 
@@ -356,7 +362,7 @@ async def get_current_user(
     if ctx.user_id <= 0:
         raise AuthenticationError("Invalid token subject", "INVALID_SUBJECT")
 
-    user = _fetch_user(db, ctx.user_id)
+    user = await _fetch_user(db, ctx.user_id)
     if not user:
         raise AuthenticationError("User not found or inactive", "USER_NOT_FOUND")
 

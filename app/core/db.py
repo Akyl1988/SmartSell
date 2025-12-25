@@ -233,6 +233,10 @@ def _engine_options(async_engine: bool) -> dict:
     # pytest — аккуратнее
     if "PYTEST_CURRENT_TEST" in os.environ or getattr(settings, "ENVIRONMENT", "") == "test":
         opts.setdefault("poolclass", NullPool)
+    poolclass = opts.get("poolclass")
+    if poolclass is NullPool or (isinstance(poolclass, type) and issubclass(poolclass, NullPool)):
+        for bad in ("pool_size", "max_overflow", "pool_timeout", "pool_recycle"):
+            opts.pop(bad, None)
     # echo по DEBUG
     if "echo" not in opts:
         opts["echo"] = bool(getattr(settings, "DEBUG", False))

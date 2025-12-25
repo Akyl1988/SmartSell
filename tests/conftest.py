@@ -657,6 +657,12 @@ async def async_db_session(test_db: None) -> AsyncIterator[AsyncSession]:
         yield session
 
 
+# Backward-compat alias used by some tests
+@pytest_asyncio.fixture
+async def async_async_db_session(async_db_session: AsyncSession) -> AsyncIterator[AsyncSession]:
+    yield async_db_session
+
+
 @pytest.fixture
 def db_session_factory() -> Callable[[], Awaitable[AsyncSession]]:
     async def _factory() -> AsyncSession:
@@ -665,16 +671,35 @@ def db_session_factory() -> Callable[[], Awaitable[AsyncSession]]:
     return _factory
 
 
-@pytest_asyncio.fixture
+@pytest_asyncio.fixture(autouse=True)
 async def db_reset(async_db_session: AsyncSession) -> AsyncIterator[None]:
     yield
 
     import app.models as m  # type: ignore
 
-    tablenames = [t for t in m.Base.metadata.tables.keys() if t != "alembic_version"]
+    # Collect existing tables in the target schema to avoid TRUNCATE on missing ones
+    rows = await async_db_session.execute(
+        text("select schemaname, tablename from pg_tables where schemaname = 'public'")
+    )
+    existing = {(r[0], r[1]) for r in rows}
+
+    tablenames: list[str] = []
+    for raw in m.Base.metadata.tables.keys():
+        if raw == "alembic_version":
+            continue
+        parts = raw.split(".", 1)
+        if len(parts) == 2:
+            schema, table = parts
+        else:
+            schema, table = "public", parts[0]
+        if (schema or "public", table) not in existing:
+            continue
+        tablenames.append(f'"{schema}"."{table}"' if schema else f'"{table}"')
+
     if not tablenames:
         return
-    sql = "TRUNCATE " + ", ".join(f'"{name}"' for name in tablenames) + " RESTART IDENTITY CASCADE"
+
+    sql = "TRUNCATE " + ", ".join(tablenames) + " RESTART IDENTITY CASCADE"
     await async_db_session.execute(text(sql))
     await async_db_session.commit()
 

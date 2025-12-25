@@ -32,6 +32,7 @@ from fastapi.responses import JSONResponse, PlainTextResponse, RedirectResponse
 
 # ✅ агрегатор v1-роутеров (wallet/payments/campaigns/users/auth/products)
 from app.api.routes import mount_v1
+from app.core.exceptions import register_exception_handlers
 from app.core.config import settings
 
 try:
@@ -901,6 +902,12 @@ def create_app() -> FastAPI:
         lifespan=lifespan,
         root_path=(settings.ROOT_PATH or ""),  # ✅ учитываем развёртывание за прокси
     )
+
+    # Register unified exception handlers so domain errors map to correct HTTP codes
+    try:
+        register_exception_handlers(app)
+    except Exception as exc:
+        logger.warning("Failed to register exception handlers", exc_info=exc)
 
     # HTTPS redirect (optional)
     if _env_truthy(os.getenv("FORCE_HTTPS", "0")) and HTTPSRedirectMiddleware:

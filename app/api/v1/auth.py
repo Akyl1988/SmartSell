@@ -23,6 +23,7 @@ from __future__ import annotations
 import hashlib
 import secrets
 from datetime import UTC, datetime, timedelta
+import re
 
 from fastapi import APIRouter, Depends, Query, Request
 from pydantic import BaseModel, Field
@@ -99,7 +100,23 @@ def _utcnow_naive() -> datetime:
 
 
 def _normalize_phone(v: str | None) -> str:
-    return (v or "").strip()
+    # Normalize to digits only to compare consistently across stored formats
+    return re.sub(r"\D", "", (v or "").strip())
+
+
+def _phone_variants(phone: str) -> list[str]:
+    """Return common representations to match stored values."""
+    digits = _normalize_phone(phone)
+    variants = []
+    if digits:
+        variants.append(digits)
+        plus_form = f"+{digits}"
+        if plus_form not in variants:
+            variants.append(plus_form)
+    raw = (phone or "").strip()
+    if raw and raw not in variants:
+        variants.append(raw)
+    return variants
 
 
 def _normalize_email(v: str | None) -> str | None:
@@ -195,7 +212,8 @@ async def health():
 
 
 async def _get_user_by_phone(db: AsyncSession, phone: str) -> User | None:
-    res = await db.execute(select(User).where(User.phone == phone))
+    variants = _phone_variants(phone)
+    res = await db.execute(select(User).where(User.phone.in_(variants)))
     return res.scalars().first()
 
 
@@ -339,7 +357,7 @@ async def login(login_data: UserLogin, request: Request, db: AsyncSession = Depe
         res = await db.execute(
             select(OtpAttempt)
             .where(
-                OtpAttempt.phone == phone,
+                OtpAttempt.phone.in_(_phone_variants(phone)),
                 OtpAttempt.purpose == "login",
                 OtpAttempt.expires_at > _utcnow_naive(),
                 OtpAttempt.is_verified.is_(False),

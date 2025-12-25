@@ -582,6 +582,7 @@ def bind_context(
     user_id: str | None = None,
     tenant: str | None = None,
     client_ip: str | None = None,
+    ip_address: str | None = None,
     user_agent: str | None = None,
     trace_id: str | None = None,
     span_id: str | None = None,
@@ -594,7 +595,7 @@ def bind_context(
         request_id=request_id,
         user_id=user_id,
         tenant=tenant,
-        client_ip=client_ip,
+        client_ip=ip_address if ip_address is not None else client_ip,
         user_agent=user_agent,
         trace_id=trace_id,
         span_id=span_id,
@@ -608,6 +609,7 @@ def bound_context(
     user_id: str | None = None,
     tenant: str | None = None,
     client_ip: str | None = None,
+    ip_address: str | None = None,
     user_agent: str | None = None,
     trace_id: str | None = None,
     span_id: str | None = None,
@@ -619,7 +621,9 @@ def bound_context(
         tokens.append((_ctx_user_id, _ctx_user_id.set(str(user_id))))
     if tenant is not None:
         tokens.append((_ctx_tenant, _ctx_tenant.set(str(tenant))))
-    if client_ip is not None:
+    if ip_address is not None:
+        tokens.append((_ctx_client_ip, _ctx_client_ip.set(ip_address)))
+    elif client_ip is not None:
         tokens.append((_ctx_client_ip, _ctx_client_ip.set(client_ip)))
     if user_agent is not None:
         tokens.append((_ctx_user_agent, _ctx_user_agent.set(user_agent)))
@@ -742,6 +746,20 @@ class AuditLogger:
 
     def log_permission_denied(self, user_id: int | str, reason: str, resource: str) -> None:
         self.logger.warning("permission_denied", user_id=user_id, reason=reason, resource=resource)
+
+    def log_system_event(
+        self,
+        *,
+        level: str = "info",
+        event: str = "",
+        message: str = "",
+        meta: dict[str, Any] | None = None,
+    ) -> None:
+        """Generic system event logger to avoid attribute errors when called defensively."""
+        meta_safe = redact_secrets(meta or {})
+        lvl = (level or "info").lower()
+        log_fn = self.logger.warning if lvl in {"warning", "warn", "error"} else self.logger.info
+        log_fn("system_event", event_name=event, message=message, **meta_safe)
 
     # универсальный action, используемый в ваших роутерах
     def log_action(

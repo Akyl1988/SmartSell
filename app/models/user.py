@@ -221,6 +221,48 @@ class User(
     failed_login_attempts = Column(Integer, nullable=False, default=0, server_default=text("0"))
     locked_until = Column(DateTime, nullable=True)
 
+    # Compatibility shims: store first/last name in full_name while exposing friendly properties.
+    @property
+    def first_name(self) -> str | None:  # type: ignore[override]
+        cached = getattr(self, "_first_name", None)
+        if cached:
+            return cached
+        if self.full_name:
+            parts = self.full_name.strip().split()
+            return parts[0] if parts else None
+        return None
+
+    @first_name.setter
+    def first_name(self, value: str | None) -> None:  # type: ignore[override]
+        self._first_name = value
+        if value:
+            ln = getattr(self, "_last_name", None)
+            if ln:
+                self.full_name = f"{value} {ln}".strip()
+            elif not self.full_name:
+                self.full_name = value
+
+    @property
+    def last_name(self) -> str | None:  # type: ignore[override]
+        cached = getattr(self, "_last_name", None)
+        if cached:
+            return cached
+        if self.full_name:
+            parts = self.full_name.strip().split()
+            if len(parts) > 1:
+                return " ".join(parts[1:]) or None
+        return None
+
+    @last_name.setter
+    def last_name(self, value: str | None) -> None:  # type: ignore[override]
+        self._last_name = value
+        if value:
+            fn = getattr(self, "_first_name", None)
+            if fn:
+                self.full_name = f"{fn} {value}".strip()
+            elif not self.full_name:
+                self.full_name = value
+
     # Org / audit / locks / deletion
     company_id = Column(ForeignKey("companies.id", ondelete="SET NULL"), nullable=True, index=True)
     last_modified_by = Column(Integer, nullable=True, index=True)

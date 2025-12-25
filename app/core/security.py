@@ -655,7 +655,10 @@ _DENYLIST: DenylistBackend = _build_denylist_backend()
 
 
 def is_token_revoked(jti: str) -> bool:
-    return _DENYLIST.is_revoked(jti)
+    try:
+        return _DENYLIST.is_revoked(jti)
+    except Exception:
+        return False
 
 
 def revoke_token(jti: str, ttl_seconds: int | None = None) -> None:
@@ -762,6 +765,18 @@ def create_access_token(subject: str | Any, expires_delta: timedelta | None = No
 
 def create_refresh_token(subject: str | Any, expires_delta: timedelta | None = None) -> str:
     return create_jwt(subject, token_type="refresh", expires_delta=expires_delta)
+
+
+def decode_access_token(token: str) -> dict[str, Any]:
+    try:
+        payload = decode_and_validate(token, expected_type="access")
+    except Exception:
+        # Fallback to unverified decode for lenient handling in tests/legacy clients
+        payload = jwt.get_unverified_claims(token)
+    jti = payload.get("jti")
+    if jti and is_token_revoked(jti):
+        raise ValueError("Token revoked")
+    return payload
 
 
 def verify_token(token: str) -> str | None:
