@@ -266,3 +266,10 @@ test_auth_result.txt
 test_login_output.txt
 test_login_v2.txt
 full_test_output.txt
+
+# test outputs / local run logs
+test_*_result*.txt
+test_*_verbose*.txt
+test_*_quick*.txt
+*_result*.txt
+*_verbose*.txt
