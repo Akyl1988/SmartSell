@@ -1482,6 +1482,17 @@ def get_settings() -> Settings:
     under_test = s.TESTING or _under_pytest()
     if under_test:
         test_db = s.TEST_DATABASE_URL or s.DATABASE_TEST_URL or s.DATABASE_URL
+        # Если TEST_DATABASE_URL не задан, но есть рабочий DATABASE_URL — аккуратно подменим имя БД на test-версию.
+        if not s.TEST_DATABASE_URL and s.DATABASE_URL:
+            try:
+                p = urlparse(s.DATABASE_URL)
+                dbname = (p.path or "").lstrip("/") or "test"
+                if "test" not in dbname.lower():
+                    dbname = f"{dbname}_test"
+                test_db = urlunparse((p.scheme, p.netloc, f"/{dbname}", p.params, p.query, p.fragment))
+            except Exception:
+                # fallback: требуем переменную окружения
+                pass
         if not test_db:
             raise ValueError(
                 "TEST_DATABASE_URL (или DATABASE_TEST_URL) обязателен в тестах и должен быть PostgreSQL, "

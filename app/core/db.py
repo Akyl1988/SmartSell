@@ -115,14 +115,47 @@ __all__ = [
 # Вспомогательные: нормализация URL
 # -----------------------------------------------------------------------------
 def _normalize_pg_to_asyncpg(url: str) -> str:
-    if url.startswith("postgres://"):
-        url = url.replace("postgres://", "postgresql://", 1)
-    if url.startswith("postgresql+"):
-        # имеется драйвер -> заменим на asyncpg
-        return "postgresql+asyncpg://" + url.split("://", 1)[1]
-    if url.startswith("postgresql://"):
-        return url.replace("postgresql://", "postgresql+asyncpg://", 1)
-    return url
+    """Convert any Postgres URL to asyncpg and strip unsupported sslmode.
+
+    Handles forms:
+    - postgres://...
+    - postgresql://...
+    - postgresql+<driver>://...
+
+    Removes any `sslmode` query parameter (disable/require/prefer, etc.) which
+    asyncpg does not accept. Other query params are preserved.
+    """
+    try:
+        # Normalize base scheme
+        if url.startswith("postgres://"):
+            url = url.replace("postgres://", "postgresql://", 1)
+
+        u = make_url(url)
+
+        # Force asyncpg driver
+        base_driver = u.drivername.split("+", 1)[0]
+        u = u.set(drivername=f"{base_driver}+asyncpg")
+
+        # Strip any sslmode from query params (asyncpg does not accept it)
+        if u.query:
+            q = dict(u.query)
+            if "sslmode" in q:
+                q.pop("sslmode", None)
+                u = u.set(query=q)
+
+        return str(u)
+    except Exception:
+        # Fallback to original heuristic if parsing failed
+        if url.startswith("postgresql+"):
+            url = "postgresql+asyncpg://" + url.split("://", 1)[1]
+            # best-effort strip
+            url = url.replace("sslmode=disable", "").replace("sslmode=require", "")
+            return url
+        if url.startswith("postgresql://"):
+            url = url.replace("postgresql://", "postgresql+asyncpg://", 1)
+            url = url.replace("sslmode=disable", "").replace("sslmode=require", "")
+            return url
+        return url
 
 
 def _normalize_pg_to_psycopg2(url: str) -> str:
@@ -155,6 +188,8 @@ def _resolve_async_url() -> str:
     try:
         url = getattr(settings, "sqlalchemy_async_url", "").strip()
         if url:
+            # Normalize to asyncpg and strip unsupported params
+            url = _normalize_pg_to_asyncpg(url)
             make_url(url)
             return url
     except Exception:
@@ -164,6 +199,7 @@ def _resolve_async_url() -> str:
         urls = getattr(settings, "sqlalchemy_urls", {}) or {}
         url = (urls.get("async") or "").strip()
         if url:
+            url = _normalize_pg_to_asyncpg(url)
             make_url(url)
             return url
     except Exception:
@@ -235,7 +271,7 @@ def _engine_options(async_engine: bool) -> dict:
         opts.setdefault("poolclass", NullPool)
     poolclass = opts.get("poolclass")
     if poolclass is NullPool or (isinstance(poolclass, type) and issubclass(poolclass, NullPool)):
-        for bad in ("pool_size", "max_overflow", "pool_timeout", "pool_recycle"):
+        for bad in ("pool_size", "max_overflow", "pool_timeout", "pool_recycle", "pool_use_lifo"):
             opts.pop(bad, None)
     # echo по DEBUG
     if "echo" not in opts:

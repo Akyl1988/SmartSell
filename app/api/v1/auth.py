@@ -232,7 +232,7 @@ async def _get_user_by_email(db: AsyncSession, email: str) -> User | None:
     response_model=TokenResponse if AUTH_REGISTER_ISSUE_TOKENS else SuccessResponse,
     dependencies=[Depends(auth_rate_limit)],
 )
-async def register(user_data: UserCreate, request: Request, db: AsyncSession = Depends(get_db)):
+async def register(user_data: UserCreate, request: Request, db: AsyncSession = Depends(get_async_db)):
     """
     Регистрация пользователя.
     По умолчанию сразу возвращаем токены (для UX/тестов). Можно отключить через AUTH_REGISTER_ISSUE_TOKENS=0.
@@ -332,7 +332,7 @@ async def register(user_data: UserCreate, request: Request, db: AsyncSession = D
     response_model=TokenResponse,
     dependencies=[Depends(auth_rate_limit)],
 )
-async def login(login_data: UserLogin, request: Request, db: AsyncSession = Depends(get_db)):
+async def login(login_data: UserLogin, request: Request, db: AsyncSession = Depends(get_async_db)):
     """Аутентификация по телефону и паролю. Возвращает access/refresh токены."""
     client_info = get_client_info(request)
     phone = _normalize_phone(login_data.phone)
@@ -433,7 +433,7 @@ async def login(login_data: UserLogin, request: Request, db: AsyncSession = Depe
 
 
 @router.post("/refresh", response_model=TokenResponse)
-async def refresh_token(refresh_data: RefreshTokenRequest, db: AsyncSession = Depends(get_db)):
+async def refresh_token(refresh_data: RefreshTokenRequest, db: AsyncSession = Depends(get_async_db)):
     """
     Обновляет access-токен по действующему refresh-токену.
     Refresh при этом НЕ меняется (скользящая сессия реализуется в другом флоу).
@@ -478,7 +478,7 @@ async def refresh_token_alias(
 
 
 @router.post("/logout", response_model=SuccessResponse)
-async def logout(refresh_data: RefreshTokenRequest, db: AsyncSession = Depends(get_db)):
+async def logout(refresh_data: RefreshTokenRequest, db: AsyncSession = Depends(get_async_db)):
     """
     Выход из системы: деактивирует сессию по переданному refresh-токену.
     """
@@ -556,7 +556,7 @@ async def change_password(
     response_model=SuccessResponse,
     dependencies=[Depends(auth_rate_limit)],
 )
-async def request_otp(otp_request: OTPRequest, db: AsyncSession = Depends(get_db)):
+async def request_otp(otp_request: OTPRequest, db: AsyncSession = Depends(get_async_db)):
     """
     Запросить OTP код для номера телефона.
     Поведение:
@@ -644,7 +644,7 @@ async def request_otp(otp_request: OTPRequest, db: AsyncSession = Depends(get_db
     response_model=SuccessResponse,
     dependencies=[Depends(auth_rate_limit)],
 )
-async def verify_otp(otp_verify: OTPVerify, db: AsyncSession = Depends(get_db)):
+async def verify_otp(otp_verify: OTPVerify, db: AsyncSession = Depends(get_async_db)):
     """Проверка OTP кода."""
     phone = _normalize_phone(otp_verify.phone)
     purpose = _normalize_purpose(otp_verify.purpose)
@@ -713,7 +713,7 @@ async def verify_otp(otp_verify: OTPVerify, db: AsyncSession = Depends(get_db)):
     response_model=SuccessResponse,
     dependencies=[Depends(auth_rate_limit)],
 )
-async def reset_password(reset_data: PasswordReset, db: AsyncSession = Depends(get_db)):
+async def reset_password(reset_data: PasswordReset, db: AsyncSession = Depends(get_async_db)):
     """Сброс пароля по OTP (purpose='reset')."""
     phone = _normalize_phone(reset_data.phone)
 
@@ -782,7 +782,7 @@ async def reset_password(reset_data: PasswordReset, db: AsyncSession = Depends(g
 @router.post(
     "/otp/request", response_model=SuccessResponse, dependencies=[Depends(auth_rate_limit)]
 )
-async def request_otp_alias(otp_request: OTPRequest, db: AsyncSession = Depends(get_db)):
+async def request_otp_alias(otp_request: OTPRequest, db: AsyncSession = Depends(get_async_db)):
     return await request_otp(otp_request, db)  # type: ignore[arg-type]
 
 
@@ -798,7 +798,7 @@ async def send_otp_alias(
 
 
 @router.post("/otp/verify", response_model=SuccessResponse, dependencies=[Depends(auth_rate_limit)])
-async def verify_otp_alias(otp_verify: OTPVerify, db: AsyncSession = Depends(get_db)):
+async def verify_otp_alias(otp_verify: OTPVerify, db: AsyncSession = Depends(get_async_db)):
     return await verify_otp(otp_verify, db)  # type: ignore[arg-type]
 
 
