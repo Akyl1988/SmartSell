@@ -21,6 +21,7 @@ logout, OTP, and small health checks — production-grade.
 from __future__ import annotations
 
 import hashlib
+import os
 import secrets
 from datetime import UTC, datetime, timedelta
 import re
@@ -148,6 +149,12 @@ def _issue_tokens_for_user(user_id: int) -> tuple[str, str]:
 def _sms_text_for_otp(code: str, purpose: str) -> str:
     p = purpose or "login"
     return f"{PROJECT_NAME}: код подтверждения {code} для {p}. Никому не сообщайте."
+
+
+def _should_return_provider_info() -> bool:
+    env = str(os.getenv("ENVIRONMENT") or getattr(settings, "ENVIRONMENT", "production") or "production").lower()
+    debug_flag = os.getenv("DEBUG_PROVIDER_INFO", "").strip()
+    return (env != "production") or (debug_flag in {"1", "true", "yes", "on"})
 
 
 # =============================================================================
@@ -669,9 +676,11 @@ async def request_otp(
         "expires_in": OTP_TTL_MINUTES * 60,
         "provider_success": (send_result or {}).get("success") if send_result else None,
         "provider_status": (send_result or {}).get("status") if send_result else None,
-        "provider": provider_name,
-        "provider_version": provider_version,
     }
+
+    if _should_return_provider_info():
+        data["provider"] = provider_name
+        data["provider_version"] = provider_version
 
     return SuccessResponse(message="OTP code sent successfully", data=data)
 

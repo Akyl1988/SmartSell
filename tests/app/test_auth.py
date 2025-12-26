@@ -169,6 +169,36 @@ class TestAuth:
         assert response.status_code in (200, 500)
 
     @pytest.mark.asyncio
+    async def test_send_otp_hides_provider_in_production(self, async_client: AsyncClient, monkeypatch):
+        monkeypatch.setenv("ENVIRONMENT", "production")
+        monkeypatch.delenv("DEBUG_PROVIDER_INFO", raising=False)
+
+        response = await async_client.post(
+            "/api/auth/send-otp",
+            params={"phone": "+77001234567", "purpose": "login"},
+        )
+
+        assert response.status_code in (200, 500)
+        data = response.json().get("data") or {}
+        assert "provider" not in data
+        assert "provider_version" not in data
+
+    @pytest.mark.asyncio
+    async def test_send_otp_shows_provider_when_allowed(self, async_client: AsyncClient, monkeypatch):
+        monkeypatch.setenv("ENVIRONMENT", "development")
+        monkeypatch.setenv("DEBUG_PROVIDER_INFO", "1")
+
+        response = await async_client.post(
+            "/api/auth/send-otp",
+            params={"phone": "+77001234567", "purpose": "login"},
+        )
+
+        assert response.status_code in (200, 500)
+        data = response.json().get("data") or {}
+        assert "provider" in data
+        assert "provider_version" in data
+
+    @pytest.mark.asyncio
     async def test_refresh_token(self, async_client: AsyncClient, async_db_session: AsyncSession):
         """Test token refresh"""
 
