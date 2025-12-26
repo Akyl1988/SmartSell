@@ -40,6 +40,7 @@ from sqlalchemy import MetaData, Table
 from sqlalchemy import exc as sa_exc  # РѕР±СЂР°Р±РѕС‚РєР° OperationalError/В«already existsВ»
 from sqlalchemy import text
 from sqlalchemy.engine import Connection, Engine
+from sqlalchemy.orm import sessionmaker
 from sqlalchemy.ext.asyncio import (
     AsyncEngine,
     AsyncSession,
@@ -236,6 +237,24 @@ def _import_app_and_get_db() -> tuple[Any, Callable[..., AsyncIterator[AsyncSess
             ) from e
 
     return app, get_async_db_func  # type: ignore[return-value]
+
+
+def _find_sync_get_db_funcs() -> list[Callable[..., AsyncIterator[AsyncSession]]]:
+    funcs: list[Callable[..., AsyncIterator[AsyncSession]]] = []
+    try:
+        from app.core.db import get_db as _sync_get_db  # type: ignore
+
+        funcs.append(_sync_get_db)
+    except Exception:
+        pass
+    try:
+        from app.core.database import get_db as _sync_get_db_old  # type: ignore
+
+        if _sync_get_db_old not in funcs:
+            funcs.append(_sync_get_db_old)
+    except Exception:
+        pass
+    return funcs
 
 
 def _import_all_models_once() -> bool:
@@ -584,6 +603,20 @@ def test_db() -> Iterator[None]:
         future=True,
     )
 
+    # Seed minimal companies for API tests (ids 1..4)
+    try:
+        from app.models.company import Company  # type: ignore
+
+        SessionLocalSeed = sessionmaker(
+            bind=sync_engine, expire_on_commit=False, autoflush=False
+        )
+        with SessionLocalSeed() as s:
+            if (s.query(Company).count() or 0) < 4:
+                s.add_all([Company(name=f"Company {i}") for i in range(1, 5)])
+                s.commit()
+    except Exception:
+        pass
+
     try:
         yield
     finally:
@@ -624,26 +657,35 @@ async def _override_get_db() -> AsyncIterator[AsyncSession]:
             await session.close()
 
 
+def _override_get_db_sync() -> Iterator[Any]:
+    """Sync Session override for dependencies expecting sync get_db."""
+    global sync_engine
+    if sync_engine is None:
+        raise RuntimeError("sync_engine not initialized; test_db fixture must run first")
+    SessionLocal = sessionmaker(bind=sync_engine, expire_on_commit=False, autoflush=False)
+    db = SessionLocal()
+    try:
+        yield db
+    finally:
+        db.close()
+
+
 @pytest_asyncio.fixture
 async def async_client(test_db: None) -> AsyncIterator[AsyncClient]:
     app, get_async_db = _import_app_and_get_db()
-    app.dependency_overrides[get_async_db] = _override_get_db  # type: ignore[index]
+    overrides: dict[Any, Any] = {get_async_db: _override_get_db}
+    for sync_dep in _find_sync_get_db_funcs():
+        overrides[sync_dep] = _override_get_db_sync
+    app.dependency_overrides.update(overrides)
     async with AsyncClient(app=app, base_url="http://test") as client:
         try:
             yield client
         finally:
             app.dependency_overrides.clear()
 
-
-@pytest.fixture
-def client(test_db: None) -> Iterator[TestClient]:
-    app, get_db = _import_app_and_get_db()
-    app.dependency_overrides[get_db] = _override_get_db  # type: ignore[index]
-    with TestClient(app) as c:
-        try:
-            yield c
-        finally:
-            app.dependency_overrides.clear()
+@pytest_asyncio.fixture
+async def client(async_client: AsyncClient) -> AsyncIterator[AsyncClient]:
+    yield async_client
 
 
 # ======================================================================================
@@ -894,27 +936,46 @@ def db_session(test_db: None):
         connection.close()
 
 
-@pytest.fixture
-def auth_headers(client):
-    """
-    Р РµРіРёСЃС‚СЂРёСЂСѓРµС‚ РїРѕР»СЊР·РѕРІР°С‚РµР»СЏ (РµСЃР»Рё СѓР¶Рµ РµСЃС‚СЊ вЂ” РЅРµ СЃС‚СЂР°С€РЅРѕ) Рё Р»РѕРіРёРЅРёС‚ РµРіРѕ,
-    РІРѕР·РІСЂР°С‰Р°СЏ Р·Р°РіРѕР»РѕРІРѕРє Authorization РґР»СЏ API-С‚РµСЃС‚РѕРІ РїРѕРґРїРёСЃРѕРє.
-    """
-    phone = "+77000000001"
+@pytest_asyncio.fixture
+async def auth_headers(async_client: AsyncClient):
+    """Seed a platform admin user and return its bearer token."""
+    from app.core.security import create_access_token, get_password_hash  # type: ignore
+    from app.models.company import Company  # type: ignore
+    from app.models.user import User  # type: ignore
+
+    phone = "77000000001"
     password = "Secret123!"
 
-    # РџС‹С‚Р°РµРјСЃСЏ Р·Р°СЂРµРіРёСЃС‚СЂРёСЂРѕРІР°С‚СЊ; РµСЃР»Рё СѓР¶Рµ РµСЃС‚СЊ вЂ” РѕРє.
-    client.post(
-        "/api/auth/register", json={"phone": phone, "password": password, "full_name": "Test User"}
-    )
+    SessionLocal = sessionmaker(bind=sync_engine, expire_on_commit=False, autoflush=False)
+    with SessionLocal() as s:
+        existing_ids = {c.id for c in s.query(Company).all()}
+        for cid in range(1, 5):
+            if cid not in existing_ids:
+                s.add(Company(id=cid, name=f"Company {cid}"))
+        s.flush()
 
-    r = client.post("/api/auth/login", json={"phone": phone, "password": password})
-    assert r.status_code == 200, r.text
-    data = r.json()
-    token = (
-        data.get("access_token")
-        or (data.get("data") or {}).get("access_token")
-        or (data.get("result") or {}).get("access_token")
-    )
-    assert token, f"РќРµ СѓРґР°Р»РѕСЃСЊ РёР·РІР»РµС‡СЊ access_token РёР· РѕС‚РІРµС‚Р°: {data}"
+        company = s.get(Company, 1)
+        if company is None:
+            raise RuntimeError("Failed to seed company with id=1")
+
+        user = s.query(User).filter(User.phone.in_([phone, f"+{phone}"])).first()
+        if not user:
+            user = User(
+                company_id=company.id,
+                phone=phone,
+                hashed_password=get_password_hash(password),
+                role="platform_admin",
+                is_active=True,
+                is_verified=True,
+            )
+            s.add(user)
+        else:
+            user.company_id = company.id
+            user.role = "platform_admin"
+            user.is_active = True
+            user.is_verified = True
+        s.commit()
+        s.refresh(user)
+        token = create_access_token(subject=user.id)
+
     return {"Authorization": f"Bearer {token}"}

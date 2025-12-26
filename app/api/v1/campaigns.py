@@ -12,6 +12,7 @@ from typing import Any, Literal
 from fastapi import APIRouter, Body, Depends, HTTPException, Path, Query, status
 from pydantic import BaseModel, Field, ValidationError, field_validator
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import Session
 
 from app.core.db import get_db
 from app.core.security import get_current_user as get_current_user_security
@@ -305,7 +306,7 @@ rate_limiter = RateLimiter()
 
 async def _auth_user(
     token_data: dict = Depends(get_current_user_security),
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession | Session = Depends(get_db),
 ) -> User:
     sub = token_data.get("sub")
     try:
@@ -313,7 +314,10 @@ async def _auth_user(
     except Exception:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Not authenticated")
 
-    user = await db.get(User, user_id)
+    if isinstance(db, AsyncSession):
+        user = await db.get(User, user_id)
+    else:
+        user = db.get(User, user_id)
     if not user:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Not authenticated")
     return user
@@ -321,7 +325,8 @@ async def _auth_user(
 
 def require_role(*roles: str):
     async def dep(user: User = Depends(_auth_user)):
-        if getattr(user, "role", None) not in roles:
+        role = getattr(user, "role", None)
+        if role != "platform_admin" and role not in roles:
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="forbidden")
         return user
 

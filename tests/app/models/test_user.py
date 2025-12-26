@@ -7,6 +7,7 @@ import pytest
 # --- Импортируем модели и общую Base ---
 import app.models  # важно, чтобы подтянулись все ORM-классы
 from app.models.audit_log import AuditLog
+from app.models.company import Company
 from app.models.product import Product
 from app.models.user import OTPCode, User, UserSession
 from app.models.warehouse import StockMovement
@@ -93,6 +94,11 @@ class TestUser:
 
     def test_audit_log_and_stock_movement(self, db_session):
         """Test AuditLog and StockMovement models."""
+        prod = Product(name="Stocked", sku="STK-1", slug="stocked", price=10)
+        db_session.add(prod)
+        db_session.commit()
+        db_session.refresh(prod)
+
         user = User(username="audituser", email="audit@example.com", hashed_password="hashed")
         db_session.add(user)
         db_session.commit()
@@ -103,7 +109,7 @@ class TestUser:
 
         stock = StockMovement(
             user_id=user.id,
-            product_id=1,
+            product_id=prod.id,
             quantity=10,
             movement_type="in",
             previous_quantity=0,
@@ -322,6 +328,11 @@ class TestUser:
 
     def test_user_can_manage_user(self, db_session):
         """Test RBAC: can_manage_user logic."""
+        c1 = Company(name="C1")
+        c2 = Company(name="C2")
+        db_session.add_all([c1, c2])
+        db_session.commit()
+
         admin = User(
             username="admin",
             email="admin@example.com",
@@ -333,28 +344,28 @@ class TestUser:
             username="manager",
             email="manager@example.com",
             role="manager",
-            company_id=1,
+            company_id=c1.id,
             is_active=True,
         )
         other_manager = User(
             username="othermanager",
             email="othermanager@example.com",
             role="manager",
-            company_id=2,
+            company_id=c2.id,
             is_active=True,
         )
         storekeeper = User(
             username="keeper",
             email="keeper@example.com",
             role="storekeeper",
-            company_id=1,
+            company_id=c1.id,
             is_active=True,
         )
         user = User(
             username="plain",
             email="plain@example.com",
             role="analyst",
-            company_id=1,
+            company_id=c1.id,
             is_active=True,
         )
         db_session.add_all([admin, manager, other_manager, storekeeper, user])

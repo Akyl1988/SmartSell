@@ -17,6 +17,7 @@ from app.core.db import get_db
 from app.core.security import get_current_user  # -> текущий пользователь
 from app.models.billing import BillingPayment, Subscription
 from app.models.company import Company
+from app.models.user import User
 
 # ----------------------------------------------------------------
 
@@ -141,6 +142,18 @@ def ensure_sub_access(user, sub: Subscription, db: Session) -> Company:
     return company
 
 
+def _auth_user(token_data: dict = Depends(get_current_user), db: Session = Depends(get_db)) -> User:
+    """Resolve the actual User model from JWT claims, supporting sync Session."""
+    try:
+        user_id = int(token_data.get("sub"))
+    except Exception:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Not authenticated")
+    user = db.get(User, user_id)
+    if not user:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Not authenticated")
+    return user
+
+
 # ====== Эндпоинты ======
 @router.get("", response_model=list[SubscriptionOut])
 def list_subscriptions(
@@ -150,7 +163,7 @@ def list_subscriptions(
     from_date: datetime | None = Query(None, description="Фильтр по next_billing_date (>=)"),
     to_date: datetime | None = Query(None, description="Фильтр по next_billing_date (<=)"),
     db: Session = Depends(get_db),
-    user=Depends(get_current_user),
+    user: User = Depends(_auth_user),
 ):
     company = ensure_company(db, company_id)
     ensure_company_access(user, company)
@@ -181,7 +194,7 @@ def list_subscriptions(
 def get_current_subscription(
     company_id: int = Query(..., ge=1),
     db: Session = Depends(get_db),
-    user=Depends(get_current_user),
+    user: User = Depends(_auth_user),
 ):
     company = ensure_company(db, company_id)
     ensure_company_access(user, company)
@@ -205,7 +218,7 @@ def get_current_subscription(
 def create_subscription(
     payload: SubscriptionCreate,
     db: Session = Depends(get_db),
-    user=Depends(get_current_user),
+    user: User = Depends(_auth_user),
 ):
     company = ensure_company(db, payload.company_id)
     ensure_company_access(user, company)
@@ -248,7 +261,7 @@ def update_subscription(
     subscription_id: int = Path(..., ge=1),
     payload: SubscriptionUpdate = ...,
     db: Session = Depends(get_db),
-    user=Depends(get_current_user),
+    user: User = Depends(_auth_user),
 ):
     sub = db.get(Subscription, subscription_id)
     if not sub:
@@ -284,7 +297,7 @@ def update_subscription(
 def cancel_subscription(
     subscription_id: int = Path(..., ge=1),
     db: Session = Depends(get_db),
-    user=Depends(get_current_user),
+    user: User = Depends(_auth_user),
 ):
     sub = db.get(Subscription, subscription_id)
     if not sub:
@@ -305,7 +318,7 @@ def cancel_subscription(
 def resume_subscription(
     subscription_id: int = Path(..., ge=1),
     db: Session = Depends(get_db),
-    user=Depends(get_current_user),
+    user: User = Depends(_auth_user),
 ):
     sub = db.get(Subscription, subscription_id)
     if not sub:
@@ -336,7 +349,7 @@ def resume_subscription(
 def renew_subscription(
     subscription_id: int = Path(..., ge=1),
     db: Session = Depends(get_db),
-    user=Depends(get_current_user),
+    user: User = Depends(_auth_user),
 ):
     """
     Простое продление (вызвать после успешной оплаты).
@@ -358,7 +371,7 @@ def renew_subscription(
 def end_trial(
     subscription_id: int = Path(..., ge=1),
     db: Session = Depends(get_db),
-    user=Depends(get_current_user),
+    user: User = Depends(_auth_user),
 ):
     """
     Принудительно завершить trial и перевести в active (например, после ранней оплаты).
@@ -384,7 +397,7 @@ def end_trial(
 def list_subscription_payments(
     subscription_id: int = Path(..., ge=1),
     db: Session = Depends(get_db),
-    user=Depends(get_current_user),
+    user: User = Depends(_auth_user),
 ):
     """
     История платежей, связанных с подпиской (упрощённо: по company_id и plan).

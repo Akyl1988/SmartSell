@@ -197,6 +197,63 @@ def _patch_otpcode_api(cls: type[Any]) -> None:
 
         setattr(cls, "verify_plain", verify_plain)
 
+    if not hasattr(cls, "increment_attempts"):
+
+        def increment_attempts(self) -> None:
+            self.attempts = int(getattr(self, "attempts", 0) or 0) + 1
+            if hasattr(self, "updated_at"):
+                setattr(self, "updated_at", utc_now())
+
+        setattr(cls, "increment_attempts", increment_attempts)
+
+    if not hasattr(cls, "mark_as_used"):
+
+        def mark_as_used(self) -> None:
+            # Alias for mark_used to satisfy tests
+            if hasattr(self, "mark_used"):
+                self.mark_used()  # type: ignore[attr-defined]
+            else:  # pragma: no cover - fallback
+                self.is_used = True
+                if hasattr(self, "updated_at"):
+                    setattr(self, "updated_at", utc_now())
+
+        setattr(cls, "mark_as_used", mark_as_used)
+
+    if not hasattr(cls, "cleanup_expired"):
+
+        @staticmethod
+        def cleanup_expired(session, *, older_than_minutes: int = 60) -> int:
+            threshold = utc_now() - timedelta(minutes=older_than_minutes)
+            try:
+                q = session.query(cls).filter(
+                    or_(
+                        cls.expires_at < threshold,
+                        and_(
+                            cls.is_used.is_(True),
+                            getattr(cls, "verified_at") != None,  # noqa: E711
+                            getattr(cls, "verified_at") < threshold,
+                        ),
+                    )
+                )
+                deleted = q.delete(synchronize_session=False)
+                session.flush()
+                return int(deleted or 0)
+            except Exception:
+                return 0
+
+        setattr(cls, "cleanup_expired", cleanup_expired)
+
+    if not hasattr(cls, "otp_status"):
+
+        def otp_status(self) -> str:
+            if getattr(self, "is_used", False):
+                return "used"
+            if self.is_expired():
+                return "expired"
+            return "active"
+
+        setattr(cls, "otp_status", otp_status)
+
     if not hasattr(cls, "factory"):
 
         @staticmethod
@@ -394,6 +451,13 @@ if _existing_otpcode is None:
                 self.updated_at = utc_now()
             return ok
 
+        def increment_attempts(self) -> None:
+            self.attempts = int(self.attempts or 0) + 1
+            self.updated_at = utc_now()
+
+        def mark_as_used(self) -> None:
+            self.mark_used()
+
         # ---- Фабрики/асинхронные хелперы ----
         @staticmethod
         def factory(
@@ -472,6 +536,33 @@ if _existing_otpcode is None:
                 )
             )
             return int(res.rowcount or 0)
+
+        @staticmethod
+        def cleanup_expired(session, *, older_than_minutes: int = 60) -> int:
+            threshold = utc_now() - timedelta(minutes=older_than_minutes)
+            deleted = (
+                session.query(OTPCode)
+                .filter(
+                    or_(
+                        OTPCode.expires_at < threshold,
+                        and_(
+                            OTPCode.is_used.is_(True),
+                            OTPCode.verified_at != None,  # noqa: E711
+                            OTPCode.verified_at < threshold,
+                        ),
+                    )
+                )
+                .delete(synchronize_session=False)
+            )
+            session.flush()
+            return int(deleted or 0)
+
+        def otp_status(self) -> str:
+            if self.is_used:
+                return "used"
+            if self.is_expired():
+                return "expired"
+            return "active"
 
         def __repr__(self) -> str:  # pragma: no cover
             return (

@@ -305,12 +305,16 @@ async def _fetch_user(db, user_id: int):
         return None
 
     try:
-        if hasattr(db, "execute"):
+        from sqlalchemy.ext.asyncio import AsyncSession as _AsyncSession  # type: ignore
+
+        if isinstance(db, _AsyncSession):
             res = await db.execute(
                 select(User).where(User.id == user_id, User.is_active.is_(True))
             )
             return res.scalars().first()
-        return db.query(User).filter(User.id == user_id, User.is_active.is_(True)).first()
+
+        res = db.execute(select(User).where(User.id == user_id, User.is_active.is_(True)))
+        return res.scalars().first() if hasattr(res, "scalars") else None
     except Exception:
         return None
 

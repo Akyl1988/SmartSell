@@ -138,7 +138,7 @@ from app.models.base import (  # async helpers (опциональны, но а�
 # ======================================================================================
 # Constants & Policies
 # ======================================================================================
-ALLOWED_ROLES = {"admin", "manager", "storekeeper", "analyst"}
+ALLOWED_ROLES = {"admin", "manager", "storekeeper", "analyst", "platform_admin"}
 EMAIL_REGEX = re.compile(r"^[^@]+@[^@]+\.[^@]+$")
 PHONE_REGEX = re.compile(r"^\+?\d{10,15}$")
 
@@ -316,7 +316,8 @@ class User(
         Index("ix_users_username_email_lower", func.lower(username), func.lower(email)),
         CheckConstraint("failed_login_attempts >= 0", name="ck_user_failed_login_nonneg"),
         CheckConstraint(
-            "role IN ('admin','manager','storekeeper','analyst')", name="ck_user_role_allowed"
+            "role IN ('admin','manager','storekeeper','analyst','platform_admin')",
+            name="ck_user_role_allowed",
         ),
     )
 

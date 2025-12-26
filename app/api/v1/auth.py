@@ -33,6 +33,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
 from app.core.db import get_async_db as get_db
+from app.core.db import get_async_db
 from app.core.dependencies import auth_rate_limit, get_client_info, get_current_user
 from app.core.exceptions import AuthenticationError, ConflictError, SmartSellValidationError
 from app.core.logging import audit_logger

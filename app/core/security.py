@@ -449,7 +449,6 @@ def _decode(token: str, alg: str | None = None) -> dict[str, Any]:
         audience=JWT_AUDIENCE,
         issuer=JWT_ISSUER,
         options={"verify_aud": True, "verify_iss": True},
-        leeway=JWT_LEEWAY_SECONDS,
     )
 
 
