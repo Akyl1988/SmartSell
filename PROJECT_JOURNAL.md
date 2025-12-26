@@ -1,3 +1,9 @@
+## [2025-12-27] Mobizon OTP provider
+- added: Mobizon OTP provider (send/verify) with safe logging, retries/idempotency, and healthcheck; NoOp OTP provider now supports verify
+- changed: OTP provider resolution pulls configs via ProviderConfigService with eventing and fallback to noop when config/build fails
+- tests: added `tests/test_mobizon_provider.py`; full suite `pytest -q` (127 passed, 5 skipped; warnings unchanged)
+- commands: `alembic upgrade head`; `pytest -q` (127 passed, 5 skipped)
+
 ## [2025-12-26] Admin Integrations: listing & events API
 - Added: provider listing endpoint with filters + pagination (service layer + admin API).
 - Added: events listing endpoint with filters (domain/provider/actor) + pagination; ordered results.
