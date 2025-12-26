@@ -526,12 +526,14 @@ set_idempotency_result = _idempotency_enforcer.set_result
 # Provider adapters (registry-aware, default to NoOp)
 # ------------------------------------------------------------------------------
 async def get_payment_gateway(db=Depends(get_db)):
-    from app.core.provider_registry import ProviderRegistry
     from app.integrations.providers.noop import NoOpPaymentGateway
+    from app.services.payment_providers import PaymentProviderResolver
 
-    provider, cfg = await ProviderRegistry.get_provider_config(db, "payments")
-    _ = provider  # provider selection reserved for future adapters
-    return NoOpPaymentGateway()
+    try:
+        return await PaymentProviderResolver.resolve(db, domain="payments")
+    except Exception as exc:  # pragma: no cover - runtime guard
+        log.warning("Payment gateway resolution failed; using noop", exc_info=exc)
+        return NoOpPaymentGateway()
 
 
 async def get_otp_service(db=Depends(get_db)):
@@ -550,12 +552,14 @@ get_otp_provider = get_otp_service
 
 
 async def get_messaging_provider(db=Depends(get_db)):
-    from app.core.provider_registry import ProviderRegistry
     from app.integrations.providers.noop import NoOpMessagingProvider
+    from app.services.messaging_providers import MessagingProviderResolver
 
-    provider, cfg = await ProviderRegistry.get_provider_config(db, "messaging")
-    _ = provider
-    return NoOpMessagingProvider()
+    try:
+        return await MessagingProviderResolver.resolve(db, domain="messaging")
+    except Exception as exc:  # pragma: no cover - runtime guard
+        log.warning("Messaging provider resolution failed; using noop", exc_info=exc)
+        return NoOpMessagingProvider()
 
 
 # ------------------------------------------------------------------------------

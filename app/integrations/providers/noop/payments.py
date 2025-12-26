@@ -8,6 +8,11 @@ from app.integrations.ports.payments import PaymentGateway
 class NoOpPaymentGateway(PaymentGateway):
     """Minimal no-op gateway for testing/wiring."""
 
+    def __init__(self, name: str | None = None, config: dict[str, Any] | None = None, version: int | None = None):
+        self.name = (name or "noop").strip() or "noop"
+        self.config = config or {}
+        self.version = int(version or 0)
+
     async def charge(
         self,
         amount: float,
@@ -17,11 +22,14 @@ class NoOpPaymentGateway(PaymentGateway):
     ) -> dict[str, Any]:
         return {
             "status": "noop",
+            "provider": self.name,
+            "version": self.version,
             "transaction_id": "noop",
             "amount": amount,
             "currency": currency,
             "customer_id": customer_id,
             "metadata": metadata or {},
+            "config": self.config,
         }
 
     async def refund(
@@ -33,11 +41,14 @@ class NoOpPaymentGateway(PaymentGateway):
     ) -> dict[str, Any]:
         return {
             "status": "noop",
+            "provider": self.name,
+            "version": self.version,
             "transaction_id": transaction_id,
             "refunded": True,
             "amount": amount,
             "reason": reason,
             "metadata": metadata or {},
+            "config": self.config,
         }
 
 
