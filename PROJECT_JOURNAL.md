@@ -1,3 +1,9 @@
+## [2025-12-27] Payments domain wiring
+- added: payments port (healthcheck/create_payment_intent/refund + provider identity), NoOp payments gateway, PaymentProviderResolver with ProviderConfigService config/events/cache fallback, payments admin endpoints (list/config/healthcheck), DI alias `get_payment_service`
+- changed: payment provider resolution fetches encrypted configs with events on missing/build errors; ProviderConfigService healthcheck supports payments; PaymentGateway keeps backward-compatible charge alias
+- tests: added `tests/test_payments_provider.py`; full suite `pytest -q` (130 passed, 5 skipped; warnings unchanged)
+- commands: `alembic upgrade head`; `pytest -q`
+
 ## [2025-12-27] Mobizon OTP provider
 - added: Mobizon OTP provider (send/verify) with safe logging, retries/idempotency, and healthcheck; NoOp OTP provider now supports verify
 - changed: OTP provider resolution pulls configs via ProviderConfigService with eventing and fallback to noop when config/build fails
