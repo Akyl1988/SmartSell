@@ -14,6 +14,7 @@ from app.core.dependencies import (
 )
 from app.core.provider_registry import ProviderRegistry
 from app.services.integration_providers import IntegrationProviderService
+from app.services.provider_configs import ProviderConfigService
 
 router = APIRouter(prefix="/api/admin/integrations", tags=["admin-integrations"])
 
@@ -89,8 +90,39 @@ class CacheInvalidate(BaseModel):
     domain: ProviderDomain | None = None
 
 
+class ProviderConfigIn(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    config: dict[str, Any] = Field(..., description="Provider config payload")
+    key_id: str | None = Field(default=None, description="Key identifier used for encryption")
+    meta: dict[str, Any] | None = Field(default=None)
+
+
+class ProviderConfigOut(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    domain: str
+    provider: str
+    config: dict[str, Any]
+    key_id: str | None = None
+    updated_at: dt.datetime | None = None
+
+
+class ProviderHealthcheckOut(BaseModel):
+    status: str
+    domain: str
+    provider: str
+    error: str | None = None
+
+
 def _normalize_domain(domain: ProviderDomain | str | None) -> str:
     return (domain or "").strip().lower()
+
+
+def _require_config_or_404(config: dict[str, Any]) -> dict[str, Any]:
+    if not config:
+        raise HTTPException(status_code=404, detail="config_not_found")
+    return config
 
 
 @router.get("/providers", response_model=list[ProviderOut])
@@ -312,3 +344,89 @@ async def invalidate_cache(
     ProviderRegistry.invalidate(domain or None)
     await ProviderRegistry.publish_change(domain or "", None)
     return {"status": "ok", "domain": domain or "*"}
+
+
+@router.get(
+    "/providers/{domain}/{provider}/config",
+    response_model=ProviderConfigOut,
+)
+async def get_provider_config(
+    domain: ProviderDomain,
+    provider: str,
+    db=Depends(get_db),
+    admin: Any = Depends(require_platform_admin),
+) -> ProviderConfigOut:
+    _ = admin
+    cfg = await ProviderConfigService.get_redacted_config(db, domain=_normalize_domain(domain), provider=provider)
+    _require_config_or_404(cfg)
+    model = await ProviderConfigService.get_model(db, _normalize_domain(domain), provider)
+    return ProviderConfigOut(
+        domain=_normalize_domain(domain),
+        provider=provider,
+        config=cfg,
+        key_id=getattr(model, "key_id", None),
+        updated_at=getattr(model, "updated_at", None),
+    )
+
+
+@router.put(
+    "/providers/{domain}/{provider}/config",
+    response_model=ProviderConfigOut,
+    dependencies=[Depends(ensure_idempotency_replay)],
+)
+async def set_provider_config(
+    domain: ProviderDomain,
+    provider: str,
+    payload: ProviderConfigIn,
+    request: Request,
+    db=Depends(get_db),
+    admin: Any = Depends(require_platform_admin),
+) -> ProviderConfigOut:
+    idem_key = getattr(getattr(request, "state", None), "idempotency_key", None)
+    item = await ProviderConfigService.set_provider_config(
+        db,
+        domain=_normalize_domain(domain),
+        provider=provider,
+        config=payload.config,
+        key_id=payload.key_id or "master",
+        meta=payload.meta,
+        actor_user_id=getattr(admin, "id", None),
+    )
+    if idem_key:
+        await set_idempotency_result(idem_key, status_code=200, ttl_seconds=None)  # type: ignore[arg-type]
+    cfg = await ProviderConfigService.get_redacted_config(db, domain=item.domain, provider=item.provider)
+    return ProviderConfigOut(
+        domain=item.domain,
+        provider=item.provider,
+        config=cfg,
+        key_id=item.key_id,
+        updated_at=item.updated_at,
+    )
+
+
+@router.post(
+    "/providers/{domain}/{provider}/healthcheck",
+    response_model=ProviderHealthcheckOut,
+)
+async def provider_healthcheck(
+    domain: ProviderDomain,
+    provider: str,
+    db=Depends(get_db),
+    admin: Any = Depends(require_platform_admin),
+) -> ProviderHealthcheckOut:
+    _ = admin
+    result = await ProviderConfigService.healthcheck(
+        db,
+        domain=_normalize_domain(domain),
+        provider=provider,
+        actor_user_id=getattr(admin, "id", None),
+    )
+    status = result.get("status") or "error"
+    if status != "ok":
+        return ProviderHealthcheckOut(
+            status=status,
+            domain=_normalize_domain(domain),
+            provider=provider,
+            error=result.get("error"),
+        )
+    return ProviderHealthcheckOut(status="ok", domain=_normalize_domain(domain), provider=provider)
