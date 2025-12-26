@@ -115,6 +115,15 @@ class ProviderHealthcheckOut(BaseModel):
     error: str | None = None
 
 
+class PaymentConfigUpsert(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    provider: str = Field(..., min_length=1, max_length=128)
+    config: dict[str, Any] = Field(..., description="Provider config payload")
+    key_id: str | None = Field(default=None, description="Key identifier used for encryption")
+    meta: dict[str, Any] | None = Field(default=None)
+
+
 def _normalize_domain(domain: ProviderDomain | str | None) -> str:
     return (domain or "").strip().lower()
 
@@ -430,3 +439,117 @@ async def provider_healthcheck(
             error=result.get("error"),
         )
     return ProviderHealthcheckOut(status="ok", domain=_normalize_domain(domain), provider=provider)
+
+
+# ---------------------------------------------------------------------------
+# Payments convenience endpoints
+# ---------------------------------------------------------------------------
+
+
+@router.get("/payments/providers", response_model=list[ProviderOut])
+async def list_payment_providers(
+    is_enabled: bool | None = None,
+    is_active: bool | None = None,
+    limit: int | None = Query(default=None, ge=1, le=500),
+    offset: int | None = Query(default=None, ge=0),
+    db=Depends(get_db),
+    admin: Any = Depends(require_platform_admin),
+) -> list[ProviderOut]:
+    _ = admin
+    items = await IntegrationProviderService.list_providers(
+        db,
+        domain="payments",
+        provider=None,
+        is_enabled=is_enabled,
+        is_active=is_active,
+        limit=limit,
+        offset=offset,
+    )
+    out: list[ProviderOut] = []
+    for it in items:
+        out.append(
+            ProviderOut(
+                id=it.id,
+                domain=it.domain,
+                provider=it.provider,
+                is_enabled=it.is_enabled,
+                is_active=it.is_active,
+                capabilities=it.capabilities,
+                version=it.version or 1,
+                created_at=it.created_at,
+                updated_at=it.updated_at,
+                has_config=it.config_json is not None,
+            )
+        )
+    return out
+
+
+@router.get("/payments/config", response_model=ProviderConfigOut)
+async def get_payment_config(
+    provider: str = Query(..., min_length=1, max_length=128),
+    db=Depends(get_db),
+    admin: Any = Depends(require_platform_admin),
+) -> ProviderConfigOut:
+    _ = admin
+    cfg = await ProviderConfigService.get_redacted_config(db, domain="payments", provider=provider)
+    _require_config_or_404(cfg)
+    model = await ProviderConfigService.get_model(db, "payments", provider)
+    return ProviderConfigOut(
+        domain="payments",
+        provider=provider,
+        config=cfg,
+        key_id=getattr(model, "key_id", None),
+        updated_at=getattr(model, "updated_at", None),
+    )
+
+
+@router.put(
+    "/payments/config",
+    response_model=ProviderConfigOut,
+    dependencies=[Depends(ensure_idempotency_replay)],
+)
+async def set_payment_config(
+    payload: PaymentConfigUpsert,
+    request: Request,
+    db=Depends(get_db),
+    admin: Any = Depends(require_platform_admin),
+) -> ProviderConfigOut:
+    idem_key = getattr(getattr(request, "state", None), "idempotency_key", None)
+    item = await ProviderConfigService.set_provider_config(
+        db,
+        domain="payments",
+        provider=payload.provider,
+        config=payload.config,
+        key_id=payload.key_id or "master",
+        meta=payload.meta,
+        actor_user_id=getattr(admin, "id", None),
+    )
+    if idem_key:
+        await set_idempotency_result(idem_key, status_code=200, ttl_seconds=None)  # type: ignore[arg-type]
+    cfg = await ProviderConfigService.get_redacted_config(db, domain=item.domain, provider=item.provider)
+    return ProviderConfigOut(
+        domain=item.domain,
+        provider=item.provider,
+        config=cfg,
+        key_id=item.key_id,
+        updated_at=item.updated_at,
+    )
+
+
+@router.get("/payments/healthcheck", response_model=ProviderHealthcheckOut)
+async def payment_healthcheck(
+    provider: str = Query(..., min_length=1, max_length=128),
+    db=Depends(get_db),
+    admin: Any = Depends(require_platform_admin),
+) -> ProviderHealthcheckOut:
+    _ = admin
+    result = await ProviderConfigService.healthcheck(
+        db,
+        domain="payments",
+        provider=provider,
+        actor_user_id=getattr(admin, "id", None),
+    )
+    status = result.get("status") or "error"
+    if status != "ok":
+        return ProviderHealthcheckOut(status=status, domain="payments", provider=provider, error=result.get("error"))
+    return ProviderHealthcheckOut(status="ok", domain="payments", provider=provider)

@@ -181,14 +181,27 @@ class ProviderConfigService:
     ) -> dict[str, Any]:
         status = "ok"
         error = None
+        domain_norm = _normalize_domain(domain)
         try:
             cfg = await cls.get_provider_config(db, domain=domain, provider=provider)
             cls.validate_config_schema(domain, provider, cfg if cfg else {})
-            if _normalize_domain(domain) == "otp" and provider.lower() in {"mobizon", "otp-mobizon", "mobizon-otp"}:
+            if domain_norm == "otp" and provider.lower() in {"mobizon", "otp-mobizon", "mobizon-otp"}:
                 try:
                     from app.integrations.providers.mobizon.otp import MobizonOtpProvider
 
                     provider_inst = MobizonOtpProvider(config=cfg, name=provider, version=0)
+                    hc = await provider_inst.healthcheck()
+                    if hc.get("status") != "ok":
+                        status = "error"
+                        error = hc.get("provider_error") or "healthcheck_failed"
+                except Exception as exc:  # pragma: no cover - defensive guard
+                    status = "error"
+                    error = str(exc)
+            elif domain_norm == "payments":
+                try:
+                    from app.integrations.providers.noop.payments import NoOpPaymentGateway
+
+                    provider_inst = NoOpPaymentGateway(config=cfg, name=provider, version=0)
                     hc = await provider_inst.healthcheck()
                     if hc.get("status") != "ok":
                         status = "error"

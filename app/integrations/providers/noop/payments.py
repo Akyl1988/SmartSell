@@ -13,7 +13,22 @@ class NoOpPaymentGateway(PaymentGateway):
         self.config = config or {}
         self.version = int(version or 0)
 
-    async def charge(
+    @property
+    def provider_name(self) -> str:
+        return self.name
+
+    @property
+    def provider_version(self) -> int:
+        return self.version
+
+    async def healthcheck(self) -> dict[str, Any]:
+        return {
+            "status": "ok",
+            "provider": self.name,
+            "version": self.version,
+        }
+
+    async def create_payment_intent(
         self,
         amount: float,
         currency: str,
@@ -24,7 +39,7 @@ class NoOpPaymentGateway(PaymentGateway):
             "status": "noop",
             "provider": self.name,
             "version": self.version,
-            "transaction_id": "noop",
+            "payment_intent_id": "noop",
             "amount": amount,
             "currency": currency,
             "customer_id": customer_id,
@@ -50,6 +65,21 @@ class NoOpPaymentGateway(PaymentGateway):
             "metadata": metadata or {},
             "config": self.config,
         }
+
+    # Backward-compat alias
+    async def charge(
+        self,
+        amount: float,
+        currency: str,
+        customer_id: str,
+        metadata: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        return await self.create_payment_intent(
+            amount=amount,
+            currency=currency,
+            customer_id=customer_id,
+            metadata=metadata,
+        )
 
 
 __all__ = ["NoOpPaymentGateway"]

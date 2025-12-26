@@ -536,6 +536,10 @@ async def get_payment_gateway(db=Depends(get_db)):
         return NoOpPaymentGateway()
 
 
+# Alias for DI symmetry
+get_payment_service = get_payment_gateway
+
+
 async def get_otp_service(db=Depends(get_db)):
     from app.services.otp_providers import OtpProviderResolver
 
@@ -599,6 +603,7 @@ __all__ = [
     "set_idempotency_result",
     # providers
     "get_payment_gateway",
+    "get_payment_service",
     "get_otp_service",
     "get_otp_provider",
     "get_messaging_provider",

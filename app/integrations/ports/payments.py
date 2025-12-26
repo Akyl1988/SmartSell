@@ -4,7 +4,10 @@ from typing import Any, Protocol
 
 
 class PaymentGateway(Protocol):
-    async def charge(
+    async def healthcheck(self) -> dict[str, Any]:
+        ...
+
+    async def create_payment_intent(
         self,
         amount: float,
         currency: str,
@@ -20,6 +23,24 @@ class PaymentGateway(Protocol):
         reason: str | None = None,
         metadata: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
+        ...
+
+    # Backward-compat alias for older call sites
+    async def charge(
+        self,
+        amount: float,
+        currency: str,
+        customer_id: str,
+        metadata: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        ...
+
+    @property
+    def provider_name(self) -> str:  # noqa: D401 - simple accessors
+        ...
+
+    @property
+    def provider_version(self) -> int:
         ...
 
 

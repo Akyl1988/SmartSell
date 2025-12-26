@@ -7,6 +7,7 @@ from app.core.logging import get_logger
 from app.core.provider_registry import ProviderRegistry
 from app.integrations.ports.payments import PaymentGateway
 from app.integrations.providers.noop.payments import NoOpPaymentGateway
+from app.services.provider_configs import ProviderConfigService
 
 log = get_logger(__name__)
 
@@ -65,10 +66,39 @@ class PaymentProviderResolver:
                 cls._cache[cache_key] = instance
             return instance
 
+        provider_config = entry.config or {}
+
+        if not provider_name.lower().startswith("noop"):
+            try:
+                provider_config = await ProviderConfigService.get_provider_config(
+                    db, domain=domain_key, provider=entry.provider
+                )
+                if not provider_config:
+                    await ProviderConfigService.record_event(
+                        db,
+                        domain=domain_key,
+                        provider=entry.provider,
+                        action="config_missing",
+                        status="error",
+                        error="provider_config_missing",
+                    )
+                    provider_config = {}
+            except Exception as exc:  # pragma: no cover - runtime guard
+                log.warning("Payment provider config fetch failed; using noop", exc_info=exc)
+                provider_config = {}
+
         try:
-            instance = cls._build_provider(entry.provider, entry.config, int(entry.version or 0))
+            instance = cls._build_provider(entry.provider, provider_config, int(entry.version or 0))
         except Exception as exc:  # pragma: no cover - runtime guard
             log.warning("Payment provider build failed; using noop", exc_info=exc)
+            await ProviderConfigService.record_event(
+                db,
+                domain=domain_key,
+                provider=entry.provider,
+                action="provider_build_failed",
+                status="error",
+                error=str(exc),
+            )
             instance = NoOpPaymentGateway(name="noop", config={}, version=0)
 
         async with cls._lock:
