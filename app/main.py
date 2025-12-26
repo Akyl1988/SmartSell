@@ -1523,6 +1523,14 @@ def create_app() -> FastAPI:
     except Exception as e:
         logger.warning("Auth compat router not mounted: %s", e)
 
+    # Admin integrations (platform-level)
+    try:
+        from app.api.admin import router as admin_router
+
+        app.include_router(admin_router)
+    except Exception as e:
+        logger.warning("Admin router not mounted: %s", e)
+
     # 2) Fallback campaigns — только если после mount_v1 префикса нет
     if not _has_path_prefix(app, f"{getattr(settings, 'API_V1_STR', '/api/v1').rstrip('/')}/campaigns"):
         campaigns_mounted = False

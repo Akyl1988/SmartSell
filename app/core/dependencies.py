@@ -410,6 +410,13 @@ async def get_current_superuser(current_user: Any = Depends(get_current_user)) -
     return current_user
 
 
+async def require_platform_admin(current_user: Any = Depends(get_current_user)) -> Any:
+    role = getattr(current_user, "role", "") or ""
+    if role not in {"platform_admin", "superadmin"}:
+        raise AuthorizationError("Admin role required", "ADMIN_REQUIRED")
+    return current_user
+
+
 def require_scopes(required: Sequence[str]) -> Callable[..., Any]:
     """Factory dependency to ensure required OAuth scopes are present."""
     req = set(required)
@@ -673,6 +680,36 @@ async def set_idempotency_result(key: str, status_code: int, ttl_seconds: int = 
 
 
 # ------------------------------------------------------------------------------
+# Provider adapters (registry-aware, default to NoOp)
+# ------------------------------------------------------------------------------
+async def get_payment_gateway(db=Depends(get_db)):
+    from app.core.provider_registry import ProviderRegistry
+    from app.integrations.providers.noop import NoOpPaymentGateway
+
+    provider, cfg = await ProviderRegistry.get_provider_config(db, "payments")
+    _ = provider  # provider selection reserved for future adapters
+    return NoOpPaymentGateway()
+
+
+async def get_otp_provider(db=Depends(get_db)):
+    from app.core.provider_registry import ProviderRegistry
+    from app.integrations.providers.noop import NoOpOtpProvider
+
+    provider, cfg = await ProviderRegistry.get_provider_config(db, "otp")
+    _ = provider
+    return NoOpOtpProvider()
+
+
+async def get_messaging_provider(db=Depends(get_db)):
+    from app.core.provider_registry import ProviderRegistry
+    from app.integrations.providers.noop import NoOpMessagingProvider
+
+    provider, cfg = await ProviderRegistry.get_provider_config(db, "messaging")
+    _ = provider
+    return NoOpMessagingProvider()
+
+
+# ------------------------------------------------------------------------------
 # Module alias to support legacy imports: app.core.dependencies -> this module
 # ------------------------------------------------------------------------------
 # If some routers still do: from app.core.dependencies import api_rate_limit
@@ -689,6 +726,7 @@ __all__ = [
     "get_current_active_user",
     "get_current_verified_user",
     "get_current_superuser",
+    "require_platform_admin",
     "require_scopes",
     # rate limit
     "rate_limit",
@@ -704,4 +742,8 @@ __all__ = [
     # idempotency
     "ensure_idempotency",
     "set_idempotency_result",
+    # providers
+    "get_payment_gateway",
+    "get_otp_provider",
+    "get_messaging_provider",
 ]

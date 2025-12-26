@@ -176,6 +176,9 @@ _LAZY_MODELS: dict[str, tuple[str, str]] = {
     "StockMovement": ("app.models.warehouse", "StockMovement"),
     # outbox
     "InventoryOutbox": ("app.models.inventory_outbox", "InventoryOutbox"),
+    # system integrations
+    "SystemIntegration": ("app.models.system_integrations", "SystemIntegration"),
+    "SystemActiveProvider": ("app.models.system_integrations", "SystemActiveProvider"),
 }
 
 # Поддерживаемые модули доменов для «массового» импорта (ручной whitelisting).
@@ -191,6 +194,7 @@ _DOMAIN_MODULES: tuple[str, ...] = (
     "app.models.otp",  # добавлено: явный модуль OTP
     "app.models.warehouse",
     "app.models.inventory_outbox",
+    "app.models.system_integrations",
 )
 
 # Критичные модули/классы, чья регистрация нужна даже при «холодном» старте (FK/relationship)

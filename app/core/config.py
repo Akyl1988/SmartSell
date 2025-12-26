@@ -216,6 +216,23 @@ class Settings(BaseSettings):
     )
     REDIS_DB: int = Field(default=0, description="Redis db index", validation_alias="REDIS_DB")
 
+    # ---- system integrations / provider registry
+    INTEGRATIONS_MASTER_KEY: str | None = Field(
+        default=None,
+        description="Base64-encoded master key for encrypting provider configs",
+        validation_alias="INTEGRATIONS_MASTER_KEY",
+    )
+    SYSTEM_INTEGRATIONS_CACHE_TTL: int = Field(
+        default=30,
+        description="TTL (seconds) for provider registry cache",
+        validation_alias="SYSTEM_INTEGRATIONS_CACHE_TTL",
+    )
+    SYSTEM_CONFIG_CHANNEL: str = Field(
+        default="smartsell.config_changed",
+        description="Redis pub/sub channel for system integration changes",
+        validation_alias="SYSTEM_CONFIG_CHANNEL",
+    )
+
     CELERY_BROKER_URL: str = Field(
         default="redis://localhost:6379/0",
         description="Celery broker URL",
