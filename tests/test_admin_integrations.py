@@ -12,6 +12,7 @@ from app.core.provider_registry import CachedProvider, ProviderRegistry
 from app.core.security import create_access_token, get_password_hash
 from app.models.integration_provider import IntegrationProvider, IntegrationProviderEvent
 from app.models.user import User
+from app.services.otp_providers import OtpProviderResolver
 
 
 @pytest.fixture(autouse=True)
@@ -29,8 +30,10 @@ def _setup_master_key(monkeypatch):
 @pytest.fixture(autouse=True)
 def _reset_provider_registry():
     ProviderRegistry.invalidate()
+    OtpProviderResolver.reset_cache()
     yield
     ProviderRegistry.invalidate()
+    OtpProviderResolver.reset_cache()
 
 
 @pytest.mark.asyncio
@@ -125,6 +128,57 @@ async def test_admin_switch_provider_publishesFC(async_client, async_db_session,
     assert publish_calls.get("domain") == "otp"
     assert publish_calls.get("version") == active.version
     assert "otp" not in ProviderRegistry._cache
+
+
+@pytest.mark.asyncio
+async def test_otp_provider_hot_switch(async_client, async_db_session):
+    OtpProviderResolver.reset_cache()
+    _, token = await _make_admin(async_db_session)
+    headers = {"Authorization": f"Bearer {token}"}
+
+    for provider in ("noop-a", "noop-b"):
+        resp = await async_client.post(
+            "/api/admin/integrations/providers",
+            json={"domain": "otp", "provider": provider, "config": {}},
+            headers=headers,
+        )
+        assert resp.status_code == 201, resp.text
+
+    resp_activate_a = await async_client.post(
+        "/api/admin/integrations/active",
+        json={"domain": "otp", "provider": "noop-a"},
+        headers=headers,
+    )
+    assert resp_activate_a.status_code == 200, resp_activate_a.text
+    version_a = resp_activate_a.json().get("version")
+
+    resp_first = await async_client.post(
+        "/api/v1/auth/request-otp",
+        json={"phone": "+77000000101", "purpose": "login"},
+    )
+    assert resp_first.status_code == 200, resp_first.text
+    data_first = resp_first.json().get("data") or {}
+    assert data_first.get("provider") == "noop-a"
+
+    resp_activate_b = await async_client.post(
+        "/api/admin/integrations/active",
+        json={"domain": "otp", "provider": "noop-b"},
+        headers=headers,
+    )
+    assert resp_activate_b.status_code == 200, resp_activate_b.text
+    version_b = resp_activate_b.json().get("version")
+    assert version_b is not None
+
+    resp_second = await async_client.post(
+        "/api/v1/auth/request-otp",
+        json={"phone": "+77000000102", "purpose": "login"},
+    )
+    assert resp_second.status_code == 200, resp_second.text
+    data_second = resp_second.json().get("data") or {}
+
+    assert data_second.get("provider") == "noop-b"
+    assert data_second.get("provider") != data_first.get("provider")
+    assert data_second.get("provider_version") == version_b
 
 
 @pytest.mark.asyncio
