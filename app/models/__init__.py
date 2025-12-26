@@ -181,6 +181,7 @@ _LAZY_MODELS: dict[str, tuple[str, str]] = {
     "SystemActiveProvider": ("app.models.system_integrations", "SystemActiveProvider"),
     "IntegrationProvider": ("app.models.integration_provider", "IntegrationProvider"),
     "IntegrationProviderEvent": ("app.models.integration_provider", "IntegrationProviderEvent"),
+    "IntegrationProviderConfig": ("app.models.integration_provider_config", "IntegrationProviderConfig"),
 }
 
 # Поддерживаемые модули доменов для «массового» импорта (ручной whitelisting).
@@ -198,6 +199,7 @@ _DOMAIN_MODULES: tuple[str, ...] = (
     "app.models.inventory_outbox",
     "app.models.system_integrations",
     "app.models.integration_provider",
+    "app.models.integration_provider_config",
 )
 
 # Критичные модули/классы, чья регистрация нужна даже при «холодном» старте (FK/relationship)
