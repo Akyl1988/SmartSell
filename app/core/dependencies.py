@@ -518,6 +518,7 @@ _idempotency_enforcer = IdempotencyEnforcer(
 )
 
 ensure_idempotency = _idempotency_enforcer.dependency()
+ensure_idempotency_replay = _idempotency_enforcer.dependency(allow_replay=True)
 set_idempotency_result = _idempotency_enforcer.set_result
 
 
@@ -584,6 +585,7 @@ __all__ = [
     "get_client_info",
     # idempotency
     "ensure_idempotency",
+    "ensure_idempotency_replay",
     "set_idempotency_result",
     # providers
     "get_payment_gateway",

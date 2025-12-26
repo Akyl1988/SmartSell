@@ -63,7 +63,7 @@ class IdempotencyEnforcer:
                 pass
         self._mem[key] = (status_code, time.time() + ttl)
 
-    def dependency(self):
+    def dependency(self, allow_replay: bool = False):
         async def dep(request: Request, response: Response):
             method = request.method.upper()
             if method not in ("POST", "PUT", "PATCH"):
@@ -81,6 +81,13 @@ class IdempotencyEnforcer:
 
             allowed, processed_status = await self._reserve(key, ttl_seconds)
             if not allowed:
+                if processed_status is not None and allow_replay:
+                    # Request was already processed; allow handler to proceed and return same status
+                    request.state.idempotency_key = key
+                    request.state.idempotency_ttl = ttl_seconds
+                    response.headers["Idempotency-Key"] = key
+                    response.status_code = processed_status
+                    return True
                 detail = "Request already processed" if processed_status else "Request is being processed"
                 raise HTTPException(status.HTTP_409_CONFLICT, detail)
 
