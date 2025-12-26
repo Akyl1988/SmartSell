@@ -577,7 +577,8 @@ def run_migrations_online() -> None:
     connectable = create_engine(url, future=True)
 
     try:
-        with connectable.connect() as connection:
+        # Используем begin(), чтобы соединение само закоммитилось при выходе
+        with connectable.begin() as connection:
             # SQLite: включаем foreign_keys (на всякий случай)
             try:
                 if _is_sqlite_url(url):
