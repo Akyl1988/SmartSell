@@ -3,13 +3,18 @@ from __future__ import annotations
 import datetime as dt
 from typing import Any, Literal
 
-from fastapi import APIRouter, Depends, HTTPException, Path
+from fastapi import APIRouter, Depends, HTTPException, Path, Request
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.crypto import decrypt_json, encrypt_json
-from app.core.dependencies import get_db, require_platform_admin
+from app.core.dependencies import (
+    get_db,
+    require_platform_admin,
+    ensure_idempotency,
+    set_idempotency_result,
+)
 from app.core.provider_registry import ProviderRegistry
 from app.models.system_integrations import SystemActiveProvider, SystemIntegration
 
@@ -268,9 +273,14 @@ async def get_active_provider(
     )
 
 
-@router.post("/active", response_model=ActiveProviderOut)
+@router.post(
+    "/active",
+    response_model=ActiveProviderOut,
+    dependencies=[Depends(ensure_idempotency)],
+)
 async def set_active_provider(
     payload: SetActive,
+    request: Request,
     db=Depends(get_db),
     _: Any = Depends(require_platform_admin),
 ) -> ActiveProviderOut:
@@ -299,6 +309,10 @@ async def set_active_provider(
     await _commit(db)
     await _refresh(db, active)
     await ProviderRegistry.notify_change(domain, new_version)
+
+    idem_key = getattr(getattr(request, "state", None), "idempotency_key", None)
+    if idem_key:
+        await set_idempotency_result(idem_key, status_code=200, ttl_seconds=None)  # type: ignore[arg-type]
 
     return ActiveProviderOut(
         domain=active.domain,

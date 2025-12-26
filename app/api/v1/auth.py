@@ -34,7 +34,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.config import settings
 from app.core.db import get_async_db as get_db
 from app.core.db import get_async_db
-from app.core.dependencies import auth_rate_limit, get_client_info, get_current_user
+from app.core.dependencies import auth_rate_limit, get_client_info, get_current_user, otp_rate_limit
 from app.core.exceptions import AuthenticationError, ConflictError, SmartSellValidationError
 from app.core.logging import audit_logger
 from app.core.security import (
@@ -555,7 +555,7 @@ async def change_password(
 @router.post(
     "/request-otp",
     response_model=SuccessResponse,
-    dependencies=[Depends(auth_rate_limit)],
+    dependencies=[Depends(auth_rate_limit), Depends(otp_rate_limit)],
 )
 async def request_otp(otp_request: OTPRequest, db: AsyncSession = Depends(get_async_db)):
     """
@@ -781,13 +781,19 @@ async def reset_password(reset_data: PasswordReset, db: AsyncSession = Depends(g
 
 
 @router.post(
-    "/otp/request", response_model=SuccessResponse, dependencies=[Depends(auth_rate_limit)]
+    "/otp/request",
+    response_model=SuccessResponse,
+    dependencies=[Depends(auth_rate_limit), Depends(otp_rate_limit)],
 )
 async def request_otp_alias(otp_request: OTPRequest, db: AsyncSession = Depends(get_async_db)):
     return await request_otp(otp_request, db)  # type: ignore[arg-type]
 
 
-@router.post("/send-otp", response_model=SuccessResponse, dependencies=[Depends(auth_rate_limit)])
+@router.post(
+    "/send-otp",
+    response_model=SuccessResponse,
+    dependencies=[Depends(auth_rate_limit), Depends(otp_rate_limit)],
+)
 async def send_otp_alias(
     phone: str = Query(...), 
     purpose: str = Query("login"),
@@ -798,7 +804,11 @@ async def send_otp_alias(
     return await request_otp(otp_request, db)  # type: ignore[arg-type]
 
 
-@router.post("/otp/verify", response_model=SuccessResponse, dependencies=[Depends(auth_rate_limit)])
+@router.post(
+    "/otp/verify",
+    response_model=SuccessResponse,
+    dependencies=[Depends(auth_rate_limit)],
+)
 async def verify_otp_alias(otp_verify: OTPVerify, db: AsyncSession = Depends(get_async_db)):
     return await verify_otp(otp_verify, db)  # type: ignore[arg-type]
 

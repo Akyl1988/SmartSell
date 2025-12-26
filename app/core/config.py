@@ -270,6 +270,11 @@ class Settings(BaseSettings):
     RATE_LIMIT_BURST: int = Field(
         default=100, description="Rate limit burst", validation_alias="RATE_LIMIT_BURST"
     )
+    RATE_LIMIT_ENABLED: bool = Field(
+        default=True,
+        description="Master switch for rate limiting",
+        validation_alias="RATE_LIMIT_ENABLED",
+    )
     AUTH_RATE_LIMIT_PER_MINUTE: int = Field(
         default=10,
         description="Auth endpoints rate limit per minute",
@@ -855,6 +860,7 @@ class Settings(BaseSettings):
     @property
     def rate_limit_settings(self) -> dict:
         return {
+            "enabled": bool(self.RATE_LIMIT_ENABLED),
             "api_per_minute": int(self.RATE_LIMIT_PER_MINUTE),
             "api_window_seconds": int(self.RATE_LIMIT_WINDOW_SECONDS),
             "api_burst": int(self.RATE_LIMIT_BURST),

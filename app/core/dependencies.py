@@ -22,8 +22,6 @@ ENV (optional):
 
 import os
 import sys
-import time
-from collections import defaultdict, deque
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from typing import Any
@@ -191,35 +189,9 @@ except Exception:  # pragma: no cover
 # ------------------------------------------------------------------------------
 # Redis (optional)
 # ------------------------------------------------------------------------------
-try:
-    import redis.asyncio as aioredis  # type: ignore
-
-    _HAS_REDIS = True
-except Exception:  # pragma: no cover
-    aioredis = None  # type: ignore
-    _HAS_REDIS = False
-
-_redis_client: aioredis.Redis | None = None  # type: ignore
-
-
-def _redis() -> aioredis.Redis | None:  # type: ignore
-    """Lazy init of asyncio Redis client."""
-    global _redis_client
-    if not _HAS_REDIS:
-        return None
-    if _redis_client is None:
-        try:
-            _redis_client = aioredis.from_url(
-                settings.REDIS_URL,
-                encoding="utf-8",
-                decode_responses=True,
-                socket_timeout=1.0,
-                socket_connect_timeout=1.0,
-            )
-        except Exception as e:  # pragma: no cover
-            log.warning("Redis init failed", error=str(e))
-            return None
-    return _redis_client
+from app.core.idempotency import IdempotencyEnforcer
+from app.core.rate_limiter import RateLimiter, rate_limit_dependency
+from app.core.redis_client import get_redis
 
 
 # ------------------------------------------------------------------------------
@@ -463,220 +435,90 @@ def get_pagination(page: int = 1, per_page: int = 20) -> Pagination:
     return Pagination(page=page, per_page=per_page)
 
 
-# ------------------------------------------------------------------------------
-# Rate limiting: Redis token bucket -> memory sliding window
-# ------------------------------------------------------------------------------
-def _env_int(name: str, default: int) -> int:
+def _int_setting(val, default: int) -> int:
     try:
-        v = int(os.getenv(name, "").strip() or default)
-        return v if v >= 0 else default
+        return int(val)
     except Exception:
         return default
 
 
-_API_RATE_LIMIT = _env_int("RATE_LIMIT_PER_MINUTE", getattr(settings, "RATE_LIMIT_PER_MINUTE", 100))
-_API_RATE_WINDOW = _env_int(
-    "RATE_LIMIT_WINDOW_SECONDS", getattr(settings, "RATE_LIMIT_WINDOW_SECONDS", 60)
+_rate_cfg = getattr(settings, "rate_limit_settings", {}) or {}
+_env_tag = getattr(settings, "ENVIRONMENT", "dev")
+_RATE_ENABLED = bool(_rate_cfg.get("enabled", getattr(settings, "RATE_LIMIT_ENABLED", True)))
+
+_API_RATE_LIMIT = _int_setting(
+    _rate_cfg.get("api_per_minute", getattr(settings, "RATE_LIMIT_PER_MINUTE", 100)), 100
 )
-_AUTH_RATE_LIMIT = _env_int("AUTH_RATE_LIMIT", 10)
-_AUTH_RATE_WINDOW = _env_int("AUTH_RATE_WINDOW_SECONDS", 60)
+_API_RATE_WINDOW = _int_setting(
+    _rate_cfg.get("api_window_seconds", getattr(settings, "RATE_LIMIT_WINDOW_SECONDS", 60)), 60
+)
+_AUTH_RATE_LIMIT = _int_setting(_rate_cfg.get("auth_per_minute", 10), 10)
+_AUTH_RATE_WINDOW = _int_setting(_rate_cfg.get("auth_window_seconds", 60), 60)
+_OTP_RATE_LIMIT = _int_setting(_rate_cfg.get("otp_per_minute", 5), 5)
+_OTP_RATE_WINDOW = _int_setting(_rate_cfg.get("otp_window_seconds", 60), 60)
 
-# in-memory sliding window
-_rate_mem: dict[str, deque[float]] = defaultdict(deque)
-
-_RL_LUA = r"""
-local key        = KEYS[1]
-local rate       = tonumber(ARGV[1])   -- tokens per second
-local burst      = tonumber(ARGV[2])   -- bucket capacity
-local now_ms     = tonumber(ARGV[3])   -- current time in ms
-local cost       = tonumber(ARGV[4])   -- tokens cost (usually 1)
-local ttl_sec    = tonumber(ARGV[5])   -- bucket ttl seconds
-
-local data = redis.call('HMGET', key, 'tokens', 'ts')
-local tokens = tonumber(data[1])
-local ts     = tonumber(data[2])
-
-if tokens == nil then
-  tokens = burst
-  ts = now_ms
-else
-  local delta = math.max(0, now_ms - ts)
-  local refill = delta * (rate / 1000.0)
-  tokens = math.min(burst, tokens + refill)
-  ts = now_ms
-end
-
-local allowed = 0
-local retry_after_ms = 0
-if tokens >= cost then
-  allowed = 1
-  tokens = tokens - cost
-else
-  allowed = 0
-  retry_after_ms = math.ceil((cost - tokens) / (rate / 1000.0))
-end
-
-redis.call('HMSET', key, 'tokens', tokens, 'ts', ts)
-redis.call('EXPIRE', key, ttl_sec)
-
-return {allowed, math.floor(tokens), retry_after_ms}
-"""
+_rate_limiter = RateLimiter(redis=get_redis(), env=_env_tag, prefix="rl") if _RATE_ENABLED else None
 
 
-async def _rl_redis_allow(key: str, max_requests: int, window_seconds: int) -> tuple[bool, int]:
-    client = _redis()
-    if not client:
-        return True, 0
-    rate = max_requests / float(window_seconds)
-    burst = max_requests
-    now_ms = int(time.time() * 1000)
-    try:
-        res = await client.eval(_RL_LUA, 1, key, rate, burst, now_ms, 1, window_seconds * 2)
-        allowed, _tokens, retry_ms = int(res[0]), int(res[1]), int(res[2])
-        return (allowed == 1), int((retry_ms + 999) / 1000)
-    except Exception as e:
-        log.warning("Redis rate-limit error; falling back to memory", error=str(e))
-        return True, 0
+def _limit_dep(tag: str, max_requests: int, window_seconds: int, per_user: bool = True):
+    if not _RATE_ENABLED:
+        async def _noop(request: Request):
+            return True
 
+        return _noop
 
-def _rl_mem_allow(key: str, max_requests: int, window_seconds: int) -> tuple[bool, int]:
-    now = time.time()
-    cutoff = now - window_seconds
-    q = _rate_mem[key]
-    while q and q[0] <= cutoff:
-        q.popleft()
-    if len(q) >= max_requests:
-        retry = max(1, int(window_seconds - (now - q[0])))
-        return False, retry
-    q.append(now)
-    return True, 0
-
-
-def _rate_key(request: Request, tag: str, per_user: bool = True) -> str:
-    base = f"{getattr(settings, 'ENVIRONMENT', 'dev')}:{tag}:{request.method}:{request.url.path}"
-    if per_user:
-        user_or_ip = "anon"
-        auth = request.headers.get("authorization")
-        if auth and " " in auth:
-            # keep only tail of token to avoid storing secrets
-            user_or_ip = auth.rsplit(" ", 1)[-1][-16:]
-        else:
-            user_or_ip = request.client.host if request.client else "0.0.0.0"
-        return f"{base}:{user_or_ip}"
-    return base
-
-
-def rate_limit(
-    max_requests: int = 100, window_seconds: int = 60, tag: str = "api", per_user: bool = True
-):
-    """Factory of async dependency for rate limiting with Redis->memory fallback."""
-
-    async def dep(request: Request):
-        key = _rate_key(request, tag=tag, per_user=per_user)
-        if _HAS_REDIS and _redis():
-            allowed, retry = await _rl_redis_allow(key, max_requests, window_seconds)
-        else:
-            allowed, retry = _rl_mem_allow(key, max_requests, window_seconds)
-        if not allowed:
-            headers = {
-                "Retry-After": str(retry),
-                "X-RateLimit-Limit": str(max_requests),
-                "X-RateLimit-Window": str(window_seconds),
-            }
-            raise RateLimitError(
-                f"Rate limit exceeded. Maximum {max_requests} requests per {window_seconds} seconds.",
-                "RATE_LIMIT_EXCEEDED",
-                headers=headers,
-            )
-        return True
-
-    return dep
-
-
-# Profiles (names for compatibility with your routers)
-async def auth_rate_limit(request: Request):
-    dep = rate_limit(
-        max_requests=_AUTH_RATE_LIMIT, window_seconds=_AUTH_RATE_WINDOW, tag="auth", per_user=True
+    return rate_limit_dependency(
+        _rate_limiter,
+        tag=tag,
+        max_requests=max_requests,
+        window_seconds=window_seconds,
+        per_user=per_user,
     )
-    return await dep(request)
+
+
+def rate_limit(max_requests: int = 100, window_seconds: int = 60, tag: str = "api", per_user: bool = True):
+    dep = _limit_dep(tag, max_requests, window_seconds, per_user)
+
+    async def _wrapped(request: Request):
+        return await dep(request)
+
+    return _wrapped
+
+
+_auth_rl = _limit_dep("auth", _AUTH_RATE_LIMIT, _AUTH_RATE_WINDOW)
+_api_rl = _limit_dep("api", _API_RATE_LIMIT, _API_RATE_WINDOW)
+_otp_rl = _limit_dep("otp", _OTP_RATE_LIMIT, _OTP_RATE_WINDOW)
+
+
+async def auth_rate_limit(request: Request):
+    return await _auth_rl(request)
 
 
 async def api_rate_limit(request: Request):
-    dep = rate_limit(
-        max_requests=_API_RATE_LIMIT, window_seconds=_API_RATE_WINDOW, tag="api", per_user=True
-    )
-    return await dep(request)
+    return await _api_rl(request)
 
 
-# Backward-compat names the user pasted in their draft (keep both)
+async def otp_rate_limit(request: Request):
+    return await _otp_rl(request)
+
+
+# Backward-compat names
 auth_rate_limit_dep = auth_rate_limit
 api_rate_limit_dep = api_rate_limit
 
 # ------------------------------------------------------------------------------
 # Idempotency via Idempotency-Key
 # ------------------------------------------------------------------------------
-_idem_mem: dict[str, tuple[int, float]] = {}
+_idem_cfg = getattr(settings, "idempotency_settings", {}) or {}
+_idem_prefix = _idem_cfg.get("prefix", getattr(settings, "IDEMPOTENCY_CACHE_PREFIX", "idemp"))
+_idem_default_ttl = _int_setting(_idem_cfg.get("default_ttl", getattr(settings, "IDEMPOTENCY_DEFAULT_TTL", 900)), 900)
 
+_idempotency_enforcer = IdempotencyEnforcer(
+    redis=get_redis(), prefix=_idem_prefix, default_ttl=_idem_default_ttl, env=_env_tag
+)
 
-async def ensure_idempotency(request: Request, response: Response):
-    """
-    Use on mutating routes:
-      @router.post("/pay", dependencies=[Depends(ensure_idempotency)])
-    """
-    method = request.method.upper()
-    if method not in ("POST", "PUT", "PATCH"):
-        return True
-
-    key = request.headers.get("Idempotency-Key")
-    if not key:
-        # Choose strict behavior if needed:
-        # raise HTTPException(400, "Idempotency-Key header required")
-        return True
-
-    ttl_seconds = int(request.headers.get("Idempotency-TTL", "900"))  # default 15 min
-    r = _redis()
-
-    if _HAS_REDIS and r:
-        redis_key = f"idemp:{getattr(settings, 'ENVIRONMENT', 'dev')}:{key}"
-        try:
-            set_ok = await r.set(redis_key, "processing", ex=ttl_seconds, nx=True)
-            if not set_ok:
-                status_text = await r.get(redis_key)
-                if status_text and status_text.isdigit():
-                    raise HTTPException(status.HTTP_409_CONFLICT, "Request already processed")
-                raise HTTPException(status.HTTP_409_CONFLICT, "Request is being processed")
-            request.state.idempotency_key = key
-            request.state.idempotency_ttl = ttl_seconds
-            return True
-        except HTTPException:
-            raise
-        except Exception as e:
-            log.warning("Idempotency Redis error; falling back to memory", error=str(e))
-
-    now = time.time()
-    rec = _idem_mem.get(key)
-    if rec:
-        status_code, exp = rec
-        if now < exp:
-            raise HTTPException(status.HTTP_409_CONFLICT, "Request already processed")
-        else:
-            _idem_mem.pop(key, None)
-    _idem_mem[key] = (102, now + ttl_seconds)
-    request.state.idempotency_key = key
-    request.state.idempotency_ttl = ttl_seconds
-    return True
-
-
-async def set_idempotency_result(key: str, status_code: int, ttl_seconds: int = 900) -> None:
-    r = _redis()
-    if _HAS_REDIS and r:
-        try:
-            redis_key = f"idemp:{getattr(settings, 'ENVIRONMENT', 'dev')}:{key}"
-            await r.set(redis_key, str(status_code), ex=ttl_seconds)
-            return
-        except Exception:
-            pass
-    _idem_mem[key] = (status_code, time.time() + ttl_seconds)
+ensure_idempotency = _idempotency_enforcer.dependency()
+set_idempotency_result = _idempotency_enforcer.set_result
 
 
 # ------------------------------------------------------------------------------
@@ -732,6 +574,7 @@ __all__ = [
     "rate_limit",
     "auth_rate_limit",
     "api_rate_limit",
+    "otp_rate_limit",
     "auth_rate_limit_dep",  # keep aliases
     "api_rate_limit_dep",
     # pagination
