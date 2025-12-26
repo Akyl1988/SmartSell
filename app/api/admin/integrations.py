@@ -3,7 +3,7 @@ from __future__ import annotations
 import datetime as dt
 from typing import Any, Literal
 
-from fastapi import APIRouter, Depends, HTTPException, Path, Request
+from fastapi import APIRouter, Depends, HTTPException, Path, Query, Request
 from pydantic import BaseModel, ConfigDict, Field
 
 from app.core.dependencies import (
@@ -53,6 +53,7 @@ class ProviderOut(BaseModel):
     is_active: bool
     capabilities: dict[str, Any] | None
     version: int
+    created_at: dt.datetime | None = None
     updated_at: dt.datetime | None = None
     has_config: bool = True
 
@@ -64,6 +65,19 @@ class ActiveProviderOut(BaseModel):
     provider: str
     version: int
     updated_at: dt.datetime | None = None
+
+
+class ProviderEventOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    domain: str
+    provider_from: str | None
+    provider_to: str
+    actor_user_id: int | None
+    created_at: dt.datetime
+    updated_at: dt.datetime | None
+    meta_json: dict[str, Any] | None = None
 
 
 class SetActive(BaseModel):
@@ -82,11 +96,24 @@ def _normalize_domain(domain: ProviderDomain | str | None) -> str:
 @router.get("/providers", response_model=list[ProviderOut])
 async def list_providers(
     domain: ProviderDomain | None = None,
+    provider: str | None = None,
+    is_enabled: bool | None = None,
+    is_active: bool | None = None,
+    limit: int | None = Query(default=None, ge=1, le=500),
+    offset: int | None = Query(default=None, ge=0),
     db=Depends(get_db),
     admin: Any = Depends(require_platform_admin),
 ) -> list[ProviderOut]:
     _ = admin  # access control only
-    items = await IntegrationProviderService.list_providers(db, domain=_normalize_domain(domain))
+    items = await IntegrationProviderService.list_providers(
+        db,
+        domain=_normalize_domain(domain),
+        provider=provider,
+        is_enabled=is_enabled,
+        is_active=is_active,
+        limit=limit,
+        offset=offset,
+    )
     out: list[ProviderOut] = []
     for it in items:
         out.append(
@@ -98,6 +125,7 @@ async def list_providers(
                 is_active=it.is_active,
                 capabilities=it.capabilities,
                 version=it.version or 1,
+                created_at=it.created_at,
                 updated_at=it.updated_at,
                 has_config=it.config_json is not None,
             )
@@ -236,6 +264,42 @@ async def set_active_provider(
         version=active.version or 1,
         updated_at=active.updated_at,
     )
+
+
+@router.get("/events", response_model=list[ProviderEventOut])
+async def list_events(
+    domain: ProviderDomain | None = None,
+    provider_from: str | None = None,
+    provider_to: str | None = None,
+    actor_user_id: int | None = None,
+    limit: int | None = Query(default=None, ge=1, le=500),
+    offset: int | None = Query(default=None, ge=0),
+    db=Depends(get_db),
+    admin: Any = Depends(require_platform_admin),
+) -> list[ProviderEventOut]:
+    _ = admin
+    items = await IntegrationProviderService.list_events(
+        db,
+        domain=_normalize_domain(domain),
+        provider_from=provider_from,
+        provider_to=provider_to,
+        actor_user_id=actor_user_id,
+        limit=limit,
+        offset=offset,
+    )
+    return [
+        ProviderEventOut(
+            id=it.id,
+            domain=it.domain,
+            provider_from=it.provider_from,
+            provider_to=it.provider_to,
+            actor_user_id=it.actor_user_id,
+            created_at=it.created_at,
+            updated_at=it.updated_at,
+            meta_json=it.meta_json,
+        )
+        for it in items
+    ]
 
 
 @router.post("/cache/invalidate", response_model=dict[str, str])

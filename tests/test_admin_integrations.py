@@ -279,3 +279,141 @@ async def test_cannot_activate_disabled_provider(async_client, async_db_session)
         headers=headers,
     )
     assert resp.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_list_providers_returns_created_provider(async_client, async_db_session):
+    _, token = await _make_admin(async_db_session)
+    headers = {"Authorization": f"Bearer {token}"}
+
+    resp = await async_client.post(
+        "/api/admin/integrations/providers",
+        json={
+            "domain": "otp",
+            "provider": "noop-list",
+            "config": {"from": "+100"},
+            "is_enabled": True,
+        },
+        headers=headers,
+    )
+    assert resp.status_code == 201
+
+    resp = await async_client.get(
+        "/api/admin/integrations/providers",
+        headers=headers,
+    )
+    assert resp.status_code == 200
+    data = resp.json()
+    assert any(item["provider"] == "noop-list" and item["domain"] == "otp" for item in data)
+
+
+@pytest.mark.asyncio
+async def test_list_providers_filter_domain(async_client, async_db_session):
+    _, token = await _make_admin(async_db_session)
+    headers = {"Authorization": f"Bearer {token}"}
+
+    for domain, provider in (("otp", "noop-a"), ("payments", "noop-b")):
+        resp = await async_client.post(
+            "/api/admin/integrations/providers",
+            json={
+                "domain": domain,
+                "provider": provider,
+                "config": {},
+            },
+            headers=headers,
+        )
+        assert resp.status_code == 201
+
+    resp = await async_client.get(
+        "/api/admin/integrations/providers",
+        params={"domain": "payments"},
+        headers=headers,
+    )
+    assert resp.status_code == 200
+    data = resp.json()
+    assert all(item["domain"] == "payments" for item in data)
+
+
+@pytest.mark.asyncio
+async def test_list_events_contains_switch_event(async_client, async_db_session):
+    _, token = await _make_admin(async_db_session)
+    headers = {"Authorization": f"Bearer {token}"}
+
+    # create two providers and switch
+    for provider in ("noop-a", "noop-b"):
+        resp = await async_client.post(
+            "/api/admin/integrations/providers",
+            json={
+                "domain": "payments",
+                "provider": provider,
+                "config": {},
+                "is_enabled": True,
+            },
+            headers=headers,
+        )
+        assert resp.status_code == 201
+
+    resp = await async_client.post(
+        "/api/admin/integrations/active",
+        json={"domain": "payments", "provider": "noop-b"},
+        headers=headers,
+    )
+    assert resp.status_code == 200
+
+    resp = await async_client.get(
+        "/api/admin/integrations/events",
+        headers=headers,
+    )
+    assert resp.status_code == 200
+    data = resp.json()
+    assert any(evt["provider_to"] == "noop-b" for evt in data)
+
+
+@pytest.mark.asyncio
+async def test_list_events_filter_domain(async_client, async_db_session):
+    _, token = await _make_admin(async_db_session)
+    headers = {"Authorization": f"Bearer {token}"}
+
+    # payments
+    for provider in ("noop-a", "noop-b"):
+        assert (
+            await async_client.post(
+                "/api/admin/integrations/providers",
+                json={"domain": "payments", "provider": provider, "config": {}},
+                headers=headers,
+            )
+        ).status_code == 201
+    assert (
+        await async_client.post(
+            "/api/admin/integrations/active",
+            json={"domain": "payments", "provider": "noop-b"},
+            headers=headers,
+        )
+    ).status_code == 200
+
+    # messaging
+    for provider in ("noop-m1", "noop-m2"):
+        assert (
+            await async_client.post(
+                "/api/admin/integrations/providers",
+                json={"domain": "messaging", "provider": provider, "config": {}},
+                headers=headers,
+            )
+        ).status_code == 201
+    assert (
+        await async_client.post(
+            "/api/admin/integrations/active",
+            json={"domain": "messaging", "provider": "noop-m2"},
+            headers=headers,
+        )
+    ).status_code == 200
+
+    resp = await async_client.get(
+        "/api/admin/integrations/events",
+        params={"domain": "payments"},
+        headers=headers,
+    )
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data
+    assert all(evt["domain"] == "payments" for evt in data)

@@ -46,11 +46,33 @@ async def _refresh(db: Any, model: Any) -> None:
 
 class IntegrationProviderService:
     @staticmethod
-    async def list_providers(db: Any, domain: str | None = None) -> list[IntegrationProvider]:
+    async def list_providers(
+        db: Any,
+        *,
+        domain: str | None = None,
+        provider: str | None = None,
+        is_enabled: bool | None = None,
+        is_active: bool | None = None,
+        limit: int | None = None,
+        offset: int | None = None,
+    ) -> list[IntegrationProvider]:
         stmt = select(IntegrationProvider)
         if domain:
             stmt = stmt.where(IntegrationProvider.domain == _normalize_domain(domain))
-        res = await _execute(db, stmt.order_by(IntegrationProvider.domain, IntegrationProvider.provider))
+        if provider:
+            stmt = stmt.where(IntegrationProvider.provider == provider)
+        if is_enabled is not None:
+            stmt = stmt.where(IntegrationProvider.is_enabled.is_(is_enabled))
+        if is_active is not None:
+            stmt = stmt.where(IntegrationProvider.is_active.is_(is_active))
+
+        stmt = stmt.order_by(IntegrationProvider.domain, IntegrationProvider.provider)
+        if offset is not None:
+            stmt = stmt.offset(max(0, int(offset)))
+        if limit is not None:
+            stmt = stmt.limit(max(1, int(limit)))
+
+        res = await _execute(db, stmt)
         return list(res.scalars().all())
 
     @staticmethod
@@ -85,6 +107,36 @@ class IntegrationProviderService:
         )
         res = await _execute(db, stmt)
         return res.scalar_one_or_none()
+
+    @staticmethod
+    async def list_events(
+        db: Any,
+        *,
+        domain: str | None = None,
+        provider_from: str | None = None,
+        provider_to: str | None = None,
+        actor_user_id: int | None = None,
+        limit: int | None = None,
+        offset: int | None = None,
+    ) -> list[IntegrationProviderEvent]:
+        stmt = select(IntegrationProviderEvent)
+        if domain:
+            stmt = stmt.where(IntegrationProviderEvent.domain == _normalize_domain(domain))
+        if provider_from:
+            stmt = stmt.where(IntegrationProviderEvent.provider_from == provider_from)
+        if provider_to:
+            stmt = stmt.where(IntegrationProviderEvent.provider_to == provider_to)
+        if actor_user_id is not None:
+            stmt = stmt.where(IntegrationProviderEvent.actor_user_id == actor_user_id)
+
+        stmt = stmt.order_by(IntegrationProviderEvent.created_at.desc())
+        if offset is not None:
+            stmt = stmt.offset(max(0, int(offset)))
+        if limit is not None:
+            stmt = stmt.limit(max(1, int(limit)))
+
+        res = await _execute(db, stmt)
+        return list(res.scalars().all())
 
     @staticmethod
     async def create_provider(
