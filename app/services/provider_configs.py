@@ -59,6 +59,30 @@ def _redact_value(val: Any) -> Any:
 
 class ProviderConfigService:
     @staticmethod
+    async def record_event(
+        db: Any,
+        *,
+        domain: str,
+        provider: str,
+        action: str,
+        status: str,
+        error: str | None = None,
+        meta: dict[str, Any] | None = None,
+        actor_user_id: int | None = None,
+    ) -> IntegrationProviderEvent:
+        event = IntegrationProviderEvent(
+            domain=_normalize_domain(domain),
+            provider_from=provider,
+            provider_to=provider,
+            actor_user_id=actor_user_id,
+            meta_json={"action": action, "status": status, "error": error, **(meta or {})},
+        )
+        db.add(event)
+        await _commit(db)
+        await _refresh(db, event)
+        return event
+
+    @staticmethod
     async def get_model(db: Any, domain: str, provider: str) -> IntegrationProviderConfig | None:
         stmt = (
             select(IntegrationProviderConfig)
@@ -155,26 +179,37 @@ class ProviderConfigService:
         provider: str,
         actor_user_id: int | None = None,
     ) -> dict[str, Any]:
+        status = "ok"
+        error = None
         try:
             cfg = await cls.get_provider_config(db, domain=domain, provider=provider)
             cls.validate_config_schema(domain, provider, cfg if cfg else {})
-            status = "ok"
-            error = None
+            if _normalize_domain(domain) == "otp" and provider.lower() in {"mobizon", "otp-mobizon", "mobizon-otp"}:
+                try:
+                    from app.integrations.providers.mobizon.otp import MobizonOtpProvider
+
+                    provider_inst = MobizonOtpProvider(config=cfg, name=provider, version=0)
+                    hc = await provider_inst.healthcheck()
+                    if hc.get("status") != "ok":
+                        status = "error"
+                        error = hc.get("provider_error") or "healthcheck_failed"
+                except Exception as exc:  # pragma: no cover - defensive guard
+                    status = "error"
+                    error = str(exc)
         except Exception as exc:  # pragma: no cover - defensive guard
             log.warning("Provider config healthcheck failed", exc_info=exc)
             status = "error"
             error = str(exc)
 
-        event = IntegrationProviderEvent(
-            domain=_normalize_domain(domain),
-            provider_from=provider,
-            provider_to=provider,
+        await cls.record_event(
+            db,
+            domain=domain,
+            provider=provider,
+            action="healthcheck",
+            status=status,
+            error=error,
             actor_user_id=actor_user_id,
-            meta_json={"action": "healthcheck", "status": status, "error": error},
         )
-        db.add(event)
-        await _commit(db)
-        await _refresh(db, event)
         return {"status": status, "domain": _normalize_domain(domain), "provider": provider, "error": error}
 
 

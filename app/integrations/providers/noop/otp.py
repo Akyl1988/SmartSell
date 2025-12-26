@@ -29,5 +29,22 @@ class NoOpOtpProvider(OtpProvider):
             "config": self.config,
         }
 
+    async def verify_otp(
+        self,
+        phone: str,
+        code: str,
+        metadata: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        return {
+            "status": "noop",
+            "provider": self.name,
+            "version": self.version,
+            "to": phone,
+            "code": code,
+            "metadata": metadata or {},
+            "config": self.config,
+            "verified": True,
+        }
+
 
 __all__ = ["NoOpOtpProvider"]
