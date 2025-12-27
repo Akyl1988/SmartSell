@@ -15,6 +15,8 @@ from pathlib import Path, PurePosixPath
 from typing import Any, Literal, cast
 from urllib.parse import parse_qs, quote, urlencode, urlparse, urlunparse
 
+import hashlib
+
 from pydantic import AliasChoices, AnyHttpUrl, EmailStr, Field, field_validator
 from pydantic import ValidationInfo
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -58,6 +60,17 @@ def _mask_secret(val: str | None) -> str | None:
 def _project_root() -> Path:
     here = Path(__file__).resolve()
     return here.parent.parent.parent
+
+
+def db_url_fingerprint(url: str) -> str:
+    """
+    Считаем fingerprint полного DSN (включая пароль) и возвращаем первые 12 символов sha256.
+    Используем только для логов/ассертов без утечки пароля.
+    """
+    try:
+        return hashlib.sha256(url.encode("utf-8")).hexdigest()[:12]
+    except Exception:
+        return ""
 
 
 def _parse_list_like(v: Any) -> Any:
@@ -815,6 +828,43 @@ class Settings(BaseSettings):
             )
         except Exception:
             return ""
+
+    def db_url_source(self) -> str:
+        """
+        Пытаемся определить, откуда пришёл текущий DATABASE_URL.
+        Приоритет: переменные окружения (DATABASE_URL/DB_URL/TEST_DATABASE_URL/DATABASE_TEST_URL),
+        затем .env.test, затем .env, затем дефолт.
+        Это эвристика для диагностики; на поведение не влияет.
+        """
+
+        def _match_env(name: str, value: str | None) -> str | None:
+            env_val = os.getenv(name)
+            if env_val and value and env_val.strip() == value.strip():
+                return f"env:{name}"
+            return None
+
+        current = self.DATABASE_URL or ""
+
+        for key in ("DATABASE_URL", "DB_URL", "TEST_DATABASE_URL", "DATABASE_TEST_URL"):
+            src = _match_env(key, current)
+            if src:
+                return src
+
+        # Если нет прямого совпадения в окружении — попробуем найти в .env.test и .env
+        for env_file, tag in ((".env.test", "file:.env.test"), (".env", "file:.env")):
+            try:
+                path = _project_root() / env_file
+                if not path.exists():
+                    continue
+                for line in path.read_text(encoding="utf-8").splitlines():
+                    if line.strip().startswith("DATABASE_URL"):
+                        _, _, val = line.partition("=")
+                        if val and current.strip() == val.strip():
+                            return tag
+            except Exception:
+                continue
+
+        return "default"
 
     def _log_config_summary(self) -> None:
         """
@@ -1660,6 +1710,7 @@ __all__ = [
     "Settings",
     "get_settings",
     "settings",
+    "db_url_fingerprint",
     "JSONAPI_MIME",
     "KASPI_JSONAPI_AUTH_HEADER",
 ]
