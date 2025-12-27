@@ -1,3 +1,8 @@
+## [2025-12-27] Pydantic v2 validator migration
+- changed: migrated product schema validators (slug, sku, sale/max price checks, stock/galleries) and repricing config validator to `field_validator` to remove Pydantic v1 deprecation noise while preserving behavior.
+- tests: `pytest -q` (137 passed, 5 skipped; warnings reduced to non-pydantic items: Config class deprecation, SQLAlchemy Query.get legacy, Trio/argon2).
+- commands: `pytest -q`
+
 ## [2025-12-27] Integrations audit + admin RBAC
 - changed: provider activation/healthcheck/config events now capture `actor_email`; admin endpoints forward user email for audit trail.
 - tests: expanded `tests/test_admin_integrations.py` with non-admin access blocks and actor_email assertions; full suite `pytest -q` (133 passed, 5 skipped; warnings unchanged: Pydantic v1 validators, SQLAlchemy Query.get legacy, Trio deprecations, passlib/argon2 version warning).
