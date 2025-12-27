@@ -218,6 +218,27 @@ class ProviderConfigService:
                 except Exception as exc:  # pragma: no cover - defensive guard
                     status = "error"
                     error = str(exc)
+            elif domain_norm == "messaging":
+                try:
+                    if provider.lower().startswith("noop"):
+                        status = "ok"
+                    elif provider.lower().startswith("webhook"):
+                        from app.integrations.providers.webhook.messaging import WebhookMessagingProvider
+
+                        provider_inst = WebhookMessagingProvider(config=cfg, name=provider, version=0)
+                        hc = await provider_inst.healthcheck()
+                        if hc.get("status") != "ok":
+                            status = "error"
+                            error = hc.get("provider_error") or "healthcheck_failed"
+                        else:
+                            status = "ok"
+                            error = hc.get("provider_error")
+                    else:
+                        status = "error"
+                        error = "unsupported_provider"
+                except Exception as exc:  # pragma: no cover - defensive guard
+                    status = "error"
+                    error = str(exc)
         except Exception as exc:  # pragma: no cover - defensive guard
             log.warning("Provider config healthcheck failed", exc_info=exc)
             status = "error"
