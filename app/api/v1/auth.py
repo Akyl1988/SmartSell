@@ -21,9 +21,11 @@ logout, OTP, and small health checks — production-grade.
 from __future__ import annotations
 
 import hashlib
+import os
 import secrets
 from datetime import UTC, datetime, timedelta
 import re
+from typing import Any
 
 from fastapi import APIRouter, Depends, Query, Request
 from pydantic import BaseModel, Field
@@ -34,7 +36,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.config import settings
 from app.core.db import get_async_db as get_db
 from app.core.db import get_async_db
-from app.core.dependencies import auth_rate_limit, get_client_info, get_current_user
+from app.core.dependencies import (
+    auth_rate_limit,
+    get_client_info,
+    get_current_user,
+    get_otp_service,
+    otp_rate_limit,
+)
 from app.core.exceptions import AuthenticationError, ConflictError, SmartSellValidationError
 from app.core.logging import audit_logger
 from app.core.security import (
@@ -57,6 +65,7 @@ from app.schemas.user import (
     UserResponse,
 )
 from app.utils.otp import verify_otp_hash
+from app.integrations.ports.otp import OtpProvider
 
 router = APIRouter(prefix="/auth", tags=["Authentication"])
 
@@ -140,6 +149,12 @@ def _issue_tokens_for_user(user_id: int) -> tuple[str, str]:
 def _sms_text_for_otp(code: str, purpose: str) -> str:
     p = purpose or "login"
     return f"{PROJECT_NAME}: код подтверждения {code} для {p}. Никому не сообщайте."
+
+
+def _should_return_provider_info() -> bool:
+    env = str(os.getenv("ENVIRONMENT") or getattr(settings, "ENVIRONMENT", "production") or "production").lower()
+    debug_flag = os.getenv("DEBUG_PROVIDER_INFO", "").strip()
+    return (env != "production") or (debug_flag in {"1", "true", "yes", "on"})
 
 
 # =============================================================================
@@ -555,9 +570,13 @@ async def change_password(
 @router.post(
     "/request-otp",
     response_model=SuccessResponse,
-    dependencies=[Depends(auth_rate_limit)],
+    dependencies=[Depends(auth_rate_limit), Depends(otp_rate_limit)],
 )
-async def request_otp(otp_request: OTPRequest, db: AsyncSession = Depends(get_async_db)):
+async def request_otp(
+    otp_request: OTPRequest,
+    db: AsyncSession = Depends(get_async_db),
+    otp_service: OtpProvider = Depends(get_otp_service),
+):
     """
     Запросить OTP код для номера телефона.
     Поведение:
@@ -615,7 +634,28 @@ async def request_otp(otp_request: OTPRequest, db: AsyncSession = Depends(get_as
         raise SmartSellValidationError("Failed to create OTP", "OTP_CREATE_FAILED")
 
     text = _sms_text_for_otp(code, purpose)
-    send_result = _send_otp_via_provider(phone, text)
+    send_result: dict[str, Any] | None = None
+    provider_name: str | None = None
+    provider_version: int | None = None
+
+    try:
+        send_result = await otp_service.send_otp(
+            phone=phone,
+            code=code,
+            ttl_seconds=int(ttl.total_seconds()),
+            metadata={"purpose": purpose, "text": text},
+        )
+        provider_name = (send_result or {}).get("provider") or getattr(otp_service, "name", None)
+        provider_version = (send_result or {}).get("version") or getattr(otp_service, "version", None)
+    except Exception as exc:
+        provider_name = getattr(otp_service, "name", None) or "noop"
+        provider_version = getattr(otp_service, "version", None)
+        audit_logger.log_system_event(
+            level="warning",
+            event="otp_send_failed",
+            message=str(exc),
+            meta={"phone": phone, "purpose": purpose, "provider": provider_name},
+        )
 
     audit_logger.log_system_event(
         level="info",
@@ -624,20 +664,25 @@ async def request_otp(otp_request: OTPRequest, db: AsyncSession = Depends(get_as
         meta={
             "phone": phone,
             "purpose": purpose,
-            "provider": (send_result or {}).get("provider", "none"),
+            "provider": provider_name or (send_result or {}).get("provider", "none"),
+            "provider_version": provider_version,
         },
     )
 
     if DEBUG_MODE:
         print(f"[DEBUG] OTP for {phone}: {code}")
 
-    return SuccessResponse(
-        message="OTP code sent successfully",
-        data={
-            "expires_in": OTP_TTL_MINUTES * 60,
-            "provider_success": (send_result or {}).get("success") if send_result else None,
-        },
-    )
+    data = {
+        "expires_in": OTP_TTL_MINUTES * 60,
+        "provider_success": (send_result or {}).get("success") if send_result else None,
+        "provider_status": (send_result or {}).get("status") if send_result else None,
+    }
+
+    if _should_return_provider_info():
+        data["provider"] = provider_name
+        data["provider_version"] = provider_version
+
+    return SuccessResponse(message="OTP code sent successfully", data=data)
 
 
 @router.post(
@@ -781,24 +826,39 @@ async def reset_password(reset_data: PasswordReset, db: AsyncSession = Depends(g
 
 
 @router.post(
-    "/otp/request", response_model=SuccessResponse, dependencies=[Depends(auth_rate_limit)]
+    "/otp/request",
+    response_model=SuccessResponse,
+    dependencies=[Depends(auth_rate_limit), Depends(otp_rate_limit)],
 )
-async def request_otp_alias(otp_request: OTPRequest, db: AsyncSession = Depends(get_async_db)):
-    return await request_otp(otp_request, db)  # type: ignore[arg-type]
+async def request_otp_alias(
+    otp_request: OTPRequest,
+    db: AsyncSession = Depends(get_async_db),
+    otp_service: OtpProvider = Depends(get_otp_service),
+):
+    return await request_otp(otp_request, db, otp_service=otp_service)  # type: ignore[arg-type]
 
 
-@router.post("/send-otp", response_model=SuccessResponse, dependencies=[Depends(auth_rate_limit)])
+@router.post(
+    "/send-otp",
+    response_model=SuccessResponse,
+    dependencies=[Depends(auth_rate_limit), Depends(otp_rate_limit)],
+)
 async def send_otp_alias(
     phone: str = Query(...), 
     purpose: str = Query("login"),
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
+    otp_service: OtpProvider = Depends(get_otp_service),
 ):
     """Алиас для /request-otp (backward compatibility) - принимает query параметры"""
     otp_request = OTPRequest(phone=phone, purpose=purpose)  # type: ignore[arg-type]
-    return await request_otp(otp_request, db)  # type: ignore[arg-type]
+    return await request_otp(otp_request, db, otp_service=otp_service)  # type: ignore[arg-type]
 
 
-@router.post("/otp/verify", response_model=SuccessResponse, dependencies=[Depends(auth_rate_limit)])
+@router.post(
+    "/otp/verify",
+    response_model=SuccessResponse,
+    dependencies=[Depends(auth_rate_limit)],
+)
 async def verify_otp_alias(otp_verify: OTPVerify, db: AsyncSession = Depends(get_async_db)):
     return await verify_otp(otp_verify, db)  # type: ignore[arg-type]
 

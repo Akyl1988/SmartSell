@@ -215,6 +215,33 @@ class Settings(BaseSettings):
         default=None, description="Redis password", validation_alias="REDIS_PASSWORD"
     )
     REDIS_DB: int = Field(default=0, description="Redis db index", validation_alias="REDIS_DB")
+    REDIS_CLIENT_STRICT: bool = Field(
+        default=False,
+        description="Fail fast if Redis is unavailable (production safeguard)",
+        validation_alias="REDIS_CLIENT_STRICT",
+    )
+    REDIS_SOCKET_TIMEOUT: float = Field(
+        default=1.0,
+        description="Redis socket timeout seconds",
+        validation_alias="REDIS_SOCKET_TIMEOUT",
+    )
+
+    # ---- system integrations / provider registry
+    INTEGRATIONS_MASTER_KEY: str | None = Field(
+        default=None,
+        description="Base64-encoded master key for encrypting provider configs",
+        validation_alias="INTEGRATIONS_MASTER_KEY",
+    )
+    SYSTEM_INTEGRATIONS_CACHE_TTL: int = Field(
+        default=30,
+        description="TTL (seconds) for provider registry cache",
+        validation_alias="SYSTEM_INTEGRATIONS_CACHE_TTL",
+    )
+    SYSTEM_CONFIG_CHANNEL: str = Field(
+        default="smartsell.config_changed",
+        description="Redis pub/sub channel for system integration changes",
+        validation_alias="SYSTEM_CONFIG_CHANNEL",
+    )
 
     CELERY_BROKER_URL: str = Field(
         default="redis://localhost:6379/0",
@@ -242,6 +269,41 @@ class Settings(BaseSettings):
     )
     RATE_LIMIT_BURST: int = Field(
         default=100, description="Rate limit burst", validation_alias="RATE_LIMIT_BURST"
+    )
+    RATE_LIMIT_ENABLED: bool = Field(
+        default=True,
+        description="Master switch for rate limiting",
+        validation_alias="RATE_LIMIT_ENABLED",
+    )
+    AUTH_RATE_LIMIT_PER_MINUTE: int = Field(
+        default=10,
+        description="Auth endpoints rate limit per minute",
+        validation_alias="AUTH_RATE_LIMIT_PER_MINUTE",
+    )
+    AUTH_RATE_WINDOW_SECONDS: int = Field(
+        default=60,
+        description="Auth endpoints rate limit window (seconds)",
+        validation_alias="AUTH_RATE_WINDOW_SECONDS",
+    )
+    OTP_RATE_LIMIT_PER_MINUTE: int = Field(
+        default=5,
+        description="OTP/send-code rate limit per minute",
+        validation_alias="OTP_RATE_LIMIT_PER_MINUTE",
+    )
+    OTP_RATE_WINDOW_SECONDS: int = Field(
+        default=60,
+        description="OTP/send-code rate limit window (seconds)",
+        validation_alias="OTP_RATE_WINDOW_SECONDS",
+    )
+    IDEMPOTENCY_DEFAULT_TTL: int = Field(
+        default=900,
+        description="Default idempotency TTL seconds when header not provided",
+        validation_alias="IDEMPOTENCY_DEFAULT_TTL",
+    )
+    IDEMPOTENCY_CACHE_PREFIX: str = Field(
+        default="idemp",
+        description="Redis key prefix for idempotency storage",
+        validation_alias="IDEMPOTENCY_CACHE_PREFIX",
     )
 
     # ---- CORS/hosts
@@ -787,7 +849,33 @@ class Settings(BaseSettings):
     # --------- групповые представления настроек ---------
     @property
     def redis_settings(self) -> dict:
-        return {"url": self.REDIS_URL, "password": self.REDIS_PASSWORD, "db": self.REDIS_DB}
+        return {
+            "url": self.REDIS_URL,
+            "password": self.REDIS_PASSWORD,
+            "db": self.REDIS_DB,
+            "strict": bool(self.REDIS_CLIENT_STRICT),
+            "socket_timeout": float(self.REDIS_SOCKET_TIMEOUT),
+        }
+
+    @property
+    def rate_limit_settings(self) -> dict:
+        return {
+            "enabled": bool(self.RATE_LIMIT_ENABLED),
+            "api_per_minute": int(self.RATE_LIMIT_PER_MINUTE),
+            "api_window_seconds": int(self.RATE_LIMIT_WINDOW_SECONDS),
+            "api_burst": int(self.RATE_LIMIT_BURST),
+            "auth_per_minute": int(self.AUTH_RATE_LIMIT_PER_MINUTE),
+            "auth_window_seconds": int(self.AUTH_RATE_WINDOW_SECONDS),
+            "otp_per_minute": int(self.OTP_RATE_LIMIT_PER_MINUTE),
+            "otp_window_seconds": int(self.OTP_RATE_WINDOW_SECONDS),
+        }
+
+    @property
+    def idempotency_settings(self) -> dict:
+        return {
+            "default_ttl": int(self.IDEMPOTENCY_DEFAULT_TTL),
+            "prefix": self.IDEMPOTENCY_CACHE_PREFIX,
+        }
 
     @property
     def smtp_settings(self) -> dict:

@@ -46,24 +46,6 @@ def upgrade() -> None:
         sa.CheckConstraint(
             "amount >= 0", name=op.f("ck__billing_payments__ck_bp_amount_non_negative")
         ),
-        sa.ForeignKeyConstraint(
-            ["company_id"],
-            ["companies.id"],
-            name=op.f("fk__billing_payments__company_id__companies"),
-            ondelete="CASCADE",
-        ),
-        sa.ForeignKeyConstraint(
-            ["order_id"],
-            ["orders.id"],
-            name=op.f("fk__billing_payments__order_id__orders"),
-            ondelete="CASCADE",
-        ),
-        sa.ForeignKeyConstraint(
-            ["subscription_id"],
-            ["subscriptions.id"],
-            name=op.f("fk__billing_payments__subscription_id__subscriptions"),
-            ondelete="CASCADE",
-        ),
         sa.PrimaryKeyConstraint("id", name=op.f("pk__billing_payments")),
         sa.UniqueConstraint("provider", "provider_payment_id", name="uq_bp_provider_payment"),
     )
@@ -330,6 +312,17 @@ def upgrade() -> None:
         deferrable=True,
         initially="DEFERRED",
     )
+    op.create_foreign_key(
+        op.f("fk__billing_payments__company_id__companies"),
+        "billing_payments",
+        "companies",
+        ["company_id"],
+        ["id"],
+        ondelete="CASCADE",
+        use_alter=True,
+        deferrable=True,
+        initially="DEFERRED",
+    )
     op.create_table(
         "customers",
         sa.Column("id", sa.Integer(), autoincrement=True, nullable=False),
@@ -567,71 +560,16 @@ def upgrade() -> None:
     op.create_index(
         "ix_subscription_company_status", "subscriptions", ["company_id", "status"], unique=False
     )
-    op.create_table(
-        "users",
-        sa.Column("id", sa.Integer(), nullable=False),
-        sa.Column("username", sa.String(length=50), nullable=True),
-        sa.Column("phone", sa.String(length=20), nullable=True),
-        sa.Column("email", sa.String(length=255), nullable=True),
-        sa.Column(
-            "hashed_password", sa.String(length=255), server_default=sa.text("''"), nullable=False
-        ),
-        sa.Column(
-            "role", sa.String(length=32), server_default=sa.text("'manager'"), nullable=False
-        ),
-        sa.Column("is_active", sa.Boolean(), server_default=sa.text("true"), nullable=False),
-        sa.Column("is_verified", sa.Boolean(), server_default=sa.text("false"), nullable=False),
-        sa.Column("is_superuser", sa.Boolean(), server_default=sa.text("false"), nullable=False),
-        sa.Column("full_name", sa.String(length=255), nullable=True),
-        sa.Column("last_login_at", sa.DateTime(), nullable=True),
-        sa.Column(
-            "failed_login_attempts", sa.Integer(), server_default=sa.text("0"), nullable=False
-        ),
-        sa.Column("locked_until", sa.DateTime(), nullable=True),
-        sa.Column("company_id", sa.Integer(), nullable=True),
-        sa.Column("last_modified_by", sa.Integer(), nullable=True),
-        sa.Column("modified_at", sa.DateTime(), nullable=True),
-        sa.Column("locked_at", sa.DateTime(), nullable=True),
-        sa.Column("locked_by", sa.Integer(), nullable=True),
-        sa.Column("deleted_at", sa.DateTime(), nullable=True),
-        sa.Column("created_at", sa.DateTime(), server_default=sa.text("now()"), nullable=False),
-        sa.Column("updated_at", sa.DateTime(), nullable=False),
-        sa.Column("tenant_id", sa.Integer(), nullable=True),
-        sa.Column("version", sa.Integer(), server_default=sa.text("0"), nullable=False),
-        sa.CheckConstraint(
-            "role IN ('admin','manager','storekeeper','analyst')",
-            name=op.f("ck__users__ck_user_role_allowed"),
-        ),
-        sa.CheckConstraint(
-            "failed_login_attempts >= 0", name=op.f("ck__users__ck_user_failed_login_nonneg")
-        ),
-        sa.ForeignKeyConstraint(
-            ["company_id"],
-            ["companies.id"],
-            name=op.f("fk__users__company_id__companies"),
-            ondelete="SET NULL",
-        ),
-        sa.PrimaryKeyConstraint("id", name=op.f("pk__users")),
-    )
-    op.create_index(op.f("ix__users__company_id"), "users", ["company_id"], unique=False)
-    op.create_index(op.f("ix__users__deleted_at"), "users", ["deleted_at"], unique=False)
-    op.create_index(op.f("ix__users__email"), "users", ["email"], unique=True)
-    op.create_index(op.f("ix__users__id"), "users", ["id"], unique=False)
-    op.create_index(
-        op.f("ix__users__last_modified_by"), "users", ["last_modified_by"], unique=False
-    )
-    op.create_index(op.f("ix__users__locked_by"), "users", ["locked_by"], unique=False)
-    op.create_index(op.f("ix__users__phone"), "users", ["phone"], unique=True)
-    op.create_index(op.f("ix__users__tenant_id"), "users", ["tenant_id"], unique=False)
-    op.create_index(op.f("ix__users__username"), "users", ["username"], unique=True)
-    op.create_index("ix_users_active_role", "users", ["is_active", "role"], unique=False)
-    op.create_index("ix_users_company_active", "users", ["company_id", "is_active"], unique=False)
-    op.create_index("ix_users_login_fields", "users", ["username", "phone", "email"], unique=False)
-    op.create_index(
-        "ix_users_username_email_lower",
-        "users",
-        [sa.text("lower(username)"), sa.text("lower(email)")],
-        unique=False,
+    op.create_foreign_key(
+        op.f("fk__billing_payments__subscription_id__subscriptions"),
+        "billing_payments",
+        "subscriptions",
+        ["subscription_id"],
+        ["id"],
+        ondelete="CASCADE",
+        use_alter=True,
+        deferrable=True,
+        initially="DEFERRED",
     )
     op.create_table(
         "campaigns",
@@ -749,6 +687,17 @@ def upgrade() -> None:
     op.create_index(op.f("ix__orders__updated_at"), "orders", ["updated_at"], unique=False)
     op.create_index("ix_orders_company_status", "orders", ["company_id", "status"], unique=False)
     op.create_index("ix_orders_source_created", "orders", ["source", "created_at"], unique=False)
+    op.create_foreign_key(
+        op.f("fk__billing_payments__order_id__orders"),
+        "billing_payments",
+        "orders",
+        ["order_id"],
+        ["id"],
+        ondelete="CASCADE",
+        use_alter=True,
+        deferrable=True,
+        initially="DEFERRED",
+    )
     op.create_table(
         "otp_attempts",
         sa.Column("id", sa.Integer(), autoincrement=True, nullable=False),

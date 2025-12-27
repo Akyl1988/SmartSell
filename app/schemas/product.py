@@ -5,7 +5,7 @@ Product-related Pydantic schemas with validation.
 from decimal import Decimal
 from typing import Any
 
-from pydantic import Field, validator
+from pydantic import Field, ValidationInfo, field_validator
 
 from app.schemas.base import BaseSchema, TimestampedSchema
 
@@ -20,7 +20,7 @@ class CategoryBase(BaseSchema):
     is_active: bool = Field(default=True, description="Whether category is active")
     sort_order: int = Field(default=0, ge=0, description="Sort order")
 
-    @validator("slug")
+    @field_validator("slug", mode="before")
     def validate_slug(cls, v):
         """Validate slug format."""
         import re
@@ -46,7 +46,7 @@ class CategoryUpdate(BaseSchema):
     is_active: bool | None = None
     sort_order: int | None = Field(None, ge=0)
 
-    @validator("slug")
+    @field_validator("slug", mode="before")
     def validate_slug(cls, v):
         """Validate slug format."""
         if v is not None:
@@ -117,7 +117,7 @@ class ProductBase(BaseSchema):
         None, ge=0, max_digits=8, decimal_places=2, description="Height in cm"
     )
 
-    @validator("slug")
+    @field_validator("slug", mode="before")
     def validate_slug(cls, v):
         """Validate slug format."""
         import re
@@ -126,7 +126,7 @@ class ProductBase(BaseSchema):
             raise ValueError("Slug must contain only lowercase letters, numbers, and hyphens")
         return v
 
-    @validator("sku")
+    @field_validator("sku", mode="before")
     def validate_sku(cls, v):
         """Validate SKU format."""
         import re
@@ -137,21 +137,23 @@ class ProductBase(BaseSchema):
             )
         return v
 
-    @validator("sale_price")
-    def validate_sale_price(cls, v, values):
+    @field_validator("sale_price", mode="after")
+    def validate_sale_price(cls, v, info: ValidationInfo):
         """Validate sale price is less than regular price."""
-        if v is not None and "price" in values and v >= values["price"]:
+        price = (info.data or {}).get("price")
+        if v is not None and price is not None and v >= price:
             raise ValueError("Sale price must be less than regular price")
         return v
 
-    @validator("max_stock_level")
-    def validate_max_stock_level(cls, v, values):
+    @field_validator("max_stock_level", mode="after")
+    def validate_max_stock_level(cls, v, info: ValidationInfo):
         """Validate max stock level is greater than min stock level."""
-        if v is not None and "min_stock_level" in values and v <= values["min_stock_level"]:
+        min_stock = (info.data or {}).get("min_stock_level")
+        if v is not None and min_stock is not None and v <= min_stock:
             raise ValueError("Max stock level must be greater than min stock level")
         return v
 
-    @validator("gallery_urls")
+    @field_validator("gallery_urls", mode="after")
     def validate_gallery_urls(cls, v):
         """Validate gallery URLs."""
         if v is not None:
@@ -200,7 +202,7 @@ class ProductUpdate(BaseSchema):
     width: Decimal | None = Field(None, ge=0, max_digits=8, decimal_places=2)
     height: Decimal | None = Field(None, ge=0, max_digits=8, decimal_places=2)
 
-    @validator("slug")
+    @field_validator("slug", mode="before")
     def validate_slug(cls, v):
         """Validate slug format."""
         if v is not None:
@@ -210,15 +212,11 @@ class ProductUpdate(BaseSchema):
                 raise ValueError("Slug must contain only lowercase letters, numbers, and hyphens")
         return v
 
-    @validator("sale_price")
-    def validate_sale_price(cls, v, values):
+    @field_validator("sale_price", mode="after")
+    def validate_sale_price(cls, v, info: ValidationInfo):
         """Validate sale price is less than regular price."""
-        if (
-            v is not None
-            and "price" in values
-            and values["price"] is not None
-            and v >= values["price"]
-        ):
+        price = (info.data or {}).get("price")
+        if v is not None and price is not None and v >= price:
             raise ValueError("Sale price must be less than regular price")
         return v
 
@@ -252,7 +250,7 @@ class ProductVariantBase(BaseSchema):
     is_active: bool = Field(default=True, description="Whether variant is active")
     image_url: str | None = Field(None, max_length=500, description="Variant image URL")
 
-    @validator("sku")
+    @field_validator("sku", mode="before")
     def validate_sku(cls, v):
         """Validate SKU format."""
         import re
@@ -263,10 +261,11 @@ class ProductVariantBase(BaseSchema):
             )
         return v
 
-    @validator("sale_price")
-    def validate_sale_price(cls, v, values):
+    @field_validator("sale_price", mode="after")
+    def validate_sale_price(cls, v, info: ValidationInfo):
         """Validate sale price is less than regular price."""
-        if v is not None and "price" in values and v >= values["price"]:
+        price = (info.data or {}).get("price")
+        if v is not None and price is not None and v >= price:
             raise ValueError("Sale price must be less than regular price")
         return v
 
@@ -308,14 +307,10 @@ class ProductSearchFilters(BaseSchema):
     in_stock: bool | None = None
     search: str | None = Field(None, min_length=1, max_length=255)
 
-    @validator("max_price")
-    def validate_price_range(cls, v, values):
+    @field_validator("max_price", mode="after")
+    def validate_price_range(cls, v, info: ValidationInfo):
         """Validate price range."""
-        if (
-            v is not None
-            and "min_price" in values
-            and values["min_price"] is not None
-            and v <= values["min_price"]
-        ):
+        min_price = (info.data or {}).get("min_price")
+        if v is not None and min_price is not None and v <= min_price:
             raise ValueError("Max price must be greater than min price")
         return v

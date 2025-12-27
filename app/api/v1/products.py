@@ -16,7 +16,7 @@ from enum import Enum
 from typing import Any
 
 from fastapi import APIRouter, Depends, Path, Query
-from pydantic import BaseModel, Field, validator
+from pydantic import BaseModel, Field, ValidationInfo, field_validator
 from sqlalchemy import func, or_
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
@@ -754,9 +754,9 @@ class RepricingConfigIn(BaseModel):
         0.0, ge=0, description="Гистерезис на флуктуации (минимальный шаг реакции)"
     )
 
-    @validator("max")
-    def _max_vs_min(cls, v, values):
-        mn = values.get("min")
+    @field_validator("max", mode="after")
+    def _max_vs_min(cls, v, info: ValidationInfo):
+        mn = (info.data or {}).get("min")
         if v is not None and mn is not None and v < mn:
             raise ValueError("max must be >= min")
         return v
