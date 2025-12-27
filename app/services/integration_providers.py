@@ -149,6 +149,7 @@ class IntegrationProviderService:
         is_enabled: bool = True,
         is_active: bool = False,
         actor_user_id: int | None = None,
+        actor_email: str | None = None,
     ) -> IntegrationProvider:
         item = IntegrationProvider(
             domain=_normalize_domain(domain),
@@ -170,6 +171,7 @@ class IntegrationProviderService:
                 domain=item.domain,
                 provider=item.provider,
                 actor_user_id=actor_user_id,
+                actor_email=actor_email,
             )
         return item
 
@@ -183,6 +185,7 @@ class IntegrationProviderService:
         is_enabled: bool | None = None,
         is_active: bool | None = None,
         actor_user_id: int | None = None,
+        actor_email: str | None = None,
     ) -> IntegrationProvider | None:
         item = await IntegrationProviderService.get_provider(db, provider_id)
         if not item:
@@ -213,6 +216,7 @@ class IntegrationProviderService:
                 domain=item.domain,
                 provider=item.provider,
                 actor_user_id=actor_user_id,
+                actor_email=actor_email,
             )
         elif is_active is False and item.is_active:
             item.is_active = False
@@ -242,6 +246,7 @@ class IntegrationProviderService:
         domain: str,
         provider: str,
         actor_user_id: int | None = None,
+        actor_email: str | None = None,
         meta: dict[str, Any] | None = None,
     ) -> tuple[IntegrationProvider, bool, IntegrationProviderEvent | None]:
         domain_key = _normalize_domain(domain)
@@ -271,7 +276,7 @@ class IntegrationProviderService:
             provider_from=current.provider if current else None,
             provider_to=provider,
             actor_user_id=actor_user_id,
-            meta_json=meta or {},
+            meta_json={**(meta or {}), "actor_email": actor_email},
         )
         db.add(event)
 

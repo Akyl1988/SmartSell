@@ -69,13 +69,20 @@ class ProviderConfigService:
         error: str | None = None,
         meta: dict[str, Any] | None = None,
         actor_user_id: int | None = None,
+        actor_email: str | None = None,
     ) -> IntegrationProviderEvent:
         event = IntegrationProviderEvent(
             domain=_normalize_domain(domain),
             provider_from=provider,
             provider_to=provider,
             actor_user_id=actor_user_id,
-            meta_json={"action": action, "status": status, "error": error, **(meta or {})},
+            meta_json={
+                "action": action,
+                "status": status,
+                "error": error,
+                "actor_email": actor_email,
+                **(meta or {}),
+            },
         )
         db.add(event)
         await _commit(db)
@@ -118,6 +125,7 @@ class ProviderConfigService:
         key_id: str = "master",
         meta: dict[str, Any] | None = None,
         actor_user_id: int | None = None,
+        actor_email: str | None = None,
     ) -> IntegrationProviderConfig:
         cls.validate_config_schema(domain, provider, config)
         encrypted = encrypt_json(config)
@@ -145,7 +153,7 @@ class ProviderConfigService:
             provider_from=provider,
             provider_to=provider,
             actor_user_id=actor_user_id,
-            meta_json={"action": "config_set", "meta": meta or {}},
+            meta_json={"action": "config_set", "meta": meta or {}, "actor_email": actor_email},
         )
         db.add(event)
 
@@ -178,6 +186,7 @@ class ProviderConfigService:
         domain: str,
         provider: str,
         actor_user_id: int | None = None,
+        actor_email: str | None = None,
     ) -> dict[str, Any]:
         status = "ok"
         error = None
@@ -222,6 +231,7 @@ class ProviderConfigService:
             status=status,
             error=error,
             actor_user_id=actor_user_id,
+            actor_email=actor_email,
         )
         return {"status": status, "domain": _normalize_domain(domain), "provider": provider, "error": error}
 

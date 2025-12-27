@@ -189,6 +189,7 @@ async def create_provider(
         is_enabled=payload.is_enabled,
         is_active=payload.is_active,
         actor_user_id=getattr(admin, "id", None),
+        actor_email=getattr(admin, "email", None),
     )
     await ProviderRegistry.notify_change(item.domain, item.version or 1)
     return ProviderOut(
@@ -219,6 +220,7 @@ async def update_provider(
         is_enabled=payload.is_enabled,
         is_active=payload.is_active,
         actor_user_id=getattr(admin, "id", None),
+        actor_email=getattr(admin, "email", None),
     )
     if not item:
         raise HTTPException(status_code=404, detail="integration_not_found")
@@ -289,6 +291,7 @@ async def set_active_provider(
             domain=_normalize_domain(payload.domain),
             provider=payload.provider,
             actor_user_id=getattr(admin, "id", None),
+            actor_email=getattr(admin, "email", None),
             meta={"idempotency_key": idem_key} if idem_key else None,
         )
     except LookupError:
@@ -400,6 +403,7 @@ async def set_provider_config(
         key_id=payload.key_id or "master",
         meta=payload.meta,
         actor_user_id=getattr(admin, "id", None),
+        actor_email=getattr(admin, "email", None),
     )
     if idem_key:
         await set_idempotency_result(idem_key, status_code=200, ttl_seconds=None)  # type: ignore[arg-type]
@@ -429,6 +433,7 @@ async def provider_healthcheck(
         domain=_normalize_domain(domain),
         provider=provider,
         actor_user_id=getattr(admin, "id", None),
+        actor_email=getattr(admin, "email", None),
     )
     status = result.get("status") or "error"
     if status != "ok":

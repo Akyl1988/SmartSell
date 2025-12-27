@@ -205,6 +205,44 @@ async def test_access_control_admin_only(async_client, async_db_session):
 
 
 @pytest.mark.asyncio
+async def test_non_admin_cannot_manage_configs(async_client, async_db_session):
+    user = User(
+        username="manager2",
+        email="manager2@example.com",
+        phone="+77000000004",
+        hashed_password=get_password_hash("Secret123!"),
+        role="manager",
+        is_active=True,
+        is_verified=True,
+    )
+    async_db_session.add(user)
+    await async_db_session.commit()
+    await async_db_session.refresh(user)
+    token = create_access_token(subject=user.id)
+    headers = {"Authorization": f"Bearer {token}"}
+
+    resp_get = await async_client.get(
+        "/api/admin/integrations/payments/config",
+        params={"provider": "noop-non-admin"},
+        headers=headers,
+    )
+    assert resp_get.status_code == 403
+
+    resp_put = await async_client.put(
+        "/api/admin/integrations/providers/payments/noop-non-admin/config",
+        json={"config": {}},
+        headers=headers,
+    )
+    assert resp_put.status_code == 403
+
+    resp_hc = await async_client.post(
+        "/api/admin/integrations/providers/otp/noop-non-admin/healthcheck",
+        headers=headers,
+    )
+    assert resp_hc.status_code == 403
+
+
+@pytest.mark.asyncio
 async def test_single_active_enforced_with_events(async_client, async_db_session):
     _, token = await _make_admin(async_db_session)
     headers = {"Authorization": f"Bearer {token}"}
@@ -471,3 +509,63 @@ async def test_list_events_filter_domain(async_client, async_db_session):
     data = resp.json()
     assert data
     assert all(evt["domain"] == "payments" for evt in data)
+
+
+@pytest.mark.asyncio
+async def test_activation_event_includes_actor_email(async_client, async_db_session):
+    admin, token = await _make_admin(async_db_session)
+    headers = {"Authorization": f"Bearer {token}"}
+
+    resp_create = await async_client.post(
+        "/api/admin/integrations/providers",
+        json={"domain": "otp", "provider": "noop-actor", "config": {}},
+        headers=headers,
+    )
+    assert resp_create.status_code == 201
+
+    resp_activate = await async_client.post(
+        "/api/admin/integrations/active",
+        json={"domain": "otp", "provider": "noop-actor"},
+        headers=headers,
+    )
+    assert resp_activate.status_code == 200
+
+    res_event = await async_db_session.execute(
+        select(IntegrationProviderEvent)
+        .where(IntegrationProviderEvent.domain == "otp")
+        .order_by(IntegrationProviderEvent.id.desc())
+    )
+    evt = res_event.scalar_one_or_none()
+    assert evt is not None
+    assert evt.meta_json is not None
+    assert evt.meta_json.get("actor_email") == admin.email
+
+
+@pytest.mark.asyncio
+async def test_healthcheck_event_includes_actor_email(async_client, async_db_session):
+    admin, token = await _make_admin(async_db_session)
+    headers = {"Authorization": f"Bearer {token}"}
+
+    resp_config = await async_client.put(
+        "/api/admin/integrations/providers/payments/noop-hc/config",
+        json={"config": {"key": "v"}},
+        headers=headers,
+    )
+    assert resp_config.status_code == 200
+
+    resp_hc = await async_client.post(
+        "/api/admin/integrations/providers/payments/noop-hc/healthcheck",
+        headers=headers,
+    )
+    assert resp_hc.status_code == 200
+
+    res_event = await async_db_session.execute(
+        select(IntegrationProviderEvent)
+        .where(IntegrationProviderEvent.domain == "payments")
+        .order_by(IntegrationProviderEvent.id.desc())
+    )
+    evt = res_event.scalars().first()
+    assert evt is not None
+    assert evt.meta_json is not None
+    assert evt.meta_json.get("action") == "healthcheck"
+    assert evt.meta_json.get("actor_email") == admin.email
