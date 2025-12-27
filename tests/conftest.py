@@ -26,6 +26,7 @@ import asyncio
 import os
 from collections.abc import AsyncIterator, Awaitable, Callable, Iterator
 from typing import Any, Dict, List, Optional, Set, Tuple
+from urllib.parse import quote
 
 import pytest
 import pytest_asyncio
@@ -40,6 +41,7 @@ from sqlalchemy import MetaData, Table
 from sqlalchemy import exc as sa_exc  # РѕР±СЂР°Р±РѕС‚РєР° OperationalError/В«already existsВ»
 from sqlalchemy import text
 from sqlalchemy.engine import Connection, Engine
+from sqlalchemy.engine.url import make_url
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.ext.asyncio import (
     AsyncEngine,
@@ -50,6 +52,18 @@ from sqlalchemy.ext.asyncio import (
 from sqlalchemy.pool import NullPool
 from sqlalchemy.sql.type_api import TypeEngine  # С‚РёРїС‹ РґР»СЏ С„РёР»СЊС‚СЂР° unsupported
 
+# Compatibility shim: newer trio may not expose MultiError; keep anyio trio backend working in tests.
+try:
+    import trio  # type: ignore
+
+    if not hasattr(trio, "MultiError"):
+        class _TrioMultiError(BaseExceptionGroup):  # type: ignore[misc]
+            ...
+
+        trio.MultiError = _TrioMultiError  # type: ignore[attr-defined]
+except Exception:
+    pass
+
 # ======================================================================================
 # 0) Р‘СѓС‚СЃС‚СЂР°Рї РѕРєСЂСѓР¶РµРЅРёСЏ
 # ======================================================================================
@@ -59,12 +73,6 @@ os.environ.setdefault("PYTHONIOENCODING", "UTF-8")
 
 # Disable rate limiting in tests by default (can be overridden explicitly)
 os.environ.setdefault("RATE_LIMIT_ENABLED", "0")
-
-# Р§С‚РѕР±С‹ РїСЂРѕС€С‘Р» tests/app/core/test_config.py::test_database_url_default
-os.environ.setdefault(
-    "DATABASE_URL",
-    "postgresql+psycopg2://postgres:admin123@localhost:5432/SmartSell",
-)
 
 # РЇРІРЅРѕ СѓРєР°Р¶РµРј "СЃРѕРІСЂРµРјРµРЅРЅС‹Р№" strict-СЂРµР¶РёРј asyncio, РµСЃР»Рё РїР»Р°РіРёРЅ РЅРµ РґРµР»Р°РµС‚ СЌС‚РѕРіРѕ СЃР°Рј.
 os.environ.setdefault("PYTEST_ASYNCIO_MODE", "strict")
@@ -176,11 +184,23 @@ def _get_async_test_url() -> str:
         # Р•СЃР»Рё РєС‚Рѕ-С‚Рѕ РїРѕ РѕС€РёР±РєРµ РґР°Р» sync URL, Р°РєРєСѓСЂР°С‚РЅРѕ РєРѕРЅРІРµСЂС‚РёСЂСѓРµРј С‚РѕР»СЊРєРѕ РґСЂР°Р№РІРµСЂ.
         if base_url.startswith("postgresql+psycopg2://"):
             url = "postgresql+asyncpg://" + base_url.split("postgresql+psycopg2://", 1)[1]
+        elif base_url.startswith("postgresql://"):
+            url = "postgresql+asyncpg://" + base_url.split("postgresql://", 1)[1]
+        elif base_url.startswith("postgres://"):
+            url = "postgresql+asyncpg://" + base_url.split("postgres://", 1)[1]
         else:
             url = base_url
     else:
-        # СЂР°Р·СѓРјРЅС‹Р№ РґРµС„РѕР»С‚ РїРѕРґ Р»РѕРєР°Р»СЊРЅСѓСЋ СЂР°Р·СЂР°Р±РѕС‚РєСѓ
-        url = "postgresql+asyncpg://postgres:admin123@localhost:5432/SmartSellTest"
+        # разумный дефолт под локальную разработку (с паролем)
+        user = os.getenv("TEST_DB_USER") or os.getenv("POSTGRES_USER") or "postgres"
+        password = os.getenv("TEST_DB_PASSWORD") or os.getenv("POSTGRES_PASSWORD") or "admin123"
+        host = os.getenv("TEST_DB_HOST") or "127.0.0.1"
+        port = os.getenv("TEST_DB_PORT") or "5432"
+        dbname = os.getenv("TEST_DB_NAME") or "SmartSellTest"
+        url = (
+            f"postgresql+asyncpg://{quote(user, safe='')}:{quote(password, safe='')}"
+            f"@{host}:{port}/{dbname}"
+        )
 
     if not url.startswith("postgresql+"):
         raise RuntimeError(
@@ -205,6 +225,26 @@ def _make_sync_test_url(async_url: str) -> str:
     if async_url.startswith("postgresql://"):
         return async_url
     return async_url.replace("postgresql+asyncpg", "postgresql+psycopg2")
+
+
+def _ensure_test_urls() -> tuple[str, str]:
+    """Ensure consistent test URLs with password and export them to env."""
+    async_url = _get_async_test_url()
+    sync_url = _make_sync_test_url(async_url)
+
+    os.environ["TEST_ASYNC_DATABASE_URL"] = async_url
+    os.environ["TEST_DATABASE_URL"] = sync_url
+    os.environ["DATABASE_URL"] = sync_url
+    os.environ.setdefault("DB_URL", sync_url)
+
+    try:
+        pw = make_url(async_url).password or ""
+    except Exception:
+        pw = ""
+    if pw and not os.getenv("PGPASSWORD"):
+        os.environ["PGPASSWORD"] = pw
+
+    return async_url, sync_url
 
 
 def _import_app_and_get_db() -> tuple[Any, Callable[..., AsyncIterator[AsyncSession]]]:
@@ -313,8 +353,7 @@ def _bootstrap_minimal_models() -> None:
 # 1) РќР°СЃС‚СЂРѕР№РєР° С‚РµСЃС‚РѕРІРѕРіРѕ AsyncEngine (PostgreSQL + asyncpg)
 # ======================================================================================
 
-TEST_DATABASE_URL = _get_async_test_url()
-SYNC_TEST_DATABASE_URL = _make_sync_test_url(TEST_DATABASE_URL)
+TEST_DATABASE_URL, SYNC_TEST_DATABASE_URL = _ensure_test_urls()
 
 # Module-level engine/sessionmaker variables initialized to None
 # Created AFTER alembic upgrade in test_db fixture

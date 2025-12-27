@@ -73,6 +73,28 @@ def db_url_fingerprint(url: str) -> str:
         return ""
 
 
+def db_connection_fingerprint(url: str, include_password: bool = True) -> str:
+    """
+    Безопасный fingerprint соединения. Берёт user|host|port|db|password (если include_password)
+    и возвращает первые 12 символов sha256.
+    Если URL не парсится — пустая строка.
+    """
+    try:
+        parsed = urlparse(url)
+        user = parsed.username or ""
+        host = parsed.hostname or ""
+        port = str(parsed.port or "")
+        db = (parsed.path or "").lstrip("/")
+        pw = parsed.password or ""
+        parts = [user, host, port, db]
+        if include_password:
+            parts.append(pw)
+        data = "|".join(parts)
+        return hashlib.sha256(data.encode("utf-8")).hexdigest()[:12]
+    except Exception:
+        return ""
+
+
 def _parse_list_like(v: Any) -> Any:
     """
     Принимает строку "a,b,c" или JSON-массив и возвращает list[str].
@@ -133,6 +155,19 @@ def _writable(p: Path) -> bool:
         return True
     except Exception:
         return False
+
+
+def _default_test_db_url() -> str:
+    """Build a password-bearing asyncpg DSN for tests when none is provided."""
+    user = os.getenv("TEST_DB_USER") or os.getenv("POSTGRES_USER") or "postgres"
+    password = os.getenv("TEST_DB_PASSWORD") or os.getenv("POSTGRES_PASSWORD") or "admin123"
+    host = os.getenv("TEST_DB_HOST") or "127.0.0.1"
+    port = os.getenv("TEST_DB_PORT") or "5432"
+    dbname = os.getenv("TEST_DB_NAME") or "SmartSellTest"
+    return (
+        f"postgresql+asyncpg://{quote(user, safe='')}:{quote(password, safe='')}"
+        f"@{host}:{port}/{dbname}"
+    )
 
 
 # ================================
@@ -872,6 +907,9 @@ class Settings(BaseSettings):
         """
         try:
             drv = self.sqlalchemy_urls["driver"] or "unknown"
+            safe = self.db_url_safe
+            parsed = urlparse(self.DATABASE_URL or "")
+            fp_no_pw = db_connection_fingerprint(self.DATABASE_URL or "", include_password=False)
             logging.getLogger(__name__).info(
                 "config_summary=%s",
                 json.dumps(
@@ -880,7 +918,11 @@ class Settings(BaseSettings):
                         "log_level": (self.LOG_LEVEL or "INFO").upper(),
                         "log_format": (self.LOG_FORMAT or "json").lower(),
                         "db_driver": drv,
-                        "db_url": self.db_url_safe,
+                        "db_host": parsed.hostname or "",
+                        "db_port": parsed.port or "",
+                        "db_name": (parsed.path or "").lstrip("/"),
+                        "db_url": safe,
+                        "db_fp_no_pw": fp_no_pw,
                         "public_url": self.public_url,
                         "uvicorn_workers": int(self.UVICORN_WORKERS),
                         "kaspi_encryption_enabled": self.kaspi_encryption_enabled,
@@ -1619,23 +1661,24 @@ def get_settings() -> Settings:
     # Жёсткая политика: в тестах (pytest/TESTING) — только PostgreSQL
     under_test = s.TESTING or _under_pytest()
     if under_test:
-        test_db = s.TEST_DATABASE_URL or s.DATABASE_TEST_URL or s.DATABASE_URL
-        # Если TEST_DATABASE_URL не задан, но есть рабочий DATABASE_URL — аккуратно подменим имя БД на test-версию.
-        if not s.TEST_DATABASE_URL and s.DATABASE_URL:
-            try:
-                p = urlparse(s.DATABASE_URL)
-                dbname = (p.path or "").lstrip("/") or "test"
-                if "test" not in dbname.lower():
-                    dbname = f"{dbname}_test"
-                test_db = urlunparse((p.scheme, p.netloc, f"/{dbname}", p.params, p.query, p.fragment))
-            except Exception:
-                # fallback: требуем переменную окружения
-                pass
+        env_test_sync = (
+            os.getenv("TEST_DATABASE_URL") or os.getenv("DATABASE_TEST_URL") or ""
+        ).strip()
+        env_test_async = (os.getenv("TEST_ASYNC_DATABASE_URL") or "").strip()
+        env_db = (os.getenv("DATABASE_URL") or os.getenv("DB_URL") or "").strip()
+
+        test_db = (
+            env_test_sync
+            or env_test_async
+            or (s.TEST_DATABASE_URL or s.DATABASE_TEST_URL or "").strip()
+            or env_db
+            or (s.DATABASE_URL or "").strip()
+        )
+
         if not test_db:
-            raise ValueError(
-                "TEST_DATABASE_URL (или DATABASE_TEST_URL) обязателен в тестах и должен быть PostgreSQL, "
-                "например: postgresql://user:pass@localhost:5432/testdb"
-            )
+            test_db = _default_test_db_url()
+
+        # Минимальная валидация Postgres
         try:
             parsed = urlparse(test_db)
             scheme = (parsed.scheme or "").lower()
@@ -1643,6 +1686,14 @@ def get_settings() -> Settings:
                 raise ValueError
         except Exception:
             raise ValueError("Некорректный TEST_DATABASE_URL: требуется PostgreSQL URL")
+
+        # Экспорт пароля в PGPASSWORD для sync клиентов (psycopg2/Alembic) при наличии
+        try:
+            if parsed.password and not os.getenv("PGPASSWORD"):
+                os.environ["PGPASSWORD"] = parsed.password
+        except Exception:
+            pass
+
         object.__setattr__(s, "DATABASE_URL", test_db)
 
     # Нормализация REDIS_URL с учётом REDIS_PASSWORD/DB
@@ -1711,6 +1762,7 @@ __all__ = [
     "get_settings",
     "settings",
     "db_url_fingerprint",
+    "db_connection_fingerprint",
     "JSONAPI_MIME",
     "KASPI_JSONAPI_AUTH_HEADER",
 ]
