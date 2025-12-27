@@ -1,3 +1,9 @@
+## [2025-12-27] Merge integration center to dev/main
+- merged: `feature/system-integration-center-v1` -> `dev`, then `dev` -> `main` (integration center v1, provider registry/configs, messaging webhook provider).
+- commands: `alembic upgrade head`; `pytest -q`.
+- results: `pytest -q` (137 passed, 5 skipped).
+- warnings: Pydantic class-based `Config` deprecation, SQLAlchemy `Query.get` legacy, Trio `MultiError` deprecation, passlib/argon2 version warning.
+
 ## [2025-12-27] Pydantic v2 validator migration
 - changed: migrated product schema validators (slug, sku, sale/max price checks, stock/galleries) and repricing config validator to `field_validator` to remove Pydantic v1 deprecation noise while preserving behavior.
 - tests: `pytest -q` (137 passed, 5 skipped; warnings reduced to non-pydantic items: Config class deprecation, SQLAlchemy Query.get legacy, Trio/argon2).
