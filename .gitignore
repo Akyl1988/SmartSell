@@ -267,6 +267,11 @@ test_login_output.txt
 test_login_v2.txt
 full_test_output.txt
 
+# Local scratch artifacts (analysis/temp)
+__tmp_*/
+__tmp_*.txt
+_snapshot_core.txt
+
 # test outputs / local run logs
 test_*_result*.txt
 test_*_verbose*.txt
