@@ -7,14 +7,15 @@ from decimal import Decimal
 from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Path, Query, status
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel, Field, condecimal, constr
 from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
-from sqlalchemy.orm import Session
+from sqlalchemy.ext.asyncio import AsyncSession
 
 # --- проектные зависимости (пути проверьте по вашему проекту) ---
-from app.core.db import get_db
-from app.core.security import get_current_user  # -> текущий пользователь
+from app.core.db import get_async_db
+from app.core.security import decode_and_validate, is_token_revoked
 from app.models.billing import BillingPayment, Subscription
 from app.models.company import Company
 from app.models.user import User
@@ -23,13 +24,15 @@ from app.models.user import User
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/v1/subscriptions", tags=["subscriptions"])
+http_bearer = HTTPBearer(auto_error=False)
 
 # ====== Константы/типы ======
 PlanName = constr(min_length=2, max_length=32)
 CurrencyCode = constr(min_length=3, max_length=8)
-AllowedStatus = Literal["active", "canceled", "overdue", "trial", "paused"]
+AllowedStatus = Literal["active", "canceled", "overdue", "trial", "paused", "expired", "ended"]
 Cycle = Literal["monthly", "yearly"]
 ACTIVE_STATES = {"active", "trial", "overdue", "paused"}  # «текущие» подписки
+FINAL_STATES = {"canceled", "expired", "ended"}
 
 
 # ====== Схемы ======
@@ -60,6 +63,9 @@ class SubscriptionOut(BaseModel):
     started_at: datetime | None
     expires_at: datetime | None
     next_billing_date: datetime | None
+    canceled_at: datetime | None = None
+    ended_at: datetime | None = None
+    deleted_at: datetime | None = None
 
     class Config:
         from_attributes = True
@@ -86,8 +92,8 @@ def next_billing_from(now: datetime, cycle: str) -> datetime:
     return now + (timedelta(days=365) if cycle == "yearly" else timedelta(days=31))
 
 
-def ensure_company(db: Session, company_id: int) -> Company:
-    c = db.get(Company, company_id)
+async def ensure_company(db: AsyncSession, company_id: int) -> Company:
+    c = await db.get(Company, company_id)
     if not c:
         raise HTTPException(status_code=404, detail="Company not found")
     return c
@@ -114,19 +120,29 @@ def ensure_company_access(user, company: Company) -> None:
     raise HTTPException(status_code=403, detail="Forbidden")
 
 
-def forbid_multiple_active(db: Session, company_id: int) -> None:
+def _is_platform_admin(user: User | None) -> bool:
+    try:
+        return getattr(user, "role", None) in {"platform_admin", "superadmin"}
+    except Exception:
+        return False
+
+
+async def forbid_multiple_active(db: AsyncSession, company_id: int, exclude_id: int | None = None) -> None:
     """
     Запретить более одной «текущей» подписки (active|trial|overdue|paused).
+
+    SQLAlchemy не умеет безопасно приводить expression к bool, поэтому строим
+    список условий и добавляем фильтр по id только если exclude_id передан.
     """
-    count = (
-        db.scalar(
-            select(func.count(Subscription.id)).where(
-                (Subscription.company_id == company_id)
-                & (Subscription.status.in_(list(ACTIVE_STATES)))
-            )
-        )
-        or 0
-    )
+    clauses = [
+        Subscription.company_id == company_id,
+        Subscription.status.in_(list(ACTIVE_STATES)),
+        Subscription.deleted_at.is_(None),
+    ]
+    if exclude_id is not None:
+        clauses.append(Subscription.id != exclude_id)
+
+    count = (await db.scalar(select(func.count(Subscription.id)).where(*clauses))) or 0
     if count:
         raise HTTPException(
             status_code=409,
@@ -134,21 +150,40 @@ def forbid_multiple_active(db: Session, company_id: int) -> None:
         )
 
 
-def ensure_sub_access(user, sub: Subscription, db: Session) -> Company:
-    company = db.get(Company, sub.company_id)
+async def ensure_sub_access(user, sub: Subscription, db: AsyncSession, *, allow_deleted: bool = False) -> Company:
+    company = await db.get(Company, sub.company_id)
     if not company:
         raise HTTPException(status_code=404, detail="Company not found")
+    if sub.deleted_at and not allow_deleted:
+        raise HTTPException(status_code=404, detail="Subscription archived")
     ensure_company_access(user, company)
     return company
 
 
-def _auth_user(token_data: dict = Depends(get_current_user), db: Session = Depends(get_db)) -> User:
-    """Resolve the actual User model from JWT claims, supporting sync Session."""
+async def _auth_user(
+    credentials: HTTPAuthorizationCredentials | None = Depends(http_bearer),
+    db: AsyncSession = Depends(get_async_db),
+) -> User:
+    """Resolve User from Bearer token without threadpool to keep async-safe under Trio."""
+
+    if not credentials or credentials.scheme.lower() != "bearer":
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Not authenticated")
+
     try:
-        user_id = int(token_data.get("sub"))
+        payload = decode_and_validate(credentials.credentials, expected_type="access")
+    except Exception as e:  # decode errors → 401
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=str(e))
+
+    jti = payload.get("jti")
+    if jti and is_token_revoked(jti):
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Token revoked")
+
+    try:
+        user_id = int(payload.get("sub"))
     except Exception:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Not authenticated")
-    user = db.get(User, user_id)
+
+    user = await db.get(User, user_id)
     if not user:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Not authenticated")
     return user
@@ -156,19 +191,25 @@ def _auth_user(token_data: dict = Depends(get_current_user), db: Session = Depen
 
 # ====== Эндпоинты ======
 @router.get("", response_model=list[SubscriptionOut])
-def list_subscriptions(
+async def list_subscriptions(
     company_id: int = Query(..., ge=1),
     status_filter: AllowedStatus | None = Query(None),
     plan: str | None = Query(None, max_length=32),
     from_date: datetime | None = Query(None, description="Фильтр по next_billing_date (>=)"),
     to_date: datetime | None = Query(None, description="Фильтр по next_billing_date (<=)"),
-    db: Session = Depends(get_db),
+    include_deleted: bool = Query(False, description="Только для админов: включать архивные"),
+    db: AsyncSession = Depends(get_async_db),
     user: User = Depends(_auth_user),
 ):
-    company = ensure_company(db, company_id)
+    company = await ensure_company(db, company_id)
     ensure_company_access(user, company)
 
+    is_admin = getattr(user, "role", None) in {"platform_admin", "superadmin"}
+    include_deleted = include_deleted if is_admin else False
+
     stmt = select(Subscription).where(Subscription.company_id == company_id)
+    if not include_deleted:
+        stmt = stmt.where(Subscription.deleted_at.is_(None))
     if status_filter:
         stmt = stmt.where(Subscription.status == status_filter)
     if plan:
@@ -179,53 +220,50 @@ def list_subscriptions(
         stmt = stmt.where(Subscription.next_billing_date <= to_date)
 
     rows = (
-        db.execute(
+        await db.execute(
             stmt.order_by(
                 Subscription.next_billing_date.is_(None), Subscription.next_billing_date.asc()
             )
         )
-        .scalars()
-        .all()
-    )
+    ).scalars().all()
     return rows
 
 
 @router.get("/current", response_model=SubscriptionOut | None)
-def get_current_subscription(
+async def get_current_subscription(
     company_id: int = Query(..., ge=1),
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_async_db),
     user: User = Depends(_auth_user),
 ):
-    company = ensure_company(db, company_id)
+    company = await ensure_company(db, company_id)
     ensure_company_access(user, company)
 
     rows = (
-        db.execute(
+        await db.execute(
             select(Subscription)
             .where(Subscription.company_id == company_id)
+            .where(Subscription.deleted_at.is_(None))
             .where(Subscription.status.in_(list(ACTIVE_STATES)))
             .order_by(
                 Subscription.next_billing_date.is_(None), Subscription.next_billing_date.asc()
             )
         )
-        .scalars()
-        .all()
-    )
+    ).scalars().all()
     return rows[0] if rows else None
 
 
 @router.post("", response_model=SubscriptionOut, status_code=status.HTTP_201_CREATED)
-def create_subscription(
+async def create_subscription(
     payload: SubscriptionCreate,
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_async_db),
     user: User = Depends(_auth_user),
 ):
-    company = ensure_company(db, payload.company_id)
+    company = await ensure_company(db, payload.company_id)
     ensure_company_access(user, company)
 
     try:
         # бизнес-правило: только одна «текущая» подписка
-        forbid_multiple_active(db, payload.company_id)
+        await forbid_multiple_active(db, payload.company_id)
 
         now = utc_now()
         sub = Subscription(
@@ -240,33 +278,33 @@ def create_subscription(
             next_billing_date=next_billing_from(now, payload.billing_cycle),
         )
         db.add(sub)
-        db.commit()
-        db.refresh(sub)
+        await db.commit()
+        await db.refresh(sub)
         return sub
 
     except IntegrityError as e:
-        db.rollback()
+        await db.rollback()
         logger.exception("IntegrityError on create_subscription: %s", e)
         raise HTTPException(status_code=409, detail="Duplicate or constraint violation")
     except HTTPException:
         raise
     except Exception as e:
-        db.rollback()
+        await db.rollback()
         logger.exception("Unexpected error on create_subscription: %s", e)
         raise HTTPException(status_code=500, detail="Subscription creation failed")
 
 
 @router.patch("/{subscription_id}", response_model=SubscriptionOut)
-def update_subscription(
+async def update_subscription(
     subscription_id: int = Path(..., ge=1),
     payload: SubscriptionUpdate = ...,
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_async_db),
     user: User = Depends(_auth_user),
 ):
-    sub = db.get(Subscription, subscription_id)
+    sub = await db.get(Subscription, subscription_id)
     if not sub:
         raise HTTPException(status_code=404, detail="Subscription not found")
-    company = ensure_sub_access(user, sub, db)
+    company = await ensure_sub_access(user, sub, db)
 
     try:
         if payload.plan is not None:
@@ -279,51 +317,51 @@ def update_subscription(
         if payload.currency is not None:
             sub.currency = payload.currency
 
-        db.commit()
-        db.refresh(sub)
+        await db.commit()
+        await db.refresh(sub)
         return sub
 
     except IntegrityError as e:
-        db.rollback()
+        await db.rollback()
         logger.exception("IntegrityError on update_subscription: %s", e)
         raise HTTPException(status_code=409, detail="Duplicate or constraint violation")
     except Exception as e:
-        db.rollback()
+        await db.rollback()
         logger.exception("Unexpected error on update_subscription: %s", e)
         raise HTTPException(status_code=500, detail="Subscription update failed")
 
 
 @router.post("/{subscription_id}/cancel", response_model=SubscriptionOut)
-def cancel_subscription(
+async def cancel_subscription(
     subscription_id: int = Path(..., ge=1),
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_async_db),
     user: User = Depends(_auth_user),
 ):
-    sub = db.get(Subscription, subscription_id)
+    sub = await db.get(Subscription, subscription_id)
     if not sub:
         raise HTTPException(status_code=404, detail="Subscription not found")
-    company = ensure_sub_access(user, sub, db)
+    company = await ensure_sub_access(user, sub, db)
 
     if sub.status == "canceled":
         return sub  # идемпотентно
 
     sub.status = "canceled"
     sub.canceled_at = utc_now()
-    db.commit()
-    db.refresh(sub)
+    await db.commit()
+    await db.refresh(sub)
     return sub
 
 
 @router.post("/{subscription_id}/resume", response_model=SubscriptionOut)
-def resume_subscription(
+async def resume_subscription(
     subscription_id: int = Path(..., ge=1),
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_async_db),
     user: User = Depends(_auth_user),
 ):
-    sub = db.get(Subscription, subscription_id)
+    sub = await db.get(Subscription, subscription_id)
     if not sub:
         raise HTTPException(status_code=404, detail="Subscription not found")
-    company = ensure_sub_access(user, sub, db)
+    company = await ensure_sub_access(user, sub, db)
 
     # Бизнес-правило: нельзя «возобновлять», если подписка давно отменена и срок истёк (пример)
     if sub.status == "canceled" and sub.expires_at and sub.expires_at < utc_now():
@@ -338,48 +376,48 @@ def resume_subscription(
         sub.started_at = now
 
     # Доп. валидация: нет ли другой «текущей» подписки у компании
-    forbid_multiple_active(db, sub.company_id)
+    await forbid_multiple_active(db, sub.company_id, exclude_id=sub.id)
 
-    db.commit()
-    db.refresh(sub)
+    await db.commit()
+    await db.refresh(sub)
     return sub
 
 
 @router.post("/{subscription_id}/renew", response_model=SubscriptionOut)
-def renew_subscription(
+async def renew_subscription(
     subscription_id: int = Path(..., ge=1),
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_async_db),
     user: User = Depends(_auth_user),
 ):
     """
     Простое продление (вызвать после успешной оплаты).
     """
-    sub = db.get(Subscription, subscription_id)
+    sub = await db.get(Subscription, subscription_id)
     if not sub:
         raise HTTPException(status_code=404, detail="Subscription not found")
-    company = ensure_sub_access(user, sub, db)
+    company = await ensure_sub_access(user, sub, db)
 
     now = utc_now()
     sub.status = "active"
     sub.next_billing_date = next_billing_from(now, sub.billing_cycle or "monthly")
-    db.commit()
-    db.refresh(sub)
+    await db.commit()
+    await db.refresh(sub)
     return sub
 
 
 @router.post("/{subscription_id}/end-trial", response_model=SubscriptionOut)
-def end_trial(
+async def end_trial(
     subscription_id: int = Path(..., ge=1),
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_async_db),
     user: User = Depends(_auth_user),
 ):
     """
     Принудительно завершить trial и перевести в active (например, после ранней оплаты).
     """
-    sub = db.get(Subscription, subscription_id)
+    sub = await db.get(Subscription, subscription_id)
     if not sub:
         raise HTTPException(status_code=404, detail="Subscription not found")
-    company = ensure_sub_access(user, sub, db)
+    company = await ensure_sub_access(user, sub, db)
 
     if sub.status != "trial":
         raise HTTPException(status_code=422, detail="Subscription is not in trial")
@@ -388,31 +426,80 @@ def end_trial(
     sub.status = "active"
     sub.expires_at = None
     sub.next_billing_date = next_billing_from(now, sub.billing_cycle or "monthly")
-    db.commit()
-    db.refresh(sub)
+    await db.commit()
+    await db.refresh(sub)
+    return sub
+
+
+@router.post("/{subscription_id}/archive", response_model=SubscriptionOut)
+async def archive_subscription(
+    subscription_id: int = Path(..., ge=1),
+    db: AsyncSession = Depends(get_async_db),
+    user: User = Depends(_auth_user),
+):
+    if not _is_platform_admin(user):
+        raise HTTPException(status_code=403, detail="Admin only")
+
+    sub = await db.get(Subscription, subscription_id)
+    if not sub:
+        raise HTTPException(status_code=404, detail="Subscription not found")
+
+    await ensure_sub_access(user, sub, db, allow_deleted=True)
+
+    if sub.deleted_at:
+        return sub
+
+    # Soft-delete uses naive UTC timestamp to match existing column type
+    sub.deleted_at = utc_now().replace(tzinfo=None)
+    await db.commit()
+    await db.refresh(sub)
+    return sub
+
+
+@router.post("/{subscription_id}/restore", response_model=SubscriptionOut)
+async def restore_subscription(
+    subscription_id: int = Path(..., ge=1),
+    db: AsyncSession = Depends(get_async_db),
+    user: User = Depends(_auth_user),
+):
+    if not _is_platform_admin(user):
+        raise HTTPException(status_code=403, detail="Admin only")
+
+    sub = await db.get(Subscription, subscription_id)
+    if not sub:
+        raise HTTPException(status_code=404, detail="Subscription not found")
+
+    await ensure_sub_access(user, sub, db, allow_deleted=True)
+
+    sub.deleted_at = None
+    await db.commit()
+    await db.refresh(sub)
     return sub
 
 
 @router.get("/{subscription_id}/payments", response_model=list[PaymentOut])
-def list_subscription_payments(
+async def list_subscription_payments(
     subscription_id: int = Path(..., ge=1),
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_async_db),
     user: User = Depends(_auth_user),
 ):
     """
     История платежей, связанных с подпиской (упрощённо: по company_id и plan).
     В проде лучше иметь Subscription->Payment связь явно.
     """
-    sub = db.get(Subscription, subscription_id)
+    sub = await db.get(Subscription, subscription_id)
     if not sub:
         raise HTTPException(status_code=404, detail="Subscription not found")
-    company = ensure_sub_access(user, sub, db)
+    company = await ensure_sub_access(user, sub, db)
 
     stmt = (
         select(BillingPayment)
-        .where(BillingPayment.company_id == company.id)
+        .where(
+            BillingPayment.company_id == company.id,
+            BillingPayment.subscription_id == subscription_id,
+        )
         .order_by(BillingPayment.created_at.desc())
         .limit(100)
     )
-    rows = db.execute(stmt).scalars().all()
+    rows = (await db.execute(stmt)).scalars().all()
     return rows

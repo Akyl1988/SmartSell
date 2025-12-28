@@ -34,6 +34,7 @@ from sqlalchemy import (
     UniqueConstraint,
     func,
     select,
+    text,
 )
 from sqlalchemy.exc import DBAPIError, OperationalError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -493,6 +494,7 @@ class Subscription(BaseModel, SoftDeleteMixin):
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
     canceled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    ended_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
     last_payment_id: Mapped[int | None] = mapped_column(ForeignKey("billing_payments.id"))
     next_billing_date: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
@@ -512,6 +514,14 @@ class Subscription(BaseModel, SoftDeleteMixin):
 
     __table_args__ = (
         Index("ix_subscription_company_status", "company_id", "status"),
+        Index(
+            "uq_subscription_company_active_states",
+            "company_id",
+            unique=True,
+            postgresql_where=text(
+                "status IN ('active','trial','overdue','paused') AND deleted_at IS NULL"
+            ),
+        ),
         CheckConstraint("price >= 0", name="ck_subscription_price_nonneg"),
         CheckConstraint("grace_period_days >= 0", name="ck_subscription_grace_nonneg"),
         {"extend_existing": True},

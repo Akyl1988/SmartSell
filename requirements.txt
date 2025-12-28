@@ -1,7 +1,8 @@
 # FastAPI and core
-fastapi==0.104.1
+fastapi==0.115.5
 uvicorn[standard]==0.24.0
 python-multipart==0.0.6
+starlette==0.41.3
 
 # Database
 sqlalchemy==2.0.23

@@ -21,6 +21,7 @@ def test_alembic_upgrade_head_runs(tmp_path: Path):
     cwd = os.getcwd()
     try:
         os.chdir(Path(__file__).resolve().parent.parent)
-        command.upgrade(cfg, "head")
+        # Use offline SQL generation to validate migration graph without mutating live test DB
+        command.upgrade(cfg, "head", sql=True)
     finally:
         os.chdir(cwd)

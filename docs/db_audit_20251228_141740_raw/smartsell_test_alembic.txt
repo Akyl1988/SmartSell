@@ -1,0 +1,3 @@
+version_num
+20251227_add_provider_configs
+(1 row)

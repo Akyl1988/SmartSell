@@ -15,6 +15,8 @@ from pathlib import Path, PurePosixPath
 from typing import Any, Literal, cast
 from urllib.parse import parse_qs, quote, urlencode, urlparse, urlunparse
 
+import hashlib
+
 from pydantic import AliasChoices, AnyHttpUrl, EmailStr, Field, field_validator
 from pydantic import ValidationInfo
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -58,6 +60,39 @@ def _mask_secret(val: str | None) -> str | None:
 def _project_root() -> Path:
     here = Path(__file__).resolve()
     return here.parent.parent.parent
+
+
+def db_url_fingerprint(url: str) -> str:
+    """
+    Считаем fingerprint полного DSN (включая пароль) и возвращаем первые 12 символов sha256.
+    Используем только для логов/ассертов без утечки пароля.
+    """
+    try:
+        return hashlib.sha256(url.encode("utf-8")).hexdigest()[:12]
+    except Exception:
+        return ""
+
+
+def db_connection_fingerprint(url: str, include_password: bool = True) -> str:
+    """
+    Безопасный fingerprint соединения. Берёт user|host|port|db|password (если include_password)
+    и возвращает первые 12 символов sha256.
+    Если URL не парсится — пустая строка.
+    """
+    try:
+        parsed = urlparse(url)
+        user = parsed.username or ""
+        host = parsed.hostname or ""
+        port = str(parsed.port or "")
+        db = (parsed.path or "").lstrip("/")
+        pw = parsed.password or ""
+        parts = [user, host, port, db]
+        if include_password:
+            parts.append(pw)
+        data = "|".join(parts)
+        return hashlib.sha256(data.encode("utf-8")).hexdigest()[:12]
+    except Exception:
+        return ""
 
 
 def _parse_list_like(v: Any) -> Any:
@@ -120,6 +155,19 @@ def _writable(p: Path) -> bool:
         return True
     except Exception:
         return False
+
+
+def _default_test_db_url() -> str:
+    """Build a password-bearing asyncpg DSN for tests when none is provided."""
+    user = os.getenv("TEST_DB_USER") or os.getenv("POSTGRES_USER") or "postgres"
+    password = os.getenv("TEST_DB_PASSWORD") or os.getenv("POSTGRES_PASSWORD") or "admin123"
+    host = os.getenv("TEST_DB_HOST") or "127.0.0.1"
+    port = os.getenv("TEST_DB_PORT") or "5432"
+    dbname = os.getenv("TEST_DB_NAME") or "SmartSellTest"
+    return (
+        f"postgresql+asyncpg://{quote(user, safe='')}:{quote(password, safe='')}"
+        f"@{host}:{port}/{dbname}"
+    )
 
 
 # ================================
@@ -816,12 +864,52 @@ class Settings(BaseSettings):
         except Exception:
             return ""
 
+    def db_url_source(self) -> str:
+        """
+        Пытаемся определить, откуда пришёл текущий DATABASE_URL.
+        Приоритет: переменные окружения (DATABASE_URL/DB_URL/TEST_DATABASE_URL/DATABASE_TEST_URL),
+        затем .env.test, затем .env, затем дефолт.
+        Это эвристика для диагностики; на поведение не влияет.
+        """
+
+        def _match_env(name: str, value: str | None) -> str | None:
+            env_val = os.getenv(name)
+            if env_val and value and env_val.strip() == value.strip():
+                return f"env:{name}"
+            return None
+
+        current = self.DATABASE_URL or ""
+
+        for key in ("DATABASE_URL", "DB_URL", "TEST_DATABASE_URL", "DATABASE_TEST_URL"):
+            src = _match_env(key, current)
+            if src:
+                return src
+
+        # Если нет прямого совпадения в окружении — попробуем найти в .env.test и .env
+        for env_file, tag in ((".env.test", "file:.env.test"), (".env", "file:.env")):
+            try:
+                path = _project_root() / env_file
+                if not path.exists():
+                    continue
+                for line in path.read_text(encoding="utf-8").splitlines():
+                    if line.strip().startswith("DATABASE_URL"):
+                        _, _, val = line.partition("=")
+                        if val and current.strip() == val.strip():
+                            return tag
+            except Exception:
+                continue
+
+        return "default"
+
     def _log_config_summary(self) -> None:
         """
         Безопасная сводка конфигурации в лог (без секретов).
         """
         try:
             drv = self.sqlalchemy_urls["driver"] or "unknown"
+            safe = self.db_url_safe
+            parsed = urlparse(self.DATABASE_URL or "")
+            fp_no_pw = db_connection_fingerprint(self.DATABASE_URL or "", include_password=False)
             logging.getLogger(__name__).info(
                 "config_summary=%s",
                 json.dumps(
@@ -830,7 +918,11 @@ class Settings(BaseSettings):
                         "log_level": (self.LOG_LEVEL or "INFO").upper(),
                         "log_format": (self.LOG_FORMAT or "json").lower(),
                         "db_driver": drv,
-                        "db_url": self.db_url_safe,
+                        "db_host": parsed.hostname or "",
+                        "db_port": parsed.port or "",
+                        "db_name": (parsed.path or "").lstrip("/"),
+                        "db_url": safe,
+                        "db_fp_no_pw": fp_no_pw,
                         "public_url": self.public_url,
                         "uvicorn_workers": int(self.UVICORN_WORKERS),
                         "kaspi_encryption_enabled": self.kaspi_encryption_enabled,
@@ -1566,26 +1658,22 @@ class Settings(BaseSettings):
 def get_settings() -> Settings:
     s = Settings()
 
-    # Жёсткая политика: в тестах (pytest/TESTING) — только PostgreSQL
-    under_test = s.TESTING or _under_pytest()
+    # Жёсткая политика: в тестах (TESTING=1/pytest) — только TEST_* URL, DATABASE_URL игнорируется
+    under_test = bool(s.TESTING or _under_pytest())
     if under_test:
-        test_db = s.TEST_DATABASE_URL or s.DATABASE_TEST_URL or s.DATABASE_URL
-        # Если TEST_DATABASE_URL не задан, но есть рабочий DATABASE_URL — аккуратно подменим имя БД на test-версию.
-        if not s.TEST_DATABASE_URL and s.DATABASE_URL:
-            try:
-                p = urlparse(s.DATABASE_URL)
-                dbname = (p.path or "").lstrip("/") or "test"
-                if "test" not in dbname.lower():
-                    dbname = f"{dbname}_test"
-                test_db = urlunparse((p.scheme, p.netloc, f"/{dbname}", p.params, p.query, p.fragment))
-            except Exception:
-                # fallback: требуем переменную окружения
-                pass
+        object.__setattr__(s, "TESTING", True)
+
+        env_test_sync = (os.getenv("TEST_DATABASE_URL") or os.getenv("DATABASE_TEST_URL") or "").strip()
+        env_test_async = (os.getenv("TEST_ASYNC_DATABASE_URL") or "").strip()
+        # В тестах никогда не подхватываем DATABASE_URL/DB_URL, чтобы не уехать в прод
+        test_db = env_test_sync or env_test_async or (s.TEST_DATABASE_URL or s.DATABASE_TEST_URL or "").strip()
+
         if not test_db:
             raise ValueError(
-                "TEST_DATABASE_URL (или DATABASE_TEST_URL) обязателен в тестах и должен быть PostgreSQL, "
-                "например: postgresql://user:pass@localhost:5432/testdb"
+                "TEST_DATABASE_URL is required when TESTING=1 or under pytest; target smartsell_test."
             )
+
+        # Минимальная валидация Postgres
         try:
             parsed = urlparse(test_db)
             scheme = (parsed.scheme or "").lower()
@@ -1593,7 +1681,22 @@ def get_settings() -> Settings:
                 raise ValueError
         except Exception:
             raise ValueError("Некорректный TEST_DATABASE_URL: требуется PostgreSQL URL")
+
+        # Экспорт пароля в PGPASSWORD для sync клиентов (psycopg2/Alembic) при наличии
+        try:
+            if parsed.password and not os.getenv("PGPASSWORD"):
+                os.environ["PGPASSWORD"] = parsed.password
+        except Exception:
+            pass
+
         object.__setattr__(s, "DATABASE_URL", test_db)
+
+        # Для тестов фиксируем безопасный SMTP порт, чтобы .env не подменял на 25
+        try:
+            smtp_test = int(os.getenv("SMTP_PORT_TEST", "587"))
+        except Exception:
+            smtp_test = 587
+        object.__setattr__(s, "SMTP_PORT", smtp_test)
 
     # Нормализация REDIS_URL с учётом REDIS_PASSWORD/DB
     if (s.REDIS_PASSWORD is not None) or (s.REDIS_DB is not None):
@@ -1660,6 +1763,8 @@ __all__ = [
     "Settings",
     "get_settings",
     "settings",
+    "db_url_fingerprint",
+    "db_connection_fingerprint",
     "JSONAPI_MIME",
     "KASPI_JSONAPI_AUTH_HEADER",
 ]
