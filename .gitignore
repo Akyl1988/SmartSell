@@ -278,3 +278,7 @@ test_*_verbose*.txt
 test_*_quick*.txt
 *_result*.txt
 *_verbose*.txt
+
+# Generated DB reset reports
+docs/DB_SETUP_*.md
+
