@@ -1,0 +1,5 @@
+table\ttotal_size
+public.campaign_messages\t48 kB
+public.payments\t48 kB
+public.campaigns\t40 kB
+(3 rows)

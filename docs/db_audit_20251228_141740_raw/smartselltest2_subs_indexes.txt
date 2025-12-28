@@ -1,0 +1,2 @@
+indexname\tindexdef
+(0 rows)

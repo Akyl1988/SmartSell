@@ -1,0 +1,2 @@
+table\ttotal_size
+(0 rows)

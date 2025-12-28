@@ -43,6 +43,7 @@ import re
 import sys
 import warnings
 from collections.abc import Iterable
+from logging import getLogger
 from logging.config import fileConfig
 from typing import Any, Optional
 
@@ -58,6 +59,7 @@ if load_dotenv:
 
 # --- Alembic / SQLAlchemy -----------------------------------------------
 from sqlalchemy import MetaData, text, event
+import sqlalchemy as sa
 from sqlalchemy import schema as sa_schema  # noqa: F401  (зарезервировано на будущее)
 from sqlalchemy.engine import Connection
 from sqlalchemy.engine.url import make_url
@@ -68,6 +70,15 @@ from sqlalchemy import create_engine
 from alembic import context
 from alembic.runtime.environment import EnvironmentContext
 from alembic.config import Config
+
+# SmartSell config
+try:
+    from app.core.config import get_settings, db_connection_fingerprint
+except Exception:  # pragma: no cover
+    get_settings = None  # type: ignore
+    db_connection_fingerprint = None  # type: ignore
+
+logger = getLogger(__name__)
 
 # Операции для пост-обработки автогенерации
 try:
@@ -268,17 +279,42 @@ def _combine_metadata(metas: Iterable[tuple[MetaData, str]]) -> tuple[MetaData |
 
 def get_url_from_env_or_cfg() -> str:
     """
-    Порядок приоритета:
-    1) alembic.ini -> sqlalchemy.url
-    2) ENV: DATABASE_URL / DB_URL / SQLALCHEMY_DATABASE_URI
-    3) дефолт (localhost).
+    Порядок приоритета (enterprise-safe):
+    1) app.core.config.get_settings().sqlalchemy_sync_url (respects TESTING/TEST_* env)
+    2) fallback: env DATABASE_URL / DB_URL / SQLALCHEMY_DATABASE_URI
+    3) fallback: alembic.ini sqlalchemy.url
     """
     ini_url = config.get_main_option("sqlalchemy.url")
     env_url = (
         os.getenv("DATABASE_URL") or os.getenv("DB_URL") or os.getenv("SQLALCHEMY_DATABASE_URI")
     )
-    # Наш приоритет: ENV > INI (чаще удобно перегонять в CI)
-    return normalize_db_url(env_url or ini_url)
+
+    source = "env-or-ini"
+    url = None
+
+    if get_settings:
+        try:
+            settings = get_settings()
+            url = settings.sqlalchemy_sync_url
+            source = settings.db_url_source() if hasattr(settings, "db_url_source") else "settings"
+            safe = getattr(settings, "db_url_safe", "")
+            fp = db_connection_fingerprint(url or "", include_password=False) if db_connection_fingerprint else ""
+            logger.info("alembic_db_url_resolved source=%s url=%s fp=%s", source, safe, fp)
+        except Exception as e:  # pragma: no cover
+            logger.warning("get_settings() failed in Alembic env: %s", e)
+            url = None
+
+    if not url:
+        url = env_url or ini_url
+        source = "env-fallback" if env_url else "ini"
+        safe = url or ""
+        try:
+            fp = db_connection_fingerprint(url or "", include_password=False) if db_connection_fingerprint else ""
+        except Exception:
+            fp = ""
+        logger.info("alembic_db_url_resolved source=%s url=%s fp=%s", source, safe, fp)
+
+    return normalize_db_url(url)
 
 
 # ======================================================================
@@ -373,6 +409,29 @@ def include_name(name: str | None, type_: str | None, parent_names) -> bool:
     if type_ == "table" and any(name.startswith(pref) for pref in SYSTEM_TABLE_PREFIXES):
         return False
     return True
+
+
+def _ensure_version_table_size(connection: Connection, schema: str | None) -> None:
+        """Ensure alembic_version.version_num can store long revision ids (256 chars) if table already exists."""
+        vt_schema = schema or DEFAULT_SCHEMA or "public"
+        try:
+                sql = f"""
+                DO $$
+                BEGIN
+                    IF EXISTS (
+                        SELECT 1 FROM information_schema.columns
+                         WHERE table_schema='{vt_schema}'
+                             AND table_name='{ALEMBIC_VERSION_TABLE}'
+                             AND column_name='version_num'
+                             AND (character_maximum_length < 256 OR character_maximum_length IS NULL)
+                    ) THEN
+                        EXECUTE 'ALTER TABLE "{vt_schema}"."{ALEMBIC_VERSION_TABLE}" ALTER COLUMN version_num TYPE VARCHAR(256)';
+                    END IF;
+                END$$;
+                """
+                connection.execute(text(sql))
+        except Exception as e:  # pragma: no cover - diagnostic only
+                _debug(f"Version table size check skipped: {e!r}")
 
 
 # ======================================================================
@@ -526,6 +585,7 @@ def _configure_context(connection: Connection | None = None) -> None:
         # Фиксация таблицы версий
         version_table=ALEMBIC_VERSION_TABLE,
         version_table_schema=version_table_schema,
+        version_table_column_type=sa.String(length=256),
         # Схемы включаем — важно для сложных проектов
         include_schemas=include_schemas_cfg,
     )
@@ -606,6 +666,10 @@ def run_migrations_online() -> None:
             _session_set_search_path(connection, DEFAULT_SCHEMA)
 
             # Базовая конфигурация контекста
+            version_table_schema = ALEMBIC_VERSION_TABLE_SCHEMA
+            if version_table_schema is None and _is_postgres_url(url):
+                version_table_schema = DEFAULT_SCHEMA or "public"
+
             _configure_context(connection=connection)
 
             # Все миграции — в одной транзакции (PostgreSQL: транзакционный DDL)
@@ -636,6 +700,9 @@ def run_migrations_online() -> None:
                         ))
                 except Exception as e:
                     _debug(f"Проверка/создание схемы или version table пропущены: {e!r}")
+
+                # Гарантируем, что колонка version_num достаточно длинная
+                _ensure_version_table_size(connection, version_table_schema)
 
                 context.run_migrations()
     finally:

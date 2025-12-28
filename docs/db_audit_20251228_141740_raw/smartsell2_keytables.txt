@@ -1,0 +1,8 @@
+table_schema\ttable_name
+public\tbilling_payments
+public\tcompanies
+public\totp_codes
+public\tsubscriptions
+public\tuser_sessions
+public\tusers
+(6 rows)

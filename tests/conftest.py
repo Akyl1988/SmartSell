@@ -52,6 +52,12 @@ from sqlalchemy.ext.asyncio import (
 from sqlalchemy.pool import NullPool
 from sqlalchemy.sql.type_api import TypeEngine  # С‚РёРїС‹ РґР»СЏ С„РёР»СЊС‚СЂР° unsupported
 
+
+@pytest.fixture
+def anyio_backend():
+    """Force asyncio backend; asyncpg does not run under trio without extra shims."""
+    return "asyncio"
+
 # Compatibility shim: newer trio may not expose MultiError; keep anyio trio backend working in tests.
 try:
     import trio  # type: ignore
@@ -614,6 +620,33 @@ def test_db() -> Iterator[None]:
         command.upgrade(cfg, "head")
     except Exception:
         pass  # Fallback below will handle it
+
+    # Ensure alembic_version exists with a 256-char column for long revision ids
+    with sa.create_engine(sync_url, future=True).begin() as conn:
+        conn.execute(
+            text(
+                """
+                DO $$
+                BEGIN
+                    IF NOT EXISTS (
+                        SELECT 1 FROM information_schema.tables
+                         WHERE table_schema='public'
+                           AND table_name='alembic_version'
+                    ) THEN
+                        EXECUTE 'CREATE TABLE public.alembic_version (version_num VARCHAR(256) NOT NULL)';
+                    ELSIF EXISTS (
+                        SELECT 1 FROM information_schema.columns
+                         WHERE table_schema='public'
+                           AND table_name='alembic_version'
+                           AND column_name='version_num'
+                           AND (character_maximum_length IS NULL OR character_maximum_length < 256)
+                    ) THEN
+                        EXECUTE 'ALTER TABLE public.alembic_version ALTER COLUMN version_num TYPE VARCHAR(256)';
+                    END IF;
+                END$$;
+                """
+            )
+        )
     
     # Explicitly create all ORM tables to ensure schema is complete
     # (alembic migration might not have all tables)
@@ -692,11 +725,11 @@ async def _override_get_db() -> AsyncIterator[AsyncSession]:
     global TestingSessionLocal
     if TestingSessionLocal is None:
         raise RuntimeError("TestingSessionLocal not initialized; test_db fixture must run first")
-    async with TestingSessionLocal() as session:
-        try:
-            yield session
-        finally:
-            await session.close()
+    session = TestingSessionLocal()
+    try:
+        yield session
+    finally:
+        await session.close()
 
 
 def _override_get_db_sync() -> Iterator[Any]:
@@ -737,8 +770,11 @@ async def client(async_client: AsyncClient) -> AsyncIterator[AsyncClient]:
 
 @pytest_asyncio.fixture
 async def async_db_session(test_db: None) -> AsyncIterator[AsyncSession]:
-    async with TestingSessionLocal() as session:
+    session = TestingSessionLocal()
+    try:
         yield session
+    finally:
+        await session.close()
 
 
 # Backward-compat alias used by some tests

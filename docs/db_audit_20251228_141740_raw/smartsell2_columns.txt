@@ -1,0 +1,91 @@
+table_schema\ttable_name\tcolumn_name\tdata_type\tis_nullable\tcolumn_default
+public\tbilling_payments\tid\tinteger\tNO\tnextval('billing_payments_id_seq'::regclass)
+public\tbilling_payments\tcompany_id\tinteger\tNO\t
+public\tbilling_payments\tsubscription_id\tinteger\tYES\t
+public\tbilling_payments\tamount\tnumeric\tNO\t
+public\tbilling_payments\tcurrency\tcharacter varying\tNO\t'KZT'::character varying
+public\tbilling_payments\tpayment_type\tcharacter varying\tNO\t
+public\tbilling_payments\tprovider\tcharacter varying\tNO\t'tiptop'::character varying
+public\tbilling_payments\tprovider_invoice_id\tcharacter varying\tNO\t
+public\tbilling_payments\tprovider_transaction_id\tcharacter varying\tYES\t
+public\tbilling_payments\tstatus\tcharacter varying\tNO\t
+public\tbilling_payments\tprocessed_at\ttimestamp with time zone\tYES\t
+public\tbilling_payments\tdescription\tcharacter varying\tYES\t
+public\tbilling_payments\tbilling_period_start\ttimestamp with time zone\tYES\t
+public\tbilling_payments\tbilling_period_end\ttimestamp with time zone\tYES\t
+public\tbilling_payments\treceipt_url\tcharacter varying\tYES\t
+public\tbilling_payments\treceipt_number\tcharacter varying\tYES\t
+public\tbilling_payments\tcreated_at\ttimestamp with time zone\tNO\tnow()
+public\tbilling_payments\tupdated_at\ttimestamp with time zone\tNO\tnow()
+public\tcompanies\tid\tinteger\tNO\tnextval('companies_id_seq'::regclass)
+public\tcompanies\tname\tcharacter varying\tNO\t
+public\tcompanies\tbin_iin\tcharacter varying\tYES\t
+public\tcompanies\tphone\tcharacter varying\tYES\t
+public\tcompanies\temail\tcharacter varying\tYES\t
+public\tcompanies\taddress\ttext\tYES\t
+public\tcompanies\tis_active\tboolean\tNO\ttrue
+public\tcompanies\tkaspi_store_id\tcharacter varying\tYES\t
+public\tcompanies\tkaspi_api_key\tcharacter varying\tYES\t
+public\tcompanies\tsubscription_plan\tcharacter varying\tNO\t'start'::character varying
+public\tcompanies\tsubscription_expires_at\tcharacter varying\tYES\t
+public\tcompanies\tsettings\ttext\tYES\t
+public\tcompanies\tcreated_at\ttimestamp without time zone\tNO\tnow()
+public\tcompanies\tupdated_at\ttimestamp without time zone\tNO\tnow()
+public\tcompanies\tdeleted_at\ttimestamp with time zone\tYES\t
+public\tcompanies\towner_id\tinteger\tYES\t
+public\totp_codes\tphone\tcharacter varying\tNO\t
+public\totp_codes\tcode\tcharacter varying\tNO\t
+public\totp_codes\tpurpose\tcharacter varying\tNO\t
+public\totp_codes\texpires_at\ttimestamp without time zone\tNO\t
+public\totp_codes\tis_used\tboolean\tNO\t
+public\totp_codes\tattempts\tinteger\tNO\t
+public\totp_codes\tid\tinteger\tNO\tnextval('otp_codes_id_seq'::regclass)
+public\totp_codes\tcreated_at\ttimestamp without time zone\tNO\t
+public\totp_codes\tupdated_at\ttimestamp without time zone\tNO\t
+public\tsubscriptions\tid\tinteger\tNO\tnextval('subscriptions_id_seq'::regclass)
+public\tsubscriptions\tcompany_id\tinteger\tNO\t
+public\tsubscriptions\tplan\tcharacter varying\tNO\t
+public\tsubscriptions\tstatus\tcharacter varying\tNO\t
+public\tsubscriptions\tbilling_cycle\tcharacter varying\tNO\t'monthly'::character varying
+public\tsubscriptions\tprice\tnumeric\tNO\t
+public\tsubscriptions\tcurrency\tcharacter varying\tNO\t'KZT'::character varying
+public\tsubscriptions\tstarted_at\ttimestamp with time zone\tYES\t
+public\tsubscriptions\texpires_at\ttimestamp with time zone\tYES\t
+public\tsubscriptions\tcanceled_at\ttimestamp with time zone\tYES\t
+public\tsubscriptions\tlast_payment_id\tinteger\tYES\t
+public\tsubscriptions\tnext_billing_date\ttimestamp with time zone\tYES\t
+public\tsubscriptions\tauto_renew\tboolean\tNO\ttrue
+public\tsubscriptions\ttrial_used\tboolean\tNO\tfalse
+public\tsubscriptions\tcreated_at\ttimestamp with time zone\tNO\tnow()
+public\tsubscriptions\tupdated_at\ttimestamp with time zone\tNO\tnow()
+public\tuser_sessions\tuser_id\tinteger\tNO\t
+public\tuser_sessions\trefresh_token\tcharacter varying\tNO\t
+public\tuser_sessions\tip_address\tcharacter varying\tYES\t
+public\tuser_sessions\tuser_agent\tcharacter varying\tYES\t
+public\tuser_sessions\texpires_at\ttimestamp without time zone\tNO\t
+public\tuser_sessions\tis_active\tboolean\tNO\t
+public\tuser_sessions\tid\tinteger\tNO\tnextval('user_sessions_id_seq'::regclass)
+public\tuser_sessions\tcreated_at\ttimestamp without time zone\tNO\t
+public\tuser_sessions\tupdated_at\ttimestamp without time zone\tNO\t
+public\tusers\tphone\tcharacter varying\tYES\t
+public\tusers\temail\tcharacter varying\tYES\t
+public\tusers\thashed_password\tcharacter varying\tNO\t
+public\tusers\tfull_name\tcharacter varying\tYES\t
+public\tusers\tis_active\tboolean\tNO\t
+public\tusers\tis_verified\tboolean\tNO\t
+public\tusers\tis_superuser\tboolean\tNO\t
+public\tusers\tlast_login_at\ttimestamp without time zone\tYES\t
+public\tusers\tfailed_login_attempts\tinteger\tNO\t
+public\tusers\tlocked_until\ttimestamp without time zone\tYES\t
+public\tusers\tid\tinteger\tNO\tnextval('users_id_seq'::regclass)
+public\tusers\tcreated_at\ttimestamp without time zone\tNO\t
+public\tusers\tupdated_at\ttimestamp without time zone\tNO\t
+public\tusers\tusername\tcharacter varying\tNO\t
+public\tusers\tcompany_id\tinteger\tYES\t
+public\tusers\trole\tcharacter varying\tNO\t'manager'::character varying
+public\tusers\ttenant_id\tinteger\tYES\t
+public\tusers\tdeleted_at\ttimestamp with time zone\tYES\t
+public\tusers\tlast_modified_by\tinteger\tYES\t
+public\tusers\tlocked_at\ttimestamp with time zone\tYES\t
+public\tusers\tlocked_by\tinteger\tYES\t
+(89 rows)

@@ -1658,25 +1658,20 @@ class Settings(BaseSettings):
 def get_settings() -> Settings:
     s = Settings()
 
-    # Жёсткая политика: в тестах (pytest/TESTING) — только PostgreSQL
-    under_test = s.TESTING or _under_pytest()
+    # Жёсткая политика: в тестах (TESTING=1/pytest) — только TEST_* URL, DATABASE_URL игнорируется
+    under_test = bool(s.TESTING or _under_pytest())
     if under_test:
-        env_test_sync = (
-            os.getenv("TEST_DATABASE_URL") or os.getenv("DATABASE_TEST_URL") or ""
-        ).strip()
-        env_test_async = (os.getenv("TEST_ASYNC_DATABASE_URL") or "").strip()
-        env_db = (os.getenv("DATABASE_URL") or os.getenv("DB_URL") or "").strip()
+        object.__setattr__(s, "TESTING", True)
 
-        test_db = (
-            env_test_sync
-            or env_test_async
-            or (s.TEST_DATABASE_URL or s.DATABASE_TEST_URL or "").strip()
-            or env_db
-            or (s.DATABASE_URL or "").strip()
-        )
+        env_test_sync = (os.getenv("TEST_DATABASE_URL") or os.getenv("DATABASE_TEST_URL") or "").strip()
+        env_test_async = (os.getenv("TEST_ASYNC_DATABASE_URL") or "").strip()
+        # В тестах никогда не подхватываем DATABASE_URL/DB_URL, чтобы не уехать в прод
+        test_db = env_test_sync or env_test_async or (s.TEST_DATABASE_URL or s.DATABASE_TEST_URL or "").strip()
 
         if not test_db:
-            test_db = _default_test_db_url()
+            raise ValueError(
+                "TEST_DATABASE_URL is required when TESTING=1 or under pytest; target smartsell_test."
+            )
 
         # Минимальная валидация Postgres
         try:
@@ -1695,6 +1690,13 @@ def get_settings() -> Settings:
             pass
 
         object.__setattr__(s, "DATABASE_URL", test_db)
+
+        # Для тестов фиксируем безопасный SMTP порт, чтобы .env не подменял на 25
+        try:
+            smtp_test = int(os.getenv("SMTP_PORT_TEST", "587"))
+        except Exception:
+            smtp_test = 587
+        object.__setattr__(s, "SMTP_PORT", smtp_test)
 
     # Нормализация REDIS_URL с учётом REDIS_PASSWORD/DB
     if (s.REDIS_PASSWORD is not None) or (s.REDIS_DB is not None):
