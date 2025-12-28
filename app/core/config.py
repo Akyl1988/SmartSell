@@ -68,7 +68,7 @@ def db_url_fingerprint(url: str) -> str:
     Используем только для логов/ассертов без утечки пароля.
     """
     try:
-        return hashlib.sha256(url.encode("utf-8")).hexdigest()[:12]
+        return hashlib.sha256(url.encode("utf-8")).hexdigest()[:8]
     except Exception:
         return ""
 
@@ -93,6 +93,60 @@ def db_connection_fingerprint(url: str, include_password: bool = True) -> str:
         return hashlib.sha256(data.encode("utf-8")).hexdigest()[:12]
     except Exception:
         return ""
+
+
+def _is_local_env(env_value: str, debug: bool) -> bool:
+    env_norm = (env_value or "").lower()
+    return debug or env_norm in {"local", "development", "dev"}
+
+
+def resolve_database_url(settings: "Settings" | None = None) -> tuple[str, str, str]:
+    """
+    Single source of truth for DB URL resolution.
+    Priority:
+      1) TESTING truthy AND TEST_DATABASE_URL (or TEST_ASYNC_DATABASE_URL/DATABASE_TEST_URL) → as-is
+      2) TESTING truthy AND DATABASE_URL present → as-is
+      3) DATABASE_URL present → as-is
+      4) Otherwise: local-only fallback; non-local → error
+
+    Returns (resolved_url, source, fingerprint_12)
+    """
+
+    env = os.environ
+    s = settings or Settings()
+
+    testing_flag = bool(s.TESTING or _under_pytest() or env.get("TESTING", "").lower() in ("1", "true", "yes", "on"))
+
+    test_candidate = (
+        env.get("TEST_DATABASE_URL")
+        or env.get("TEST_ASYNC_DATABASE_URL")
+        or env.get("DATABASE_TEST_URL")
+        or (s.TEST_DATABASE_URL or s.DATABASE_TEST_URL)
+    )
+    db_candidate = env.get("DATABASE_URL") or env.get("DB_URL") or s.DATABASE_URL
+
+    resolved_url: str | None = None
+    source: str = "DEFAULT"
+
+    if testing_flag and test_candidate:
+        resolved_url = test_candidate.strip()
+        source = "TEST_DATABASE_URL"
+    elif testing_flag and db_candidate:
+        resolved_url = db_candidate.strip()
+        source = "DATABASE_URL"
+    elif db_candidate:
+        resolved_url = db_candidate.strip()
+        source = "DATABASE_URL"
+
+    if not resolved_url:
+        if _is_local_env(s.ENVIRONMENT, s.DEBUG):
+            resolved_url = _default_test_db_url()
+            source = "DEFAULT"
+        else:
+            raise ValueError("DATABASE_URL/TEST_DATABASE_URL is required in non-local environments")
+
+    fingerprint = db_url_fingerprint(resolved_url)
+    return resolved_url, source, fingerprint
 
 
 def _parse_list_like(v: Any) -> Any:
@@ -724,13 +778,14 @@ class Settings(BaseSettings):
                 logging.getLogger(__name__).warning(f"Directory not writable: {p}")
 
     def check_secret_key(self) -> None:
-        if self.is_production:
+        localish = _is_local_env(self.ENVIRONMENT, bool(self.DEBUG))
+        if not localish:
             if not self.SECRET_KEY or self.SECRET_KEY.strip().lower() in {
                 "changeme",
                 "secret",
                 "password",
             }:
-                raise ValueError("Set a secure SECRET_KEY in .env for production!")
+                raise ValueError("Set a secure SECRET_KEY in non-local environments!")
 
     def _is_postgres_url(self, url: str) -> bool:
         try:
@@ -1658,45 +1713,44 @@ class Settings(BaseSettings):
 def get_settings() -> Settings:
     s = Settings()
 
-    # Жёсткая политика: в тестах (TESTING=1/pytest) — только TEST_* URL, DATABASE_URL игнорируется
-    under_test = bool(s.TESTING or _under_pytest())
-    if under_test:
+    # Resolve database URL once with strict priority (no rewriting)
+    resolved_url, resolved_source, resolved_fp = resolve_database_url(s)
+    object.__setattr__(s, "DATABASE_URL", resolved_url)
+    object.__setattr__(s, "DB_URL_SOURCE", resolved_source)
+    object.__setattr__(s, "DB_URL_FINGERPRINT", resolved_fp)
+
+    # ensure TESTING flag reflects env/pytest for downstream checks
+    if _under_pytest() and not s.TESTING:
         object.__setattr__(s, "TESTING", True)
 
-        env_test_sync = (os.getenv("TEST_DATABASE_URL") or os.getenv("DATABASE_TEST_URL") or "").strip()
-        env_test_async = (os.getenv("TEST_ASYNC_DATABASE_URL") or "").strip()
-        # В тестах никогда не подхватываем DATABASE_URL/DB_URL, чтобы не уехать в прод
-        test_db = env_test_sync or env_test_async or (s.TEST_DATABASE_URL or s.DATABASE_TEST_URL or "").strip()
+    # Export password to PGPASSWORD when present (helps psycopg2/Alembic)
+    try:
+        parsed = urlparse(resolved_url)
+        if parsed.password and not os.getenv("PGPASSWORD"):
+            os.environ["PGPASSWORD"] = parsed.password
+    except Exception:
+        pass
 
-        if not test_db:
-            raise ValueError(
-                "TEST_DATABASE_URL is required when TESTING=1 or under pytest; target smartsell_test."
-            )
-
-        # Минимальная валидация Postgres
-        try:
-            parsed = urlparse(test_db)
-            scheme = (parsed.scheme or "").lower()
-            if not (scheme in {"postgres", "postgresql"} or scheme.startswith("postgresql+")):
-                raise ValueError
-        except Exception:
-            raise ValueError("Некорректный TEST_DATABASE_URL: требуется PostgreSQL URL")
-
-        # Экспорт пароля в PGPASSWORD для sync клиентов (psycopg2/Alembic) при наличии
-        try:
-            if parsed.password and not os.getenv("PGPASSWORD"):
-                os.environ["PGPASSWORD"] = parsed.password
-        except Exception:
-            pass
-
-        object.__setattr__(s, "DATABASE_URL", test_db)
-
-        # Для тестов фиксируем безопасный SMTP порт, чтобы .env не подменял на 25
+    # Для тестов фиксируем безопасный SMTP порт, чтобы .env не подменял на 25
+    if s.TESTING:
         try:
             smtp_test = int(os.getenv("SMTP_PORT_TEST", "587"))
         except Exception:
             smtp_test = 587
         object.__setattr__(s, "SMTP_PORT", smtp_test)
+
+    # One-time structured log for DB URL resolution (without secrets)
+    try:
+        logging.getLogger(__name__).info(
+            "db_url_resolved",
+            extra={
+                "event_name": "db_url_resolved",
+                "db_url_source": resolved_source,
+                "db_url_fingerprint": resolved_fp,
+            },
+        )
+    except Exception:
+        pass
 
     # Нормализация REDIS_URL с учётом REDIS_PASSWORD/DB
     if (s.REDIS_PASSWORD is not None) or (s.REDIS_DB is not None):

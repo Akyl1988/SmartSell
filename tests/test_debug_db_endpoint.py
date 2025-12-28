@@ -15,11 +15,21 @@ def test_debug_db_endpoint_exposes_fingerprints(monkeypatch, test_db):
     monkeypatch.setenv("TEST_DATABASE_URL", cft.SYNC_TEST_DATABASE_URL)
     monkeypatch.setenv("DATABASE_URL", cft.SYNC_TEST_DATABASE_URL)
     monkeypatch.setenv("DB_URL", cft.SYNC_TEST_DATABASE_URL)
+    monkeypatch.setenv("ENVIRONMENT", "local")
     config.get_settings.cache_clear()  # type: ignore[attr-defined]
+    refreshed = config.get_settings()
+    monkeypatch.setattr(config, "settings", refreshed, raising=False)
 
     monkeypatch.setattr(dbg, "_get_async_engine", lambda: cft.test_engine)
 
-    from app.main import app
+    import importlib
+
+    import app.api.routes as routes  # type: ignore
+    import app.main as main  # type: ignore
+
+    importlib.reload(routes)
+    importlib.reload(main)
+    app = main.app
 
     client = TestClient(app)
 
