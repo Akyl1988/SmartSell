@@ -8,7 +8,7 @@ from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Path, Query, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
-from pydantic import BaseModel, Field, condecimal, constr
+from pydantic import BaseModel, ConfigDict, Field, condecimal, constr
 from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -67,8 +67,7 @@ class SubscriptionOut(BaseModel):
     ended_at: datetime | None = None
     deleted_at: datetime | None = None
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 class PaymentOut(BaseModel):
@@ -79,8 +78,7 @@ class PaymentOut(BaseModel):
     currency: str | None = None
     created_at: datetime | None = None
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 # ====== Утилиты доступа/времени ======

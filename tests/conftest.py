@@ -58,11 +58,11 @@ def anyio_backend():
     """Force asyncio backend; asyncpg does not run under trio without extra shims."""
     return "asyncio"
 
-# Compatibility shim: newer trio may not expose MultiError; keep anyio trio backend working in tests.
+# Compatibility shim: newer trio may not expose MultiError; avoid touching deprecated attribute when present.
 try:
     import trio  # type: ignore
 
-    if not hasattr(trio, "MultiError"):
+    if "MultiError" not in getattr(trio, "__dict__", {}):
         class _TrioMultiError(BaseExceptionGroup):  # type: ignore[misc]
             ...
 
@@ -1009,8 +1009,9 @@ def db_session(test_db: None):
     try:
         yield session
     finally:
+        if trans.is_active:
+            trans.rollback()
         session.close()
-        trans.rollback()
         connection.close()
 
 

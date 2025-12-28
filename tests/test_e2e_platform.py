@@ -117,7 +117,7 @@ def test_e2e_models_happy_path(db_session, company, admin_user, product, warehou
 
     # 7) отчёт по марже (price берём из Product.price)
     def price_fetcher(product_id: int):
-        pr = db_session.query(Product).get(product_id)
+        pr = db_session.get(Product, product_id)
         return pr.price if pr and pr.price else Decimal("0.00")
 
     mr = margin_report(
