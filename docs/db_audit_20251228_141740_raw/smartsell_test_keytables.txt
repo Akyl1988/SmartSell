@@ -1,0 +1,9 @@
+table_schema\ttable_name
+public\talembic_version
+public\tbilling_payments
+public\tcompanies
+public\totp_codes
+public\tsubscriptions
+public\tuser_sessions
+public\tusers
+(7 rows)

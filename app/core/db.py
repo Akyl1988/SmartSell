@@ -24,6 +24,7 @@ Unified database configuration and session management for SmartSell (async + syn
 from __future__ import annotations
 
 import logging
+import hashlib
 import os
 import time as _time
 from collections.abc import AsyncIterator, Generator, Iterator
@@ -49,7 +50,7 @@ logger = logging.getLogger(__name__)
 # Settings (безопасный импорт)
 # -----------------------------------------------------------------------------
 try:
-    from app.core.config import get_settings  # type: ignore
+    from app.core.config import get_settings, db_url_fingerprint  # type: ignore
 
     settings = get_settings()
 except Exception:
@@ -317,6 +318,26 @@ _SYNC_REPLICA_ENGINE: Engine | None = None
 _query_stats: dict[str, dict[str, float]] = {}
 
 
+def _log_effective_url(url: str, *, mode: str) -> None:
+    """Логируем безопасную сводку по DSN перед созданием engine."""
+    try:
+        parsed = make_url(url)
+        fp = db_url_fingerprint(url)
+        logger.info(
+            "db_url_resolved mode=%s driver=%s user=%s host=%s port=%s db=%s source=%s fp=%s",
+            mode,
+            parsed.drivername,
+            parsed.username or "",
+            parsed.host or "",
+            parsed.port or "",
+            parsed.database or "",
+            getattr(settings, "db_url_source", lambda: "unknown")(),
+            fp,
+        )
+    except Exception as e:
+        logger.warning("db_url_resolved mode=%s failed to log: %s", mode, e)
+
+
 def _install_query_metrics_on_sync_engine(eng: Engine) -> None:
     @event.listens_for(eng, "before_cursor_execute")
     def before_cursor_execute(conn, cursor, statement, params, context, executemany):
@@ -345,6 +366,7 @@ def _get_async_engine() -> AsyncEngine:
         return _ASYNC_ENGINE
 
     url = _resolve_async_url()
+    _log_effective_url(url, mode="async")
     _ASYNC_ENGINE = create_async_engine(url, **_engine_options(async_engine=True))
     _ASYNC_SESSION_MAKER = async_sessionmaker(
         bind=_ASYNC_ENGINE,
@@ -412,6 +434,7 @@ def _get_sync_engine() -> Engine:
                 logger.warning("PG on_connect setup failed: %s", e)
 
     url = _resolve_sync_pg_url()
+    _log_effective_url(url, mode="sync")
     _SYNC_ENGINE = create_engine(url, **_engine_options(async_engine=False))
     _install_pg_connection_events(_SYNC_ENGINE)
     _SYNC_SESSION_MAKER = sessionmaker(

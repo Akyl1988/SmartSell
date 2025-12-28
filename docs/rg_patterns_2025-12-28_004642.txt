@@ -1,0 +1,20 @@
+SECRET_KEY
+changeme
+admin123
+_debug/db
+/api/v1/_debug/db
+ALLOW_DROPS
+DATABASE_URL
+TEST_DATABASE_URL
+TEST_ASYNC_DATABASE_URL
+sqlite://
+postgresql://
+asyncpg
+MOBIZON
+TIPTOP
+KASPI
+JWT
+BEGIN PRIVATE KEY
+API_KEY
+TOKEN
+PASSWORD

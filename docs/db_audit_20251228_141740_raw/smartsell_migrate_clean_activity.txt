@@ -1,0 +1,3 @@
+datname\tusename\tstate\tcnt
+smartsell_migrate_clean\tsmartsell\tactive\t1
+(1 row)

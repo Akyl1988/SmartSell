@@ -1,0 +1,3 @@
+datname\tusename\tstate\tcnt
+smartsell_test\tsmartsell\tactive\t1
+(1 row)

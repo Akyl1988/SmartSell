@@ -1,0 +1,2 @@
+table_schema\ttable_name
+(0 rows)

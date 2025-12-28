@@ -1,0 +1,11 @@
+datname
+SmartSellTest
+postgres
+smartsell
+smartsell2
+smartsell_migrate_clean
+smartsell_test
+smartsell_test2
+smartsell_utf8
+smartselltest2
+(9 rows)
