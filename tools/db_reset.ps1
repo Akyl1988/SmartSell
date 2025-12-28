@@ -3,7 +3,10 @@ param(
     [string]$TestUrl    = $env:TEST_DATABASE_URL,
     [string]$AlembicBin = "alembic",
     [switch]$AllowStamp,
-    [switch]$RunUtf8Probe
+    [switch]$RunUtf8Probe,
+    [switch]$UseIcu,
+    [string]$IcuLocale = "kk-KZ-x-icu",
+    [switch]$IcuStrict
 )
 
 $ErrorActionPreference = "Stop"
@@ -18,6 +21,7 @@ $reportPath = Join-Path $docsDir "DB_SETUP_${timestamp}.md"
 
 $report = @()
 $hadError = $false
+$exitCode = 1
 $failureMessages = @()
 $report += "# SmartSell DB Setup ($timestamp)"
 $report += "Env: PGHOST=$($env:PGHOST) PGPORT=$($env:PGPORT)"
@@ -30,6 +34,109 @@ function Invoke-PsqlLine {
     param([string]$Url, [string]$Sql)
     $args = @('-d', $Url, '-X', '-q', '-t', '-w', '-P', 'pager=off', '-c', $Sql)
     & psql @args 2>&1
+}
+
+function Get-ServerVersionNum {
+    param([string]$AdminUrl)
+    $v = Invoke-PsqlLine -Url $AdminUrl -Sql "show server_version_num;" | ForEach-Object { $_.Trim() } | Select-Object -First 1
+    try { return [int]$v } catch { return 0 }
+}
+
+function Parse-PostgresUrl {
+    param([string]$Url)
+    $uri = [uri]$Url
+    $dbName = $uri.AbsolutePath.Trim('/')
+    $pgHost = $uri.Host
+    $port = if ($uri.Port -gt 0) { $uri.Port } else { 5432 }
+    $userInfo = $uri.UserInfo
+    $owner = if ($userInfo) { ($userInfo.Split(':')[0]) } else { '' }
+    $scheme = $uri.Scheme
+    $adminUrl = "${scheme}://"
+    if ($userInfo) { $adminUrl += "$userInfo@" }
+    $adminUrl += "${pgHost}:${port}/postgres"
+    return @{ DbName = $dbName; AdminUrl = $adminUrl; Owner = $owner }
+}
+
+function Recreate-DatabaseWithOptionalIcu {
+    param(
+        [string]$Url,
+        [string]$Label,
+        [bool]$EnableIcu,
+        [int]$ServerVersion
+    )
+
+    $parts = Parse-PostgresUrl -Url $Url
+    $dbName = $parts.DbName
+    $adminUrl = $parts.AdminUrl
+    $owner = if ($parts.Owner) { $parts.Owner } else { 'smartsell' }
+
+    Write-Info "Recreating database '$dbName' ($Label)"
+
+    $dropSql = @"
+SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname='$dbName' AND pid <> pg_backend_pid();
+DROP DATABASE IF EXISTS "$dbName";
+"@
+    Invoke-PsqlLine -Url $adminUrl -Sql $dropSql | Out-Null
+
+    $createdWithIcu = $false
+    if ($EnableIcu) {
+        $icuSql = @"
+CREATE DATABASE "$dbName"
+  WITH OWNER "$owner"
+       TEMPLATE template0
+       ENCODING 'UTF8'
+       LOCALE_PROVIDER icu
+       ICU_LOCALE '$IcuLocale';
+"@
+        try {
+            Invoke-PsqlLine -Url $adminUrl -Sql $icuSql | Out-Null
+            $verifySql = "select datlocprovider, datlocale from pg_database where datname='$dbName';"
+            $verify = Invoke-PsqlLine -Url $adminUrl -Sql $verifySql | ForEach-Object { $_.Trim() }
+            $provider = $null; $locale = $null
+            if ($verify) {
+                $line = $verify | Select-Object -First 1
+                $parts = $line -split '\s*\|\s*'
+                if ($parts.Count -ge 2) {
+                    $provider = $parts[0].Trim(); $locale = $parts[1].Trim()
+                } else {
+                    $parts = $line -split '\s+'
+                    if ($parts.Count -ge 2) { $provider = $parts[0].Trim(); $locale = $parts[1].Trim() }
+                }
+            }
+
+            $localeMatch = $false
+            if ($locale) { $localeMatch = [string]::Equals($locale, $IcuLocale, [System.StringComparison]::InvariantCultureIgnoreCase) }
+
+            if ($provider -eq 'i' -and $localeMatch) {
+                $createdWithIcu = $true
+                Write-Info "Created $dbName with ICU locale $IcuLocale"
+            } else {
+                if ($IcuStrict) {
+                    $script:exitCode = 3
+                    throw "ICU verification failed for $dbName ($Label): provider='$provider', locale='$locale'"
+                }
+                Write-Warn "ICU verification failed for $dbName ($Label): provider='$provider', locale='$locale'. Falling back to default locale."
+                Invoke-PsqlLine -Url $adminUrl -Sql $dropSql | Out-Null
+            }
+        } catch {
+            if ($IcuStrict) {
+                $script:exitCode = 3
+                throw "ICU creation failed for $dbName ($Label): $($_.Exception.Message)"
+            }
+            Write-Warn "ICU creation failed for $dbName ($Label): $($_.Exception.Message). Falling back to default locale."
+        }
+    }
+
+    if (-not $createdWithIcu) {
+        $fallbackSql = @"
+CREATE DATABASE "$dbName"
+  WITH OWNER "$owner"
+       TEMPLATE template0
+       ENCODING 'UTF8';
+"@
+        Invoke-PsqlLine -Url $adminUrl -Sql $fallbackSql | Out-Null
+        Write-Warn "Created $dbName WITHOUT ICU (fallback)"
+    }
 }
 
 function Section {
@@ -224,6 +331,43 @@ try {
     $currentTest = ''
     $utf8ProbeOutput = ''
 
+    $runtimeParts = Parse-PostgresUrl -Url $RuntimeUrl
+    $testParts = Parse-PostgresUrl -Url $TestUrl
+
+    if ($runtimeParts.DbName -eq $testParts.DbName) {
+        throw "Runtime and test database names must differ."
+    }
+
+    $serverVersion = Get-ServerVersionNum -AdminUrl $runtimeParts.AdminUrl
+    $icuSupported = $UseIcu -and ($serverVersion -ge 150000)
+    if ($UseIcu -and -not $icuSupported) {
+        if ($IcuStrict) {
+            $script:exitCode = 2
+            throw "ICU per-database is not supported on this PostgreSQL version ($serverVersion)."
+        }
+        Write-Warn "ICU per-database is not supported on PostgreSQL version $serverVersion; falling back to default locale."
+    }
+
+    # 0) Optional ICU recreation
+    if ($UseIcu) {
+        Recreate-DatabaseWithOptionalIcu -Url $RuntimeUrl -Label "runtime" -EnableIcu:$icuSupported -ServerVersion $serverVersion
+        Recreate-DatabaseWithOptionalIcu -Url $TestUrl -Label "test" -EnableIcu:$icuSupported -ServerVersion $serverVersion
+
+        $icuCheckSql = @"
+select datname,
+       pg_encoding_to_char(encoding) as encoding,
+       datcollate,
+       datctype,
+       datlocale,
+       datlocprovider
+from pg_database
+where datname in ('smartsell_main','smartsell_test')
+order by datname;
+"@
+        $icuCheck = Invoke-PsqlLine -Url $RuntimeUrl -Sql $icuCheckSql
+        Section -Title "ICU database settings" -Content $icuCheck
+    }
+
     # 1) Connectivity checks
     Write-Info "Checking runtime DB connectivity"
     $runtimeConn = Invoke-PsqlLine -Url $RuntimeUrl -Sql "select current_database(), current_user, now()"
@@ -320,5 +464,5 @@ finally {
 
     $report | Out-File -FilePath $reportPath -Encoding utf8
     Write-Info "Report written to $reportPath"
-    if ($hadError) { exit 1 }
+    if ($hadError) { exit $exitCode }
 }
