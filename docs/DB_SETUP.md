@@ -13,3 +13,9 @@ If you explicitly need to stamp without migrating (dangerous, not recommended):
 ```powershell
 pwsh -ExecutionPolicy Bypass -File tools/db_reset.ps1 -AllowStamp
 ```
+
+## UTF-8 на Windows
+
+- Inline `psql -c "..."` с кириллицей/қазақша в Windows-консолях ненадёжен из-за CP1251 — сервер получит битые байты.
+- Используйте `psql -f` с файлом в UTF-8 без BOM (например, `tools/utf8_probe.sql`) или запускайте psql из WSL/Git Bash/UTF-8 окружения.
+- Postgres хранит данные в UTF-8 (`server_encoding=UTF8`); `datcollate`/`datctype` могут быть `Russian_Kazakhstan.1251` — это влияет на сортировку/сравнение, но не на хранение кодовых точек.
