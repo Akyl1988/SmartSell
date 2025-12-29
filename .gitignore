@@ -288,3 +288,8 @@ docs/secrets_risk_scan_*.txt
 docs/db_audit_*_raw*
 docs/db_audit_all/*
 
+
+# legacy migration archives
+_alembic_backup/
+migrations/versions/_backup/
+migrations/versions/_quarantine/
