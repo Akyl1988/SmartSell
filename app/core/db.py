@@ -50,7 +50,12 @@ logger = logging.getLogger(__name__)
 # Settings (безопасный импорт)
 # -----------------------------------------------------------------------------
 try:
-    from app.core.config import get_settings, db_url_fingerprint, resolve_database_url  # type: ignore
+    from app.core.config import (
+        get_settings,
+        db_url_fingerprint,
+        resolve_database_url,
+        _under_pytest,
+    )  # type: ignore
 
     settings = get_settings()
 except Exception:
@@ -68,6 +73,8 @@ except Exception:
             return {}
 
     settings = _S()  # type: ignore
+    def _under_pytest() -> bool:  # type: ignore
+        return False
 
 
 # -----------------------------------------------------------------------------
@@ -177,6 +184,14 @@ def _normalize_pg_to_psycopg2(url: str) -> str:
         return url
 
 
+def _assert_non_local_has_real_db(source: str) -> None:
+    if _under_pytest():
+        return
+    env_val = str(getattr(settings, "ENVIRONMENT", "") or "").lower()
+    if source == "DEFAULT" and env_val != "local":
+        raise RuntimeError("DATABASE_URL is required for non-local environments")
+
+
 def _validate_is_postgres(url: str) -> None:
     if not (
         url.startswith("postgresql://")
@@ -193,7 +208,8 @@ def _validate_is_postgres(url: str) -> None:
 # Определение URL с дефолтами/фолбэками
 # -----------------------------------------------------------------------------
 def _resolve_async_url() -> str:
-    base_url, _, _ = resolve_database_url(settings)
+    base_url, source, _ = resolve_database_url(settings)
+    _assert_non_local_has_real_db(source)
 
     candidates: list[str] = []
     try:
@@ -227,7 +243,8 @@ def _resolve_async_url() -> str:
 
 
 def _resolve_sync_pg_url() -> str:
-    base_url, _, _ = resolve_database_url(settings)
+    base_url, source, _ = resolve_database_url(settings)
+    _assert_non_local_has_real_db(source)
 
     candidates: list[str] = []
     try:

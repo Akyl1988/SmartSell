@@ -34,6 +34,7 @@ from fastapi.responses import JSONResponse, PlainTextResponse, RedirectResponse
 from app.api.routes import mount_v1
 from app.core.exceptions import register_exception_handlers
 from app.core.config import settings
+from app.core import config as core_config
 
 try:
     from starlette.staticfiles import StaticFiles
@@ -87,6 +88,30 @@ class _RequestIdFilter(logging.Filter):
 
 
 logging.getLogger().addFilter(_RequestIdFilter())
+
+# DB diagnostics at startup (no secrets)
+try:
+    logging.getLogger(__name__).info(
+        "db_url_runtime",
+        extra={
+            "event_name": "db_url_runtime",
+            "db_url_source": getattr(settings, "DB_URL_SOURCE", ""),
+            "db_url_fingerprint": getattr(settings, "DB_URL_FINGERPRINT", ""),
+        },
+    )
+except Exception:
+    logger.debug("db_url_runtime log skipped", exc_info=False)
+
+# Fail fast if DB URL fallback is used outside local (skip during pytest)
+try:
+    env_val = str(getattr(settings, "ENVIRONMENT", "") or "").lower()
+    if not core_config._under_pytest() and env_val != "local" and getattr(settings, "DB_URL_SOURCE", "") == "DEFAULT":
+        raise RuntimeError("DATABASE_URL is required for non-local environments")
+except Exception as e:
+    # re-raise runtime errors; ignore logging issues
+    if isinstance(e, RuntimeError):
+        raise
+    logger.debug("DB URL startup guard skipped: %s", e)
 
 # ======================================================================================
 # GLOBAL STATE

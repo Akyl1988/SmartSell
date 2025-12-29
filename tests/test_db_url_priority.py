@@ -77,3 +77,24 @@ def test_no_fallback_outside_local(monkeypatch):
 
     with pytest.raises(ValueError):
         config.resolve_database_url(config.Settings())
+
+
+def test_non_testing_prefers_database_url(monkeypatch):
+    env_url = "postgresql://postgres:envpass@host1:5432/db_env"
+    test_url = "postgresql://postgres:testpass@host2:5432/db_test"
+
+    for key in ("TESTING", "TEST_DATABASE_URL", "TEST_ASYNC_DATABASE_URL", "DATABASE_TEST_URL", "DB_URL"):
+        monkeypatch.delenv(key, raising=False)
+
+    monkeypatch.setenv("ENVIRONMENT", "development")
+    monkeypatch.setenv("TESTING", "0")
+    monkeypatch.setenv("DATABASE_URL", env_url)
+    monkeypatch.setenv("TEST_DATABASE_URL", test_url)
+
+    config.get_settings.cache_clear()  # type: ignore[attr-defined]
+    monkeypatch.setattr(config, "_under_pytest", lambda: False)
+    s = config.get_settings()
+
+    assert s.DATABASE_URL == env_url
+    assert getattr(s, "DB_URL_SOURCE", "") == "DATABASE_URL"
+    assert getattr(s, "DB_URL_FINGERPRINT", "") == config.db_url_fingerprint(env_url)
