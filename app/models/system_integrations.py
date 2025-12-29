@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-from datetime import datetime
-
 from sqlalchemy import (
     BigInteger,
     Boolean,
@@ -10,7 +8,6 @@ from sqlalchemy import (
     DateTime,
     Integer,
     String,
-    Text,
     UniqueConstraint,
     func,
 )
@@ -54,9 +51,7 @@ class SystemActiveProvider(Base):
     version = Column(Integer, nullable=False, server_default="1")
     updated_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now())
 
-    __table_args__ = (
-        CheckConstraint("version > 0", name="ck_system_active_version_pos"),
-    )
+    __table_args__ = (CheckConstraint("version > 0", name="ck_system_active_version_pos"),)
 
     def __repr__(self) -> str:  # pragma: no cover - diagnostics helper
         return f"<SystemActiveProvider domain={self.domain} provider={self.provider} version={self.version}>"

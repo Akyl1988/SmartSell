@@ -6,7 +6,12 @@ from app.integrations.ports.messaging import MessagingProvider
 
 
 class NoOpMessagingProvider(MessagingProvider):
-    def __init__(self, name: str | None = None, config: dict[str, Any] | None = None, version: int | None = None):
+    def __init__(
+        self,
+        name: str | None = None,
+        config: dict[str, Any] | None = None,
+        version: int | None = None,
+    ):
         self.name = (name or "noop").strip() or "noop"
         self.config = config or {}
         self.version = int(version or 0)

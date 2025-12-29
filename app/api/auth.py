@@ -38,13 +38,13 @@ from typing import Any
 from fastapi import APIRouter, Depends, Header, Request, Response, status
 from fastapi.responses import RedirectResponse
 from pydantic import BaseModel, Field
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.v1.auth import ChangePasswordPayload as V1ChangePasswordPayload  # reuse schema
 from app.api.v1.auth import change_password as v1_change_password
 from app.core.dependencies import get_current_user, get_db
 from app.core.schemas import SuccessResponse
 from app.models import User
-from sqlalchemy.ext.asyncio import AsyncSession
 
 logger = logging.getLogger(__name__)
 
@@ -186,9 +186,7 @@ async def register_alias(
             async with httpx.AsyncClient(app=request.app, base_url=str(request.base_url)) as client:
                 v1_resp = await client.post(
                     "/api/v1/auth/register",
-                    json=(
-                        payload.model_dump() if hasattr(payload, "model_dump") else payload.dict()
-                    ),
+                    json=(payload.model_dump() if hasattr(payload, "model_dump") else payload.dict()),
                 )
             if 200 <= v1_resp.status_code < 300:
                 return RegisterAccepted(

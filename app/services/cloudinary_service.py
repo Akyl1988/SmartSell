@@ -116,9 +116,7 @@ class CloudinaryService:
             logger.error(f"Cloudinary update error: {e}")
             return None
 
-    def generate_url(
-        self, public_id: str, transformation: dict[str, Any] | None = None, **kwargs
-    ) -> str:
+    def generate_url(self, public_id: str, transformation: dict[str, Any] | None = None, **kwargs) -> str:
         """Generate optimized image URL"""
 
         try:
@@ -152,9 +150,7 @@ class CloudinaryService:
 
         return self.generate_url(public_id, transformation=transformation)
 
-    async def upload_multiple_images(
-        self, files: list[UploadFile], folder: str = "smartsell"
-    ) -> list[dict[str, Any]]:
+    async def upload_multiple_images(self, files: list[UploadFile], folder: str = "smartsell") -> list[dict[str, Any]]:
         """Upload multiple images"""
 
         results = []
@@ -167,9 +163,7 @@ class CloudinaryService:
         logger.info(f"Uploaded {len(results)} images to Cloudinary")
         return results
 
-    async def create_image_archive(
-        self, public_ids: list[str], archive_type: str = "zip"
-    ) -> str | None:
+    async def create_image_archive(self, public_ids: list[str], archive_type: str = "zip") -> str | None:
         """Create archive of multiple images"""
 
         try:

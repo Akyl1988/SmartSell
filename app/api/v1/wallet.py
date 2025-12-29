@@ -4,7 +4,7 @@ from __future__ import annotations
 import inspect
 import logging
 from decimal import Decimal, InvalidOperation
-from typing import Any, Literal
+from typing import Any
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Path, Query, status
 from pydantic import BaseModel, Field, conint, constr
@@ -203,9 +203,7 @@ except Exception as e:
 # ---- Возможные расширенные методы (работаем мягко, если их нет) -------------
 _HAS_GET_ACC_BY_UC = hasattr(storage, "get_account_by_user_currency")
 _HAS_LIST_ACC_EXT = (
-    "currency" in inspect.signature(storage.list_accounts).parameters
-    if hasattr(storage, "list_accounts")
-    else False
+    "currency" in inspect.signature(storage.list_accounts).parameters if hasattr(storage, "list_accounts") else False
 )
 _HAS_ADJUST = hasattr(storage, "adjust_balance")
 _HAS_HEALTH = hasattr(storage, "health")

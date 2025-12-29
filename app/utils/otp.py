@@ -24,9 +24,7 @@ def generate_otp_code(length: int = 6) -> str:
 
 def hash_otp_code(code: str) -> str:
     """Hash OTP code with secret key"""
-    return hmac.new(
-        settings.SECRET_KEY.encode("utf-8"), code.encode("utf-8"), hashlib.sha256
-    ).hexdigest()
+    return hmac.new(settings.SECRET_KEY.encode("utf-8"), code.encode("utf-8"), hashlib.sha256).hexdigest()
 
 
 def verify_otp_hash(code: str, code_hash: str) -> bool:
@@ -156,9 +154,7 @@ async def cleanup_expired_otp(db: AsyncSession) -> int:
 
     try:
         # Get expired OTP attempts
-        result = await db.execute(
-            select(OtpAttempt).where(OtpAttempt.expires_at < datetime.utcnow())
-        )
+        result = await db.execute(select(OtpAttempt).where(OtpAttempt.expires_at < datetime.utcnow()))
         expired_attempts = result.scalars().all()
 
         # Delete expired attempts
@@ -207,8 +203,6 @@ async def get_otp_attempts_count(db: AsyncSession, phone: str, minutes: int = 60
 
     since = datetime.utcnow() - timedelta(minutes=minutes)
 
-    result = await db.execute(
-        select(OtpAttempt).where(and_(OtpAttempt.phone == phone, OtpAttempt.created_at >= since))
-    )
+    result = await db.execute(select(OtpAttempt).where(and_(OtpAttempt.phone == phone, OtpAttempt.created_at >= since)))
 
     return len(result.scalars().all())

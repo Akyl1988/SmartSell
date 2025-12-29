@@ -36,9 +36,7 @@ try:
     # settings может отсутствовать на ранних этапах; берём API_V1_STR (как в .env) или API_V1_PREFIX.
     from app.core.config import settings  # type: ignore
 
-    _API_V1_PREFIX: str = getattr(settings, "API_V1_STR", None) or getattr(
-        settings, "API_V1_PREFIX", "/api/v1"
-    )
+    _API_V1_PREFIX: str = getattr(settings, "API_V1_STR", None) or getattr(settings, "API_V1_PREFIX", "/api/v1")
 except Exception:
     _API_V1_PREFIX = "/api/v1"
 

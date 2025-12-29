@@ -5,7 +5,7 @@ import json
 import logging
 import time
 from dataclasses import dataclass
-from typing import Any, Dict, Optional
+from typing import Any, Optional
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -30,7 +30,7 @@ _TTL = max(1, int(getattr(settings, "SYSTEM_INTEGRATIONS_CACHE_TTL", 30) or 30))
 @dataclass
 class CachedProvider:
     provider: str
-    config: Dict[str, Any]
+    config: dict[str, Any]
     version: int
     cached_at: float
 
@@ -151,7 +151,7 @@ class ProviderRegistry:
         if not integ:
             return None
 
-        config: Dict[str, Any] = integ.config_json or {}
+        config: dict[str, Any] = integ.config_json or {}
 
         return CachedProvider(
             provider=integ.provider,
@@ -174,7 +174,7 @@ class ProviderRegistry:
         return entry
 
     @classmethod
-    async def get_provider_config(cls, db: Any, domain: str) -> tuple[str | None, Dict[str, Any]]:
+    async def get_provider_config(cls, db: Any, domain: str) -> tuple[str | None, dict[str, Any]]:
         entry = await cls.get_active_provider(db, domain)
         if not entry:
             return None, {}

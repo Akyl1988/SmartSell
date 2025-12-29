@@ -3,7 +3,6 @@ from __future__ import annotations
 import logging
 import time
 from collections import defaultdict, deque
-from typing import Optional, Tuple
 
 from fastapi import HTTPException, Request, status
 
@@ -78,7 +77,7 @@ class RateLimiter:
             return auth.rsplit(" ", 1)[-1][-16:]
         return request.client.host if request.client else "0.0.0.0"
 
-    async def allow(self, tag: str, ident: str, max_requests: int, window_seconds: int) -> Tuple[bool, int]:
+    async def allow(self, tag: str, ident: str, max_requests: int, window_seconds: int) -> tuple[bool, int]:
         if max_requests <= 0:
             return False, window_seconds
         if window_seconds <= 0:
@@ -99,7 +98,7 @@ class RateLimiter:
 
         return self._allow_mem(tag, ident, max_requests, window_seconds)
 
-    def _allow_mem(self, tag: str, ident: str, max_requests: int, window_seconds: int) -> Tuple[bool, int]:
+    def _allow_mem(self, tag: str, ident: str, max_requests: int, window_seconds: int) -> tuple[bool, int]:
         now = time.time()
         cutoff = now - window_seconds
         key = self._key(tag, ident)

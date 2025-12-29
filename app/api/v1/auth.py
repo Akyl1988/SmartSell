@@ -22,9 +22,9 @@ from __future__ import annotations
 
 import hashlib
 import os
+import re
 import secrets
 from datetime import UTC, datetime, timedelta
-import re
 from typing import Any
 
 from fastapi import APIRouter, Depends, Query, Request
@@ -34,8 +34,8 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
-from app.core.db import get_async_db as get_db
 from app.core.db import get_async_db
+from app.core.db import get_async_db as get_db
 from app.core.dependencies import (
     auth_rate_limit,
     get_client_info,
@@ -51,7 +51,8 @@ from app.core.security import (
     get_password_hash,
     verify_password,
 )
-from app.models.otp import OTPCode, OtpAttempt  # таблица otp_codes и enterprise-OTP попытки
+from app.integrations.ports.otp import OtpProvider
+from app.models.otp import OtpAttempt, OTPCode  # таблица otp_codes и enterprise-OTP попытки
 from app.models.user import User, UserSession
 from app.schemas.base import SuccessResponse
 from app.schemas.user import (
@@ -62,10 +63,8 @@ from app.schemas.user import (
     TokenResponse,
     UserCreate,
     UserLogin,
-    UserResponse,
 )
 from app.utils.otp import verify_otp_hash
-from app.integrations.ports.otp import OtpProvider
 
 router = APIRouter(prefix="/auth", tags=["Authentication"])
 
@@ -154,7 +153,12 @@ def _sms_text_for_otp(code: str, purpose: str) -> str:
 def _should_return_provider_info() -> bool:
     env = str(os.getenv("ENVIRONMENT") or getattr(settings, "ENVIRONMENT", "production") or "production").lower()
     debug_flag = os.getenv("DEBUG_PROVIDER_INFO", "").strip()
-    return (env != "production") or (debug_flag in {"1", "true", "yes", "on"})
+    if debug_flag.lower() in {"1", "true", "yes", "on"}:
+        return True
+    if env == "production":
+        return False
+    is_test_env = bool(os.getenv("PYTEST_CURRENT_TEST")) or bool(getattr(settings, "TESTING", False))
+    return is_test_env or (env != "production")
 
 
 # =============================================================================
@@ -423,7 +427,7 @@ async def login(login_data: UserLogin, request: Request, db: AsyncSession = Depe
         refresh_token=hashlib.sha256(refresh_token.encode()).hexdigest(),
         ip_address=client_info["ip_address"],
         user_agent=client_info["user_agent"],
-            expires_at=_utcnow_naive() + timedelta(days=settings.REFRESH_TOKEN_EXPIRE_DAYS),
+        expires_at=_utcnow_naive() + timedelta(days=settings.REFRESH_TOKEN_EXPIRE_DAYS),
         is_active=True,
     )
     db.add(session)
@@ -468,9 +472,7 @@ async def refresh_token(refresh_data: RefreshTokenRequest, db: AsyncSession = De
     if not session:
         raise AuthenticationError("Invalid or expired refresh token", "INVALID_REFRESH_TOKEN")
 
-    res_u = await db.execute(
-        select(User).where(User.id == session.user_id, User.is_active.is_(True))
-    )
+    res_u = await db.execute(select(User).where(User.id == session.user_id, User.is_active.is_(True)))
     user = res_u.scalars().first()
     if not user:
         raise AuthenticationError("User not found or inactive", "USER_NOT_FOUND")
@@ -486,9 +488,7 @@ async def refresh_token(refresh_data: RefreshTokenRequest, db: AsyncSession = De
 
 
 @router.post("/token/refresh", response_model=TokenResponse)
-async def refresh_token_alias(
-    refresh_data: RefreshTokenRequest, db: AsyncSession = Depends(get_db)
-):
+async def refresh_token_alias(refresh_data: RefreshTokenRequest, db: AsyncSession = Depends(get_db)):
     """Legacy alias for /auth/refresh used by tests/older clients."""
     return await refresh_token(refresh_data, db)
 
@@ -546,9 +546,7 @@ async def change_password(
         )
     )
 
-    await db.execute(
-        update(UserSession).where(UserSession.user_id == current_user.id).values(is_active=False)
-    )
+    await db.execute(update(UserSession).where(UserSession.user_id == current_user.id).values(is_active=False))
     await db.commit()
 
     audit_logger.log_data_change(
@@ -697,9 +695,7 @@ async def verify_otp(otp_verify: OTPVerify, db: AsyncSession = Depends(get_async
 
     now = _utcnow_naive()
 
-    dev_master_ok = (
-        DEBUG_MODE and DEBUG_OTP_CODE and (str(otp_verify.code).strip() == str(DEBUG_OTP_CODE))
-    )
+    dev_master_ok = DEBUG_MODE and DEBUG_OTP_CODE and (str(otp_verify.code).strip() == str(DEBUG_OTP_CODE))
 
     res = await db.execute(
         select(OTPCode).where(
@@ -803,9 +799,7 @@ async def reset_password(reset_data: PasswordReset, db: AsyncSession = Depends(g
     otp.is_used = True
 
     # инвалидируем все активные refresh-сессии пользователя
-    await db.execute(
-        update(UserSession).where(UserSession.user_id == user.id).values(is_active=False)
-    )
+    await db.execute(update(UserSession).where(UserSession.user_id == user.id).values(is_active=False))
 
     await db.commit()
 
@@ -844,7 +838,7 @@ async def request_otp_alias(
     dependencies=[Depends(auth_rate_limit), Depends(otp_rate_limit)],
 )
 async def send_otp_alias(
-    phone: str = Query(...), 
+    phone: str = Query(...),
     purpose: str = Query("login"),
     db: AsyncSession = Depends(get_db),
     otp_service: OtpProvider = Depends(get_otp_service),

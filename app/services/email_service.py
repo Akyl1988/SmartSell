@@ -30,9 +30,7 @@ class EmailService:
 
         # Setup Jinja2 for email templates
         template_dir = os.path.join(os.path.dirname(__file__), "../templates/email")
-        self.jinja_env = Environment(
-            loader=(FileSystemLoader(template_dir) if os.path.exists(template_dir) else None)
-        )
+        self.jinja_env = Environment(loader=(FileSystemLoader(template_dir) if os.path.exists(template_dir) else None))
 
     async def send_email(
         self,
@@ -138,9 +136,7 @@ class EmailService:
             logger.error(f"Failed to send order confirmation: {e}")
             return False
 
-    async def send_order_email(
-        self, to_email: str, subject: str, order: Order, pdf_attachment: str = None
-    ) -> bool:
+    async def send_order_email(self, to_email: str, subject: str, order: Order, pdf_attachment: str = None) -> bool:
         """Send order details with optional PDF attachment"""
 
         text_body = f"""
@@ -213,9 +209,7 @@ class EmailService:
         results = {"total": len(recipients), "sent": 0, "failed": 0, "errors": []}
 
         for email in recipients:
-            success = await self.send_email(
-                to_email=email, subject=subject, body=body, html_body=html_body
-            )
+            success = await self.send_email(to_email=email, subject=subject, body=body, html_body=html_body)
 
             if success:
                 results["sent"] += 1
@@ -248,9 +242,7 @@ class EmailService:
 
         return await self.send_email(to_email=to_email, subject=subject, body=text_body.strip())
 
-    async def send_low_stock_alert(
-        self, to_email: str, products: list[dict], company_name: str
-    ) -> bool:
+    async def send_low_stock_alert(self, to_email: str, products: list[dict], company_name: str) -> bool:
         """Send low stock alert"""
 
         subject = f"Уведомление о низких остатках - {company_name}"

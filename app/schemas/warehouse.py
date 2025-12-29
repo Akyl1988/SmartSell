@@ -140,9 +140,7 @@ class StockTransfer(BaseCreateSchema):
 class StockAdjustment(BaseCreateSchema):
     """Schema for stock adjustment"""
 
-    adjustments: list[dict] = Field(
-        ..., min_items=1
-    )  # List of {product_id, warehouse_id, new_quantity, reason}
+    adjustments: list[dict] = Field(..., min_items=1)  # List of {product_id, warehouse_id, new_quantity, reason}
     notes: str | None = None
 
 

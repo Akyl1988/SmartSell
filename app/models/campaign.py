@@ -31,9 +31,9 @@ from collections.abc import Iterable, Sequence
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
-from sqlalchemy import CheckConstraint, DateTime
-from sqlalchemy import Enum as SAEnum
 from sqlalchemy import (
+    CheckConstraint,
+    DateTime,
     ForeignKey,
     Index,
     Integer,
@@ -45,6 +45,7 @@ from sqlalchemy import (
     select,
     update,
 )
+from sqlalchemy import Enum as SAEnum
 from sqlalchemy.orm import Mapped, mapped_column, relationship, validates
 
 from app.models.base import Base  # PR #21 Base
@@ -71,9 +72,7 @@ class SoftDeleteMixin:
     Глобальный "исключающий" фильтр не навязывается — применяйте в репозитории/DAO.
     """
 
-    deleted_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), nullable=True, index=True
-    )
+    deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, index=True)
     deleted_by: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
     delete_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
 
@@ -142,9 +141,7 @@ class Campaign(SoftDeleteMixin, Base):
         nullable=False,
     )
 
-    scheduled_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), nullable=True, index=True
-    )
+    scheduled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, index=True)
 
     # Multitenant
     company_id: Mapped[int] = mapped_column(
@@ -170,9 +167,7 @@ class Campaign(SoftDeleteMixin, Base):
         CheckConstraint("length(title) > 0", name="ck_campaign_title_non_empty"),
         Index("ix_campaign_company_status", "company_id", "status"),
         Index("ix_campaign_scheduled_at_status", "scheduled_at", "status"),
-        UniqueConstraint(
-            "company_id", "title", "scheduled_at", name="uq_campaign_company_title_scheduled"
-        ),
+        UniqueConstraint("company_id", "title", "scheduled_at", name="uq_campaign_company_title_scheduled"),
     )
 
     # --------- Валидации ---------
@@ -259,7 +254,7 @@ class Campaign(SoftDeleteMixin, Base):
         msgs: list[Message] = []
         if template_vars_iter is None:
             template_vars_iter = [{} for _ in recipients]
-        for recipient, vars_ in zip(recipients, template_vars_iter):
+        for recipient, vars_ in zip(recipients, template_vars_iter, strict=False):
             content = Message.render_content_static(content_template, vars_ or {})
             msgs.append(self.add_message(recipient=recipient, content=content, channel=channel))
         return msgs
@@ -307,9 +302,7 @@ class Campaign(SoftDeleteMixin, Base):
         Пересчитать счётчики по не удалённым сообщениям.
         """
         total = await session.scalar(
-            select(func.count(Message.id)).where(
-                Message.campaign_id == self.id, Message.deleted_at.is_(None)
-            )
+            select(func.count(Message.id)).where(Message.campaign_id == self.id, Message.deleted_at.is_(None))
         )
         sent = await session.scalar(
             select(func.count(Message.id)).where(
@@ -562,11 +555,7 @@ class Campaign(SoftDeleteMixin, Base):
             content_len = len(r.content or "")
             sent_hour = r.sent_at.hour if r.sent_at else None
             delivered_hour = r.delivered_at.hour if r.delivered_at else None
-            latency = (
-                (r.delivered_at - r.sent_at).total_seconds()
-                if (r.sent_at and r.delivered_at)
-                else None
-            )
+            latency = (r.delivered_at - r.sent_at).total_seconds() if (r.sent_at and r.delivered_at) else None
             data.append(
                 {
                     "id": r.id,
@@ -606,9 +595,7 @@ class Campaign(SoftDeleteMixin, Base):
         ]
         if only_failed:
             conds.append(Message.status == MessageStatus.FAILED)
-        res = await session.execute(
-            update(Message).where(*conds).values(delete_reason=archived_reason)
-        )
+        res = await session.execute(update(Message).where(*conds).values(delete_reason=archived_reason))
         return int(res.rowcount or 0)
 
     async def purge_messages_async(
@@ -762,9 +749,7 @@ class Message(SoftDeleteMixin, Base):
     sent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     delivered_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
-    error_code: Mapped[str | None] = mapped_column(
-        String(MAX_ERROR_CODE_LEN), nullable=True, index=True
-    )
+    error_code: Mapped[str | None] = mapped_column(String(MAX_ERROR_CODE_LEN), nullable=True, index=True)
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     campaign = relationship("Campaign", back_populates="messages")
@@ -845,9 +830,7 @@ class Message(SoftDeleteMixin, Base):
         self.error_code = None
         self.error_message = None
 
-    def mark_failed(
-        self, *, reason: str, error_code: str | None = None, when: datetime | None = None
-    ) -> None:
+    def mark_failed(self, *, reason: str, error_code: str | None = None, when: datetime | None = None) -> None:
         if self.is_deleted:
             raise ValueError("Нельзя изменять удалённое сообщение.")
         self.status = MessageStatus.FAILED
@@ -880,9 +863,7 @@ class Message(SoftDeleteMixin, Base):
         if delivered is True:
             self.mark_delivered(when=delivered_at)
         elif delivered is False:
-            self.mark_failed(
-                reason=error or "Delivery failed", error_code=error_code, when=delivered_at
-            )
+            self.mark_failed(reason=error or "Delivery failed", error_code=error_code, when=delivered_at)
         elif error:
             self.mark_failed(reason=error, error_code=error_code, when=delivered_at)
 
@@ -918,9 +899,7 @@ class Message(SoftDeleteMixin, Base):
             values.setdefault("sent_at", when)
 
         res = await session.execute(
-            update(Message)
-            .where(Message.id.in_(message_ids), Message.deleted_at.is_(None))
-            .values(**values)
+            update(Message).where(Message.id.in_(message_ids), Message.deleted_at.is_(None)).values(**values)
         )
         return res.rowcount or 0
 
@@ -999,10 +978,7 @@ class Message(SoftDeleteMixin, Base):
             )
         await Campaign.bulk_insert_messages_async(session, campaign_id, items)
         rows = await session.execute(
-            select(Message)
-            .where(Message.campaign_id == campaign_id)
-            .order_by(Message.id.desc())
-            .limit(count)
+            select(Message).where(Message.campaign_id == campaign_id).order_by(Message.id.desc()).limit(count)
         )
         return list(reversed([r[0] for r in rows.all()]))
 

@@ -3,10 +3,10 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime
-from typing import Any, Dict, List, Optional
+from typing import Any, Optional
 
 import sqlalchemy as sa
-from sqlalchemy import BigInteger, Boolean, Numeric, String, Text, text
+from sqlalchemy import BigInteger, Boolean, Numeric, String, text
 from sqlalchemy.dialects.postgresql import BYTEA, UUID
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import Mapped, mapped_column
@@ -42,14 +42,15 @@ class KaspiStoreToken(Base):
         session: AsyncSession,
         store_name: str,
         plaintext_token: str,
-    ) -> "KaspiStoreToken":
+    ) -> KaspiStoreToken:
         if not store_name or not plaintext_token:
             raise ValueError("store_name and token are required")
 
         enc_key = settings.get_kaspi_enc_key()
-        store = store_name if settings is None else (
-            store_name if not getattr(settings, "normalize_on_write", True)
-            else _normalize_name(store_name)
+        store = (
+            store_name
+            if settings is None
+            else (store_name if not getattr(settings, "normalize_on_write", True) else _normalize_name(store_name))
         )
 
         sql = sa.text(
@@ -87,10 +88,10 @@ class KaspiStoreToken(Base):
         )
         res = await session.execute(sql, {"store": store_name, "k": enc_key})
         row = res.fetchone()
-        return (row[0] if row else None)
+        return row[0] if row else None
 
     @classmethod
-    async def list_stores(cls, session: AsyncSession) -> List[str]:
+    async def list_stores(cls, session: AsyncSession) -> list[str]:
         sql = sa.text("SELECT store_name FROM kaspi_store_tokens ORDER BY store_name")
         res = await session.execute(sql)
         return list(res.scalars().all())
@@ -103,7 +104,7 @@ class KaspiStoreToken(Base):
         *,
         mask_len: int = 10,
         mask_char: str = "…",
-    ) -> Optional[Dict[str, Any]]:
+    ) -> Optional[dict[str, Any]]:
         sql = sa.text(
             f"""
             SELECT
@@ -226,7 +227,7 @@ class KaspiStoreToken(Base):
 class ProductMarketplacePrice(Base):
     __tablename__ = "product_marketplace_price"
     __table_args__ = ()  # Removed schema='public' for SQLite compatibility
-    
+
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
     product_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
     marketplace: Mapped[str] = mapped_column(String(32), nullable=False)

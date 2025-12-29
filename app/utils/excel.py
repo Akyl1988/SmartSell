@@ -25,9 +25,7 @@ class ExcelProcessor:
         self.output_dir = os.path.join(settings.UPLOAD_DIR, "excel")
         os.makedirs(self.output_dir, exist_ok=True)
 
-    async def import_products_from_excel(
-        self, file: UploadFile, company_id: int, db: AsyncSession
-    ) -> dict[str, Any]:
+    async def import_products_from_excel(self, file: UploadFile, company_id: int, db: AsyncSession) -> dict[str, Any]:
         """Import products from Excel file"""
 
         try:
@@ -112,9 +110,7 @@ class ExcelProcessor:
                     # Handle stock if quantity column exists
                     if "quantity" in row and pd.notna(row["quantity"]):
                         quantity = int(row["quantity"])
-                        await self._update_product_stock(
-                            db, existing_product or product, quantity, company_id
-                        )
+                        await self._update_product_stock(db, existing_product or product, quantity, company_id)
 
                 except Exception as e:
                     results["errors"].append(f"Row {index + 2}: {str(e)}")
@@ -128,9 +124,7 @@ class ExcelProcessor:
             logger.error(f"Excel import error: {e}")
             raise Exception(f"Failed to import products: {e}")
 
-    async def export_products_to_excel(
-        self, products: list[Product], include_stock: bool = True
-    ) -> str:
+    async def export_products_to_excel(self, products: list[Product], include_stock: bool = True) -> str:
         """Export products to Excel file"""
 
         try:
@@ -281,9 +275,7 @@ class ExcelProcessor:
             logger.error(f"Orders Excel export error: {e}")
             raise Exception(f"Failed to export orders: {e}")
 
-    async def _update_product_stock(
-        self, db: AsyncSession, product: Product, quantity: int, company_id: int
-    ):
+    async def _update_product_stock(self, db: AsyncSession, product: Product, quantity: int, company_id: int):
         """Update product stock during import"""
 
         try:
@@ -315,9 +307,7 @@ class ExcelProcessor:
             if stock:
                 stock.quantity = quantity
             else:
-                stock = ProductStock(
-                    product_id=product.id, warehouse_id=warehouse.id, quantity=quantity
-                )
+                stock = ProductStock(product_id=product.id, warehouse_id=warehouse.id, quantity=quantity)
                 db.add(stock)
 
         except Exception as e:
@@ -328,9 +318,7 @@ class ExcelProcessor:
 excel_processor = ExcelProcessor()
 
 
-async def import_products_from_excel(
-    file: UploadFile, company_id: int, db: AsyncSession
-) -> dict[str, Any]:
+async def import_products_from_excel(file: UploadFile, company_id: int, db: AsyncSession) -> dict[str, Any]:
     """Import products from Excel (convenience function)"""
     return await excel_processor.import_products_from_excel(file, company_id, db)
 
@@ -340,9 +328,7 @@ async def export_products_to_excel(products: list[Product]) -> str:
     return await excel_processor.export_products_to_excel(products)
 
 
-async def export_analytics_to_excel(
-    export_type: str, company_id: int, filters: dict, db: AsyncSession
-) -> str:
+async def export_analytics_to_excel(export_type: str, company_id: int, filters: dict, db: AsyncSession) -> str:
     """Export analytics data to Excel"""
 
     try:

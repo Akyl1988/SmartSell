@@ -123,12 +123,8 @@ class BillingPayment(BaseModel, SoftDeleteMixin):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
 
-    order_id: Mapped[int | None] = mapped_column(
-        ForeignKey("orders.id", ondelete="CASCADE"), nullable=True, index=True
-    )
-    company_id: Mapped[int] = mapped_column(
-        ForeignKey("companies.id", ondelete="CASCADE"), nullable=False, index=True
-    )
+    order_id: Mapped[int | None] = mapped_column(ForeignKey("orders.id", ondelete="CASCADE"), nullable=True, index=True)
+    company_id: Mapped[int] = mapped_column(ForeignKey("companies.id", ondelete="CASCADE"), nullable=False, index=True)
     subscription_id: Mapped[int | None] = mapped_column(
         ForeignKey("subscriptions.id", ondelete="CASCADE"), nullable=True, index=True
     )
@@ -136,12 +132,8 @@ class BillingPayment(BaseModel, SoftDeleteMixin):
     amount: Mapped[Decimal] = mapped_column(Numeric(14, 2), nullable=False, default=0)
     currency: Mapped[str] = mapped_column(String(8), nullable=False, default="KZT")
 
-    status: Mapped[str] = mapped_column(
-        String(32), nullable=False, default=PaymentStatus.PENDING.value, index=True
-    )
-    method: Mapped[str] = mapped_column(
-        String(32), nullable=False, default=PaymentMethod.OTHER.value, index=True
-    )
+    status: Mapped[str] = mapped_column(String(32), nullable=False, default=PaymentStatus.PENDING.value, index=True)
+    method: Mapped[str] = mapped_column(String(32), nullable=False, default=PaymentMethod.OTHER.value, index=True)
 
     provider: Mapped[str | None] = mapped_column(String(64), index=True)
     provider_payment_id: Mapped[str | None] = mapped_column(String(128), index=True)
@@ -152,9 +144,7 @@ class BillingPayment(BaseModel, SoftDeleteMixin):
     refunded_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
     failed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
 
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), default=utc_now, nullable=False, index=True
-    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, nullable=False, index=True)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utc_now, onupdate=utc_now, nullable=False, index=True
     )
@@ -258,9 +248,7 @@ class BillingPayment(BaseModel, SoftDeleteMixin):
         invoice.mark_paid()
         session.flush()
 
-    def maybe_affect_order_status(
-        self, session: Session, *, set_paid_on_capture: bool = True
-    ) -> None:
+    def maybe_affect_order_status(self, session: Session, *, set_paid_on_capture: bool = True) -> None:
         try:
             from app.models.order import Order  # lazy
         except Exception:
@@ -429,10 +417,7 @@ class BillingPayment(BaseModel, SoftDeleteMixin):
             .group_by(BillingPayment.status)
             .order_by(BillingPayment.status.asc())
         )
-        return [
-            {"status": st, "count": int(cnt or 0), "amount_sum": str(total)}
-            for (st, cnt, total) in rows.all()
-        ]
+        return [{"status": st, "count": int(cnt or 0), "amount_sum": str(total)} for (st, cnt, total) in rows.all()]
 
     # -------- unified OperationRow (для ленты «Денежные операции») --------
     def to_operation_row(self) -> dict[str, Any]:
@@ -478,14 +463,10 @@ class Subscription(BaseModel, SoftDeleteMixin):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
 
-    company_id: Mapped[int] = mapped_column(
-        ForeignKey("companies.id", ondelete="CASCADE"), nullable=False, index=True
-    )
+    company_id: Mapped[int] = mapped_column(ForeignKey("companies.id", ondelete="CASCADE"), nullable=False, index=True)
 
     plan: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
-    status: Mapped[str] = mapped_column(
-        String(32), nullable=False, index=True
-    )  # active|canceled|overdue|trial|paused
+    status: Mapped[str] = mapped_column(String(32), nullable=False, index=True)  # active|canceled|overdue|trial|paused
     billing_cycle: Mapped[str] = mapped_column(String(32), nullable=False, default="monthly")
 
     price: Mapped[Decimal] = mapped_column(Numeric(14, 2), nullable=False)
@@ -518,9 +499,7 @@ class Subscription(BaseModel, SoftDeleteMixin):
             "uq_subscription_company_active_states",
             "company_id",
             unique=True,
-            postgresql_where=text(
-                "status IN ('active','trial','overdue','paused') AND deleted_at IS NULL"
-            ),
+            postgresql_where=text("status IN ('active','trial','overdue','paused') AND deleted_at IS NULL"),
         ),
         CheckConstraint("price >= 0", name="ck_subscription_price_nonneg"),
         CheckConstraint("grace_period_days >= 0", name="ck_subscription_grace_nonneg"),
@@ -664,9 +643,7 @@ class Subscription(BaseModel, SoftDeleteMixin):
         tax = _to_decimal(tax_amount) if tax_amount is not None else Decimal("0")
         total = subtotal + tax
 
-        number = await Invoice.generate_number_async(
-            session, prefix=invoice_prefix, company_id=self.company_id
-        )
+        number = await Invoice.generate_number_async(session, prefix=invoice_prefix, company_id=self.company_id)
 
         inv = Invoice(
             order_id=None,
@@ -721,12 +698,8 @@ class Invoice(BaseModel, SoftDeleteMixin):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
 
-    order_id: Mapped[int | None] = mapped_column(
-        ForeignKey("orders.id", ondelete="CASCADE"), nullable=True, index=True
-    )
-    company_id: Mapped[int] = mapped_column(
-        ForeignKey("companies.id", ondelete="CASCADE"), nullable=False, index=True
-    )
+    order_id: Mapped[int | None] = mapped_column(ForeignKey("orders.id", ondelete="CASCADE"), nullable=True, index=True)
+    company_id: Mapped[int] = mapped_column(ForeignKey("companies.id", ondelete="CASCADE"), nullable=False, index=True)
 
     invoice_number: Mapped[str] = mapped_column(String(64), nullable=False, index=True, unique=True)
     invoice_type: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
@@ -751,9 +724,7 @@ class Invoice(BaseModel, SoftDeleteMixin):
     payment_id: Mapped[int | None] = mapped_column(ForeignKey("billing_payments.id"))
 
     company: Mapped[Any | None] = relationship("Company", backref="invoices")
-    order: Mapped[Order | None] = relationship(
-        "Order", backref="invoices", foreign_keys=lambda: [Invoice.order_id]
-    )
+    order: Mapped[Order | None] = relationship("Order", backref="invoices", foreign_keys=lambda: [Invoice.order_id])
     payment: Mapped[BillingPayment | None] = relationship("BillingPayment")
 
     __table_args__ = (
@@ -762,9 +733,7 @@ class Invoice(BaseModel, SoftDeleteMixin):
         CheckConstraint("subtotal >= 0", name="ck_invoice_subtotal_nonneg"),
         CheckConstraint("tax_amount >= 0", name="ck_invoice_tax_nonneg"),
         CheckConstraint("total_amount >= 0", name="ck_invoice_total_nonneg"),
-        CheckConstraint(
-            "total_amount >= subtotal + COALESCE(tax_amount, 0)", name="ck_invoice_total_ge_sum"
-        ),
+        CheckConstraint("total_amount >= subtotal + COALESCE(tax_amount, 0)", name="ck_invoice_total_ge_sum"),
         {"extend_existing": True},
     )
 
@@ -831,21 +800,15 @@ class Invoice(BaseModel, SoftDeleteMixin):
     def get_last_number(cls, session: Session, *, prefix: str = "INV") -> str | None:
         like_pattern = f"{(prefix or 'INV').upper()}-%"
         row = session.execute(
-            select(cls.invoice_number)
-            .where(cls.invoice_number.like(like_pattern))
-            .order_by(cls.invoice_number.desc())
+            select(cls.invoice_number).where(cls.invoice_number.like(like_pattern)).order_by(cls.invoice_number.desc())
         ).first()
         return row[0] if row else None
 
     @classmethod
-    async def get_last_number_async(
-        cls, session: AsyncSession, *, prefix: str = "INV"
-    ) -> str | None:
+    async def get_last_number_async(cls, session: AsyncSession, *, prefix: str = "INV") -> str | None:
         like_pattern = f"{(prefix or 'INV').upper()}-%"
         row = await session.execute(
-            select(cls.invoice_number)
-            .where(cls.invoice_number.like(like_pattern))
-            .order_by(cls.invoice_number.desc())
+            select(cls.invoice_number).where(cls.invoice_number.like(like_pattern)).order_by(cls.invoice_number.desc())
         )
         r = row.first()
         return r[0] if r else None
@@ -908,11 +871,7 @@ class Invoice(BaseModel, SoftDeleteMixin):
         internal_notes: str | None = None,
         number: str | None = None,
     ) -> Invoice:
-        sub = (
-            _to_decimal(subtotal)
-            if subtotal is not None
-            else _to_decimal(total_amount) - _to_decimal(tax_amount)
-        )
+        sub = _to_decimal(subtotal) if subtotal is not None else _to_decimal(total_amount) - _to_decimal(tax_amount)
         return cls(
             order_id=order_id,
             company_id=company_id,
@@ -940,9 +899,7 @@ class Invoice(BaseModel, SoftDeleteMixin):
             "currency": _norm_currency_code(self.currency, default="KZT"),
             "status": self.status,
             "title": f"Счёт {self.invoice_number or ''}".strip(),
-            "created_at": _safe_iso(
-                self.issue_date or self.created_at if hasattr(self, "created_at") else None
-            ),
+            "created_at": _safe_iso(self.issue_date or self.created_at if hasattr(self, "created_at") else None),
             "completed_at": _safe_iso(self.paid_at or self.due_date),
             "links": {"pdf": self.pdf_url} if self.pdf_url else {},
             "is_success": self.status == "paid",
@@ -961,9 +918,7 @@ class BillingInvoice(BaseModel, SoftDeleteMixin):
     order_id: Mapped[int | None] = mapped_column(
         ForeignKey("orders.id", ondelete="CASCADE"), nullable=True, unique=True, index=True
     )
-    company_id: Mapped[int] = mapped_column(
-        ForeignKey("companies.id", ondelete="CASCADE"), nullable=False, index=True
-    )
+    company_id: Mapped[int] = mapped_column(ForeignKey("companies.id", ondelete="CASCADE"), nullable=False, index=True)
 
     number: Mapped[str | None] = mapped_column(String(64), unique=True, index=True)
     status: Mapped[str] = mapped_column(String(32), nullable=False, default="draft", index=True)
@@ -985,9 +940,7 @@ class BillingInvoice(BaseModel, SoftDeleteMixin):
     notes: Mapped[str | None] = mapped_column(Text)
     meta: Mapped[str | None] = mapped_column(Text)
 
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), default=utc_now, nullable=False, index=True
-    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, nullable=False, index=True)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utc_now, onupdate=utc_now, nullable=False, index=True
     )
@@ -1106,18 +1059,14 @@ class WalletBalance(BaseModel, SoftDeleteMixin):
     version_id: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
     __mapper_args__ = {"version_id_col": version_id}
 
-    company: Mapped[Any | None] = relationship(
-        "Company", backref=backref("wallet_balance", uselist=False)
-    )
+    company: Mapped[Any | None] = relationship("Company", backref=backref("wallet_balance", uselist=False))
     transactions: Mapped[list[Any]] = relationship(
         "WalletTransaction", back_populates="wallet", cascade="all, delete-orphan"
     )
 
     __table_args__ = (
         CheckConstraint("balance >= 0", name="ck_wallet_balance_nonneg"),
-        CheckConstraint(
-            "(credit_limit IS NULL OR credit_limit >= 0)", name="ck_wallet_credit_nonneg"
-        ),
+        CheckConstraint("(credit_limit IS NULL OR credit_limit >= 0)", name="ck_wallet_credit_nonneg"),
         CheckConstraint(
             "(auto_topup_threshold IS NULL OR auto_topup_threshold >= 0)",
             name="ck_wallet_autotopup_threshold_nonneg",
@@ -1138,12 +1087,8 @@ class WalletBalance(BaseModel, SoftDeleteMixin):
 
     # ----------------- пессимистические блокировки -----------------
     @contextmanager
-    def lock_for_update(
-        self, session: Session, *, nowait: bool = False, skip_locked: bool = False
-    ) -> Iterator[None]:
-        stmt = (
-            select(WalletBalance).where(WalletBalance.id == self.id).with_for_update(nowait=nowait)
-        )
+    def lock_for_update(self, session: Session, *, nowait: bool = False, skip_locked: bool = False) -> Iterator[None]:
+        stmt = select(WalletBalance).where(WalletBalance.id == self.id).with_for_update(nowait=nowait)
         try:
             if skip_locked and getattr(session.bind.dialect, "name", "") == "postgresql":
                 stmt = stmt.with_for_update(skip_locked=True)
@@ -1160,9 +1105,7 @@ class WalletBalance(BaseModel, SoftDeleteMixin):
     async def lock_for_update_async(
         self, session: AsyncSession, *, nowait: bool = False, skip_locked: bool = False
     ) -> AsyncIterator[None]:
-        stmt = (
-            select(WalletBalance).where(WalletBalance.id == self.id).with_for_update(nowait=nowait)
-        )
+        stmt = select(WalletBalance).where(WalletBalance.id == self.id).with_for_update(nowait=nowait)
         try:
             if skip_locked and getattr(session.bind.dialect, "name", "") == "postgresql":
                 stmt = stmt.with_for_update(skip_locked=True)
@@ -1177,7 +1120,7 @@ class WalletBalance(BaseModel, SoftDeleteMixin):
 
     @staticmethod
     def _should_retry(exc: Exception) -> bool:
-        return isinstance(exc, (StaleDataError, OperationalError, DBAPIError))
+        return isinstance(exc, StaleDataError | OperationalError | DBAPIError)
 
     # ----------------- бизнес-логика кошелька -----------------
     def can_spend(self, amount: Decimal) -> bool:
@@ -1331,9 +1274,7 @@ class WalletBalance(BaseModel, SoftDeleteMixin):
             deficit = amt - before
             if session is None:
                 raise ValueError("Insufficient wallet funds")
-            self._auto_topup_deficit_via_gateway(
-                session=session, deficit=deficit, idempotency_key=idempotency_key
-            )
+            self._auto_topup_deficit_via_gateway(session=session, deficit=deficit, idempotency_key=idempotency_key)
             before = self.balance or Decimal("0")
         if before < amt:
             raise ValueError("Insufficient wallet balance")
@@ -1407,7 +1348,7 @@ class WalletBalance(BaseModel, SoftDeleteMixin):
     ) -> WalletTransaction:
         amt = _to_decimal(amount)
         attempt = 0
-        last_exc: Exception | None = None
+        _last_exc: Exception | None = None
         while attempt <= retries:
             attempt += 1
             try:
@@ -1439,11 +1380,11 @@ class WalletBalance(BaseModel, SoftDeleteMixin):
             except Exception as e:
                 if self._should_retry(e) and attempt <= retries:
                     log.warning("debit_safe retry %s/%s due to %s", attempt, retries, repr(e))
-                    last_exc = e
+                    _last_exc = e
                     continue
                 raise
-        if last_exc:
-            raise last_exc
+        if _last_exc:
+            raise _last_exc
         raise RuntimeError("debit_safe failed unexpectedly")
 
     async def debit_safe_async(
@@ -1461,13 +1402,11 @@ class WalletBalance(BaseModel, SoftDeleteMixin):
     ) -> WalletTransaction:
         amt = _to_decimal(amount)
         attempt = 0
-        last_exc: Exception | None = None
+        _last_exc: Exception | None = None
         while attempt <= retries:
             attempt += 1
             try:
-                async with self.lock_for_update_async(
-                    session, nowait=nowait, skip_locked=skip_locked
-                ):
+                async with self.lock_for_update_async(session, nowait=nowait, skip_locked=skip_locked):
                     before = self.balance or Decimal("0")
                     if before < amt:
                         deficit = amt - before
@@ -1495,11 +1434,11 @@ class WalletBalance(BaseModel, SoftDeleteMixin):
             except Exception as e:
                 if self._should_retry(e) and attempt <= retries:
                     log.warning("debit_safe_async retry %s/%s due to %s", attempt, retries, repr(e))
-                    last_exc = e
+                    _last_exc = e
                     continue
                 raise
-        if last_exc:
-            raise last_exc
+        if _last_exc:
+            raise _last_exc
 
     def maybe_autotopup(
         self,
@@ -1531,11 +1470,7 @@ class WalletBalance(BaseModel, SoftDeleteMixin):
         return None
 
     def maybe_notify_low_balance(self, *, threshold: Decimal | None = None) -> bool:
-        thr = (
-            _to_decimal(threshold)
-            if threshold is not None
-            else (self.auto_topup_threshold or Decimal("0"))
-        )
+        thr = _to_decimal(threshold) if threshold is not None else (self.auto_topup_threshold or Decimal("0"))
         if (self.balance or Decimal("0")) <= thr:
             if self.on_low_balance:
                 try:
@@ -1583,9 +1518,7 @@ class WalletBalance(BaseModel, SoftDeleteMixin):
                 reference_type="gateway_charge",
                 reference_id=None,
             )
-        return self.debit_safe(
-            session, amt, description=description, reference_type="local", reference_id=None
-        )
+        return self.debit_safe(session, amt, description=description, reference_type="local", reference_id=None)
 
     def topup_via_gateway(
         self,
@@ -1625,15 +1558,11 @@ class WalletBalance(BaseModel, SoftDeleteMixin):
                 reference_type="gateway_topup",
                 reference_id=None,
             )
-        return self.credit(
-            amt, session=session, description=description, reference_type="local", reference_id=None
-        )
+        return self.credit(amt, session=session, description=description, reference_type="local", reference_id=None)
 
     def _ensure_currency_compat(self, *, expected_currency: str | None) -> None:
         if expected_currency and (self.currency or "").upper() != (expected_currency or "").upper():
-            raise ValueError(
-                f"Currency mismatch: wallet={self.currency} expected={expected_currency}"
-            )
+            raise ValueError(f"Currency mismatch: wallet={self.currency} expected={expected_currency}")
 
     def settle_amount_with_wallet(
         self,
@@ -1663,16 +1592,14 @@ class WalletBalance(BaseModel, SoftDeleteMixin):
             min_keep = _to_decimal(min_positive_balance) if leave_min_positive else Decimal("0")
             if allow_zero_balance and min_keep > 0:
                 min_keep = min(min_keep, Decimal("0.00"))
-            effective_min = (
-                Decimal("0.00") if allow_zero_balance else max(min_keep, Decimal("0.01"))
-            )
+            effective_min = Decimal("0.00") if allow_zero_balance else max(min_keep, Decimal("0.01"))
             max_spend_local = max(Decimal("0"), current - effective_min)
             wallet_spend_local = min(req, max_spend_local)
             missing_local = req - wallet_spend_local
             return wallet_spend_local, missing_local
 
         attempt = 0
-        last_exc: Exception | None = None
+        _last_exc: Exception | None = None
 
         while True:
             try:
@@ -1683,14 +1610,10 @@ class WalletBalance(BaseModel, SoftDeleteMixin):
                         inv: Invoice | None = None
 
                         if wallet_spend > 0:
-                            self.debit_safe(
-                                session, wallet_spend, description="settle", reference_type="settle"
-                            )
+                            self.debit_safe(session, wallet_spend, description="settle", reference_type="settle")
 
                         if missing > 0:
-                            number = Invoice.generate_number(
-                                session, prefix=invoice_prefix, company_id=company.id
-                            )
+                            number = Invoice.generate_number(session, prefix=invoice_prefix, company_id=company.id)
                             inv = Invoice(
                                 order_id=None,
                                 company_id=company.id,
@@ -1746,9 +1669,7 @@ class WalletBalance(BaseModel, SoftDeleteMixin):
                         )
 
                     if missing > 0:
-                        number = Invoice.generate_number(
-                            session, prefix=invoice_prefix, company_id=company.id
-                        )
+                        number = Invoice.generate_number(session, prefix=invoice_prefix, company_id=company.id)
                         inv = Invoice(
                             order_id=None,
                             company_id=company.id,
@@ -1790,10 +1711,8 @@ class WalletBalance(BaseModel, SoftDeleteMixin):
             except Exception as e:
                 if use_locking and self._should_retry(e) and attempt < retries:
                     attempt += 1
-                    log.warning(
-                        "settle_amount_with_wallet retry %s/%s due to %s", attempt, retries, repr(e)
-                    )
-                    last_exc = e
+                    log.warning("settle_amount_with_wallet retry %s/%s due to %s", attempt, retries, repr(e))
+                    _last_exc = e
                     continue
                 raise
 
@@ -1824,16 +1743,14 @@ class WalletBalance(BaseModel, SoftDeleteMixin):
             min_keep = _to_decimal(min_positive_balance) if leave_min_positive else Decimal("0")
             if allow_zero_balance and min_keep > 0:
                 min_keep = min(min_keep, Decimal("0.00"))
-            effective_min = (
-                Decimal("0.00") if allow_zero_balance else max(min_keep, Decimal("0.01"))
-            )
+            effective_min = Decimal("0.00") if allow_zero_balance else max(min_keep, Decimal("0.01"))
             max_spend_local = max(Decimal("0"), current - effective_min)
             wallet_spend_local = min(req, max_spend_local)
             missing_local = req - wallet_spend_local
             return wallet_spend_local, missing_local
 
         attempt = 0
-        last_exc: Exception | None = None
+        _last_exc: Exception | None = None
 
         while True:
             try:
@@ -1968,7 +1885,7 @@ class WalletBalance(BaseModel, SoftDeleteMixin):
                         retries,
                         repr(e),
                     )
-                    last_exc = e
+                    _last_exc = e
                     continue
                 raise
 
@@ -1980,12 +1897,8 @@ class WalletBalance(BaseModel, SoftDeleteMixin):
             "currency": self.currency,
             "credit_limit": str(self.credit_limit) if self.credit_limit is not None else None,
             "auto_topup_enabled": self.auto_topup_enabled,
-            "auto_topup_threshold": str(self.auto_topup_threshold)
-            if self.auto_topup_threshold is not None
-            else None,
-            "auto_topup_amount": str(self.auto_topup_amount)
-            if self.auto_topup_amount is not None
-            else None,
+            "auto_topup_threshold": str(self.auto_topup_threshold) if self.auto_topup_threshold is not None else None,
+            "auto_topup_amount": str(self.auto_topup_amount) if self.auto_topup_amount is not None else None,
             "version_id": self.version_id,
         }
 
@@ -2007,12 +1920,8 @@ class WalletBalance(BaseModel, SoftDeleteMixin):
             currency=_norm_currency_code(currency, default="KZT"),
             credit_limit=_to_decimal(credit_limit),
             auto_topup_enabled=auto_topup_enabled,
-            auto_topup_threshold=(
-                None if auto_topup_threshold is None else _to_decimal(auto_topup_threshold)
-            ),
-            auto_topup_amount=(
-                None if auto_topup_amount is None else _to_decimal(auto_topup_amount)
-            ),
+            auto_topup_threshold=(None if auto_topup_threshold is None else _to_decimal(auto_topup_threshold)),
+            auto_topup_amount=(None if auto_topup_amount is None else _to_decimal(auto_topup_amount)),
         )
 
     @classmethod
@@ -2024,9 +1933,7 @@ class WalletBalance(BaseModel, SoftDeleteMixin):
         create_if_missing: bool = False,
         currency: str = "KZT",
     ) -> WalletBalance:
-        wb = session.execute(
-            select(cls).where(cls.company_id == company_id).limit(1)
-        ).scalar_one_or_none()
+        wb = session.execute(select(cls).where(cls.company_id == company_id).limit(1)).scalar_one_or_none()
         if wb:
             return wb
         if not create_if_missing:
@@ -2078,9 +1985,7 @@ class WalletTransaction(BaseModel, SoftDeleteMixin):
         ForeignKey("wallet_balances.id", ondelete="CASCADE"), nullable=False, index=True
     )
 
-    transaction_type: Mapped[str] = mapped_column(
-        String(32), nullable=False, index=True
-    )  # credit|debit|adjustment
+    transaction_type: Mapped[str] = mapped_column(String(32), nullable=False, index=True)  # credit|debit|adjustment
     amount: Mapped[Decimal] = mapped_column(Numeric(14, 2), nullable=False)
 
     balance_before: Mapped[Decimal] = mapped_column(Numeric(14, 2), nullable=False)
@@ -2092,9 +1997,7 @@ class WalletTransaction(BaseModel, SoftDeleteMixin):
     description: Mapped[str] = mapped_column(String(255), nullable=False, default="")
     extra_data: Mapped[str | None] = mapped_column(Text)
 
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), default=utc_now, nullable=False, index=True
-    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, nullable=False, index=True)
 
     wallet: Mapped[Any] = relationship("WalletBalance", back_populates="transactions")
 
@@ -2147,9 +2050,7 @@ class WalletTransaction(BaseModel, SoftDeleteMixin):
 
 
 # ---------------- audit helpers ----------------
-def _emit_audit_safe(
-    *, session: Session, company_id: int, action: str, meta: dict[str, Any] | None = None
-) -> None:
+def _emit_audit_safe(*, session: Session, company_id: int, action: str, meta: dict[str, Any] | None = None) -> None:
     try:
         from app.models.audit import ExternalAuditEvent  # type: ignore
     except Exception:
@@ -2224,10 +2125,7 @@ def operations_feed_sync(
     if "invoice" in kinds_set:
         rows = (
             session.execute(
-                select(Invoice)
-                .where(Invoice.company_id == company_id)
-                .order_by(Invoice.issue_date.desc())
-                .limit(limit)
+                select(Invoice).where(Invoice.company_id == company_id).order_by(Invoice.issue_date.desc()).limit(limit)
             )
             .scalars()
             .all()
@@ -2255,9 +2153,7 @@ def operations_feed_sync(
 
     if "wallet_txn" in kinds_set:
         # получаем wallet id
-        w = session.execute(
-            select(WalletBalance).where(WalletBalance.company_id == company_id)
-        ).scalar_one_or_none()
+        w = session.execute(select(WalletBalance).where(WalletBalance.company_id == company_id)).scalar_one_or_none()
         if w:
             txs = (
                 session.execute(
@@ -2302,10 +2198,7 @@ async def operations_feed_async(
 
     if "invoice" in kinds_set:
         rows = await session.execute(
-            select(Invoice)
-            .where(Invoice.company_id == company_id)
-            .order_by(Invoice.issue_date.desc())
-            .limit(limit)
+            select(Invoice).where(Invoice.company_id == company_id).order_by(Invoice.issue_date.desc()).limit(limit)
         )
         for inv in rows.scalars().all():
             base_dt = inv.issue_date or getattr(inv, "created_at", None) or utc_now()
@@ -2325,9 +2218,7 @@ async def operations_feed_async(
                 out.append((base_dt, bi.to_operation_row()))
 
     if "wallet_txn" in kinds_set:
-        wrow = await session.execute(
-            select(WalletBalance).where(WalletBalance.company_id == company_id)
-        )
+        wrow = await session.execute(select(WalletBalance).where(WalletBalance.company_id == company_id))
         w = wrow.scalar_one_or_none()
         if w:
             txs = await session.execute(

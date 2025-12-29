@@ -148,9 +148,7 @@ def _send_via_smtp(smtp: SmtpConfig, msg: MIMEMultipart) -> None:
             server.login(smtp.user, smtp.password)
 
     if smtp.use_ssl:
-        with smtplib.SMTP_SSL(
-            host=smtp.host, port=smtp.port, timeout=smtp.connect_timeout
-        ) as server:
+        with smtplib.SMTP_SSL(host=smtp.host, port=smtp.port, timeout=smtp.connect_timeout) as server:
             _configure(server)
             server.send_message(msg)
     else:
@@ -159,9 +157,7 @@ def _send_via_smtp(smtp: SmtpConfig, msg: MIMEMultipart) -> None:
             server.send_message(msg)
 
 
-def _smtp_send_with_retry(
-    send_fn: Callable[[], None], *, retries: int = 2, base_delay: float = 0.7
-) -> None:
+def _smtp_send_with_retry(send_fn: Callable[[], None], *, retries: int = 2, base_delay: float = 0.7) -> None:
     last_err: Exception | None = None
     for attempt in range(retries + 1):
         try:
@@ -172,9 +168,7 @@ def _smtp_send_with_retry(
             if attempt >= retries:
                 break
             sleep_s = base_delay * (2**attempt)
-            logger.warning(
-                "SMTP send retry %s/%s через %.1fs: %s", attempt + 1, retries, sleep_s, e
-            )
+            logger.warning("SMTP send retry %s/%s через %.1fs: %s", attempt + 1, retries, sleep_s, e)
             time.sleep(sleep_s)
     assert last_err is not None
     raise last_err

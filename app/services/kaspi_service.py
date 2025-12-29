@@ -1,4 +1,5 @@
 from __future__ import annotations
+
 """
 Kaspi.kz integration: product feed generation, orders sync, and availability sync.
 
@@ -29,6 +30,7 @@ logger = get_logger(__name__)
 
 # ---------------------- small utils ---------------------- #
 
+
 def _utcnow() -> datetime:
     # Возвращаем naive UTC (совместимо с моделями)
     return datetime.utcnow()
@@ -40,11 +42,7 @@ def _as_str(v: Any) -> str:
 
 def _xml_escape(s: str) -> str:
     return (
-        s.replace("&", "&amp;")
-        .replace("<", "&lt;")
-        .replace(">", "&gt;")
-        .replace('"', "&quot;")
-        .replace("'", "&apos;")
+        s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace('"', "&quot;").replace("'", "&apos;")
     )
 
 
@@ -57,6 +55,7 @@ def _cdata(s: Optional[str]) -> str:
 
 # ---------------------- resilient HTTP client ---------------------- #
 
+
 class _RetryingAsyncClient:
     """
     Обёртка над httpx.AsyncClient с экспоненциальными повторами на сетевые и 5xx ошибки.
@@ -68,7 +67,7 @@ class _RetryingAsyncClient:
         self._retries = max(0, retries)
         self._base = backoff_base
 
-    async def __aenter__(self) -> "_RetryingAsyncClient":
+    async def __aenter__(self) -> _RetryingAsyncClient:
         return self
 
     async def __aexit__(self, exc_type, exc, tb) -> None:
@@ -105,6 +104,7 @@ class _RetryingAsyncClient:
 
 
 # ---------------------- main service ---------------------- #
+
 
 class KaspiService:
     """
@@ -197,9 +197,7 @@ class KaspiService:
         payload = {"status": status}
         async with self._client() as client:
             try:
-                resp = await client.patch(
-                    self._url(f"/orders/{order_id}/status"), headers=self.headers, json=payload
-                )
+                resp = await client.patch(self._url(f"/orders/{order_id}/status"), headers=self.headers, json=payload)
                 resp.raise_for_status()
                 logger.info("Kaspi: статус заказа %s обновлён на '%s'.", order_id, status)
                 return True
@@ -233,9 +231,7 @@ class KaspiService:
                     json={"availability": int(max(0, availability))},
                 )
                 resp.raise_for_status()
-                logger.info(
-                    "Kaspi: обновлена доступность товара %s -> %s.", product_id, availability
-                )
+                logger.info("Kaspi: обновлена доступность товара %s -> %s.", product_id, availability)
                 return True
             except httpx.HTTPError as e:
                 logger.error("Kaspi update_product_availability(%s) error: %s", product_id, e)
@@ -262,9 +258,7 @@ class KaspiService:
                 ext_id = _as_str(ko.get("id"))
                 # Ищем существующий
                 q = await db.execute(
-                    select(Order).where(
-                        and_(Order.company_id == company_id, Order.external_id == ext_id)
-                    )
+                    select(Order).where(and_(Order.company_id == company_id, Order.external_id == ext_id))
                 )
                 existing: Order | None = q.scalar_one_or_none()
 
@@ -423,7 +417,7 @@ class KaspiService:
             name = _as_str(getattr(p, "name", ""))
             desc = _as_str(getattr(p, "description", "") or "")
             price = getattr(p, "current_price", None)
-            price_val = price if isinstance(price, (int, float)) else 0
+            price_val = price if isinstance(price, int | float) else 0
             price_str = f"{float(price_val):.2f}"
 
             category_path = ""
@@ -496,7 +490,8 @@ class KaspiService:
         kaspi_product_id = _as_str(getattr(product, "kaspi_product_id", None) or "")
         if not kaspi_product_id:
             logger.info(
-                "Kaspi availability: пропуск, у товара %s нет kaspi_product_id.", getattr(product, "id", "?")
+                "Kaspi availability: пропуск, у товара %s нет kaspi_product_id.",
+                getattr(product, "id", "?"),
             )
             return True
 
@@ -511,9 +506,7 @@ class KaspiService:
         availability = 0 if is_preorder else max(0, int(free_stock))
         return await self.update_product_availability(kaspi_product_id, availability)
 
-    async def bulk_sync_availability(
-        self, company_id: int, db: AsyncSession, *, limit: int = 500
-    ) -> dict[str, int]:
+    async def bulk_sync_availability(self, company_id: int, db: AsyncSession, *, limit: int = 500) -> dict[str, int]:
         """
         Массовый апдейт доступности в Kaspi для активных товаров компании.
         """

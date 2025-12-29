@@ -22,9 +22,7 @@ def _master_key() -> bytes:
         # Fernet ctor validates key shape (base64-encoded 32 bytes)
         Fernet(key_bytes)
     except Exception as exc:  # pragma: no cover - defensive
-        raise RuntimeError(
-            "Invalid INTEGRATIONS_MASTER_KEY; must be a base64-encoded 32-byte key"
-        ) from exc
+        raise RuntimeError("Invalid INTEGRATIONS_MASTER_KEY; must be a base64-encoded 32-byte key") from exc
     return key_bytes
 
 

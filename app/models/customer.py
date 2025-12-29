@@ -17,6 +17,7 @@ Highlights:
 
 from collections.abc import Iterable
 from datetime import datetime
+from typing import TYPE_CHECKING
 
 from sqlalchemy import Boolean, DateTime, Index, Integer, String, func
 from sqlalchemy.orm import Mapped, Session, mapped_column, relationship, validates
@@ -24,6 +25,9 @@ from sqlalchemy.orm import Mapped, Session, mapped_column, relationship, validat
 # In this project BaseModel is the DeclarativeBase with naming conventions & metadata.
 # Mixins provide deleted_at, tenant_id, audit fields, etc.
 from app.models.base import AuditMixin, BaseModel, SoftDeleteMixin, TenantMixin
+
+if TYPE_CHECKING:  # to avoid runtime import cycles
+    from app.models.payment import Payment
 
 
 # ----------------------------------------------------------------------------- #
@@ -50,12 +54,8 @@ class Customer(BaseModel, TenantMixin, SoftDeleteMixin, AuditMixin):
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
 
     # Timestamps
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime, default=utc_now, nullable=False, server_default=func.now()
-    )
-    updated_at: Mapped[datetime] = mapped_column(
-        DateTime, default=utc_now, onupdate=utc_now, nullable=False
-    )
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utc_now, nullable=False, server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=utc_now, onupdate=utc_now, nullable=False)
 
     # Relationships
     # ВАЖНО: симметрия с Payment.customer (см. app/models/payment.py)
@@ -132,12 +132,8 @@ class Customer(BaseModel, TenantMixin, SoftDeleteMixin, AuditMixin):
         d = self.to_dict()
         d["display_name"] = self.display_name
         d["is_archived"] = self.is_archived
-        d["created_at_iso"] = (
-            self.created_at.isoformat(timespec="seconds") if self.created_at else None
-        )
-        d["updated_at_iso"] = (
-            self.updated_at.isoformat(timespec="seconds") if self.updated_at else None
-        )
+        d["created_at_iso"] = self.created_at.isoformat(timespec="seconds") if self.created_at else None
+        d["updated_at_iso"] = self.updated_at.isoformat(timespec="seconds") if self.updated_at else None
         return d
 
     @property
@@ -174,9 +170,7 @@ class Customer(BaseModel, TenantMixin, SoftDeleteMixin, AuditMixin):
         return session.query(cls).filter(cls.phone == phone.strip()).first()
 
     @classmethod
-    def search(
-        cls, session: Session, q: str, *, limit: int = 50, include_archived: bool = False
-    ) -> list[Customer]:
+    def search(cls, session: Session, q: str, *, limit: int = 50, include_archived: bool = False) -> list[Customer]:
         query = session.query(cls)
         if not include_archived:
             query = query.filter(getattr(cls, "deleted_at", None).is_(None))

@@ -283,9 +283,7 @@ def _patch_otpcode_api(cls: type[Any]) -> None:
     if not hasattr(cls, "a_find_latest_active"):
 
         @staticmethod
-        async def a_find_latest_active(
-            session: AsyncSession, *, phone: str, purpose: str = "login"
-        ):
+        async def a_find_latest_active(session: AsyncSession, *, phone: str, purpose: str = "login"):
             rows = await session.execute(
                 select(cls)
                 .where(
@@ -320,9 +318,7 @@ def _patch_otpcode_api(cls: type[Any]) -> None:
                 )
                 return True
             await session.flush()
-            _emit(
-                "otp.legacy.verify.fail", {"id": rec.id, "phone": rec.phone, "purpose": rec.purpose}
-            )
+            _emit("otp.legacy.verify.fail", {"id": rec.id, "phone": rec.phone, "purpose": rec.purpose})
             return False
 
         setattr(cls, "a_verify_and_mark", a_verify_and_mark)
@@ -385,17 +381,13 @@ if _existing_otpcode is None:
         purpose = Column(String(32), nullable=False, default="login")
 
         # дефолт: +5 минут с момента создания
-        expires_at = Column(
-            DateTime, nullable=False, default=lambda: utc_now() + timedelta(minutes=5)
-        )
+        expires_at = Column(DateTime, nullable=False, default=lambda: utc_now() + timedelta(minutes=5))
         is_used = Column(Boolean, nullable=False, default=False)
         attempts = Column(Integer, nullable=False, default=0)
 
         user_id = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
         # ВАЖНО: back_populates — без авто-создания backref на User
-        user = relationship(
-            "User", back_populates="otp_codes", foreign_keys=[user_id], lazy="selectin"
-        )
+        user = relationship("User", back_populates="otp_codes", foreign_keys=[user_id], lazy="selectin")
 
         created_at = Column(DateTime, nullable=False, default=utc_now)
         verified_at = Column(DateTime, nullable=True)
@@ -482,9 +474,7 @@ if _existing_otpcode is None:
             )
 
         @staticmethod
-        async def a_find_latest_active(
-            session: AsyncSession, *, phone: str, purpose: str = "login"
-        ) -> OTPCode | None:
+        async def a_find_latest_active(session: AsyncSession, *, phone: str, purpose: str = "login") -> OTPCode | None:
             rows = await session.execute(
                 select(OTPCode)
                 .where(
@@ -515,9 +505,7 @@ if _existing_otpcode is None:
                 )
                 return True
             await session.flush()
-            _emit(
-                "otp.legacy.verify.fail", {"id": rec.id, "phone": rec.phone, "purpose": rec.purpose}
-            )
+            _emit("otp.legacy.verify.fail", {"id": rec.id, "phone": rec.phone, "purpose": rec.purpose})
             return False
 
         @staticmethod
@@ -677,9 +665,7 @@ class OtpAttempt(Base):
         Index("ix_otp_attempt_blocked", "is_blocked"),
         UniqueConstraint("id", name="uq_otp_attempts_id"),
         CheckConstraint("attempts_left >= 0", name="ck_otp_attempts_left_non_negative"),
-        CheckConstraint(
-            "sent_count_hour >= 0 AND sent_count_day >= 0", name="ck_otp_sent_counts_non_negative"
-        ),
+        CheckConstraint("sent_count_hour >= 0 AND sent_count_day >= 0", name="ck_otp_sent_counts_non_negative"),
         CheckConstraint("fraud_score >= 0", name="ck_otp_fraud_score_non_negative"),
         {"extend_existing": True},
     )
@@ -687,9 +673,7 @@ class OtpAttempt(Base):
     id = Column(Integer, primary_key=True, autoincrement=True, index=True)
     phone = Column(String(32), nullable=False)
     code_hash = Column(String(255), nullable=False)
-    expires_at = Column(
-        DateTime, nullable=False, default=lambda: utc_now() + timedelta(minutes=DEFAULT_OTP_TTL_MIN)
-    )
+    expires_at = Column(DateTime, nullable=False, default=lambda: utc_now() + timedelta(minutes=DEFAULT_OTP_TTL_MIN))
 
     attempts_left = Column(Integer, default=5, nullable=False)
     is_verified = Column(Boolean, default=False, nullable=False)
@@ -1038,9 +1022,7 @@ class OtpAttempt(Base):
         user_id: int | None = None,
         reset_rate_windows: bool = True,
     ) -> OtpAttempt:
-        old = await OtpAttempt.get_latest_active_for_phone(
-            session, phone=phone, purpose=purpose, channel=channel
-        )
+        old = await OtpAttempt.get_latest_active_for_phone(session, phone=phone, purpose=purpose, channel=channel)
         if old:
             old.soft_delete("replaced")
         attempt = OtpAttempt.create_new(
@@ -1075,9 +1057,7 @@ class OtpAttempt(Base):
 
     # Maintenance
     @staticmethod
-    async def cleanup_verified(
-        session: AsyncSession, *, older_than_days: int = 7, reason: str = "archived"
-    ) -> int:
+    async def cleanup_verified(session: AsyncSession, *, older_than_days: int = 7, reason: str = "archived") -> int:
         threshold = utc_now() - timedelta(days=older_than_days)
         res = await session.execute(
             update(OtpAttempt)
@@ -1116,9 +1096,7 @@ class OtpAttempt(Base):
         return count
 
     @staticmethod
-    async def purge_soft_deleted_verified(
-        session: AsyncSession, *, older_than_days: int = 30
-    ) -> int:
+    async def purge_soft_deleted_verified(session: AsyncSession, *, older_than_days: int = 30) -> int:
         threshold = utc_now() - timedelta(days=older_than_days)
         res = await session.execute(
             delete(OtpAttempt).where(
@@ -1152,9 +1130,7 @@ class OtpAttempt(Base):
     async def purge_soft_deleted(session: AsyncSession, *, older_than_days: int = 7) -> int:
         threshold = utc_now() - timedelta(days=older_than_days)
         res = await session.execute(
-            delete(OtpAttempt).where(
-                OtpAttempt.deleted_at.is_not(None), OtpAttempt.deleted_at < threshold
-            )
+            delete(OtpAttempt).where(OtpAttempt.deleted_at.is_not(None), OtpAttempt.deleted_at < threshold)
         )
         count = int(res.rowcount or 0)
         if count:
@@ -1179,9 +1155,7 @@ class OtpAttempt(Base):
         return count
 
     @staticmethod
-    async def bulk_soft_delete(
-        session: AsyncSession, ids: Sequence[int], *, reason: str = "bulk_soft_delete"
-    ) -> int:
+    async def bulk_soft_delete(session: AsyncSession, ids: Sequence[int], *, reason: str = "bulk_soft_delete") -> int:
         if not ids:
             return 0
         res = await session.execute(
@@ -1338,9 +1312,7 @@ async def verify_plain_code_for_phone(
     channel: OtpChannel = OtpChannel.SMS,
 ) -> bool:
     """Проверяет введённый plain-код по последней активной попытке."""
-    attempt = await OtpAttempt.get_latest_active_for_phone(
-        session, phone=phone, purpose=purpose, channel=channel
-    )
+    attempt = await OtpAttempt.get_latest_active_for_phone(session, phone=phone, purpose=purpose, channel=channel)
     if not attempt:
         _emit(
             "otp.verify.no_attempt",

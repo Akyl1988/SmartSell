@@ -169,9 +169,7 @@ def cleanup_expired_otps() -> int:
                 # Delete expired OTP codes (using async SQLAlchemy)
                 from sqlalchemy import delete
 
-                result = await db.execute(
-                    delete(OTPCode).where(OTPCode.expires_at < datetime.utcnow())
-                )
+                result = await db.execute(delete(OTPCode).where(OTPCode.expires_at < datetime.utcnow()))
                 deleted_count = result.rowcount
                 await db.commit()
                 logger.info(f"Cleaned up {deleted_count} expired OTP codes")
@@ -201,9 +199,7 @@ def cleanup_expired_sessions() -> int:
                 # Delete expired sessions (using async SQLAlchemy)
                 from sqlalchemy import delete
 
-                result = await db.execute(
-                    delete(UserSession).where(UserSession.expires_at < datetime.utcnow())
-                )
+                result = await db.execute(delete(UserSession).where(UserSession.expires_at < datetime.utcnow()))
                 deleted_count = result.rowcount
                 await db.commit()
                 logger.info(f"Cleaned up {deleted_count} expired sessions")

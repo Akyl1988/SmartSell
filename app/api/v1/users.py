@@ -125,9 +125,9 @@ async def deactivate_current_user(
     current_user.is_active = False
 
     # Отзываем активные сессии
-    db.query(UserSession).filter(
-        UserSession.user_id == current_user.id, UserSession.is_active.is_(True)
-    ).update({"is_active": False})
+    db.query(UserSession).filter(UserSession.user_id == current_user.id, UserSession.is_active.is_(True)).update(
+        {"is_active": False}
+    )
 
     db.commit()
 
@@ -193,9 +193,9 @@ async def change_password(
     current_user.hashed_password = get_password_hash(req.new_password)
 
     # Отзываем все активные сессии пользователя
-    db.query(UserSession).filter(
-        UserSession.user_id == current_user.id, UserSession.is_active.is_(True)
-    ).update({"is_active": False})
+    db.query(UserSession).filter(UserSession.user_id == current_user.id, UserSession.is_active.is_(True)).update(
+        {"is_active": False}
+    )
 
     db.commit()
 
@@ -344,9 +344,7 @@ async def list_users(
     q = _apply_sorting(q, sort_by, sort_order)
     users = q.offset(pagination.offset).limit(pagination.limit).all()
 
-    return PaginatedResponse.create(
-        items=users, total=total, page=pagination.page, per_page=pagination.per_page
-    )
+    return PaginatedResponse.create(items=users, total=total, page=pagination.page, per_page=pagination.per_page)
 
 
 # ---------------------------------------------------------------------------
@@ -382,9 +380,7 @@ async def toggle_email_verified(
         resource_id=str(current_user.id),
         changes={"is_email_verified": {"old": old, "new": bool(body.value)}},
     )
-    return SuccessResponse(
-        message="Email verification flag updated", data={"is_email_verified": bool(body.value)}
-    )
+    return SuccessResponse(message="Email verification flag updated", data={"is_email_verified": bool(body.value)})
 
 
 @router.post("/me/verify/phone", response_model=SuccessResponse)
@@ -408,9 +404,7 @@ async def toggle_phone_verified(
         resource_id=str(current_user.id),
         changes={"is_verified": {"old": old, "new": bool(body.value)}},
     )
-    return SuccessResponse(
-        message="Phone verification flag updated", data={"is_verified": bool(body.value)}
-    )
+    return SuccessResponse(message="Phone verification flag updated", data={"is_verified": bool(body.value)})
 
 
 @router.post("/me/2fa", response_model=SuccessResponse)
@@ -433,6 +427,4 @@ async def toggle_2fa(
         resource_id=str(current_user.id),
         changes={"is_two_factor_enabled": {"old": old, "new": bool(body.value)}},
     )
-    return SuccessResponse(
-        message="2FA setting updated", data={"is_two_factor_enabled": bool(body.value)}
-    )
+    return SuccessResponse(message="2FA setting updated", data={"is_two_factor_enabled": bool(body.value)})

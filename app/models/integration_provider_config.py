@@ -3,9 +3,18 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import BigInteger, Boolean, DateTime, Integer, LargeBinary, String, Text, UniqueConstraint, func
+from sqlalchemy import (
+    JSON,
+    BigInteger,
+    Boolean,
+    DateTime,
+    LargeBinary,
+    String,
+    Text,
+    UniqueConstraint,
+    func,
+)
 from sqlalchemy.dialects import postgresql
-from sqlalchemy import JSON
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.models.base import BaseModel, LenientInitMixin
@@ -28,9 +37,7 @@ class IntegrationProviderConfig(LenientInitMixin, BaseModel):
         DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now()
     )
 
-    __table_args__ = (
-        UniqueConstraint("domain", "provider", name="uq__integration_provider_configs__domain_provider"),
-    )
+    __table_args__ = (UniqueConstraint("domain", "provider", name="uq__integration_provider_configs__domain_provider"),)
 
 
 __all__ = ["IntegrationProviderConfig"]

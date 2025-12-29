@@ -23,9 +23,10 @@ from datetime import datetime
 from decimal import Decimal
 from typing import TYPE_CHECKING, Any
 
-from sqlalchemy import CheckConstraint, Column, DateTime
-from sqlalchemy import Enum as SQLEnum
 from sqlalchemy import (
+    CheckConstraint,
+    Column,
+    DateTime,
     ForeignKey,
     Index,
     Integer,
@@ -38,6 +39,7 @@ from sqlalchemy import (
     select,
     update,
 )
+from sqlalchemy import Enum as SQLEnum
 from sqlalchemy.orm import relationship, validates
 
 from app.models.base import Base
@@ -250,9 +252,7 @@ class Order(Base):
     # ------------------------ CRUD / Query helpers ------------------------
     @staticmethod
     def get_by_order_number(session, order_number: str) -> Order | None:
-        return (
-            session.query(Order).filter(Order.order_number == (order_number or "").strip()).first()
-        )
+        return session.query(Order).filter(Order.order_number == (order_number or "").strip()).first()
 
     @staticmethod
     def create(
@@ -342,9 +342,7 @@ class Order(Base):
     def apply_discount_percent(self, pct: float) -> None:
         if pct < 0 or pct > 100:
             raise ValueError("pct must be in 0..100")
-        self.discount_amount = (self.subtotal * _to_decimal(pct) / Decimal("100")).quantize(
-            Decimal("0.01")
-        )
+        self.discount_amount = (self.subtotal * _to_decimal(pct) / Decimal("100")).quantize(Decimal("0.01"))
         self.calculate_totals()
 
     def add_item(
@@ -506,9 +504,7 @@ class Order(Base):
     def mark_paid(self, user_id: int | None = None, note: str | None = None, *, session=None):
         self.change_status(OrderStatus.PAID, user_id, note, session=session)
 
-    def start_processing(
-        self, user_id: int | None = None, note: str | None = None, *, session=None
-    ):
+    def start_processing(self, user_id: int | None = None, note: str | None = None, *, session=None):
         self.change_status(OrderStatus.PROCESSING, user_id, note, session=session)
 
     def ship(self, user_id: int | None = None, note: str | None = None, *, session=None):
@@ -885,9 +881,7 @@ class OrderItem(Base):
 
     @property
     def is_discounted(self) -> bool:
-        expected = (_to_decimal(self.unit_price) * _to_decimal(self.quantity)).quantize(
-            Decimal("0.01")
-        )
+        expected = (_to_decimal(self.unit_price) * _to_decimal(self.quantity)).quantize(Decimal("0.01"))
         actual = _to_decimal(self.total_price).quantize(Decimal("0.01"))
         return actual < expected
 
@@ -932,17 +926,13 @@ class OrderItem(Base):
 
     @property
     def margin_amount(self) -> Decimal:
-        revenue_net = (_to_decimal(self.total_price) - self.allocated_discount_amount).quantize(
-            Decimal("0.01")
-        )
+        revenue_net = (_to_decimal(self.total_price) - self.allocated_discount_amount).quantize(Decimal("0.01"))
         cost = (_to_decimal(self.cost_price) * _to_decimal(self.quantity)).quantize(Decimal("0.01"))
         return (revenue_net - cost).quantize(Decimal("0.01"))
 
     @property
     def margin_rate(self) -> Decimal | None:
-        revenue_net = (_to_decimal(self.total_price) - self.allocated_discount_amount).quantize(
-            Decimal("0.01")
-        )
+        revenue_net = (_to_decimal(self.total_price) - self.allocated_discount_amount).quantize(Decimal("0.01"))
         if revenue_net <= 0:
             return None
         return (self.margin_amount / revenue_net).quantize(Decimal("0.0001"))
@@ -1088,12 +1078,8 @@ class OrderStatusHistory(Base):
     async def delete_history_for_orders_async(session, order_ids: Sequence[int]) -> int:
         if not order_ids:
             return 0
-        res = await session.execute(
-            delete(OrderStatusHistory).where(OrderStatusHistory.order_id.in_(list(order_ids)))
-        )
+        res = await session.execute(delete(OrderStatusHistory).where(OrderStatusHistory.order_id.in_(list(order_ids))))
         return int(res.rowcount or 0)
 
     def __repr__(self):
-        return (
-            f"<OrderStatusHistory(order_id={self.order_id}, {self.old_status}->{self.new_status})>"
-        )
+        return f"<OrderStatusHistory(order_id={self.order_id}, {self.old_status}->{self.new_status})>"

@@ -25,9 +25,7 @@ __all__ = ["router"]
 # ------------------------------------------------------------------------------
 logger = logging.getLogger(__name__)
 if not logger.handlers:
-    logging.basicConfig(
-        level=logging.INFO, format="%(asctime)s %(levelname)s [%(name)s] %(message)s"
-    )
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s [%(name)s] %(message)s")
 
 
 # ------------------------------------------------------------------------------
@@ -134,9 +132,7 @@ class InMemoryStorage:
         with self._lock:
             return [dict(v) for v in self._db["campaigns"].values()]
 
-    def title_exists(
-        self, title: str, exclude_id: int | None = None, owner: str | None = None
-    ) -> bool:
+    def title_exists(self, title: str, exclude_id: int | None = None, owner: str | None = None) -> bool:
         """
         Проверка уникальности title среди НЕархивных кампаний.
         Опционально — в разрезе владельца (owner).
@@ -372,12 +368,8 @@ def _maybe_init_celery() -> None:
         from celery import Celery  # type: ignore
 
         _CELERY_APP = Celery("smartsell")
-        _CELERY_APP.conf.broker_url = (
-            _CELERY_APP.conf.get("broker_url") or "redis://localhost:6379/0"
-        )
-        _CELERY_APP.conf.result_backend = (
-            _CELERY_APP.conf.get("result_backend") or "redis://localhost:6379/0"
-        )
+        _CELERY_APP.conf.broker_url = _CELERY_APP.conf.get("broker_url") or "redis://localhost:6379/0"
+        _CELERY_APP.conf.result_backend = _CELERY_APP.conf.get("result_backend") or "redis://localhost:6379/0"
     except Exception as e:
         logger.debug("Celery not available: %s", e)
         _CELERY_APP = None
@@ -679,9 +671,7 @@ router = APIRouter(prefix="/api/v1/campaigns", tags=["campaigns"])
     status_code=status.HTTP_201_CREATED,
     dependencies=[Depends(require_role("admin", "manager"))],
 )
-async def create_campaign(
-    campaign: Campaign = Body(...), user: User = Depends(_auth_user)
-):
+async def create_campaign(campaign: Campaign = Body(...), user: User = Depends(_auth_user)):
     # owner, учитываем при уникальности
     owner = (campaign.owner or user.username or "").strip()
     if _title_exists(campaign.title, owner=owner):
@@ -905,9 +895,7 @@ async def export_campaigns_fmt(fmt: CampaignExportFormat = Path(...)):
         Depends(limit_dep("bulk-import", 10, 60)),
     ],
 )
-async def import_campaigns_bulk(
-    payload: list[Campaign] = Body(...), user: User = Depends(_auth_user)
-):
+async def import_campaigns_bulk(payload: list[Campaign] = Body(...), user: User = Depends(_auth_user)):
     imported = 0
     errors: list[dict[str, Any]] = []
     for idx, campaign in enumerate(payload):
@@ -971,9 +959,7 @@ async def import_campaigns_bulk(
     response_model=Campaign,
     dependencies=[Depends(require_role("admin", "manager"))],
 )
-async def save_campaign_draft(
-    campaign: Campaign = Body(...), user: User = Depends(_auth_user)
-):
+async def save_campaign_draft(campaign: Campaign = Body(...), user: User = Depends(_auth_user)):
     owner = (campaign.owner or user.username or "").strip()
     if _title_exists(campaign.title, owner=owner):
         raise HTTPException(status_code=400, detail="title must be unique")
@@ -1044,9 +1030,7 @@ async def get_campaign(campaign_id: int = Path(..., ge=1)):
     response_model=Campaign,
     dependencies=[Depends(require_role("admin", "manager"))],
 )
-async def update_campaign(
-    campaign_id: int, campaign: Campaign = Body(...), user: User = Depends(_auth_user)
-):
+async def update_campaign(campaign_id: int, campaign: Campaign = Body(...), user: User = Depends(_auth_user)):
     current = storage.get_campaign(campaign_id)
     if not current:
         raise HTTPException(status_code=404, detail="Campaign not found")
@@ -1121,9 +1105,7 @@ def _message_recipient(m: Any) -> str | None:
     status_code=status.HTTP_201_CREATED,
     dependencies=[Depends(require_role("admin", "manager"))],
 )
-async def add_message_to_campaign(
-    campaign_id: int, message: Message = Body(...), user: User = Depends(_auth_user)
-):
+async def add_message_to_campaign(campaign_id: int, message: Message = Body(...), user: User = Depends(_auth_user)):
     camp = _get_campaign_or_404(campaign_id)
     ensure_owner_or_admin(camp.owner, user)
     _ensure_unique_recipient_in_campaign(camp, message.recipient, message.channel)
@@ -1191,9 +1173,7 @@ async def update_campaign_message(
     status_code=status.HTTP_204_NO_CONTENT,
     dependencies=[Depends(require_role("admin", "manager"))],
 )
-async def delete_campaign_message(
-    campaign_id: int, message_id: int, user: User = Depends(_auth_user)
-):
+async def delete_campaign_message(campaign_id: int, message_id: int, user: User = Depends(_auth_user)):
     camp = _get_campaign_or_404(campaign_id)
     ensure_owner_or_admin(camp.owner, user)
     storage.delete_message(message_id)
@@ -1210,15 +1190,11 @@ async def delete_campaign_message(
     response_model=Message,
     dependencies=[Depends(require_role("admin", "manager"))],
 )
-async def upsert_message_by_recipient(
-    campaign_id: int, req: UpsertMessageRequest, user: User = Depends(_auth_user)
-):
+async def upsert_message_by_recipient(campaign_id: int, req: UpsertMessageRequest, user: User = Depends(_auth_user)):
     camp = _get_campaign_or_404(campaign_id)
     ensure_owner_or_admin(camp.owner, user)
     for m in camp.messages:
-        if m.recipient.strip().lower() == req.recipient.strip().lower() and str(m.channel) == str(
-            req.channel
-        ):
+        if m.recipient.strip().lower() == req.recipient.strip().lower() and str(m.channel) == str(req.channel):
             m.content = req.content
             m.status = req.status
             camp.updated_at = _now_iso()
@@ -1278,9 +1254,7 @@ async def set_message_status(
     response_model=Message,
     dependencies=[Depends(require_role("admin", "manager"))],
 )
-async def reset_message_to_pending(
-    campaign_id: int, message_id: int, user: User = Depends(_auth_user)
-):
+async def reset_message_to_pending(campaign_id: int, message_id: int, user: User = Depends(_auth_user)):
     camp = _get_campaign_or_404(campaign_id)
     ensure_owner_or_admin(camp.owner, user)
     idx, msg = _find_message_in_campaign(camp, message_id)
@@ -1356,9 +1330,7 @@ async def mark_all_sent(campaign_id: int, user: User = Depends(_auth_user)):
         Depends(limit_dep("bulk-status", 60, 60)),
     ],
 )
-async def bulk_update_message_status(
-    campaign_id: int, req: BulkStatusUpdateRequest, user: User = Depends(_auth_user)
-):
+async def bulk_update_message_status(campaign_id: int, req: BulkStatusUpdateRequest, user: User = Depends(_auth_user)):
     camp = _get_campaign_or_404(campaign_id)
     ensure_owner_or_admin(camp.owner, user)
     updated = 0
@@ -1384,9 +1356,7 @@ async def bulk_update_message_status(
         Depends(limit_dep("bulk-delete-msg", 30, 60)),
     ],
 )
-async def bulk_delete_messages(
-    campaign_id: int, req: BulkDeleteRequest, user: User = Depends(_auth_user)
-):
+async def bulk_delete_messages(campaign_id: int, req: BulkDeleteRequest, user: User = Depends(_auth_user)):
     camp = _get_campaign_or_404(campaign_id)
     ensure_owner_or_admin(camp.owner, user)
     before = len(camp.messages)
@@ -1410,9 +1380,7 @@ async def bulk_delete_messages(
         Depends(limit_dep("bulk-add-msg", 30, 60)),
     ],
 )
-async def bulk_add_messages(
-    campaign_id: int, req: BulkMessageAddRequest, user: User = Depends(_auth_user)
-):
+async def bulk_add_messages(campaign_id: int, req: BulkMessageAddRequest, user: User = Depends(_auth_user)):
     camp = _get_campaign_or_404(campaign_id)
     ensure_owner_or_admin(camp.owner, user)
     added = 0
@@ -1442,9 +1410,7 @@ async def bulk_add_messages(
         "bulk_add_messages",
         {"campaign_id": campaign_id, "added": added, "duplicates": len(dup_errors)},
     )
-    logger.info(
-        "Bulk add messages: campaign=%s added=%s duplicates=%s", campaign_id, added, len(dup_errors)
-    )
+    logger.info("Bulk add messages: campaign=%s added=%s duplicates=%s", campaign_id, added, len(dup_errors))
     return {"added": added, "total": len(camp.messages), "errors": dup_errors}
 
 
@@ -1456,17 +1422,13 @@ async def bulk_add_messages(
         Depends(limit_dep("bulk-upsert-msg", 30, 60)),
     ],
 )
-async def bulk_upsert_messages(
-    campaign_id: int, req: BulkUpsertMessageRequest, user: User = Depends(_auth_user)
-):
+async def bulk_upsert_messages(campaign_id: int, req: BulkUpsertMessageRequest, user: User = Depends(_auth_user)):
     camp = _get_campaign_or_404(campaign_id)
     ensure_owner_or_admin(camp.owner, user)
 
     updated = 0
     inserted = 0
-    index_by_key = {
-        (m.recipient.strip().lower(), str(m.channel)): i for i, m in enumerate(camp.messages)
-    }
+    index_by_key = {(m.recipient.strip().lower(), str(m.channel)): i for i, m in enumerate(camp.messages)}
 
     for item in req.items:
         key = (item.recipient.strip().lower(), str(item.channel))
@@ -1580,12 +1542,8 @@ async def schedule_campaign(
             changed += 1
     camp.updated_at = _now_iso()
     _save_campaign(camp)
-    _audit(
-        "schedule_campaign", {"id": campaign_id, "time": schedule.schedule_time, "changed": changed}
-    )
-    logger.info(
-        "Campaign scheduled: %s at %s (changed=%s)", campaign_id, schedule.schedule_time, changed
-    )
+    _audit("schedule_campaign", {"id": campaign_id, "time": schedule.schedule_time, "changed": changed})
+    logger.info("Campaign scheduled: %s at %s (changed=%s)", campaign_id, schedule.schedule_time, changed)
     return {
         "status": "scheduled",
         "campaign_id": campaign_id,
@@ -1666,9 +1624,7 @@ async def get_campaign_tags(campaign_id: int):
     response_model=Campaign,
     dependencies=[Depends(require_role("admin", "manager"))],
 )
-async def add_tag_to_campaign(
-    campaign_id: int, tag_req: AddTagRequest = Body(...), user: User = Depends(_auth_user)
-):
+async def add_tag_to_campaign(campaign_id: int, tag_req: AddTagRequest = Body(...), user: User = Depends(_auth_user)):
     campaign = _get_campaign_or_404(campaign_id)
     ensure_owner_or_admin(campaign.owner, user)
     new_tag = _normalize_tags([tag_req.tag])
@@ -1704,9 +1660,7 @@ async def remove_tag_from_campaign(
     response_model=Campaign,
     dependencies=[Depends(require_role("admin", "manager"))],
 )
-async def set_tags_for_campaign(
-    campaign_id: int, req: SetTagsRequest, user: User = Depends(_auth_user)
-):
+async def set_tags_for_campaign(campaign_id: int, req: SetTagsRequest, user: User = Depends(_auth_user)):
     campaign = _get_campaign_or_404(campaign_id)
     ensure_owner_or_admin(campaign.owner, user)
     campaign.tags = _normalize_tags(req.tags)
@@ -1722,9 +1676,7 @@ async def set_tags_for_campaign(
     response_model=Campaign,
     dependencies=[Depends(require_role("admin", "manager"))],
 )
-async def archive_campaign(
-    campaign_id: int, req: ArchiveRequest = Body(None), user: User = Depends(_auth_user)
-):
+async def archive_campaign(campaign_id: int, req: ArchiveRequest = Body(None), user: User = Depends(_auth_user)):
     data = storage.get_campaign(campaign_id)
     if not data:
         raise HTTPException(status_code=404, detail="Campaign not found")
@@ -1737,9 +1689,7 @@ async def archive_campaign(
     response_model=Campaign,
     dependencies=[Depends(require_role("admin", "manager"))],
 )
-async def restore_campaign(
-    campaign_id: int, req: RestoreRequest = Body(None), user: User = Depends(_auth_user)
-):
+async def restore_campaign(campaign_id: int, req: RestoreRequest = Body(None), user: User = Depends(_auth_user)):
     data = storage.get_campaign(campaign_id)
     if not data:
         raise HTTPException(status_code=404, detail="Campaign not found")

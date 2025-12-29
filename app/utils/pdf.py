@@ -38,9 +38,7 @@ class PDFGenerator:
         self.output_dir = os.path.join(settings.UPLOAD_DIR, "pdfs")
         os.makedirs(self.output_dir, exist_ok=True)
 
-    async def generate_invoice_pdf(
-        self, order: Order, company: Company, template: str = "default"
-    ) -> str:
+    async def generate_invoice_pdf(self, order: Order, company: Company, template: str = "default") -> str:
         """Generate invoice PDF for order"""
 
         if WEASYPRINT_AVAILABLE:
@@ -50,9 +48,7 @@ class PDFGenerator:
         else:
             raise Exception("No PDF library available. Install weasyprint or reportlab.")
 
-    async def _generate_invoice_weasyprint(
-        self, order: Order, company: Company, template: str = "default"
-    ) -> str:
+    async def _generate_invoice_weasyprint(self, order: Order, company: Company, template: str = "default") -> str:
         """Generate invoice using WeasyPrint"""
 
         try:
@@ -60,9 +56,7 @@ class PDFGenerator:
             html_content = self._generate_invoice_html(order, company)
 
             # Generate filename
-            filename = (
-                f"invoice_{order.order_number}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.pdf"
-            )
+            filename = f"invoice_{order.order_number}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.pdf"
             file_path = os.path.join(self.output_dir, filename)
 
             # Generate PDF
@@ -80,9 +74,7 @@ class PDFGenerator:
 
         try:
             # Generate filename
-            filename = (
-                f"invoice_{order.order_number}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.pdf"
-            )
+            filename = f"invoice_{order.order_number}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.pdf"
             file_path = os.path.join(self.output_dir, filename)
 
             # Create PDF document
@@ -105,9 +97,7 @@ class PDFGenerator:
 
             # Invoice info
             story.append(Paragraph(f"<b>Накладная №{order.order_number}</b>", styles["Heading2"]))
-            story.append(
-                Paragraph(f"Дата: {order.created_at.strftime('%d.%m.%Y')}", styles["Normal"])
-            )
+            story.append(Paragraph(f"Дата: {order.created_at.strftime('%d.%m.%Y')}", styles["Normal"]))
             story.append(Spacer(1, 0.5 * cm))
 
             # Customer info

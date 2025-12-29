@@ -23,15 +23,15 @@ from typing import Any
 from fastapi import APIRouter
 
 # Рекомендуемый современный агрегатор (экспортируем наружу)
-from app.api.routes import include_router_smart  # умное подключение одного роутера
-from app.api.routes import mount_all  # alias на mount_v1
-from app.api.routes import mount_v1  # монтирование в FastAPI/APIRouter
+from app.api.routes import (
+    include_router_smart,  # умное подключение одного роутера
+    mount_all,  # alias на mount_v1
+    mount_v1,  # монтирование в FastAPI/APIRouter
+)
 
 logger = logging.getLogger(__name__)
 if not logger.handlers:
-    logging.basicConfig(
-        level=logging.INFO, format="%(asctime)s %(levelname)s [%(name)s] %(message)s"
-    )
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s [%(name)s] %(message)s")
 
 
 # ---------------------------------------------------------------------------
@@ -101,9 +101,7 @@ def _safe_include(parent: APIRouter, mod: Any, fallback_prefix: str = "/v1") -> 
             logger.debug("Included router as-is: %s", r.prefix)
         else:
             parent.include_router(r, prefix=fallback_prefix)
-            logger.debug(
-                "Included router with prefix %s: %s", fallback_prefix, r.prefix or "<root>"
-            )
+            logger.debug("Included router with prefix %s: %s", fallback_prefix, r.prefix or "<root>")
         return True
     except Exception as e:
         logger.warning("Router include failed (%s): %s", getattr(mod, "__name__", mod), e)

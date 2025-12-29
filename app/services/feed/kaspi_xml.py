@@ -1,12 +1,15 @@
 from __future__ import annotations
-from typing import Iterable, Optional
-from xml.etree.ElementTree import Element, SubElement, ElementTree
+
+from collections.abc import Iterable
+from xml.etree.ElementTree import Element, ElementTree, SubElement
+
 
 class KaspiXmlBuilder:
     """
     Минимальный строитель XML-фида для Kaspi.
     Предполагает, что элементы (offers) уже прошли фильтрацию и валидацию.
     """
+
     def __init__(self, shop_name: str = "SmartSell"):
         self.shop_name = shop_name
 
@@ -16,7 +19,7 @@ class KaspiXmlBuilder:
         SubElement(shop, "name").text = self.shop_name
         SubElement(shop, "company").text = self.shop_name
 
-        categories = SubElement(shop, "categories")
+        _categories = SubElement(shop, "categories")
         # при необходимости можно выгружать иерархию категорий
         # пока опустим — Kaspi принимает базовый фид и без категорий
 

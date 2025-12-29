@@ -81,9 +81,8 @@ except Exception:
 
 try:
     # sync engine используется (на уровне env/alembic) — не тянем async здесь.
-    from sqlalchemy import BigInteger, Column, MetaData, String, Table
+    from sqlalchemy import BigInteger, Column, MetaData, String, Table, select, text
     from sqlalchemy import insert as sa_insert
-    from sqlalchemy import select, text
     from sqlalchemy.engine import Engine
 
     _HAS_SQLA = True
@@ -257,9 +256,7 @@ def _expiry_for(token_type: TokenType, override: timedelta | None = None) -> dat
     if override:
         return _utcnow() + override
     if token_type == "access":
-        return _utcnow() + timedelta(
-            minutes=int(getattr(settings, "ACCESS_TOKEN_EXPIRE_MINUTES", 30))
-        )
+        return _utcnow() + timedelta(minutes=int(getattr(settings, "ACCESS_TOKEN_EXPIRE_MINUTES", 30)))
     if token_type == "refresh":
         return _utcnow() + timedelta(days=int(getattr(settings, "REFRESH_TOKEN_EXPIRE_DAYS", 7)))
     if token_type == "reset":
@@ -549,9 +546,7 @@ class PostgresDenylist(DenylistBackend):
             table_name,
             self._meta,
             Column("jti", String(64), primary_key=True),
-            Column(
-                "exp_ts", BigInteger, nullable=True
-            ),  # unix seconds; для TTL очистки планировщиком
+            Column("exp_ts", BigInteger, nullable=True),  # unix seconds; для TTL очистки планировщиком
             Column("reason", String(256), nullable=True),
         )
         self._ensure()
@@ -590,9 +585,7 @@ class PostgresDenylist(DenylistBackend):
             elif dialect == "sqlite":
                 # SQLite: INSERT OR IGNORE
                 conn.execute(
-                    text(
-                        f"INSERT OR IGNORE INTO {self.table_name} (jti, exp_ts) VALUES (:jti, :exp_ts)"
-                    ),
+                    text(f"INSERT OR IGNORE INTO {self.table_name} (jti, exp_ts) VALUES (:jti, :exp_ts)"),
                     {"jti": jti, "exp_ts": exp_ts},
                 )
             else:
@@ -696,9 +689,7 @@ def set_refresh_cookie(response, token: str, max_age_days: int | None = None) ->
     response — объект со способом set_cookie(name=..., ...)
     """
     max_age = int(
-        timedelta(
-            days=max_age_days or int(getattr(settings, "REFRESH_TOKEN_EXPIRE_DAYS", 7))
-        ).total_seconds()
+        timedelta(days=max_age_days or int(getattr(settings, "REFRESH_TOKEN_EXPIRE_DAYS", 7))).total_seconds()
     )
     response.set_cookie(
         key=_REFRESH_COOKIE_NAME,
@@ -807,9 +798,7 @@ if _HAS_FASTAPI:
         credentials: HTTPAuthorizationCredentials | None = Depends(http_bearer),
     ) -> str:
         if not credentials or not credentials.scheme.lower() == "bearer":
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED, detail="Not authenticated"
-            )
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Not authenticated")
         token = credentials.credentials
         try:
             payload = decode_and_validate(token, expected_type="access")
@@ -825,9 +814,7 @@ if _HAS_FASTAPI:
         credentials: HTTPAuthorizationCredentials | None = Depends(http_bearer),
     ) -> dict:
         if not credentials or not credentials.scheme.lower() == "bearer":
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED, detail="Not authenticated"
-            )
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Not authenticated")
         token = credentials.credentials
         try:
             payload = decode_and_validate(token, expected_type="access")

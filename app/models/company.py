@@ -30,7 +30,7 @@ from __future__ import annotations
 import json
 from collections.abc import Callable, Iterable, Sequence
 from datetime import UTC, datetime, timedelta
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from sqlalchemy import (
     Boolean,
@@ -51,6 +51,9 @@ from sqlalchemy import (
 from sqlalchemy.orm import object_session, relationship, validates
 
 from app.models.base import Base
+
+if TYPE_CHECKING:  # for type hints only
+    from app.models.wallet import WalletBalance
 
 # -----------------------------------------------------------------------
 # Константы/утилиты
@@ -150,13 +153,9 @@ class Company(Base):
     kaspi_api_key = Column(String(255), nullable=True)
 
     # Внешние ID/интеграции (generic + 1C)
-    external_id = Column(
-        String(64), nullable=True, unique=True, index=True, doc="Generic external ID"
-    )
+    external_id = Column(String(64), nullable=True, unique=True, index=True, doc="Generic external ID")
     onec_id = Column(String(64), nullable=True, unique=True, index=True, doc="1C external ID")
-    sync_source = Column(
-        String(32), nullable=True, index=True, doc="Последний источник синхронизации (kaspi/1c/…)"
-    )
+    sync_source = Column(String(32), nullable=True, index=True, doc="Последний источник синхронизации (kaspi/1c/…)")
     synced_at = Column(DateTime(timezone=True), nullable=True, index=True)
     last_sync_error_code = Column(String(64), nullable=True, index=True)
     last_sync_error_message = Column(Text, nullable=True)
@@ -243,9 +242,7 @@ class Company(Base):
         else None
     )
     wallet_balance = (
-        relationship(
-            "WalletBalance", back_populates="company", uselist=False, cascade="all, delete-orphan"
-        )
+        relationship("WalletBalance", back_populates="company", uselist=False, cascade="all, delete-orphan")
         if _safe_import_for_rel("WalletBalance")
         else None
     )
@@ -261,9 +258,7 @@ class Company(Base):
     )
 
     # Optional owner linkage — полноценная FK и связь (если бизнес требует)
-    owner_id = Column(
-        Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True
-    )
+    owner_id = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True)
     owner = relationship("User", foreign_keys=[owner_id], uselist=False)
 
     __table_args__ = (
@@ -271,9 +266,7 @@ class Company(Base):
             "subscription_plan IN ('start','pro','business')",
             name="ck_company_subscription_plan",
         ),
-        CheckConstraint(
-            "bin_iin IS NULL OR length(bin_iin) BETWEEN 10 AND 32", name="ck_company_bin_iin_len"
-        ),
+        CheckConstraint("bin_iin IS NULL OR length(bin_iin) BETWEEN 10 AND 32", name="ck_company_bin_iin_len"),
         CheckConstraint("phone IS NULL OR length(phone) <= 32", name="ck_company_phone_len"),
         CheckConstraint("email IS NULL OR length(email) <= 255", name="ck_company_email_len"),
         Index("ix_company_active_plan", "is_active", "subscription_plan"),
@@ -581,9 +574,7 @@ class Company(Base):
             "autopay_enabled": bool(s.get("wallet.autopay_enabled", False)),
             "min_positive_balance": int(s.get("wallet.min_positive_balance", 1) or 0),
             "allow_zero_ok": bool(s.get("wallet.allow_zero_ok", True)),
-            "preferred_invoice_channel": (
-                s.get("billing.preferred_invoice_channel") or "auto"
-            ).lower(),
+            "preferred_invoice_channel": (s.get("billing.preferred_invoice_channel") or "auto").lower(),
             "partial_invoice": bool(s.get("billing.partial_invoice", True)),
             "currency": s.get("billing.currency", "KZT"),
         }
@@ -685,9 +676,7 @@ class Company(Base):
             self.sync_mark_error(source="1c", code=error_code, message=error_message)
 
     @staticmethod
-    async def batch_sync_mark_success_async(
-        session, company_ids: Sequence[int], *, source: str
-    ) -> int:
+    async def batch_sync_mark_success_async(session, company_ids: Sequence[int], *, source: str) -> int:
         """Батч-пометка успешной синхронизации."""
         if not company_ids:
             return 0
@@ -895,9 +884,7 @@ class Company(Base):
         if date_to:
             conds.append(Invoice.created_at < date_to)
 
-        debt_expr = func.greatest(
-            func.coalesce(Invoice.total_due, 0) - func.coalesce(Invoice.paid_amount, 0), 0
-        )
+        debt_expr = func.greatest(func.coalesce(Invoice.total_due, 0) - func.coalesce(Invoice.paid_amount, 0), 0)
 
         row = await session.execute(
             select(
@@ -924,9 +911,7 @@ class Company(Base):
         if date_to:
             conds.append(Invoice.created_at < date_to)
 
-        debt_expr = func.greatest(
-            func.coalesce(Invoice.total_due, 0) - func.coalesce(Invoice.paid_amount, 0), 0
-        )
+        debt_expr = func.greatest(func.coalesce(Invoice.total_due, 0) - func.coalesce(Invoice.paid_amount, 0), 0)
 
         total_debt, cnt_with_debt = session.execute(
             select(
@@ -1039,9 +1024,7 @@ class Company(Base):
         **to_csv_kwargs: Any,
     ) -> str:
         """Сохраняет CSV с заказами компании. Возвращает путь к файлу."""
-        df = await Company.orders_to_dataframe_async(
-            session, company_id, date_from=date_from, date_to=date_to
-        )
+        df = await Company.orders_to_dataframe_async(session, company_id, date_from=date_from, date_to=date_to)
         df.to_csv(path, index=index, **to_csv_kwargs)
         return path
 
@@ -1057,9 +1040,7 @@ class Company(Base):
         **kwargs: Any,
     ) -> str:
         """Сохраняет Parquet с заказами компании. Требует pandas + (pyarrow|fastparquet)."""
-        df = await Company.orders_to_dataframe_async(
-            session, company_id, date_from=date_from, date_to=date_to
-        )
+        df = await Company.orders_to_dataframe_async(session, company_id, date_from=date_from, date_to=date_to)
         df.to_parquet(path, engine=engine, **kwargs)
         return path
 
@@ -1076,9 +1057,7 @@ class Company(Base):
         **kwargs: Any,
     ) -> str:
         """Сохраняет Excel с заказами компании (один лист). Требует pandas + openpyxl/xlsxwriter."""
-        df = await Company.orders_to_dataframe_async(
-            session, company_id, date_from=date_from, date_to=date_to
-        )
+        df = await Company.orders_to_dataframe_async(session, company_id, date_from=date_from, date_to=date_to)
         try:
             import pandas as pd  # type: ignore
         except Exception as e:  # pragma: no cover
@@ -1099,9 +1078,7 @@ class Company(Base):
         **kwargs: Any,
     ) -> str:
         """Сохраняет Parquet с платежами компании."""
-        df = await Company.payments_to_dataframe_async(
-            session, company_id, date_from=date_from, date_to=date_to
-        )
+        df = await Company.payments_to_dataframe_async(session, company_id, date_from=date_from, date_to=date_to)
         df.to_parquet(path, engine=engine, **kwargs)
         return path
 
@@ -1118,9 +1095,7 @@ class Company(Base):
         **kwargs: Any,
     ) -> str:
         """Сохраняет Excel с платежами компании (один лист)."""
-        df = await Company.payments_to_dataframe_async(
-            session, company_id, date_from=date_from, date_to=date_to
-        )
+        df = await Company.payments_to_dataframe_async(session, company_id, date_from=date_from, date_to=date_to)
         try:
             import pandas as pd  # type: ignore
         except Exception as e:  # pragma: no cover
@@ -1175,9 +1150,7 @@ class Company(Base):
                     )
                 if notify_fn:
                     try:
-                        notify_fn(
-                            cid, "company.archived", {"reason": archived_reason, "by": by_user_id}
-                        )
+                        notify_fn(cid, "company.archived", {"reason": archived_reason, "by": by_user_id})
                     except Exception:
                         # нотификации не должны валить транзакцию
                         pass
@@ -1211,9 +1184,7 @@ class Company(Base):
         if reactivate:
             values["is_active"] = True
 
-        res = await session.execute(
-            update(Company).where(Company.id.in_(company_ids)).values(**values)
-        )
+        res = await session.execute(update(Company).where(Company.id.in_(company_ids)).values(**values))
         count = int(res.rowcount or 0)
 
         # ВАЖНО: здесь было русское "или" — исправлено на or
@@ -1228,9 +1199,7 @@ class Company(Base):
                     )
                 if notify_fn:
                     try:
-                        notify_fn(
-                            cid, "company.restored", {"reactivate": reactivate, "by": by_user_id}
-                        )
+                        notify_fn(cid, "company.restored", {"reactivate": reactivate, "by": by_user_id})
                     except Exception:
                         pass
         return count
@@ -1261,9 +1230,7 @@ class Company(Base):
         return
 
     @staticmethod
-    def _emit_audit_event_static(
-        *, session, company_id: int, action: str, meta: dict[str, Any] | None = None
-    ) -> None:
+    def _emit_audit_event_static(*, session, company_id: int, action: str, meta: dict[str, Any] | None = None) -> None:
         """Статическая версия для bulk-операций."""
         try:
             from app.models.audit import ExternalAuditEvent  # type: ignore
@@ -1313,18 +1280,11 @@ class Company(Base):
     # -----------------------------
     @staticmethod
     def get_active(session, *, limit: int = 100) -> list[Company]:
-        q = (
-            select(Company)
-            .where(Company.is_active.is_(True))
-            .order_by(Company.id.asc())
-            .limit(limit)
-        )
+        q = select(Company).where(Company.is_active.is_(True)).order_by(Company.id.asc()).limit(limit)
         return list(session.execute(q).scalars().all())
 
     @staticmethod
-    def find_by_external(
-        session, *, external_id: str | None = None, onec_id: str | None = None
-    ) -> Company | None:
+    def find_by_external(session, *, external_id: str | None = None, onec_id: str | None = None) -> Company | None:
         conds = []
         if external_id:
             conds.append(Company.external_id == external_id)
