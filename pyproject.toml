@@ -88,7 +88,7 @@ build-backend = "poetry.core.masonry.api"
 # ---------------- Ruff ----------------
 [tool.ruff]
 target-version = "py311"
-line-length = 100
+line-length = 120
 
 # Поддерживаем твою прежнюю схему селекторов — она обратно совместима
 select = [
@@ -101,17 +101,33 @@ select = [
   "UP", # pyupgrade
 ]
 ignore = [
-  "E501",  # line too long, Black рулит длиной
-  "B008",  # function calls in defaults
+  "E501",  # line too long, handled by formatter/line-length
   "C901",  # too complex
   "E203",  # whitespace before ':'
   "W293",  # blank line contains whitespace
 ]
 unfixable = ["B"]
 
+exclude = [
+  "migrations/versions/_quarantine",
+  "migrations/versions/_quarantine/**",
+  "migrations/versions/_backup",
+  "migrations/versions/_backup/**",
+  "migrations/versions/_alembic_backup",
+  "migrations/versions/_alembic_backup/**",
+  "_alembic_backup",
+  "_alembic_backup/**",
+  "**/_backup/**",
+  "**/_quarantine/**",
+]
+
 [tool.ruff.per-file-ignores]
 "__init__.py" = ["E402"]
 "**/{tests,docs,tools}/*" = ["F401"]
+"app/api/**/*.py" = ["B008"]
+"app/main.py" = ["B008"]
+"app/core/dependencies.py" = ["B008"]
+"app/core/security.py" = ["B008"]
 
 # ---------------- Black ----------------
 [tool.black]
