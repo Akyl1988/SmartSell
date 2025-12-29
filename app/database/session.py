@@ -1,28 +1,18 @@
 # app/db/session.py
 from __future__ import annotations
 
-import os
 from collections.abc import AsyncGenerator, Generator
 
 from sqlalchemy import create_engine
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 from sqlalchemy.orm import Session, sessionmaker
 
-# Поддерживаем как postgresql+psycopg2://..., так и postgresql://...
-SYNC_URL = os.getenv(
-    "DATABASE_URL",
-    "postgresql+psycopg2://postgres:password@localhost:5432/smartsell",
-).strip()
+from app.core import config
+from app.core.db import _normalize_pg_to_asyncpg, _normalize_pg_to_psycopg2
 
-ASYNC_URL = os.getenv("ASYNC_DATABASE_URL", "").strip()
-if not ASYNC_URL:
-    if SYNC_URL.startswith("postgresql+psycopg2://"):
-        ASYNC_URL = SYNC_URL.replace("postgresql+psycopg2://", "postgresql+asyncpg://", 1)
-    elif SYNC_URL.startswith("postgresql://"):
-        ASYNC_URL = SYNC_URL.replace("postgresql://", "postgresql+asyncpg://", 1)
-    else:
-        # крайний случай — оставим как есть (для других диалектов)
-        ASYNC_URL = SYNC_URL
+resolved_url, _, _ = config.resolve_database_url(config.get_settings())
+SYNC_URL = _normalize_pg_to_psycopg2(resolved_url)
+ASYNC_URL = _normalize_pg_to_asyncpg(resolved_url)
 
 # Синхронный движок (alembic/служебные задачи)
 engine = create_engine(SYNC_URL, pool_pre_ping=True, future=True)

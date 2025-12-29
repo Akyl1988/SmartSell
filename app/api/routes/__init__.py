@@ -22,7 +22,7 @@ import logging
 import time
 from typing import Any, Union
 
-from app.core.config import settings
+from app.core import config
 
 from fastapi import APIRouter, FastAPI
 from fastapi.responses import JSONResponse
@@ -60,10 +60,6 @@ wallet = _try_import("app.api.v1.wallet")
 payments = _try_import("app.api.v1.payments")
 kaspi_mod = _try_import("app.api.v1.kaspi")  # ⬅ добавлено
 debug_db_mod = _try_import("app.api.v1.debug_db")
-
-_debug_routes_enabled = bool(
-    settings.DEBUG or str(getattr(settings, "ENVIRONMENT", "")).lower() == "local"
-)
 
 # Переэкспорт удобных имён/алиасов (для внешнего кода)
 auth = auth_mod
@@ -135,7 +131,7 @@ if payments and _router_or_none(payments):
 if kaspi_mod and _router_or_none(kaspi_mod):
     # в kaspi.py объявлен prefix '/api/v1/kaspi' → абсолютный
     V1_ROUTERS.append(("kaspi", kaspi_mod.router, True))
-if _debug_routes_enabled and debug_db_mod and _router_or_none(debug_db_mod):
+if debug_db_mod and _router_or_none(debug_db_mod):
     V1_ROUTERS.append(("debug_db", debug_db_mod.router, True))
 
 
@@ -306,7 +302,12 @@ def mount_v1(target: Target, base_prefix: str = "/api/v1") -> None:
     защищает от двойного подключения. Работает как с FastAPI, так и с APIRouter.
     Также монтирует диагностические эндпоинты под /api/v1.
     """
+    current_settings = config.get_settings()
+    debug_enabled = bool(current_settings.DEBUG) or str(getattr(current_settings, "ENVIRONMENT", "")).lower() == "local"
+
     for name, router, is_absolute in V1_ROUTERS:
+        if name == "debug_db" and not debug_enabled:
+            continue
         try:
             note = _mount_once(target, router, base_prefix, is_absolute_flag=is_absolute)
             logger.debug("%s: %s", name, note)
@@ -314,7 +315,7 @@ def mount_v1(target: Target, base_prefix: str = "/api/v1") -> None:
             logger.exception("Failed to include router '%s': %s", name, e)
 
     # Диагностика (/_debug/routers и /health-v1)
-    if _debug_routes_enabled:
+    if debug_enabled:
         try:
             _mount_v1_diagnostics(target, base_prefix)
         except Exception as e:

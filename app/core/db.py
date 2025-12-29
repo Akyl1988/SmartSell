@@ -50,7 +50,7 @@ logger = logging.getLogger(__name__)
 # Settings (безопасный импорт)
 # -----------------------------------------------------------------------------
 try:
-    from app.core.config import get_settings, db_url_fingerprint  # type: ignore
+    from app.core.config import get_settings, db_url_fingerprint, resolve_database_url  # type: ignore
 
     settings = get_settings()
 except Exception:
@@ -160,13 +160,21 @@ def _normalize_pg_to_asyncpg(url: str) -> str:
 
 
 def _normalize_pg_to_psycopg2(url: str) -> str:
-    if url.startswith("postgres://"):
-        url = url.replace("postgres://", "postgresql://", 1)
-    if url.startswith("postgresql+"):
-        return url  # уже указан драйвер (в т.ч. psycopg2)
-    if url.startswith("postgresql://"):
-        return url.replace("postgresql://", "postgresql+psycopg2://", 1)
-    return url
+    try:
+        if url.startswith("postgres://"):
+            url = url.replace("postgres://", "postgresql://", 1)
+        u = make_url(url)
+        base_driver = u.drivername.split("+", 1)[0]
+        u = u.set(drivername=f"{base_driver}+psycopg2")
+        return str(u)
+    except Exception:
+        if url.startswith("postgresql+psycopg2://"):
+            return url
+        if url.startswith("postgresql+asyncpg://"):
+            return url.replace("postgresql+asyncpg://", "postgresql+psycopg2://", 1)
+        if url.startswith("postgresql://"):
+            return url.replace("postgresql://", "postgresql+psycopg2://", 1)
+        return url
 
 
 def _validate_is_postgres(url: str) -> None:
@@ -185,71 +193,69 @@ def _validate_is_postgres(url: str) -> None:
 # Определение URL с дефолтами/фолбэками
 # -----------------------------------------------------------------------------
 def _resolve_async_url() -> str:
-    # порядок: settings.sqlalchemy_async_url -> settings.sqlalchemy_urls['async'] -> DATABASE_URL -> sqlite memory
+    base_url, _, _ = resolve_database_url(settings)
+
+    candidates: list[str] = []
     try:
-        url = getattr(settings, "sqlalchemy_async_url", "").strip()
-        if url:
-            # Normalize to asyncpg and strip unsupported params
-            url = _normalize_pg_to_asyncpg(url)
-            make_url(url)
-            return url
+        override = getattr(settings, "sqlalchemy_async_url", "").strip()
+        if override:
+            candidates.append(override)
     except Exception:
         pass
 
     try:
         urls = getattr(settings, "sqlalchemy_urls", {}) or {}
-        url = (urls.get("async") or "").strip()
-        if url:
-            url = _normalize_pg_to_asyncpg(url)
-            make_url(url)
-            return url
+        async_url = (urls.get("async") or "").strip()
+        if async_url:
+            candidates.append(async_url)
     except Exception:
         pass
 
-    raw = (getattr(settings, "DATABASE_URL", "") or os.getenv("DATABASE_URL", "")).strip()
-    if raw:
+    candidates.append(base_url.strip())
+
+    for raw in candidates:
+        if not raw:
+            continue
         try:
             url = _normalize_pg_to_asyncpg(raw)
             make_url(url)
             return url
         except Exception:
-            logger.warning(
-                "Invalid async DATABASE_URL; falling back to sqlite memory.", exc_info=False
-            )
+            logger.warning("Invalid async DB URL candidate skipped", exc_info=False)
 
     return "sqlite+aiosqlite:///:memory:"
 
 
 def _resolve_sync_pg_url() -> str:
-    # порядок: settings.sqlalchemy_sync_url -> settings.sqlalchemy_urls['sync'] -> DATABASE_URL (strict PG)
+    base_url, _, _ = resolve_database_url(settings)
+
+    candidates: list[str] = []
     try:
-        url = getattr(settings, "sqlalchemy_sync_url", "").strip()
-        if url:
-            _validate_is_postgres(url)
-            url = _normalize_pg_to_psycopg2(url)
-            make_url(url)
-            return url
+        override = getattr(settings, "sqlalchemy_sync_url", "").strip()
+        if override:
+            candidates.append(override)
     except Exception:
         pass
 
     try:
         urls = getattr(settings, "sqlalchemy_urls", {}) or {}
-        url = (urls.get("sync") or "").strip()
-        if url:
-            _validate_is_postgres(url)
-            url = _normalize_pg_to_psycopg2(url)
-            make_url(url)
-            return url
+        sync_url = (urls.get("sync") or "").strip()
+        if sync_url:
+            candidates.append(sync_url)
     except Exception:
         pass
 
-    raw = (getattr(settings, "DATABASE_URL", "") or os.getenv("DATABASE_URL", "")).strip()
-    if not raw:
-        raise RuntimeError("DATABASE_URL is not set. PostgreSQL is required for sync engine.")
-    _validate_is_postgres(raw)
-    url = _normalize_pg_to_psycopg2(raw)
-    make_url(url)
-    return url
+    candidates.append(base_url.strip())
+
+    for raw in candidates:
+        if not raw:
+            continue
+        _validate_is_postgres(raw)
+        url = _normalize_pg_to_psycopg2(raw)
+        make_url(url)
+        return url
+
+    raise RuntimeError("DATABASE_URL is not set. PostgreSQL is required for sync engine.")
 
 
 # -----------------------------------------------------------------------------
