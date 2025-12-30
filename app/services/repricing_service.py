@@ -43,9 +43,7 @@ class RepricingConfig:
     undercut: Decimal = Decimal("1")  # на сколько быть ниже конкурента
     cooldown_seconds: int = 900  # кулдаун между изменениями (15 мин)
     ignore_seller_ids: list[str] = field(default_factory=list)  # дружественные магазины (ID)
-    include_only_seller_ids: list[str] = field(
-        default_factory=list
-    )  # если указан список — сравниваем только с ними
+    include_only_seller_ids: list[str] = field(default_factory=list)  # если указан список — сравниваем только с ними
     marketplace: str = "kaspi"  # пока каспи
     # Опционально — защита маржи (если есть себестоимость)
     min_margin_percent: Decimal | None = None
@@ -66,15 +64,8 @@ class RepricingConfig:
         ):
             try:
                 raw = getattr(p, field_name, None)
-                if isinstance(raw, dict) and (
-                    "repricing" in raw or "repricing_config" in raw or "demping" in raw
-                ):
-                    data = (
-                        raw.get("repricing")
-                        or raw.get("repricing_config")
-                        or raw.get("demping")
-                        or {}
-                    )
+                if isinstance(raw, dict) and ("repricing" in raw or "repricing_config" in raw or "demping" in raw):
+                    data = raw.get("repricing") or raw.get("repricing_config") or raw.get("demping") or {}
                     break
                 if isinstance(raw, dict) and any(
                     k in raw for k in ("enabled", "min_price", "max_price", "step", "undercut")
@@ -166,9 +157,7 @@ class RepricingService:
 
         # Защита маржи
         if cfg.min_margin_percent is not None and cost is not None:
-            min_allowed = (
-                cost * (Decimal("1") + (cfg.min_margin_percent / Decimal("100")))
-            ).quantize(Decimal("0.01"))
+            min_allowed = (cost * (Decimal("1") + (cfg.min_margin_percent / Decimal("100")))).quantize(Decimal("0.01"))
             if cfg.min_price is None or min_allowed > cfg.min_price:
                 cfg.min_price = min_allowed
 
@@ -176,9 +165,7 @@ class RepricingService:
         new_price, reason = self._compute_new_price(current_price, competitor, cfg)
 
         if new_price is None or new_price == current_price:
-            log.info(
-                "Repricing: product %s price unchanged (%s)", getattr(product, "id", None), reason
-            )
+            log.info("Repricing: product %s price unchanged (%s)", getattr(product, "id", None), reason)
             return None
 
         # Применяем и сохраняем
@@ -244,9 +231,7 @@ class RepricingService:
         if comp_price > current:
             if cfg.max_price is None:
                 return None, "no_ceiling_set"
-            target = min(
-                cfg.max_price, comp_price
-            )  # можно подниматься до конкурента, но не выше потолка
+            target = min(cfg.max_price, comp_price)  # можно подниматься до конкурента, но не выше потолка
             new_price = RepricingService._nudge_towards(current, target, step)
             new_price = RepricingService._clamp(new_price, cfg.min_price, cfg.max_price)
             if new_price <= current:
@@ -265,9 +250,7 @@ class RepricingService:
         return None, "equal_no_change"
 
     @staticmethod
-    def _nudge_towards(
-        current: Decimal, target: Decimal, step: Decimal, down: bool | None = None
-    ) -> Decimal:
+    def _nudge_towards(current: Decimal, target: Decimal, step: Decimal, down: bool | None = None) -> Decimal:
         """
         Смещение от current к target дискретно шагом step.
         Если down=True — двигаемся только вниз. Если False — только вверх. Если None — по направлению к target.
@@ -304,9 +287,7 @@ class RepricingService:
         return v.quantize(Decimal("0.01"))
 
     # ---------- Данные и интеграции ----------
-    def _best_competitor_price(
-        self, product: Product, cfg: RepricingConfig
-    ) -> tuple[Decimal, str] | None:
+    def _best_competitor_price(self, product: Product, cfg: RepricingConfig) -> tuple[Decimal, str] | None:
         """
         Получаем цены конкурентов из Kaspi и выбираем «лучшую»:
           - минимальная цена среди релевантных продавцов
@@ -354,8 +335,8 @@ class RepricingService:
     # ---------- Работа с ценой товара ----------
     @staticmethod
     def _get_price(product: Product) -> Decimal:
-        for field in ("price", "sale_price", "base_price"):
-            val = getattr(product, field, None)
+        for fld in ("price", "sale_price", "base_price"):
+            val = getattr(product, fld, None)
             if val is not None:
                 try:
                     return Decimal(str(val))
@@ -370,8 +351,8 @@ class RepricingService:
 
     @staticmethod
     def _get_cost(product: Product) -> Decimal | None:
-        for field in ("cost_price", "purchase_price", "cogs"):
-            val = getattr(product, field, None)
+        for fld in ("cost_price", "purchase_price", "cogs"):
+            val = getattr(product, fld, None)
             if val is not None:
                 try:
                     return Decimal(str(val))
@@ -386,9 +367,9 @@ class RepricingService:
 
     @staticmethod
     def _set_price(product: Product, new_price: Decimal) -> None:
-        for field in ("price", "sale_price", "base_price"):
-            if hasattr(product, field):
-                setattr(product, field, Decimal(new_price))
+        for fld in ("price", "sale_price", "base_price"):
+            if hasattr(product, fld):
+                setattr(product, fld, Decimal(new_price))
                 return
         # если нет стандартных полей — положим в extra
         extra = getattr(product, "extra", None)
@@ -401,10 +382,10 @@ class RepricingService:
     @staticmethod
     def _mark_repriced_at(product: Product) -> None:
         # Пишем timestamp в одно из известных полей, если есть.
-        for field in ("repriced_at", "price_updated_at", "updated_at"):
-            if hasattr(product, field):
+        for fld in ("repriced_at", "price_updated_at", "updated_at"):
+            if hasattr(product, fld):
                 try:
-                    setattr(product, field, datetime.utcnow())
+                    setattr(product, fld, datetime.utcnow())
                     return
                 except Exception:
                     continue
@@ -422,16 +403,14 @@ class RepricingService:
         if cooldown_seconds <= 0:
             return True
         # Опираемся на одно из полей updated_at/price_updated_at/repriced_at
-        for field in ("repriced_at", "price_updated_at", "updated_at"):
-            ts = getattr(product, field, None)
+        for fld in ("repriced_at", "price_updated_at", "updated_at"):
+            ts = getattr(product, fld, None)
             if isinstance(ts, datetime):
                 return (datetime.utcnow() - ts) >= timedelta(seconds=cooldown_seconds)
         return True
 
     # ---------- Outbox событие ----------
-    def _emit_outbox(
-        self, product: Product, *, old_price: Decimal, new_price: Decimal, reason: str
-    ) -> None:
+    def _emit_outbox(self, product: Product, *, old_price: Decimal, new_price: Decimal, reason: str) -> None:
         if not InventoryOutbox:
             return
         payload = {

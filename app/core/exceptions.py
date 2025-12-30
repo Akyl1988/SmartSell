@@ -43,6 +43,7 @@ def _json_safe_errors(errs):
     except Exception:
         return [{"msg": "Validation error"}]
 
+
 # -----------------------------------------------------------------------------
 # Custom domain exceptions
 # -----------------------------------------------------------------------------
@@ -118,9 +119,7 @@ def bad_request(detail: str) -> HTTPException:
     return http_error(status.HTTP_400_BAD_REQUEST, detail)
 
 
-def unauthorized(
-    detail: str = "Unauthorized", *, www_authenticate: str | None = 'Bearer realm="api"'
-) -> HTTPException:
+def unauthorized(detail: str = "Unauthorized", *, www_authenticate: str | None = 'Bearer realm="api"') -> HTTPException:
     headers = {"WWW-Authenticate": www_authenticate} if www_authenticate else None
     return http_error(status.HTTP_401_UNAUTHORIZED, detail, headers=headers)
 
@@ -175,7 +174,7 @@ def _redact(obj: Any) -> Any:
             else:
                 out[k] = _redact(v)
         return out
-    if isinstance(obj, (list, tuple)):
+    if isinstance(obj, list | tuple):
         tp = type(obj)
         return tp(_redact(i) for i in obj)
     return obj
@@ -297,7 +296,7 @@ async def smartsell_exception_handler(request: Request, exc: SmartSellException)
         title = "Authentication error"
         # Если не задано, добавим WWW-Authenticate (полезно для клиентов)
         exc.headers.setdefault("WWW-Authenticate", 'Bearer realm="api"')
-    elif isinstance(exc, (AuthorizationError, ForbiddenError)):
+    elif isinstance(exc, AuthorizationError | ForbiddenError):
         sc = exc.http_status or status.HTTP_403_FORBIDDEN
         title = (
             "Authorization error"
@@ -404,9 +403,7 @@ async def request_validation_exception_handler(request: Request, exc) -> JSONRes
         pass
     except Exception:  # pragma: no cover
         # если тип не доступен — передадим в общий валидатор
-        return await validation_exception_handler(
-            request, ValidationError.from_exception_data("RequestValidation", [])
-        )  # type: ignore
+        return await validation_exception_handler(request, ValidationError.from_exception_data("RequestValidation", []))  # type: ignore
 
     # тип-safe проверка
     if hasattr(exc, "errors"):
@@ -488,7 +485,7 @@ async def operational_error_handler(request: Request, exc: OperationalError) -> 
     Operational DB errors (timeouts, connection issues).
     """
     rid = _extract_request_id(request.headers)
-    with bind_context(request_id=rid):
+    with bound_context(request_id=rid):
         logger.error(
             "DB operational error",
             exc_info=exc,

@@ -2,7 +2,7 @@
 """Reset test database"""
 import psycopg2
 
-conn = psycopg2.connect('postgresql://postgres:admin123@localhost:5432/postgres')
+conn = psycopg2.connect("postgresql://postgres:admin123@localhost:5432/postgres")
 conn.autocommit = True
 cur = conn.cursor()
 

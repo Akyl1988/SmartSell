@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
 """Create tables using SQLAlchemy directly (bypasses Alembic)"""
 import sys
-from sqlalchemy import create_engine, MetaData
+
+from sqlalchemy import MetaData, create_engine
 
 # Import models
-from app.models import ensure_models_loaded, Base
+from app.models import Base, ensure_models_loaded
 
 # Load models
 print("Loading models...")
@@ -20,7 +21,7 @@ print("Creating tables...")
 try:
     Base.metadata.create_all(engine)
     print("✅ Tables created!")
-    
+
     # List tables
     metadata = MetaData()
     metadata.reflect(bind=engine)
@@ -31,5 +32,6 @@ try:
 except Exception as e:
     print(f"❌ Error: {e}", file=sys.stderr)
     import traceback
+
     traceback.print_exc()
     sys.exit(1)

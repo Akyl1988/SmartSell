@@ -3,7 +3,18 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import BigInteger, Boolean, DateTime, ForeignKey, Integer, JSON, String, Text, UniqueConstraint, func
+from sqlalchemy import (
+    JSON,
+    BigInteger,
+    Boolean,
+    DateTime,
+    ForeignKey,
+    Integer,
+    String,
+    Text,
+    UniqueConstraint,
+    func,
+)
 from sqlalchemy.dialects import postgresql
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -25,19 +36,13 @@ class IntegrationProvider(LenientInitMixin, BaseModel):
     is_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default="true")
     is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default="false")
     version: Mapped[int] = mapped_column(Integer, nullable=False, server_default="1")
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), nullable=False, server_default=func.now()
-    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now()
     )
-    updated_by_user_id: Mapped[int | None] = mapped_column(
-        Integer, ForeignKey("users.id"), nullable=True
-    )
+    updated_by_user_id: Mapped[int | None] = mapped_column(Integer, ForeignKey("users.id"), nullable=True)
 
-    __table_args__ = (
-        UniqueConstraint("domain", "provider", name="uq__integration_providers__domain_provider"),
-    )
+    __table_args__ = (UniqueConstraint("domain", "provider", name="uq__integration_providers__domain_provider"),)
 
 
 class IntegrationProviderEvent(LenientInitMixin, BaseModel):
@@ -48,9 +53,7 @@ class IntegrationProviderEvent(LenientInitMixin, BaseModel):
     provider_from: Mapped[str | None] = mapped_column(String(128), nullable=True)
     provider_to: Mapped[str] = mapped_column(String(128), nullable=False)
     actor_user_id: Mapped[int | None] = mapped_column(Integer, ForeignKey("users.id"), nullable=True)
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), nullable=False, server_default=func.now()
-    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=False), nullable=False, server_default=func.now(), onupdate=func.now()
     )

@@ -219,9 +219,7 @@ class AuditLog(BaseModel, TenantMixin, AuditMixin):
             return None
 
     @classmethod
-    def bulk_insert(
-        cls, session: Session, logs: Iterable[dict[str, Any]], commit: bool = True
-    ) -> int:
+    def bulk_insert(cls, session: Session, logs: Iterable[dict[str, Any]], commit: bool = True) -> int:
         """Простая пакетная вставка через add (макс. совместимость)."""
         cnt = 0
         for data in logs:
@@ -257,9 +255,7 @@ class AuditLog(BaseModel, TenantMixin, AuditMixin):
             except Exception:
                 pass
         try:
-            session.bulk_save_objects(
-                objs, return_defaults=return_defaults, preserve_order=preserve_order
-            )
+            session.bulk_save_objects(objs, return_defaults=return_defaults, preserve_order=preserve_order)
             if commit:
                 session.commit()
         except Exception:
@@ -285,9 +281,7 @@ class AuditLog(BaseModel, TenantMixin, AuditMixin):
         return session.query(cls).order_by(cls.created_at.desc()).limit(limit).all()
 
     @classmethod
-    def find_by_entity(
-        cls, session: Session, entity_type: str, entity_id: int, limit: int = 100
-    ) -> list[AuditLog]:
+    def find_by_entity(cls, session: Session, entity_type: str, entity_id: int, limit: int = 100) -> list[AuditLog]:
         return (
             session.query(cls)
             .filter_by(entity_type=entity_type.strip().lower(), entity_id=entity_id)
@@ -299,27 +293,15 @@ class AuditLog(BaseModel, TenantMixin, AuditMixin):
     @classmethod
     def find_by_action(cls, session: Session, action: str, limit: int = 100) -> list[AuditLog]:
         return (
-            session.query(cls)
-            .filter_by(action=action.strip()[:100])
-            .order_by(cls.created_at.desc())
-            .limit(limit)
-            .all()
+            session.query(cls).filter_by(action=action.strip()[:100]).order_by(cls.created_at.desc()).limit(limit).all()
         )
 
     @classmethod
     def find_by_user(cls, session: Session, user_id: int, limit: int = 100) -> list[AuditLog]:
-        return (
-            session.query(cls)
-            .filter_by(user_id=user_id)
-            .order_by(cls.created_at.desc())
-            .limit(limit)
-            .all()
-        )
+        return session.query(cls).filter_by(user_id=user_id).order_by(cls.created_at.desc()).limit(limit).all()
 
     @classmethod
-    def filter_by_period(
-        cls, session: Session, start: datetime, end: datetime, limit: int = 100
-    ) -> list[AuditLog]:
+    def filter_by_period(cls, session: Session, start: datetime, end: datetime, limit: int = 100) -> list[AuditLog]:
         return (
             session.query(cls)
             .filter(cls.created_at >= start, cls.created_at <= end)
@@ -354,9 +336,7 @@ class AuditLog(BaseModel, TenantMixin, AuditMixin):
         return q.order_by(cls.created_at.desc()).limit(limit).all()
 
     @classmethod
-    def batch_export(
-        cls, session: Session, limit: int = 1000
-    ) -> Generator[dict[str, Any], None, None]:
+    def batch_export(cls, session: Session, limit: int = 1000) -> Generator[dict[str, Any], None, None]:
         """Экспорт логов (маскируем PII в публичной части)."""
         for obj in session.query(cls).order_by(cls.created_at.desc()).limit(limit).yield_per(200):
             yield obj.to_public_dict()
@@ -450,10 +430,7 @@ class AuditLog(BaseModel, TenantMixin, AuditMixin):
             if not isinstance(v, str):
                 return v
             lower = v.lower()
-            if any(
-                k in lower
-                for k in ("password", "secret", "token", "apikey", "api_key", "authorization")
-            ):
+            if any(k in lower for k in ("password", "secret", "token", "apikey", "api_key", "authorization")):
                 return "***"
             return v
 
@@ -493,9 +470,9 @@ class AuditLog(BaseModel, TenantMixin, AuditMixin):
 
     # --------------------- Сопоставление ---------------------
     def is_for_entity(self, entity_type: str | None, entity_id: int | None) -> bool:
-        return self.entity_type == (
-            entity_type.strip().lower() if entity_type else None
-        ) and self.entity_id == (entity_id if entity_id is not None else None)
+        return self.entity_type == (entity_type.strip().lower() if entity_type else None) and self.entity_id == (
+            entity_id if entity_id is not None else None
+        )
 
     def short_description(self) -> str:
         return f"{self.action}: {self.entity_type}({self.entity_id}) user={self.user_id}"

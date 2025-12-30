@@ -74,12 +74,8 @@ class ProductBase(BaseSchema):
 
     # Pricing
     price: Decimal = Field(..., gt=0, max_digits=10, decimal_places=2, description="Product price")
-    cost_price: Decimal | None = Field(
-        None, ge=0, max_digits=10, decimal_places=2, description="Cost price"
-    )
-    sale_price: Decimal | None = Field(
-        None, ge=0, max_digits=10, decimal_places=2, description="Sale price"
-    )
+    cost_price: Decimal | None = Field(None, ge=0, max_digits=10, decimal_places=2, description="Cost price")
+    sale_price: Decimal | None = Field(None, ge=0, max_digits=10, decimal_places=2, description="Sale price")
 
     # Inventory
     stock_quantity: int = Field(default=0, ge=0, description="Stock quantity")
@@ -104,18 +100,10 @@ class ProductBase(BaseSchema):
     gallery_urls: list[str] | None = Field(None, description="Gallery image URLs")
 
     # Dimensions
-    weight: Decimal | None = Field(
-        None, ge=0, max_digits=8, decimal_places=3, description="Weight in kg"
-    )
-    length: Decimal | None = Field(
-        None, ge=0, max_digits=8, decimal_places=2, description="Length in cm"
-    )
-    width: Decimal | None = Field(
-        None, ge=0, max_digits=8, decimal_places=2, description="Width in cm"
-    )
-    height: Decimal | None = Field(
-        None, ge=0, max_digits=8, decimal_places=2, description="Height in cm"
-    )
+    weight: Decimal | None = Field(None, ge=0, max_digits=8, decimal_places=3, description="Weight in kg")
+    length: Decimal | None = Field(None, ge=0, max_digits=8, decimal_places=2, description="Length in cm")
+    width: Decimal | None = Field(None, ge=0, max_digits=8, decimal_places=2, description="Width in cm")
+    height: Decimal | None = Field(None, ge=0, max_digits=8, decimal_places=2, description="Height in cm")
 
     @field_validator("slug", mode="before")
     def validate_slug(cls, v):
@@ -132,9 +120,7 @@ class ProductBase(BaseSchema):
         import re
 
         if not re.match(r"^[A-Z0-9-_]+$", v):
-            raise ValueError(
-                "SKU must contain only uppercase letters, numbers, hyphens, and underscores"
-            )
+            raise ValueError("SKU must contain only uppercase letters, numbers, hyphens, and underscores")
         return v
 
     @field_validator("sale_price", mode="after")
@@ -234,15 +220,9 @@ class ProductVariantBase(BaseSchema):
     sku: str = Field(..., min_length=1, max_length=100, description="Variant SKU")
     name: str = Field(..., min_length=1, max_length=255, description="Variant name")
 
-    price: Decimal | None = Field(
-        None, gt=0, max_digits=10, decimal_places=2, description="Variant price"
-    )
-    cost_price: Decimal | None = Field(
-        None, ge=0, max_digits=10, decimal_places=2, description="Cost price"
-    )
-    sale_price: Decimal | None = Field(
-        None, ge=0, max_digits=10, decimal_places=2, description="Sale price"
-    )
+    price: Decimal | None = Field(None, gt=0, max_digits=10, decimal_places=2, description="Variant price")
+    cost_price: Decimal | None = Field(None, ge=0, max_digits=10, decimal_places=2, description="Cost price")
+    sale_price: Decimal | None = Field(None, ge=0, max_digits=10, decimal_places=2, description="Sale price")
 
     stock_quantity: int = Field(default=0, ge=0, description="Stock quantity")
 
@@ -256,9 +236,7 @@ class ProductVariantBase(BaseSchema):
         import re
 
         if not re.match(r"^[A-Z0-9-_]+$", v):
-            raise ValueError(
-                "SKU must contain only uppercase letters, numbers, hyphens, and underscores"
-            )
+            raise ValueError("SKU must contain only uppercase letters, numbers, hyphens, and underscores")
         return v
 
     @field_validator("sale_price", mode="after")

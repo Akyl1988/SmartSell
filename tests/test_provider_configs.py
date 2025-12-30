@@ -6,12 +6,12 @@ from httpx import AsyncClient
 
 from app.core.crypto import decrypt_json, reset_crypto_key_cache
 from app.core.provider_registry import ProviderRegistry
-from app.services.integration_providers import IntegrationProviderService
-from app.services.provider_configs import ProviderConfigService
-from app.services.otp_providers import OtpProviderResolver
-from app.models.integration_provider_config import IntegrationProviderConfig
 from app.core.security import create_access_token, get_password_hash
+from app.models.integration_provider_config import IntegrationProviderConfig
 from app.models.user import User
+from app.services.integration_providers import IntegrationProviderService
+from app.services.otp_providers import OtpProviderResolver
+from app.services.provider_configs import ProviderConfigService
 
 
 @pytest.fixture(autouse=True)
@@ -77,7 +77,7 @@ async def test_config_roundtrip_redacted(async_client: AsyncClient, async_db_ses
     row = res.fetchone()
     assert row is not None
     encrypted = row.config_encrypted
-    assert isinstance(encrypted, (bytes, bytearray))
+    assert isinstance(encrypted, bytes | bytearray)
     assert b"secret123" not in encrypted
     decrypted = decrypt_json(encrypted)
     assert decrypted == cfg_payload

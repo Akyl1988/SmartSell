@@ -16,9 +16,7 @@ ASYNC_URL = _normalize_pg_to_asyncpg(resolved_url)
 
 # Синхронный движок (alembic/служебные задачи)
 engine = create_engine(SYNC_URL, pool_pre_ping=True, future=True)
-SessionLocal = sessionmaker(
-    bind=engine, class_=Session, autocommit=False, autoflush=False, future=True
-)
+SessionLocal = sessionmaker(bind=engine, class_=Session, autocommit=False, autoflush=False, future=True)
 
 # Асинхронный движок (ручки FastAPI)
 async_engine = create_async_engine(ASYNC_URL, pool_pre_ping=True, future=True)

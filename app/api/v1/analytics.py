@@ -42,9 +42,7 @@ async def _auth_user(
     try:
         user_id = int(sub)
     except Exception:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED, detail="Not authenticated"
-        )
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Not authenticated")
 
     user = await db.get(User, user_id)
     if not user:

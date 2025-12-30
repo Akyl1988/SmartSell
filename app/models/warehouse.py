@@ -31,9 +31,8 @@ from decimal import Decimal
 from enum import Enum
 from typing import Any
 
-from sqlalchemy import DDL
-from sqlalchemy import JSON as SAJSON  # кросс-СУБД JSON
 from sqlalchemy import (
+    DDL,
     Boolean,
     CheckConstraint,
     Column,
@@ -48,9 +47,11 @@ from sqlalchemy import (
     and_,
     event,
     func,
+    select,
+    text,
 )
+from sqlalchemy import JSON as SAJSON  # кросс-СУБД JSON
 from sqlalchemy import inspect as sa_inspect
-from sqlalchemy import select, text
 from sqlalchemy.exc import OperationalError, ProgrammingError
 from sqlalchemy.orm import Session, relationship
 
@@ -106,9 +107,7 @@ if not hasattr(InventoryOutbox, "enqueue"):
         )
         if next_attempt_in_seconds:
             try:
-                ev.next_attempt_at = datetime.utcnow() + timedelta(
-                    seconds=int(next_attempt_in_seconds)
-                )
+                ev.next_attempt_at = datetime.utcnow() + timedelta(seconds=int(next_attempt_in_seconds))
             except Exception:
                 pass
         return ev
@@ -297,9 +296,7 @@ class ProductStock(BaseModel):
 
     id = Column(Integer, primary_key=True, index=True)
     product_id = Column(ForeignKey("products.id", ondelete="CASCADE"), nullable=False, index=True)
-    warehouse_id = Column(
-        ForeignKey("warehouses.id", ondelete="CASCADE"), nullable=False, index=True
-    )
+    warehouse_id = Column(ForeignKey("warehouses.id", ondelete="CASCADE"), nullable=False, index=True)
     quantity = Column(Integer, default=0, nullable=False)
     reserved_quantity = Column(Integer, default=0, nullable=False)
     min_quantity = Column(Integer, default=0, nullable=False)
@@ -322,13 +319,9 @@ class ProductStock(BaseModel):
         CheckConstraint("quantity >= 0", name="ck_stock_quantity_nonneg"),
         CheckConstraint("reserved_quantity >= 0", name="ck_stock_reserved_nonneg"),
         CheckConstraint("reserved_quantity <= quantity", name="ck_stock_reserved_le_quantity"),
-        CheckConstraint(
-            "(max_quantity IS NULL) OR (max_quantity >= 0)", name="ck_stock_max_nonneg"
-        ),
+        CheckConstraint("(max_quantity IS NULL) OR (max_quantity >= 0)", name="ck_stock_max_nonneg"),
         CheckConstraint("min_quantity >= 0", name="ck_stock_min_nonneg"),
-        CheckConstraint(
-            "(max_quantity IS NULL) OR (min_quantity <= max_quantity)", name="ck_stock_min_le_max"
-        ),
+        CheckConstraint("(max_quantity IS NULL) OR (min_quantity <= max_quantity)", name="ck_stock_min_le_max"),
         Index("ix_stock_product_warehouse_qty", "product_id", "warehouse_id", "quantity"),
         Index("ix_stock_low", "warehouse_id", "min_quantity"),
         {"extend_existing": True},
@@ -428,9 +421,7 @@ class ProductStock(BaseModel):
         # Только для прихода
         if movement_type == MovementType.IN.value and delta > 0:
             if cost_price_for_avg is not None:
-                self._recalc_avg_cost(
-                    old_qty=prev_qty, add_qty=delta, add_cost=Decimal(cost_price_for_avg)
-                )
+                self._recalc_avg_cost(old_qty=prev_qty, add_qty=delta, add_cost=Decimal(cost_price_for_avg))
             self.last_restocked_at = datetime.utcnow()
 
         self.quantity = new_qty
@@ -757,9 +748,7 @@ class ProductStock(BaseModel):
         if exclude_archived:
             q = q.where(ProductStock.is_archived.is_(False))
         if company_id is not None:
-            q = q.join(Warehouse, Warehouse.id == ProductStock.warehouse_id).where(
-                Warehouse.company_id == company_id
-            )
+            q = q.join(Warehouse, Warehouse.id == ProductStock.warehouse_id).where(Warehouse.company_id == company_id)
         rows = session.execute(q).scalars().all()
         return [s.to_public_dict() for s in rows]
 
@@ -774,9 +763,7 @@ class StockMovement(BaseModel):
 
     id = Column(Integer, primary_key=True, index=True)
     # допускаем движения без stock_id (только product_id)
-    stock_id = Column(
-        ForeignKey("product_stocks.id", ondelete="CASCADE"), nullable=True, index=True
-    )
+    stock_id = Column(ForeignKey("product_stocks.id", ondelete="CASCADE"), nullable=True, index=True)
     product_id = Column(ForeignKey("products.id", ondelete="CASCADE"), nullable=True, index=True)
     movement_type = Column(String(32), nullable=False, index=True)
     quantity = Column(Integer, nullable=False)  # Positive for in, negative for out
@@ -832,9 +819,7 @@ class StockMovement(BaseModel):
             "reference_id": self.reference_id,
             "reason": self.reason,
             "order_id": self.order_id,
-            "created_at": self.created_at.isoformat(timespec="seconds")
-            if self.created_at
-            else None,
+            "created_at": self.created_at.isoformat(timespec="seconds") if self.created_at else None,
             "is_archived": self.is_archived,
         }
 
@@ -1015,9 +1000,7 @@ def movements_timeseries(
         """
         )
         rows = session.execute(sql, params).all()
-        return [
-            {"bucket": r[0].isoformat(timespec="seconds"), "qty_sum": int(r[1] or 0)} for r in rows
-        ]
+        return [{"bucket": r[0].isoformat(timespec="seconds"), "qty_sum": int(r[1] or 0)} for r in rows]
 
     if dialect == "sqlite":
         if bucket == "day":
@@ -1310,9 +1293,7 @@ if not globals().get("_WH_GIN_IDX_DDL_ATTACHED", False):
     ddl = DDL(
         "CREATE INDEX IF NOT EXISTS ix_warehouses_working_hours_gin "
         "ON warehouses USING gin ((working_hours::jsonb) jsonb_path_ops)"
-    ).execute_if(
-        dialect="postgresql"
-    )  # SQLAlchemy 2.x: ограничение по диалекту
+    ).execute_if(dialect="postgresql")  # SQLAlchemy 2.x: ограничение по диалекту
 
     event.listen(Warehouse.__table__, "after_create", ddl)
     globals()["_WH_GIN_IDX_DDL_ATTACHED"] = True

@@ -24,7 +24,6 @@ Unified database configuration and session management for SmartSell (async + syn
 from __future__ import annotations
 
 import logging
-import hashlib
 import os
 import time as _time
 from collections.abc import AsyncIterator, Generator, Iterator
@@ -51,11 +50,11 @@ logger = logging.getLogger(__name__)
 # -----------------------------------------------------------------------------
 try:
     from app.core.config import (
-        get_settings,
-        db_url_fingerprint,
-        resolve_database_url,
         _under_pytest,
-    )  # type: ignore
+        db_url_fingerprint,
+        get_settings,
+        resolve_database_url,
+    )
 
     settings = get_settings()
 except Exception:
@@ -73,6 +72,7 @@ except Exception:
             return {}
 
     settings = _S()  # type: ignore
+
     def _under_pytest() -> bool:  # type: ignore
         return False
 
@@ -85,6 +85,7 @@ try:
 except ImportError:
     # Fallback на случай ранних импортов (до инициализации models пакета)
     from sqlalchemy.orm import DeclarativeBase
+
     class Base(DeclarativeBase):
         pass
 
@@ -94,7 +95,7 @@ __all__ = [
     "Base",
     # Async
     "get_async_db",
-    "get_async_session",   # совместимость
+    "get_async_session",  # совместимость
     "init_db_async",
     "close_db_async",
     "reload_async_engine",
@@ -102,7 +103,7 @@ __all__ = [
     "ensure_extensions_async",
     # Sync
     "get_db",
-    "get_session",         # совместимость
+    "get_session",  # совместимость
     "session_scope",
     "init_db",
     "drop_db",
@@ -193,14 +194,9 @@ def _assert_non_local_has_real_db(source: str) -> None:
 
 
 def _validate_is_postgres(url: str) -> None:
-    if not (
-        url.startswith("postgresql://")
-        or url.startswith("postgresql+")
-        or url.startswith("postgres://")
-    ):
+    if not (url.startswith("postgresql://") or url.startswith("postgresql+") or url.startswith("postgres://")):
         raise RuntimeError(
-            f"PostgreSQL required, got DATABASE_URL='{url}'. "
-            "Use 'postgresql+psycopg2://user:pass@host:port/dbname'."
+            f"PostgreSQL required, got DATABASE_URL='{url}'. " "Use 'postgresql+psycopg2://user:pass@host:port/dbname'."
         )
 
 
@@ -405,9 +401,7 @@ def _get_async_engine() -> AsyncEngine:
         try:
             rep_url = _normalize_pg_to_asyncpg(rep)
             make_url(rep_url)
-            _ASYNC_REPLICA_ENGINE = create_async_engine(
-                rep_url, **_engine_options(async_engine=True)
-            )
+            _ASYNC_REPLICA_ENGINE = create_async_engine(rep_url, **_engine_options(async_engine=True))
         except Exception as e:
             logger.warning("Async replica init failed; primary will be used. %s", e)
 
@@ -429,9 +423,7 @@ def _get_sync_engine() -> Engine:
         return _SYNC_ENGINE
 
     def _install_pg_connection_events(engine: Engine) -> None:
-        app_name = f"{getattr(settings, 'PROJECT_NAME', 'SmartSell')}@{getattr(settings, 'VERSION', '')}".strip(
-            "@"
-        )
+        app_name = f"{getattr(settings, 'PROJECT_NAME', 'SmartSell')}@{getattr(settings, 'VERSION', '')}".strip("@")
         pg_search_path = getattr(settings, "PG_SEARCH_PATH", "") or os.getenv("PG_SEARCH_PATH", "")
         try:
             stmt_timeout_ms = int(getattr(settings, "POSTGRES_STATEMENT_TIMEOUT_MS", 0) or 0)
@@ -460,9 +452,7 @@ def _get_sync_engine() -> Engine:
     _log_effective_url(url, mode="sync")
     _SYNC_ENGINE = create_engine(url, **_engine_options(async_engine=False))
     _install_pg_connection_events(_SYNC_ENGINE)
-    _SYNC_SESSION_MAKER = sessionmaker(
-        bind=_SYNC_ENGINE, autocommit=False, autoflush=False, expire_on_commit=False
-    )
+    _SYNC_SESSION_MAKER = sessionmaker(bind=_SYNC_ENGINE, autocommit=False, autoflush=False, expire_on_commit=False)
 
     # replica (опционально)
     rep = (os.getenv("DATABASE_REPLICA_URL_SYNC", "") or "").strip()
@@ -559,13 +549,9 @@ async def health_check_db_async(timeout_seconds: int = 2) -> dict:
             version = None
             try:
                 if str(eng.url).startswith("sqlite"):
-                    version = (
-                        await conn.execute(sqltext("SELECT sqlite_version()"))
-                    ).scalar_one_or_none()
+                    version = (await conn.execute(sqltext("SELECT sqlite_version()"))).scalar_one_or_none()
                 else:
-                    version = (
-                        await conn.execute(sqltext("SHOW server_version"))
-                    ).scalar_one_or_none()
+                    version = (await conn.execute(sqltext("SHOW server_version"))).scalar_one_or_none()
             except Exception:
                 version = None
         return {"ok": True, "error": None, "server_version": version}

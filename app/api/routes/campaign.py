@@ -83,9 +83,7 @@ async def get_campaign(campaign_id: int, db: Session = Depends(get_db)):
 
 
 @router.put("/campaigns/{campaign_id}", response_model=CampaignResponse)
-async def update_campaign(
-    campaign_id: int, campaign_data: CampaignUpdate, db: Session = Depends(get_db)
-):
+async def update_campaign(campaign_id: int, campaign_data: CampaignUpdate, db: Session = Depends(get_db)):
     """
     Update existing campaign
     """

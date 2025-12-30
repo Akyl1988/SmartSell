@@ -13,7 +13,13 @@ log = get_logger(__name__)
 
 
 class MobizonOtpProvider(OtpProvider):
-    def __init__(self, *, config: dict[str, Any] | None = None, name: str | None = None, version: int | None = None):
+    def __init__(
+        self,
+        *,
+        config: dict[str, Any] | None = None,
+        name: str | None = None,
+        version: int | None = None,
+    ):
         cfg = config or {}
         self.name = (name or "mobizon").strip() or "mobizon"
         self.version = int(version or 0)

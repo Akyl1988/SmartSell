@@ -74,9 +74,7 @@ async def test_update_cancel_resume_renew_flow(client, auth_headers):
     sub = r.json()
     sid = sub["id"]
 
-    upd = await client.patch(
-        f"{BASE}/{sid}", json={"plan": "Business", "price": "33900.00"}, headers=auth_headers
-    )
+    upd = await client.patch(f"{BASE}/{sid}", json={"plan": "Business", "price": "33900.00"}, headers=auth_headers)
     assert upd.status_code == 200 and upd.json()["plan"] == "Business"
 
     c1 = await client.post(f"{BASE}/{sid}/cancel", headers=auth_headers)

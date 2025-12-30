@@ -53,9 +53,7 @@ class TipTopService:
 
         try:
             async with httpx.AsyncClient(timeout=30.0) as client:
-                response = await client.post(
-                    f"{self.base_url}/payments", headers=self.headers, json=payload
-                )
+                response = await client.post(f"{self.base_url}/payments", headers=self.headers, json=payload)
                 response.raise_for_status()
 
                 data = response.json()
@@ -73,9 +71,7 @@ class TipTopService:
 
         try:
             async with httpx.AsyncClient(timeout=30.0) as client:
-                response = await client.get(
-                    f"{self.base_url}/payments/{payment_id}", headers=self.headers
-                )
+                response = await client.get(f"{self.base_url}/payments/{payment_id}", headers=self.headers)
                 response.raise_for_status()
 
                 data = response.json()
@@ -86,9 +82,7 @@ class TipTopService:
             logger.error(f"TipTop get payment status error: {e}")
             raise Exception(f"Failed to get payment status: {e}")
 
-    async def create_refund(
-        self, payment_id: str, amount: float, reason: str = None
-    ) -> dict[str, Any]:
+    async def create_refund(self, payment_id: str, amount: float, reason: str = None) -> dict[str, Any]:
         """Create refund for payment"""
 
         payload = {
@@ -99,9 +93,7 @@ class TipTopService:
 
         try:
             async with httpx.AsyncClient(timeout=30.0) as client:
-                response = await client.post(
-                    f"{self.base_url}/refunds", headers=self.headers, json=payload
-                )
+                response = await client.post(f"{self.base_url}/refunds", headers=self.headers, json=payload)
                 response.raise_for_status()
 
                 data = response.json()
@@ -117,9 +109,7 @@ class TipTopService:
 
         try:
             async with httpx.AsyncClient(timeout=30.0) as client:
-                response = await client.get(
-                    f"{self.base_url}/refunds/{refund_id}", headers=self.headers
-                )
+                response = await client.get(f"{self.base_url}/refunds/{refund_id}", headers=self.headers)
                 response.raise_for_status()
 
                 data = response.json()
@@ -135,9 +125,7 @@ class TipTopService:
 
         try:
             # Calculate expected signature
-            expected_signature = hmac.new(
-                self.api_secret.encode("utf-8"), payload, hashlib.sha256
-            ).hexdigest()
+            expected_signature = hmac.new(self.api_secret.encode("utf-8"), payload, hashlib.sha256).hexdigest()
 
             # Compare signatures
             return hmac.compare_digest(signature, expected_signature)
@@ -168,9 +156,7 @@ class TipTopService:
 
         try:
             async with httpx.AsyncClient(timeout=30.0) as client:
-                response = await client.post(
-                    f"{self.base_url}/subscriptions", headers=self.headers, json=payload
-                )
+                response = await client.post(f"{self.base_url}/subscriptions", headers=self.headers, json=payload)
                 response.raise_for_status()
 
                 data = response.json()
@@ -221,9 +207,7 @@ class TipTopService:
 
         try:
             async with httpx.AsyncClient(timeout=30.0) as client:
-                response = await client.post(
-                    f"{self.base_url}/invoices", headers=self.headers, json=payload
-                )
+                response = await client.post(f"{self.base_url}/invoices", headers=self.headers, json=payload)
                 response.raise_for_status()
 
                 data = response.json()
@@ -239,9 +223,7 @@ class TipTopService:
 
         try:
             async with httpx.AsyncClient(timeout=30.0) as client:
-                response = await client.get(
-                    f"{self.base_url}/payment-methods", headers=self.headers
-                )
+                response = await client.get(f"{self.base_url}/payment-methods", headers=self.headers)
                 response.raise_for_status()
 
                 data = response.json()
@@ -252,18 +234,14 @@ class TipTopService:
             logger.error(f"TipTop get payment methods error: {e}")
             raise Exception(f"Failed to get payment methods: {e}")
 
-    async def create_customer(
-        self, phone: str, email: str = None, name: str = None
-    ) -> dict[str, Any]:
+    async def create_customer(self, phone: str, email: str = None, name: str = None) -> dict[str, Any]:
         """Create customer in TipTop Pay"""
 
         payload = {"phone": phone, "email": email, "name": name}
 
         try:
             async with httpx.AsyncClient(timeout=30.0) as client:
-                response = await client.post(
-                    f"{self.base_url}/customers", headers=self.headers, json=payload
-                )
+                response = await client.post(f"{self.base_url}/customers", headers=self.headers, json=payload)
                 response.raise_for_status()
 
                 data = response.json()

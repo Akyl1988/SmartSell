@@ -283,9 +283,7 @@ class User(
         foreign_keys=[company_id],
         lazy="joined",
     )
-    sessions = relationship(
-        "UserSession", back_populates="user", cascade="all, delete-orphan", lazy="selectin"
-    )
+    sessions = relationship("UserSession", back_populates="user", cascade="all, delete-orphan", lazy="selectin")
 
     # Симметрия с AuditLog.user (см. app/models/audit.py)
     audit_logs = relationship(
@@ -304,9 +302,7 @@ class User(
         lazy="dynamic",
     )
     # OTP-связь остаётся, но класс живёт в app.models.otp
-    otp_codes = relationship(
-        "OTPCode", back_populates="user", cascade="all, delete-orphan", lazy="dynamic"
-    )
+    otp_codes = relationship("OTPCode", back_populates="user", cascade="all, delete-orphan", lazy="dynamic")
 
     __table_args__ = (
         Index("ix_users_active_role", "is_active", "role"),
@@ -467,9 +463,7 @@ class User(
     # ---------------- Checks ----------------
     def is_locked(self) -> bool:
         now = utc_now()
-        return self.locked_at is not None or (
-            self.locked_until is not None and self.locked_until > now
-        )
+        return self.locked_at is not None or (self.locked_until is not None and self.locked_until > now)
 
     def is_deleted(self) -> bool:
         return self.deleted_at is not None
@@ -505,11 +499,7 @@ class User(
         """
         if self.is_superuser or self.is_admin():
             return True
-        if (
-            self.is_manager()
-            and (self.company_id is not None)
-            and (self.company_id == other.company_id)
-        ):
+        if self.is_manager() and (self.company_id is not None) and (self.company_id == other.company_id):
             return not (other.is_admin() or other.is_superuser)
         return False
 
@@ -525,9 +515,7 @@ class User(
         d["display_name"] = self.display_name()
         d["is_archived"] = self.is_archived
         d["can_login"] = self.can_login()
-        d["last_login_at_iso"] = (
-            self.last_login_at.isoformat(timespec="seconds") if self.last_login_at else None
-        )
+        d["last_login_at_iso"] = self.last_login_at.isoformat(timespec="seconds") if self.last_login_at else None
         return d
 
     def to_private_dict(self) -> dict[str, Any]:
@@ -535,9 +523,7 @@ class User(
         d["display_name"] = self.display_name()
         d["is_archived"] = self.is_archived
         d["can_login"] = self.can_login()
-        d["last_login_at_iso"] = (
-            self.last_login_at.isoformat(timespec="seconds") if self.last_login_at else None
-        )
+        d["last_login_at_iso"] = self.last_login_at.isoformat(timespec="seconds") if self.last_login_at else None
         return d
 
     def anonymized_dict(self) -> dict[str, Any]:
@@ -601,9 +587,7 @@ class User(
     # ---------------- Relation helpers ----------------
     def get_last_audit_log(self):
         return self.audit_logs.order_by(
-            func.coalesce(
-                getattr(self.audit_logs.property.mapper.class_, "created_at", None), func.now()
-            ).desc()
+            func.coalesce(getattr(self.audit_logs.property.mapper.class_, "created_at", None), func.now()).desc()
         ).first()
 
     def get_active_sessions(self) -> list[UserSession]:
@@ -616,9 +600,7 @@ class User(
     def get_stock_movements(self, limit: int = 10) -> list[StockMovement]:
         # без прямого импорта модели: берём класс из mapper связки
         mapper_cls = self.stock_movements.property.mapper.class_
-        order_col = getattr(mapper_cls, "created_at", None) or getattr(
-            mapper_cls, "timestamp", None
-        )
+        order_col = getattr(mapper_cls, "created_at", None) or getattr(mapper_cls, "timestamp", None)
         q = self.stock_movements
         if order_col is not None:
             q = q.order_by(order_col.desc())
@@ -637,9 +619,7 @@ class User(
         elif hasattr(log_cls, "meta"):
             payload["meta"] = meta or {}
         else:
-            payload["details"] = (
-                meta if isinstance(meta, dict) else {"message": str(meta) if meta else ""}
-            )
+            payload["details"] = meta if isinstance(meta, dict) else {"message": str(meta) if meta else ""}
         log = log_cls(**payload)
         self.audit_logs.append(log)
 
@@ -675,20 +655,14 @@ class User(
 
     @classmethod
     def find_by_email(cls, session: Session, email: str) -> User | None:
-        return (
-            session.query(cls)
-            .filter(func.lower(cls.email) == (email or "").strip().lower())
-            .first()
-        )
+        return session.query(cls).filter(func.lower(cls.email) == (email or "").strip().lower()).first()
 
     @classmethod
     def find_by_phone(cls, session: Session, phone: str) -> User | None:
         return session.query(cls).filter(cls.phone == (phone or "").strip()).first()
 
     @classmethod
-    def search(
-        cls, session: Session, q: str, company_id: int | None = None, limit: int = 50
-    ) -> list[User]:
+    def search(cls, session: Session, q: str, company_id: int | None = None, limit: int = 50) -> list[User]:
         query = session.query(cls).filter(cls.deleted_at.is_(None))
         if company_id is not None:
             query = query.filter(cls.company_id == company_id)
@@ -840,9 +814,7 @@ class User(
         return res.scalars().first()
 
     @classmethod
-    async def a_search(
-        cls, session, q: str, company_id: int | None = None, limit: int = 50
-    ) -> list[User]:
+    async def a_search(cls, session, q: str, company_id: int | None = None, limit: int = 50) -> list[User]:
         filters = [cls.deleted_at.is_(None)]
         if company_id is not None:
             filters.append(cls.company_id == company_id)
@@ -872,14 +844,10 @@ class User(
     ) -> tuple[User, bool]:
         user: User | None = None
         if username:
-            res = await session.execute(
-                select(cls).where(cls.username == username.strip()).limit(1)
-            )
+            res = await session.execute(select(cls).where(cls.username == username.strip()).limit(1))
             user = res.scalars().first()
         if not user and email:
-            res = await session.execute(
-                select(cls).where(func.lower(cls.email) == email.strip().lower()).limit(1)
-            )
+            res = await session.execute(select(cls).where(func.lower(cls.email) == email.strip().lower()).limit(1))
             user = res.scalars().first()
         if not user and phone:
             res = await session.execute(select(cls).where(cls.phone == phone.strip()).limit(1))
@@ -1011,9 +979,7 @@ class UserSession(LenientInitMixin, BaseModel, SoftDeleteMixin):
         return data
 
     @classmethod
-    def start_new(
-        cls, user_id: int, refresh_token: str, ttl_minutes: int = 60 * 24 * 7
-    ) -> UserSession:
+    def start_new(cls, user_id: int, refresh_token: str, ttl_minutes: int = 60 * 24 * 7) -> UserSession:
         return cls(
             user_id=user_id,
             refresh_token=refresh_token,

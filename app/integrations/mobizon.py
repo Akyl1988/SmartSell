@@ -12,9 +12,7 @@ log = logging.getLogger(__name__)
 
 class MobizonClient:
     def __init__(self) -> None:
-        self.base_url = (os.getenv("MOBIZON_BASE_URL") or "https://api.mobizon.kz/service").rstrip(
-            "/"
-        )
+        self.base_url = (os.getenv("MOBIZON_BASE_URL") or "https://api.mobizon.kz/service").rstrip("/")
         self.api_key = os.getenv("MOBIZON_API_KEY") or ""
         self.sender = os.getenv("MOBIZON_FROM") or None
         if not self.api_key:

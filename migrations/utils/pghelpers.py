@@ -92,7 +92,7 @@ def ensure_enum_exists(
             continue
         if prev_label is None:
             # добавим в начало (BEFORE first)
-            before = next((l for l in labels if l in existing), None)
+            before = next((label_existing for label_existing in labels if label_existing in existing), None)
             if before:
                 conn.execute(
                     text(

@@ -23,9 +23,11 @@ from datetime import UTC, datetime, timedelta
 from decimal import ROUND_DOWN, Decimal
 from typing import Any
 
-from sqlalchemy import Boolean, CheckConstraint, Column, DateTime
-from sqlalchemy import Enum as SQLEnum
 from sqlalchemy import (
+    Boolean,
+    CheckConstraint,
+    Column,
+    DateTime,
     ForeignKey,
     Index,
     Integer,
@@ -39,6 +41,7 @@ from sqlalchemy import (
     select,
     text,
 )
+from sqlalchemy import Enum as SQLEnum
 
 # ---- Dialect-safe type aliases ------------------------------------------------
 # На Postgres используем нативные типы; для других диалектов подменяем на безопасные аналоги
@@ -130,13 +133,9 @@ class IntegrationOutbox(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     created_at = Column(DateTime(False), nullable=False, server_default=func.now(), index=True)
-    updated_at = Column(
-        DateTime(False), nullable=False, server_default=func.now(), onupdate=func.now()
-    )
+    updated_at = Column(DateTime(False), nullable=False, server_default=func.now(), onupdate=func.now())
 
-    aggregate_type = Column(
-        String(64), nullable=False, index=True
-    )  # "payment" | "payment_refund" | ...
+    aggregate_type = Column(String(64), nullable=False, index=True)  # "payment" | "payment_refund" | ...
     aggregate_id = Column(Integer, nullable=False, index=True)
 
     event_type = Column(String(64), nullable=False, index=True)  # e.g., "payment.succeeded"
@@ -222,15 +221,11 @@ class Payment(Base):
     __tablename__ = "payments"
 
     id = Column(Integer, primary_key=True, index=True)
-    uuid = Column(
-        PG_UUID_TYPE, unique=True, nullable=False, default=lambda: str(uuid.uuid4()), index=True
-    )
+    uuid = Column(PG_UUID_TYPE, unique=True, nullable=False, default=lambda: str(uuid.uuid4()), index=True)
     version = Column(Integer, nullable=False, default=1)
 
     created_at = Column(DateTime(False), nullable=False, server_default=func.now(), index=True)
-    updated_at = Column(
-        DateTime(False), nullable=False, server_default=func.now(), onupdate=func.now(), index=True
-    )
+    updated_at = Column(DateTime(False), nullable=False, server_default=func.now(), onupdate=func.now(), index=True)
 
     order_id = Column(ForeignKey("orders.id", ondelete="CASCADE"), nullable=False, index=True)
 
@@ -243,9 +238,7 @@ class Payment(Base):
 
     provider = Column(SQLEnum(PaymentProvider), default=PaymentProvider.TIPTOP, nullable=False)
     method = Column(SQLEnum(PaymentMethod), default=PaymentMethod.CARD, nullable=False)
-    status = Column(
-        SQLEnum(PaymentStatus), default=PaymentStatus.PENDING, nullable=False, index=True
-    )
+    status = Column(SQLEnum(PaymentStatus), default=PaymentStatus.PENDING, nullable=False, index=True)
 
     amount = Column(Numeric(14, 2), nullable=False)
     fee_amount = Column(Numeric(14, 2), nullable=False, default=0)
@@ -429,15 +422,11 @@ class Payment(Base):
             self.failure_code = (code or "")[:32]
         if provider_payload:
             self._merge_provider_data(provider_payload)
-        self._siem(
-            "payment.failed", extra={"reason": self.failure_reason, "code": self.failure_code}
-        )
+        self._siem("payment.failed", extra={"reason": self.failure_reason, "code": self.failure_code})
         self._enqueue_webhook_event("payment.failed", self.to_public_dict())
         self._bump_version()
 
-    def cancel(
-        self, *, provider_payload: dict[str, Any] | None = None, reason: str | None = None
-    ) -> None:
+    def cancel(self, *, provider_payload: dict[str, Any] | None = None, reason: str | None = None) -> None:
         if self.status in {PaymentStatus.SUCCESS, PaymentStatus.REFUNDED}:
             raise ValueError(f"Cannot cancel from status {self.status}")
         self.status = PaymentStatus.CANCELLED
@@ -461,9 +450,7 @@ class Payment(Base):
         if amount > available:
             raise ValueError(f"Refund amount {amount} exceeds available {available}")
 
-        self.refunded_amount = (Decimal(self.refunded_amount or 0) + amount).quantize(
-            Decimal("0.01")
-        )
+        self.refunded_amount = (Decimal(self.refunded_amount or 0) + amount).quantize(Decimal("0.01"))
 
         if self.refunded_amount == Decimal(self.amount or 0):
             self.status = PaymentStatus.REFUNDED
@@ -488,15 +475,11 @@ class Payment(Base):
         self.refund_reason_history = hist
 
         self._siem("payment.refund_applied", extra=entry)
-        self._enqueue_webhook_event(
-            "payment.refund_applied", {"payment": self.to_public_dict(), "entry": entry}
-        )
+        self._enqueue_webhook_event("payment.refund_applied", {"payment": self.to_public_dict(), "entry": entry})
         self._bump_version()
         return self.refunded_amount
 
-    def enqueue_webhook_event(
-        self, session: Session, event_type: str, payload: dict[str, Any]
-    ) -> IntegrationOutbox:
+    def enqueue_webhook_event(self, session: Session, event_type: str, payload: dict[str, Any]) -> IntegrationOutbox:
         out = IntegrationOutbox(
             aggregate_type="payment",
             aggregate_id=self.id,
@@ -555,20 +538,14 @@ class Payment(Base):
             session.flush()
 
         amount = Decimal(self.amount or 0).quantize(Decimal("0.01"))
-        reserve = (
-            Decimal(str(reserve_min)).quantize(Decimal("0.01"))
-            if reserve_min is not None
-            else Decimal("0.00")
-        )
+        reserve = Decimal(str(reserve_min)).quantize(Decimal("0.01")) if reserve_min is not None else Decimal("0.00")
         balance = Decimal(wallet.balance or 0).quantize(Decimal("0.01"))
 
         available_to_debit = (balance - reserve).quantize(Decimal("0.01"), rounding=ROUND_DOWN)
         if available_to_debit < 0:
             available_to_debit = balance
 
-        debit_amount = min(amount, max(Decimal("0.00"), available_to_debit)).quantize(
-            Decimal("0.01")
-        )
+        debit_amount = min(amount, max(Decimal("0.00"), available_to_debit)).quantize(Decimal("0.01"))
         debited = Decimal("0.00")
 
         if debit_amount > 0:
@@ -582,9 +559,7 @@ class Payment(Base):
                 )
                 debited = debit_amount
             except Exception as e:
-                logger.error(
-                    "Wallet debit failed for payment %s: %s", self.payment_number, e, exc_info=True
-                )
+                logger.error("Wallet debit failed for payment %s: %s", self.payment_number, e, exc_info=True)
                 # не прерываем — ниже fallback в инвойс
 
         shortfall = (amount - debited).quantize(Decimal("0.01"))
@@ -620,9 +595,7 @@ class Payment(Base):
 
     # ---------- Highload safety / locking ----------
     def lock_for_update(self, session: Session) -> Payment:
-        locked = session.execute(
-            select(Payment).where(Payment.id == self.id).with_for_update()
-        ).scalar_one()
+        locked = session.execute(select(Payment).where(Payment.id == self.id).with_for_update()).scalar_one()
         return locked
 
     @staticmethod
@@ -735,18 +708,14 @@ class Payment(Base):
                     "payment_number": pay_num,
                     "order_id": oid,
                     "customer_id": cid,
-                    "provider": provider.value
-                    if isinstance(provider, PaymentProvider)
-                    else str(provider),
+                    "provider": provider.value if isinstance(provider, PaymentProvider) else str(provider),
                     "method": method.value if isinstance(method, PaymentMethod) else str(method),
                     "status": status.value if isinstance(status, PaymentStatus) else str(status),
                     "amount": str(amount) if amount is not None else None,
                     "fee_amount": str(fee) if fee is not None else None,
                     "refunded_amount": str(refunded) if refunded is not None else None,
                     "currency": currency,
-                    "confirmed_at": confirmed_at.isoformat(timespec="seconds")
-                    if confirmed_at
-                    else None,
+                    "confirmed_at": confirmed_at.isoformat(timespec="seconds") if confirmed_at else None,
                     "created_at": created_at.isoformat(timespec="seconds") if created_at else None,
                     "is_test": bool(is_test),
                 }
@@ -782,18 +751,14 @@ class Payment(Base):
                     "payment_number": pay_num,
                     "order_id": oid,
                     "customer_id": cid,
-                    "provider": provider.value
-                    if isinstance(provider, PaymentProvider)
-                    else str(provider),
+                    "provider": provider.value if isinstance(provider, PaymentProvider) else str(provider),
                     "method": method.value if isinstance(method, PaymentMethod) else str(method),
                     "status": status.value if isinstance(status, PaymentStatus) else str(status),
                     "amount": str(amount) if amount is not None else None,
                     "fee_amount": str(fee) if fee is not None else None,
                     "refunded_amount": str(refunded) if refunded is not None else None,
                     "currency": currency,
-                    "confirmed_at": confirmed_at.isoformat(timespec="seconds")
-                    if confirmed_at
-                    else None,
+                    "confirmed_at": confirmed_at.isoformat(timespec="seconds") if confirmed_at else None,
                     "created_at": created_at.isoformat(timespec="seconds") if created_at else None,
                     "is_test": bool(is_test),
                 }
@@ -925,12 +890,8 @@ class Payment(Base):
             select(
                 Payment.customer_ip,
                 func.count(Payment.id).label("cnt"),
-                func.sum(func.case((Payment.status == PaymentStatus.FAILED, 1), else_=0)).label(
-                    "failed_cnt"
-                ),
-                func.sum(func.case((Payment.status == PaymentStatus.SUCCESS, 1), else_=0)).label(
-                    "succ_cnt"
-                ),
+                func.sum(func.case((Payment.status == PaymentStatus.FAILED, 1), else_=0)).label("failed_cnt"),
+                func.sum(func.case((Payment.status == PaymentStatus.SUCCESS, 1), else_=0)).label("succ_cnt"),
             )
             .where(and_(*filters))
             .group_by(Payment.customer_ip)
@@ -969,12 +930,8 @@ class Payment(Base):
             select(
                 Payment.user_agent,
                 func.count(Payment.id).label("cnt"),
-                func.sum(func.case((Payment.status == PaymentStatus.FAILED, 1), else_=0)).label(
-                    "failed_cnt"
-                ),
-                func.sum(func.case((Payment.status == PaymentStatus.SUCCESS, 1), else_=0)).label(
-                    "succ_cnt"
-                ),
+                func.sum(func.case((Payment.status == PaymentStatus.FAILED, 1), else_=0)).label("failed_cnt"),
+                func.sum(func.case((Payment.status == PaymentStatus.SUCCESS, 1), else_=0)).label("succ_cnt"),
             )
             .where(and_(*filters))
             .group_by(Payment.user_agent)
@@ -1051,9 +1008,7 @@ class Payment(Base):
             "status": self.status.value if self.status else None,
             "amount": str(self.amount) if self.amount is not None else None,
             "fee_amount": str(self.fee_amount) if self.fee_amount is not None else None,
-            "refunded_amount": str(self.refunded_amount)
-            if self.refunded_amount is not None
-            else None,
+            "refunded_amount": str(self.refunded_amount) if self.refunded_amount is not None else None,
             "currency": self.currency,
             "refund_reason_history": self.refund_reason_history,
             "provider_data": self.provider_data,
@@ -1085,9 +1040,7 @@ class Payment(Base):
             "status": self.status.value if self.status else None,
             "amount": str(self.amount) if self.amount is not None else None,
             "fee_amount": str(self.fee_amount) if self.fee_amount is not None else None,
-            "refunded_amount": str(self.refunded_amount)
-            if self.refunded_amount is not None
-            else None,
+            "refunded_amount": str(self.refunded_amount) if self.refunded_amount is not None else None,
             "currency": self.currency,
             "refund_reason_history": self.refund_reason_history,
             "receipt_url": self.receipt_url,
@@ -1141,15 +1094,11 @@ class PaymentRefund(Base):
     __tablename__ = "payment_refunds"
 
     id = Column(Integer, primary_key=True, index=True)
-    uuid = Column(
-        PG_UUID_TYPE, unique=True, nullable=False, default=lambda: str(uuid.uuid4()), index=True
-    )
+    uuid = Column(PG_UUID_TYPE, unique=True, nullable=False, default=lambda: str(uuid.uuid4()), index=True)
     version = Column(Integer, nullable=False, default=1)
 
     created_at = Column(DateTime(False), nullable=False, server_default=func.now(), index=True)
-    updated_at = Column(
-        DateTime(False), nullable=False, server_default=func.now(), onupdate=func.now(), index=True
-    )
+    updated_at = Column(DateTime(False), nullable=False, server_default=func.now(), onupdate=func.now(), index=True)
 
     payment_id = Column(ForeignKey("payments.id", ondelete="CASCADE"), nullable=False, index=True)
 
@@ -1159,9 +1108,7 @@ class PaymentRefund(Base):
     amount = Column(Numeric(14, 2), nullable=False)
     currency = Column(String(8), default="KZT", nullable=False)
 
-    status = Column(
-        SQLEnum(PaymentStatus), default=PaymentStatus.PENDING, nullable=False, index=True
-    )
+    status = Column(SQLEnum(PaymentStatus), default=PaymentStatus.PENDING, nullable=False, index=True)
 
     processed_at = Column(DateTime(False), nullable=True)
     completed_at = Column(DateTime(False), nullable=True)
@@ -1206,9 +1153,7 @@ class PaymentRefund(Base):
         self._enqueue_webhook_event("refund.completed", self.to_public_dict())
         self._bump_version()
 
-    def mark_failed(
-        self, *, reason: str | None = None, provider_payload: dict[str, Any] | None = None
-    ) -> None:
+    def mark_failed(self, *, reason: str | None = None, provider_payload: dict[str, Any] | None = None) -> None:
         if self.status in {PaymentStatus.SUCCESS}:
             raise ValueError(f"Cannot mark_failed from status {self.status}")
         self.status = PaymentStatus.FAILED
@@ -1221,9 +1166,7 @@ class PaymentRefund(Base):
         self._enqueue_webhook_event("refund.failed", self.to_public_dict())
         self._bump_version()
 
-    def enqueue_webhook_event(
-        self, session: Session, event_type: str, payload: dict[str, Any]
-    ) -> IntegrationOutbox:
+    def enqueue_webhook_event(self, session: Session, event_type: str, payload: dict[str, Any]) -> IntegrationOutbox:
         out = IntegrationOutbox(
             aggregate_type="payment_refund",
             aggregate_id=self.id,
@@ -1355,9 +1298,7 @@ class ProviderReconciliation(Base):
     amount = Column(Numeric(14, 2), nullable=False)
     currency = Column(String(8), nullable=False, default="KZT")
 
-    matched_payment_id = Column(
-        Integer, ForeignKey("payments.id", ondelete="SET NULL"), nullable=True, index=True
-    )
+    matched_payment_id = Column(Integer, ForeignKey("payments.id", ondelete="SET NULL"), nullable=True, index=True)
     status = Column(SQLEnum(ReconciliationStatus), nullable=False, index=True)
     details = Column(JSONB_TYPE, nullable=True)  # любые дифы, поля провайдера и т.д.
 

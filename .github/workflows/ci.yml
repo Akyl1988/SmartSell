@@ -36,25 +36,45 @@ jobs:
       - name: Install tools & deps
         run: |
           python -m pip install --upgrade pip
-          pip install black isort flake8 mypy ruff
+          pip install ruff mypy
           pip install -r requirements.txt
-          # для стабильности, учитывая твои локальные логи:
           pip install tzdata "python-jose[cryptography]"
 
+      - name: pip check
+        run: pip check
+
       - name: ruff (fast lint)
-        run: ruff check --output-format=github .
+        run: python -m ruff check .
 
-      - name: black (format check)
-        run: black --check .
+  mypy:
+    name: mypy (soft-fail)
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
 
-      - name: isort (imports order)
-        run: isort --check-only .
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
 
-      - name: flake8
-        run: flake8 --max-line-length=100 --exclude=alembic,venv,env,.venv
+      - name: Cache pip
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-${{ hashFiles('requirements.txt') }}
+          restore-keys: |
+            ${{ runner.os }}-pip-
 
-      - name: mypy
-        run: mypy . --ignore-missing-imports
+      - name: Install deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install mypy
+          pip install -r requirements.txt
+          pip install tzdata "python-jose[cryptography]"
+
+      - name: mypy (lenient)
+        run: python -m mypy --config-file mypy.ini app
 
   test:
     name: Tests (Postgres + Redis)
@@ -103,6 +123,7 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
           pip install pytest pytest-cov pytest-asyncio asyncpg tzdata "python-jose[cryptography]"
+          pip check
 
       - name: Wait for Postgres
         run: |

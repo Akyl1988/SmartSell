@@ -75,17 +75,13 @@ def test_e2e_models_happy_path(db_session, company, admin_user, product, warehou
     assert sess.id and otp.id
 
     # 2) приход товара (receive) через helper ProductStock
-    m_in = stock.receive(
-        db_session, qty=10, user_id=admin_user.id, notes="initial load", commit=True
-    )
+    m_in = stock.receive(db_session, qty=10, user_id=admin_user.id, notes="initial load", commit=True)
     db_session.refresh(stock)
     assert stock.quantity == 10
     assert isinstance(m_in, StockMovement)
 
     # 3) резервирование части
-    m_res = stock.reserve_and_log(
-        db_session, qty=3, user_id=admin_user.id, notes="reserve for order #1", commit=True
-    )
+    m_res = stock.reserve_and_log(db_session, qty=3, user_id=admin_user.id, notes="reserve for order #1", commit=True)
     db_session.refresh(stock)
     assert stock.reserved_quantity == 3
     assert m_res.movement_type == "reserve"

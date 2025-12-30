@@ -26,7 +26,7 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from typing import Any
 
-from fastapi import Depends, HTTPException, Request, Response, status
+from fastapi import Depends, HTTPException, Request, Response
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy import select
 
@@ -280,9 +280,7 @@ async def _fetch_user(db, user_id: int):
         from sqlalchemy.ext.asyncio import AsyncSession as _AsyncSession  # type: ignore
 
         if isinstance(db, _AsyncSession):
-            res = await db.execute(
-                select(User).where(User.id == user_id, User.is_active.is_(True))
-            )
+            res = await db.execute(select(User).where(User.id == user_id, User.is_active.is_(True)))
             return res.scalars().first()
 
         res = db.execute(select(User).where(User.id == user_id, User.is_active.is_(True)))
@@ -446,9 +444,7 @@ _rate_cfg = getattr(settings, "rate_limit_settings", {}) or {}
 _env_tag = getattr(settings, "ENVIRONMENT", "dev")
 _RATE_ENABLED = bool(_rate_cfg.get("enabled", getattr(settings, "RATE_LIMIT_ENABLED", True)))
 
-_API_RATE_LIMIT = _int_setting(
-    _rate_cfg.get("api_per_minute", getattr(settings, "RATE_LIMIT_PER_MINUTE", 100)), 100
-)
+_API_RATE_LIMIT = _int_setting(_rate_cfg.get("api_per_minute", getattr(settings, "RATE_LIMIT_PER_MINUTE", 100)), 100)
 _API_RATE_WINDOW = _int_setting(
     _rate_cfg.get("api_window_seconds", getattr(settings, "RATE_LIMIT_WINDOW_SECONDS", 60)), 60
 )
@@ -462,6 +458,7 @@ _rate_limiter = RateLimiter(redis=get_redis(), env=_env_tag, prefix="rl") if _RA
 
 def _limit_dep(tag: str, max_requests: int, window_seconds: int, per_user: bool = True):
     if not _RATE_ENABLED:
+
         async def _noop(request: Request):
             return True
 

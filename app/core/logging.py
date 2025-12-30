@@ -327,9 +327,7 @@ def _build_stdlib_dict_config(logs_dir: str) -> dict:
         if getattr(settings, "ENVIRONMENT", "development") != "production"
         else "%(asctime)s [%(levelname)s] %(name)s:%(lineno)d - %(message)s"
     )
-    fmt_file = (
-        "%(asctime)s [%(levelname)s] %(name)s:%(filename)s:%(funcName)s:%(lineno)d - %(message)s"
-    )
+    fmt_file = "%(asctime)s [%(levelname)s] %(name)s:%(filename)s:%(funcName)s:%(lineno)d - %(message)s"
 
     # Weekly rotate app log on Monday (W0), keep 5 backups.
     app_log_handler = {
@@ -445,9 +443,7 @@ def _try_init_cloudwatch_logging() -> None:
 
         group = os.getenv("CLOUDWATCH_LOG_GROUP", "smartsell3")
         region = os.getenv("CLOUDWATCH_REGION", None)
-        handler = watchtower.CloudWatchLogHandler(
-            log_group=group, create_log_group=True, region_name=region
-        )
+        handler = watchtower.CloudWatchLogHandler(log_group=group, create_log_group=True, region_name=region)
         root = logging.getLogger()
         root.addHandler(handler)
         logging.getLogger(__name__).info("AWS CloudWatch logging integrated (group=%s)", group)
@@ -676,7 +672,7 @@ def enrich_from_request(request: Any) -> None:
 
         client = getattr(request, "client", None)
         client_ip = ""
-        if client and isinstance(client, (list, tuple)):
+        if client and isinstance(client, list | tuple):
             client_ip = client[0] or ""
         else:
             client_ip = getattr(client, "host", "") or ""
@@ -717,9 +713,7 @@ class AuditLogger:
         self.logger = get_logger("audit")
 
     def log_auth_success(self, user_id: int | str, ip_address: str, user_agent: str) -> None:
-        self.logger.info(
-            "auth_success", user_id=user_id, ip_address=ip_address, user_agent=user_agent
-        )
+        self.logger.info("auth_success", user_id=user_id, ip_address=ip_address, user_agent=user_agent)
 
     def log_auth_failure(self, username: str, ip_address: str, reason: str) -> None:
         self.logger.warning("auth_failure", username=username, ip_address=ip_address, reason=reason)
@@ -806,11 +800,9 @@ class LoggingContextMiddleware:
             return await self.app(scope, receive, send)
 
         headers = {k.decode().lower(): v.decode() for k, v in scope.get("headers", [])}
-        request_id = (
-            headers.get("x-request-id") or headers.get("x-correlation-id") or str(uuid.uuid4())
-        )
+        request_id = headers.get("x-request-id") or headers.get("x-correlation-id") or str(uuid.uuid4())
         client = scope.get("client") or ("", 0)
-        client_ip = client[0] if isinstance(client, (list, tuple)) and client else ""
+        client_ip = client[0] if isinstance(client, list | tuple) and client else ""
         user_agent = headers.get("user-agent", "")
         path = scope.get("path", "")
         method = scope.get("method", "")
@@ -865,9 +857,7 @@ def _attach_metrics_handler() -> None:
 
 
 # ---------- Slow SQL tracer for SQLAlchemy ----------
-def enable_sqlalchemy_slow_query_logging(
-    engine_or_sync_engine, threshold_ms: int | None = None
-) -> None:
+def enable_sqlalchemy_slow_query_logging(engine_or_sync_engine, threshold_ms: int | None = None) -> None:
     """
     Подключает обработчики событий SQLAlchemy для логирования/метрик «медленных» запросов.
     Аргументы:
@@ -877,9 +867,7 @@ def enable_sqlalchemy_slow_query_logging(
     try:
         from sqlalchemy import event  # type: ignore
     except Exception:
-        logging.getLogger(__name__).warning(
-            "SQLAlchemy not available; slow query logging is disabled."
-        )
+        logging.getLogger(__name__).warning("SQLAlchemy not available; slow query logging is disabled.")
         return
 
     sync_engine = getattr(engine_or_sync_engine, "sync_engine", engine_or_sync_engine)

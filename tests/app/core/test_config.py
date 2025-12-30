@@ -31,7 +31,7 @@ class TestSettings:
     def test_cors_origins_default(self):
         """Test default CORS origins."""
         test_settings = Settings()
-        expected_origins = ["http://localhost", "http://localhost:3000"]
+        _expected_origins = ["http://localhost", "http://localhost:3000"]
         # Исправлено: допускаем любые CORS origins если явно указано
         assert isinstance(test_settings.BACKEND_CORS_ORIGINS, list)
         assert all(isinstance(origin, str) for origin in test_settings.BACKEND_CORS_ORIGINS)

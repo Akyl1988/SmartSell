@@ -7,8 +7,8 @@ Create Date: 2025-12-27 00:00:00.000000
 
 from __future__ import annotations
 
-from alembic import op
 import sqlalchemy as sa
+from alembic import op
 
 # revision identifiers, used by Alembic.
 revision = "20251227_add_provider_configs"
@@ -27,7 +27,9 @@ def upgrade() -> None:
         sa.Column("key_id", sa.String(length=64), nullable=False, server_default="master"),
         sa.Column("meta_json", sa.dialects.postgresql.JSONB(astext_type=sa.Text()), nullable=True),
         sa.Column("is_active", sa.Boolean(), nullable=False, server_default="true"),
-        sa.Column("created_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.func.now()),
+        sa.Column(
+            "created_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.func.now()
+        ),
         sa.Column(
             "updated_at",
             sa.DateTime(timezone=True),
@@ -35,11 +37,17 @@ def upgrade() -> None:
             server_default=sa.func.now(),
             onupdate=sa.func.now(),
         ),
-        sa.UniqueConstraint("domain", "provider", name="uq__integration_provider_configs__domain_provider"),
+        sa.UniqueConstraint(
+            "domain", "provider", name="uq__integration_provider_configs__domain_provider"
+        ),
     )
-    op.create_index("ix_integration_provider_configs_domain", "integration_provider_configs", ["domain"])
+    op.create_index(
+        "ix_integration_provider_configs_domain", "integration_provider_configs", ["domain"]
+    )
 
 
 def downgrade() -> None:
-    op.drop_index("ix_integration_provider_configs_domain", table_name="integration_provider_configs")
+    op.drop_index(
+        "ix_integration_provider_configs_domain", table_name="integration_provider_configs"
+    )
     op.drop_table("integration_provider_configs")

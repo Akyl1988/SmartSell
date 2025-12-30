@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import logging
 from decimal import Decimal
-from typing import Literal
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Path, Query, status
 from pydantic import BaseModel, Field, field_validator
@@ -114,9 +113,7 @@ async def health():
 )
 async def create_and_capture(req: CreatePaymentRequest):
     try:
-        p = storage.create_and_capture(
-            req.user_id, req.wallet_account_id, req.amount, req.currency, req.reference
-        )
+        p = storage.create_and_capture(req.user_id, req.wallet_account_id, req.amount, req.currency, req.reference)
         return Payment(**p)
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))

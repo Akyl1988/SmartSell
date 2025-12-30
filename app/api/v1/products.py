@@ -184,9 +184,7 @@ def _is_admin(user: User) -> bool:
 async def list_products(
     filters: ProductSearchFilters = Depends(),
     pagination: Pagination = Depends(get_pagination),
-    sort_by: str = Query(
-        "created_at", description=f"One of: {', '.join(_ALLOWED_SORT_FIELDS.keys())}"
-    ),
+    sort_by: str = Query("created_at", description=f"One of: {', '.join(_ALLOWED_SORT_FIELDS.keys())}"),
     sort_order: str = Query("desc", pattern="^(?i)(asc|desc)$"),
     db: Session = Depends(get_db),
 ):
@@ -200,9 +198,7 @@ async def list_products(
     query = _apply_sorting(query, sort_by, sort_order)
     products = query.offset(pagination.offset).limit(pagination.limit).all()
 
-    return PaginatedResponse.create(
-        items=products, total=total, page=pagination.page, per_page=pagination.per_page
-    )
+    return PaginatedResponse.create(items=products, total=total, page=pagination.page, per_page=pagination.per_page)
 
 
 @router.get("/{product_id}", response_model=ProductResponse)
@@ -383,9 +379,7 @@ async def update_product_stock(
         changes={"stock_quantity": {"old": old_quantity, "new": stock_quantity}},
     )
 
-    return SuccessResponse(
-        message="Stock updated successfully", data={"new_quantity": stock_quantity}
-    )
+    return SuccessResponse(message="Stock updated successfully", data={"new_quantity": stock_quantity})
 
 
 # ---------------------------------------------------------------------------
@@ -522,9 +516,7 @@ async def bulk_create_products(
             errors.append({"index": idx, "error": code})
 
     db.commit()
-    return SuccessResponse(
-        message="Bulk create finished", data={"created": created, "errors": errors}
-    )
+    return SuccessResponse(message="Bulk create finished", data={"created": created, "errors": errors})
 
 
 @router.post("/bulk/update", response_model=SuccessResponse)
@@ -583,9 +575,7 @@ async def bulk_update_products(
             errors.append({"index": idx, "error": code, "id": pid})
 
     db.commit()
-    return SuccessResponse(
-        message="Bulk update finished", data={"updated": updated, "errors": errors}
-    )
+    return SuccessResponse(message="Bulk update finished", data={"updated": updated, "errors": errors})
 
 
 @router.post("/bulk/activate", response_model=SuccessResponse)
@@ -663,22 +653,10 @@ async def product_suggest(
         return []
 
     pattern = f"%{q}%"
-    rows = (
-        db.query(Product.name)
-        .filter(Product.name.ilike(pattern))
-        .order_by(Product.name.asc())
-        .limit(limit)
-        .all()
-    )
+    rows = db.query(Product.name).filter(Product.name.ilike(pattern)).order_by(Product.name.asc()).limit(limit).all()
     # Расширение: если не нашли по name, пробуем sku
     if not rows:
-        rows = (
-            db.query(Product.sku)
-            .filter(Product.sku.ilike(pattern))
-            .order_by(Product.sku.asc())
-            .limit(limit)
-            .all()
-        )
+        rows = db.query(Product.sku).filter(Product.sku.ilike(pattern)).order_by(Product.sku.asc()).limit(limit).all()
     # sqlalchemy возвращает список кортежей
     return [r[0] for r in rows if r and r[0]]
 
@@ -691,9 +669,7 @@ async def product_suggest(
 @router.get("/categories", response_model=list[dict[str, Any]])
 async def list_categories(
     db: Session = Depends(get_db),
-    only_active: bool = Query(
-        False, description="Return only categories that have active products"
-    ),
+    only_active: bool = Query(False, description="Return only categories that have active products"),
 ):
     """
     Список категорий. Если only_active=True — возвращаем только те, где есть активные товары.
@@ -738,21 +714,13 @@ async def get_category(
 
 class RepricingConfigIn(BaseModel):
     enabled: bool = Field(False, description="Включить автоматический демпинг для товара")
-    min: float | None = Field(
-        None, ge=0, description="Минимальная цена, ниже которой опускаться нельзя"
-    )
-    max: float | None = Field(
-        None, ge=0, description="Максимальная цена, выше которой подниматься не надо"
-    )
+    min: float | None = Field(None, ge=0, description="Минимальная цена, ниже которой опускаться нельзя")
+    max: float | None = Field(None, ge=0, description="Максимальная цена, выше которой подниматься не надо")
     step: float = Field(1.0, gt=0, description="Шаг изменения цены (например 1 или 10 тенге)")
     channel: RepricingChannel = Field(RepricingChannel.kaspi, description="Целевой канал")
-    friendly_ids: list[str] = Field(
-        default_factory=list, description="ID магазинов-друзей, с кем не демпингуем"
-    )
+    friendly_ids: list[str] = Field(default_factory=list, description="ID магазинов-друзей, с кем не демпингуем")
     cooldown: int = Field(0, ge=0, description="Кулдаун в секундах между изменениями")
-    hysteresis: float = Field(
-        0.0, ge=0, description="Гистерезис на флуктуации (минимальный шаг реакции)"
-    )
+    hysteresis: float = Field(0.0, ge=0, description="Гистерезис на флуктуации (минимальный шаг реакции)")
 
     @field_validator("max", mode="after")
     def _max_vs_min(cls, v, info: ValidationInfo):

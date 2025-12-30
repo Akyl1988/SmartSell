@@ -57,6 +57,7 @@ engine = create_engine(
     future=True,
 )
 
+
 @pytest.fixture
 def client(test_db: None):
     """TestClient with transactional DB override per-test."""
@@ -89,9 +90,7 @@ def client(test_db: None):
 
 # ------------------ HELPERS ------------------
 def _is_ok(resp, expected: int | tuple[int, ...]) -> bool:
-    return (
-        resp.status_code == expected if isinstance(expected, int) else resp.status_code in expected
-    )
+    return resp.status_code == expected if isinstance(expected, int) else resp.status_code in expected
 
 
 def _ensure_list_or_items_meta(resp_json):

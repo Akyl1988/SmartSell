@@ -7,8 +7,8 @@ Create Date: 2025-12-28 00:30:00.000000
 
 from __future__ import annotations
 
-from alembic import op, context
 import sqlalchemy as sa
+from alembic import context, op
 
 # revision identifiers, used by Alembic.
 revision = "20251228_add_subscriptions_deleted_at"

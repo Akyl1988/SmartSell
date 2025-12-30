@@ -1,5 +1,6 @@
-import pytest
 from decimal import Decimal
+
+import pytest
 from sqlalchemy.exc import IntegrityError
 
 from app.api.v1 import subscriptions as subs_api
@@ -101,9 +102,7 @@ async def test_list_subscription_payments_isolated(async_db_session):
 
     user = User.factory(company_id=company.id, role="platform_admin")
 
-    rows = await subs_api.list_subscription_payments(
-        subscription_id=sub_a.id, db=async_db_session, user=user
-    )
+    rows = await subs_api.list_subscription_payments(subscription_id=sub_a.id, db=async_db_session, user=user)
 
     ids = {p.id for p in rows}
     assert ids == {pay_a.id}
@@ -212,9 +211,7 @@ async def test_archive_and_restore_flow(async_db_session):
     )
     assert sub.id in {s.id for s in rows_all}
 
-    current = await subs_api.get_current_subscription(
-        company_id=company.id, db=async_db_session, user=admin
-    )
+    current = await subs_api.get_current_subscription(company_id=company.id, db=async_db_session, user=admin)
     assert current is None
 
     restored = await subs_api.restore_subscription(sub.id, db=async_db_session, user=admin)

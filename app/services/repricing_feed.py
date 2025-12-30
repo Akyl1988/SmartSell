@@ -189,9 +189,7 @@ class KaspiService:
         payload = {"status": status}
         async with self._client() as client:
             try:
-                resp = await client.patch(
-                    self._url(f"/orders/{order_id}/status"), headers=self.headers, json=payload
-                )
+                resp = await client.patch(self._url(f"/orders/{order_id}/status"), headers=self.headers, json=payload)
                 resp.raise_for_status()
                 logger.info("Kaspi: статус заказа %s обновлён на '%s'.", order_id, status)
                 return True
@@ -227,9 +225,7 @@ class KaspiService:
                     json={"availability": int(max(0, availability))},
                 )
                 resp.raise_for_status()
-                logger.info(
-                    "Kaspi: обновлена доступность товара %s -> %s.", product_id, availability
-                )
+                logger.info("Kaspi: обновлена доступность товара %s -> %s.", product_id, availability)
                 return True
             except httpx.HTTPError as e:
                 logger.error("Kaspi update_product_availability(%s) error: %s", product_id, e)
@@ -341,9 +337,7 @@ class KaspiService:
                 order_id = _ensure_str(ko.get("id"))
                 # Ищем существующий
                 q = await db.execute(
-                    select(Order).where(
-                        and_(Order.company_id == company_id, Order.external_id == order_id)
-                    )
+                    select(Order).where(and_(Order.company_id == company_id, Order.external_id == order_id))
                 )
                 existing: Order | None = q.scalar_one_or_none()
 
@@ -465,16 +459,12 @@ class KaspiService:
         Используем p.kaspi_product_id; если его нет — пропускаем (возвращаем True, чтобы не валить пайплайн).
         """
         if not product.kaspi_product_id:
-            logger.info(
-                "Kaspi availability: пропуск, у товара %s нет kaspi_product_id.", product.id
-            )
+            logger.info("Kaspi availability: пропуск, у товара %s нет kaspi_product_id.", product.id)
             return True
         availability = 0 if product.is_preorder() else max(0, int(product.free_stock))
         return await self.update_product_availability(str(product.kaspi_product_id), availability)
 
-    async def bulk_sync_availability(
-        self, company_id: int, db: AsyncSession, *, limit: int = 500
-    ) -> dict[str, int]:
+    async def bulk_sync_availability(self, company_id: int, db: AsyncSession, *, limit: int = 500) -> dict[str, int]:
         """
         Массовый апдейт доступности в Kaspi для активных товаров компании.
         """

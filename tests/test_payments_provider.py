@@ -5,8 +5,8 @@ import time
 import pytest
 from cryptography.fernet import Fernet
 
-from app.core.security import create_access_token, get_password_hash
 from app.core.provider_registry import CachedProvider, ProviderRegistry
+from app.core.security import create_access_token, get_password_hash
 from app.models.user import User
 from app.services.payment_providers import PaymentProviderResolver
 
@@ -72,7 +72,13 @@ async def test_payments_config_redaction_no_secrets(monkeypatch, async_client, a
     await async_client.post(
         "/api/admin/integrations/providers",
         headers=headers,
-        json={"domain": "payments", "provider": "noop-pay", "config": {}, "is_enabled": True, "is_active": True},
+        json={
+            "domain": "payments",
+            "provider": "noop-pay",
+            "config": {},
+            "is_enabled": True,
+            "is_active": True,
+        },
     )
 
     await async_client.put(
@@ -105,7 +111,13 @@ async def test_payments_healthcheck_redis_down_resilient(monkeypatch, async_clie
     await async_client.post(
         "/api/admin/integrations/providers",
         headers=headers,
-        json={"domain": "payments", "provider": "noop-pay", "config": {}, "is_enabled": True, "is_active": True},
+        json={
+            "domain": "payments",
+            "provider": "noop-pay",
+            "config": {},
+            "is_enabled": True,
+            "is_active": True,
+        },
     )
 
     await async_client.put(
