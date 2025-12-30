@@ -12,6 +12,7 @@ from app.models.product import Product
 from app.models.user import OTPCode, User, UserSession
 from app.models.warehouse import StockMovement
 
+
 class TestUser:
     """Test User model."""
 
@@ -173,9 +174,7 @@ class TestUser:
 
     def test_stock_movement_log(self, db_session):
         """Test StockMovement log_movement method and product creation."""
-        prod = Product(
-            name="TestProduct", sku="SKU-001", slug="testproduct", price=100, stock_quantity=10
-        )
+        prod = Product(name="TestProduct", sku="SKU-001", slug="testproduct", price=100, stock_quantity=10)
         db_session.add(prod)
         db_session.commit()
         db_session.refresh(prod)
@@ -281,9 +280,7 @@ class TestUser:
 
     def test_user_password_expiry(self, db_session):
         """Test password expiry logic."""
-        user = User(
-            username="expuser", email="exp@example.com", hashed_password="hashed", modified_at=None
-        )
+        user = User(username="expuser", email="exp@example.com", hashed_password="hashed", modified_at=None)
         db_session.add(user)
         db_session.commit()
         assert not user.password_expired()

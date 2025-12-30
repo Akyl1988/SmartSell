@@ -189,16 +189,12 @@ def _on_scheduler_event(event):
     if event.code == EVENT_JOB_MISSED:
         logger.warning("APScheduler: пропущен запуск job_id=%s", getattr(event, "job_id", "?"))
     elif event.code == EVENT_JOB_MAX_INSTANCES:
-        logger.error(
-            "APScheduler: достигнут максимум инстансов job_id=%s", getattr(event, "job_id", "?")
-        )
+        logger.error("APScheduler: достигнут максимум инстансов job_id=%s", getattr(event, "job_id", "?"))
     elif event.code == EVENT_JOB_ERROR:
         logger.exception("APScheduler: ошибка в job_id=%s", getattr(event, "job_id", "?"))
 
 
-scheduler.add_listener(
-    _on_scheduler_event, EVENT_JOB_MISSED | EVENT_JOB_MAX_INSTANCES | EVENT_JOB_ERROR
-)
+scheduler.add_listener(_on_scheduler_event, EVENT_JOB_MISSED | EVENT_JOB_MAX_INSTANCES | EVENT_JOB_ERROR)
 
 
 # -------- Бизнес-логика -------- #
@@ -291,9 +287,7 @@ def process_scheduled_campaigns() -> None:
             if not pending:
                 # Если нечего слать — завершаем кампанию
                 campaign.status = CampaignStatus.COMPLETED
-                logger.info(
-                    "Кампания id=%s помечена как COMPLETED (нет PENDING сообщений)", campaign.id
-                )
+                logger.info("Кампания id=%s помечена как COMPLETED (нет PENDING сообщений)", campaign.id)
                 continue
 
             # Ставим каждое сообщение в очередь на ближайший запуск
@@ -332,9 +326,7 @@ def enqueue_campaign(campaign_id: int) -> dict[str, int]:
             raise ValueError(f"Campaign {campaign_id} не найдена")
 
         messages = (
-            db.query(Message)
-            .filter(Message.campaign_id == campaign_id, Message.status == MessageStatus.PENDING)
-            .all()
+            db.query(Message).filter(Message.campaign_id == campaign_id, Message.status == MessageStatus.PENDING).all()
         )
         for m in messages:
             try:

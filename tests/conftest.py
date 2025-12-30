@@ -25,30 +25,29 @@ from __future__ import annotations
 import asyncio
 import os
 from collections.abc import AsyncIterator, Awaitable, Callable, Iterator
-from typing import Any, Dict, List, Optional, Set, Tuple
+from typing import Any, Optional
 from urllib.parse import quote
 
 import pytest
 import pytest_asyncio
-from alembic import command
-from alembic.config import Config
 
 # SQLAlchemy
 import sqlalchemy as sa
+from alembic import command
+from alembic.config import Config
 from fastapi.testclient import TestClient
 from httpx import AsyncClient
-from sqlalchemy import MetaData, Table
+from sqlalchemy import MetaData, Table, text
 from sqlalchemy import exc as sa_exc  # РѕР±СЂР°Р±РѕС‚РєР° OperationalError/В«already existsВ»
-from sqlalchemy import text
 from sqlalchemy.engine import Connection, Engine
 from sqlalchemy.engine.url import make_url
-from sqlalchemy.orm import sessionmaker
 from sqlalchemy.ext.asyncio import (
     AsyncEngine,
     AsyncSession,
     async_sessionmaker,
     create_async_engine,
 )
+from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import NullPool
 from sqlalchemy.sql.type_api import TypeEngine  # С‚РёРїС‹ РґР»СЏ С„РёР»СЊС‚СЂР° unsupported
 
@@ -58,11 +57,13 @@ def anyio_backend():
     """Force asyncio backend; asyncpg does not run under trio without extra shims."""
     return "asyncio"
 
+
 # Compatibility shim: newer trio may not expose MultiError; avoid touching deprecated attribute when present.
 try:
     import trio  # type: ignore
 
     if "MultiError" not in getattr(trio, "__dict__", {}):
+
         class _TrioMultiError(BaseExceptionGroup):  # type: ignore[misc]
             ...
 
@@ -97,9 +98,7 @@ def _patched_create_engine(*args, **kwargs):
     try:
         poolclass = kwargs.get("poolclass")
         # РЇРІРЅС‹Р№ NullPool РёР»Рё РїРѕРґРєР»Р°СЃСЃ вЂ” РІС‹СЂРµР·Р°РµРј pool_* РїР°СЂР°РјРµС‚СЂС‹, СЃ РєРѕС‚РѕСЂС‹РјРё NullPool РЅРµ СЃРѕРІРјРµСЃС‚РёРј
-        if poolclass is NullPool or (
-            isinstance(poolclass, type) and issubclass(poolclass, NullPool)
-        ):
+        if poolclass is NullPool or (isinstance(poolclass, type) and issubclass(poolclass, NullPool)):
             for bad in (
                 "pool_size",
                 "max_overflow",
@@ -203,10 +202,7 @@ def _get_async_test_url() -> str:
         host = os.getenv("TEST_DB_HOST") or "127.0.0.1"
         port = os.getenv("TEST_DB_PORT") or "5432"
         dbname = os.getenv("TEST_DB_NAME") or "SmartSellTest"
-        url = (
-            f"postgresql+asyncpg://{quote(user, safe='')}:{quote(password, safe='')}"
-            f"@{host}:{port}/{dbname}"
-        )
+        url = f"postgresql+asyncpg://{quote(user, safe='')}:{quote(password, safe='')}" f"@{host}:{port}/{dbname}"
 
     if not url.startswith("postgresql+"):
         raise RuntimeError(
@@ -281,9 +277,7 @@ def _import_app_and_get_db() -> tuple[Any, Callable[..., AsyncIterator[AsyncSess
 
             get_async_db_func = _get_async_db
         except Exception as e:
-            raise RuntimeError(
-                f"Cannot import get_async_db from app.core.db or app.core.database: {e}"
-            ) from e
+            raise RuntimeError(f"Cannot import get_async_db from app.core.db or app.core.database: {e}") from e
 
     return app, get_async_db_func  # type: ignore[return-value]
 
@@ -376,7 +370,7 @@ sync_engine: Engine | None = None
 def _is_sqlite_bind(bind: Any) -> bool:
     """РћРїСЂРµРґРµР»СЏРµРј, С‡С‚Рѕ create_all РІС‹Р·С‹РІР°СЋС‚ РґР»СЏ SQLite (РѕСЃРѕР±РµРЅРЅРѕ :memory:)."""
     try:
-        if isinstance(bind, (Engine, Connection)):
+        if isinstance(bind, Engine | Connection):
             return getattr(bind.dialect, "name", "") == "sqlite"
     except Exception:
         pass
@@ -443,9 +437,7 @@ def _sqlite_self_contained_tables(md: MetaData) -> list[Table]:
     present: set[str] = set(md.tables.keys())
     result: list[Table] = []
     for t in md.tables.values():
-        if _sqlite_extract_target_table_names(t).issubset(present) and _sqlite_is_supported_table(
-            t
-        ):
+        if _sqlite_extract_target_table_names(t).issubset(present) and _sqlite_is_supported_table(t):
             result.append(t)
     return result
 
@@ -538,7 +530,7 @@ def _ensure_patch_create_all_for_postgres() -> None:
         bind = kwargs.get("bind")
         if bind is None and args:
             for a in args:
-                if isinstance(a, (Engine, Connection)):
+                if isinstance(a, Engine | Connection):
                     bind = a
                     break
 
@@ -600,14 +592,14 @@ def test_db() -> Iterator[None]:
     with eng.connect() as conn:
         conn = conn.execution_options(isolation_level="AUTOCOMMIT")
         try:
-            conn.execute(text('DROP SCHEMA IF EXISTS public CASCADE'))
+            conn.execute(text("DROP SCHEMA IF EXISTS public CASCADE"))
         except Exception:
             pass
-        conn.execute(text('CREATE SCHEMA IF NOT EXISTS public'))
+        conn.execute(text("CREATE SCHEMA IF NOT EXISTS public"))
         # Best-effort default grants
         try:
-            conn.execute(text('GRANT ALL ON SCHEMA public TO postgres'))
-            conn.execute(text('GRANT ALL ON SCHEMA public TO public'))
+            conn.execute(text("GRANT ALL ON SCHEMA public TO postgres"))
+            conn.execute(text("GRANT ALL ON SCHEMA public TO public"))
         except Exception:
             pass
     eng.dispose()
@@ -647,11 +639,11 @@ def test_db() -> Iterator[None]:
                 """
             )
         )
-    
+
     # Explicitly create all ORM tables to ensure schema is complete
     # (alembic migration might not have all tables)
     from app.models.base import Base
-    
+
     temp_engine = sa.create_engine(sync_url, future=True)
     try:
         Base.metadata.create_all(temp_engine)
@@ -682,9 +674,7 @@ def test_db() -> Iterator[None]:
     try:
         from app.models.company import Company  # type: ignore
 
-        SessionLocalSeed = sessionmaker(
-            bind=sync_engine, expire_on_commit=False, autoflush=False
-        )
+        SessionLocalSeed = sessionmaker(bind=sync_engine, expire_on_commit=False, autoflush=False)
         with SessionLocalSeed() as s:
             if (s.query(Company).count() or 0) < 4:
                 s.add_all([Company(name=f"Company {i}") for i in range(1, 5)])
@@ -757,6 +747,7 @@ async def async_client(test_db: None) -> AsyncIterator[AsyncClient]:
             yield client
         finally:
             app.dependency_overrides.clear()
+
 
 @pytest_asyncio.fixture
 async def client(async_client: AsyncClient) -> AsyncIterator[AsyncClient]:
@@ -951,9 +942,7 @@ async def factory(async_db_session: AsyncSession) -> dict[str, Callable[..., Awa
         await async_db_session.refresh(obj)
         return obj
 
-    async def create_warehouse(
-        *, name: str = "Main WH", company: Company | None = None
-    ) -> Warehouse:
+    async def create_warehouse(*, name: str = "Main WH", company: Company | None = None) -> Warehouse:
         obj = Warehouse(name=name)
         if hasattr(obj, "company_id"):
             if company is None:

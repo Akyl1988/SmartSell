@@ -137,9 +137,7 @@ class TestAuth:
 
         # Create OTP attempt
         otp_code = "123456"
-        otp_attempt = OtpAttempt.create_new(
-            phone="+77001234567", code_hash=hash_otp_code(otp_code), purpose="login"
-        )
+        otp_attempt = OtpAttempt.create_new(phone="+77001234567", code_hash=hash_otp_code(otp_code), purpose="login")
         async_db_session.add(otp_attempt)
         await async_db_session.commit()
 
@@ -304,9 +302,7 @@ class TestAuth:
             "new_password": "newpassword123",
         }
 
-        response = await async_client.post(
-            "/api/auth/change-password", json=password_data, headers=headers
-        )
+        response = await async_client.post("/api/auth/change-password", json=password_data, headers=headers)
 
         assert response.status_code == 200, response.text
 

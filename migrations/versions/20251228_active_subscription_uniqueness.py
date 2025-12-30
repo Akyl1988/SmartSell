@@ -7,8 +7,8 @@ Create Date: 2025-12-28 00:00:00.000000
 
 from __future__ import annotations
 
-from alembic import op
 import sqlalchemy as sa
+from alembic import op
 
 # revision identifiers, used by Alembic.
 revision = "20251228_active_subscription_uniqueness"
@@ -21,9 +21,7 @@ ACTIVE_STATES = ("active", "trial", "overdue", "paused")
 
 
 def upgrade() -> None:
-    condition = sa.text(
-        "status IN ('active','trial','overdue','paused') AND deleted_at IS NULL"
-    )
+    condition = sa.text("status IN ('active','trial','overdue','paused') AND deleted_at IS NULL")
     op.create_index(
         "uq_subscription_company_active_states",
         "subscriptions",

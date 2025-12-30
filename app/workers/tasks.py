@@ -106,9 +106,7 @@ class TaskManager:
 
                 async with async_session_maker() as db:
                     # Clean up expired OTP attempts
-                    result = await db.execute(
-                        select(OtpAttempt).where(OtpAttempt.expires_at < datetime.utcnow())
-                    )
+                    result = await db.execute(select(OtpAttempt).where(OtpAttempt.expires_at < datetime.utcnow()))
                     expired_otps = result.scalars().all()
 
                     for otp in expired_otps:
@@ -121,9 +119,7 @@ class TaskManager:
 
                     # Clean up old audit logs (keep 90 days)
                     cutoff_date = datetime.utcnow() - timedelta(days=90)
-                    result = await db.execute(
-                        select(AuditLog).where(AuditLog.created_at < cutoff_date)
-                    )
+                    result = await db.execute(select(AuditLog).where(AuditLog.created_at < cutoff_date))
                     old_logs = result.scalars().all()
 
                     for log in old_logs:
@@ -354,9 +350,7 @@ class TaskManager:
 
                     # Update in Kaspi if different
                     if total_stock != product.kaspi_availability:
-                        success = await kaspi.update_product_availability(
-                            product.kaspi_product_id, total_stock
-                        )
+                        success = await kaspi.update_product_availability(product.kaspi_product_id, total_stock)
 
                         if success:
                             product.kaspi_availability = total_stock
@@ -414,9 +408,7 @@ async def send_test_notification(user_id: int, message: str) -> bool:
 
         if user.email:
             email_service = EmailService()
-            return await email_service.send_email(
-                to_email=user.email, subject="Test Notification", body=message
-            )
+            return await email_service.send_email(to_email=user.email, subject="Test Notification", body=message)
 
         return False
 
@@ -428,9 +420,7 @@ async def cleanup_old_data(days: int = 90) -> dict[str, int]:
 
     async with async_session_maker() as db:
         # Clean up expired OTP attempts
-        result = await db.execute(
-            select(OtpAttempt).where(OtpAttempt.expires_at < datetime.utcnow())
-        )
+        result = await db.execute(select(OtpAttempt).where(OtpAttempt.expires_at < datetime.utcnow()))
         expired_otps = result.scalars().all()
 
         for otp in expired_otps:
