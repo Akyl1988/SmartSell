@@ -184,7 +184,7 @@ def _mask_nested(obj: Any, key_hint: str | None = None) -> Any:
         out: dict[str, Any] = {}
         for k, v in obj.items():
             if isinstance(k, str) and _is_secret_key_name(k):
-                if isinstance(v, (dict, list, tuple)):
+                if isinstance(v, dict | list | tuple):
                     out[k] = _mask_nested(v, key_hint=k)
                 else:
                     out[k] = _mask_secret(v)
@@ -1292,7 +1292,7 @@ class Settings(BaseSettings):
         for k, v in self.model_dump().items():
             if v is None:
                 val = ""
-            elif isinstance(v, (list, dict)):
+            elif isinstance(v, list | dict):
                 val = json.dumps(v, ensure_ascii=False)
             else:
                 val = str(v)
