@@ -14,5 +14,5 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 - Initial release workflow scaffold and documentation updates.
 
-[Unreleased]: https://example.com/compare/v0.1.0...HEAD
-[v0.1.0]: https://example.com/releases/v0.1.0
+[Unreleased]: https://github.com/Akyl1988/SmartSell/compare/v0.1.0...HEAD
+[v0.1.0]: https://github.com/Akyl1988/SmartSell/releases/tag/v0.1.0
