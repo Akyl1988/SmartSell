@@ -25,7 +25,7 @@ from __future__ import annotations
 import asyncio
 import os
 from collections.abc import AsyncIterator, Awaitable, Callable, Iterator
-from typing import Any, Dict, List, Optional, Set, Tuple
+from typing import Any
 from urllib.parse import quote
 
 import pytest
@@ -378,7 +378,7 @@ sync_engine: Engine | None = None
 def _is_sqlite_bind(bind: Any) -> bool:
     """РћРїСЂРµРґРµР»СЏРµРј, С‡С‚Рѕ create_all РІС‹Р·С‹РІР°СЋС‚ РґР»СЏ SQLite (РѕСЃРѕР±РµРЅРЅРѕ :memory:)."""
     try:
-        if isinstance(bind, (Engine, Connection)):
+        if isinstance(bind, Engine | Connection):
             return getattr(bind.dialect, "name", "") == "sqlite"
     except Exception:
         pass
@@ -538,7 +538,7 @@ def _ensure_patch_create_all_for_postgres() -> None:
         bind = kwargs.get("bind")
         if bind is None and args:
             for a in args:
-                if isinstance(a, (Engine, Connection)):
+                if isinstance(a, Engine | Connection):
                     bind = a
                     break
 
