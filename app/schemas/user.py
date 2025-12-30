@@ -121,9 +121,7 @@ class UserCreate(UserBase):
     """
 
     password: str = Field(..., min_length=8, max_length=100, description="Password")
-    confirm_password: str | None = Field(
-        None, description="Password confirmation (optional; defaults to password)"
-    )
+    confirm_password: str | None = Field(None, description="Password confirmation (optional; defaults to password)")
 
     # Поля для совместимости со старыми клиентами/тестами
     first_name: str | None = Field(None, min_length=1, max_length=100)
@@ -183,7 +181,7 @@ class UserLogin(BaseSchema):
         return digits
 
     @model_validator(mode="after")
-    def _require_password_or_otp(self) -> "UserLogin":
+    def _require_password_or_otp(self) -> UserLogin:
         if not (self.password or self.otp_code):
             raise ValueError("Either password or otp_code must be provided")
         return self
@@ -290,9 +288,7 @@ class PasswordReset(BaseSchema):
     otp_code: str = Field(..., min_length=4, max_length=6, description="OTP code")
     new_password: str = Field(..., min_length=8, max_length=100, description="New password")
     # confirm_password опционален с автоподстановкой — та же стратегия, что и при регистрации
-    confirm_password: str | None = Field(
-        None, description="Password confirmation (optional; defaults to new_password)"
-    )
+    confirm_password: str | None = Field(None, description="Password confirmation (optional; defaults to new_password)")
 
     @model_validator(mode="before")
     @classmethod

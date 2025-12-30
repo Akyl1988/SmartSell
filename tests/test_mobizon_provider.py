@@ -1,13 +1,14 @@
 from __future__ import annotations
 
+from secrets import randbelow
+
 import httpx
 import pytest
 from cryptography.fernet import Fernet
-from secrets import randbelow
 from httpx import Response
 
-from app.core.security import create_access_token, get_password_hash
 from app.core.provider_registry import ProviderRegistry
+from app.core.security import create_access_token, get_password_hash
 from app.integrations.providers.mobizon.otp import MobizonOtpProvider
 from app.models.integration_provider import IntegrationProviderEvent
 from app.models.user import User
@@ -52,7 +53,13 @@ async def test_send_otp_success(monkeypatch, async_client, async_db_session):
     await async_client.post(
         "/api/admin/integrations/providers",
         headers=headers,
-        json={"domain": "otp", "provider": "mobizon", "config": {}, "is_enabled": True, "is_active": True},
+        json={
+            "domain": "otp",
+            "provider": "mobizon",
+            "config": {},
+            "is_enabled": True,
+            "is_active": True,
+        },
     )
 
     await async_client.put(
@@ -88,7 +95,13 @@ async def test_send_otp_failure(monkeypatch, async_client, async_db_session):
     await async_client.post(
         "/api/admin/integrations/providers",
         headers=headers,
-        json={"domain": "otp", "provider": "mobizon", "config": {}, "is_enabled": True, "is_active": True},
+        json={
+            "domain": "otp",
+            "provider": "mobizon",
+            "config": {},
+            "is_enabled": True,
+            "is_active": True,
+        },
     )
 
     await async_client.put(
@@ -125,7 +138,13 @@ async def test_missing_config_falls_back_and_records_event(monkeypatch, async_cl
     await async_client.post(
         "/api/admin/integrations/providers",
         headers=headers,
-        json={"domain": "otp", "provider": "mobizon", "config": {}, "is_enabled": True, "is_active": True},
+        json={
+            "domain": "otp",
+            "provider": "mobizon",
+            "config": {},
+            "is_enabled": True,
+            "is_active": True,
+        },
     )
 
     resp = await async_client.post(
@@ -153,12 +172,24 @@ async def test_resolver_uses_new_config_after_update(monkeypatch, async_client, 
     await async_client.post(
         "/api/admin/integrations/providers",
         headers=headers,
-        json={"domain": "otp", "provider": "noop", "config": {}, "is_enabled": True, "is_active": True},
+        json={
+            "domain": "otp",
+            "provider": "noop",
+            "config": {},
+            "is_enabled": True,
+            "is_active": True,
+        },
     )
     await async_client.post(
         "/api/admin/integrations/providers",
         headers=headers,
-        json={"domain": "otp", "provider": "mobizon", "config": {}, "is_enabled": True, "is_active": False},
+        json={
+            "domain": "otp",
+            "provider": "mobizon",
+            "config": {},
+            "is_enabled": True,
+            "is_active": False,
+        },
     )
 
     await async_client.put(
@@ -200,7 +231,13 @@ async def test_redis_down_does_not_break_send(monkeypatch, async_client, async_d
     await async_client.post(
         "/api/admin/integrations/providers",
         headers=headers,
-        json={"domain": "otp", "provider": "mobizon", "config": {}, "is_enabled": True, "is_active": True},
+        json={
+            "domain": "otp",
+            "provider": "mobizon",
+            "config": {},
+            "is_enabled": True,
+            "is_active": True,
+        },
     )
 
     await async_client.put(

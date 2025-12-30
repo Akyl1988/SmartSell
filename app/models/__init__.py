@@ -64,14 +64,14 @@ except Exception:
 # ------------------------------------------------------------------------------
 # База/миксины/утилиты (Base = BaseModel — совместимость со старым кодом)
 # ------------------------------------------------------------------------------
-from .base import Base  # корневой DeclarativeBase с naming conventions
-from .base import bulk_update  # алиас на bulk_update_rows
 from .base import (  # noqa: E402
     AuditMixin,
+    Base,  # корневой DeclarativeBase с naming conventions
     BaseModel,
     LockableMixin,
     SoftDeleteMixin,
     TenantMixin,
+    bulk_update,  # алиас на bulk_update_rows
     bulk_update_rows,
     create,
     delete,
@@ -120,9 +120,7 @@ def dump_duplicate_mappers() -> None:
 
         for t, mappers in sorted(by_table.items()):
             if len(mappers) > 1:
-                logger.warning(
-                    "Detected duplicate mappers for table '%s' (count=%d)", t, len(mappers)
-                )
+                logger.warning("Detected duplicate mappers for table '%s' (count=%d)", t, len(mappers))
                 for i, mp in enumerate(mappers, 1):
                     meta = _describe_mapper(mp)
                     logger.warning("  #%d -> %s  (file=%s)", i, meta.get("class"), meta.get("file"))
@@ -181,7 +179,10 @@ _LAZY_MODELS: dict[str, tuple[str, str]] = {
     "SystemActiveProvider": ("app.models.system_integrations", "SystemActiveProvider"),
     "IntegrationProvider": ("app.models.integration_provider", "IntegrationProvider"),
     "IntegrationProviderEvent": ("app.models.integration_provider", "IntegrationProviderEvent"),
-    "IntegrationProviderConfig": ("app.models.integration_provider_config", "IntegrationProviderConfig"),
+    "IntegrationProviderConfig": (
+        "app.models.integration_provider_config",
+        "IntegrationProviderConfig",
+    ),
 }
 
 # Поддерживаемые модули доменов для «массового» импорта (ручной whitelisting).
@@ -421,7 +422,7 @@ def _iter_model_modules_pkgutil() -> list[str]:
     """
     Авто-дискавери: найдём все *реальные* подмодули в пакете app.models.
     Возвращает список полных имен модулей: app.models.<name>
-    
+
     ВАЖНО: исключаем модули с дублирующими таблицами:
     - subscription.py (дубликат Subscription из billing.py)
     """
@@ -432,10 +433,10 @@ def _iter_model_modules_pkgutil() -> list[str]:
     pkg_path = getattr(pkg, "__path__", None)
     if not pkg_path:
         return modules
-    
+
     # Модули, которые содержат дубликаты таблиц и должны быть исключены
     DUPLICATE_MODULES = {"subscription"}  # дубликат Subscription из billing.py
-    
+
     for _finder, name, ispkg in pkgutil.iter_modules(pkg_path):
         if ispkg:
             continue
@@ -780,11 +781,7 @@ def get_model_pairs(include_abstract: bool = False) -> list[tuple[str, type[Any]
                 if isinstance(obj, type):
                     tablename = getattr(obj, "__tablename__", None)
                     is_abs = getattr(obj, "__abstract__", False)
-                    if (
-                        isinstance(tablename, str)
-                        and tablename
-                        and (include_abstract or not is_abs)
-                    ):
+                    if isinstance(tablename, str) and tablename and (include_abstract or not is_abs):
                         pairs.setdefault(tablename, obj)
             except Exception as inner:
                 logger.debug("get_model_pairs: skip global %r due to %s", obj, inner)
@@ -950,9 +947,7 @@ def assert_no_duplicate_tablenames() -> None:
     hard_dups = list_duplicate_tablenames(ignore=DUPLICATE_TABLES_IGNORE)
     if hard_dups:
         dump_duplicate_mappers()
-        raise RuntimeError(
-            "Duplicate tablenames detected (check imports):\n - " + "\n - ".join(hard_dups)
-        )
+        raise RuntimeError("Duplicate tablenames detected (check imports):\n - " + "\n - ".join(hard_dups))
 
     # Мягкая ветка: только игнорируемые дубли остаются — не падаем, но логируем.
     try:
@@ -975,9 +970,7 @@ def assert_no_duplicate_tablenames() -> None:
                 )
                 for i, mp in enumerate(by_table[t], 1):
                     meta = _describe_mapper(mp)
-                    logger.warning(
-                        "  [%s] #%d -> %s  (file=%s)", t, i, meta.get("class"), meta.get("file")
-                    )
+                    logger.warning("  [%s] #%d -> %s  (file=%s)", t, i, meta.get("class"), meta.get("file"))
     except Exception as e:
         logger.debug("assert_no_duplicate_tablenames (soft path) failed: %s", e)
 
@@ -1331,9 +1324,7 @@ def _maybe_install_orderitem_stub() -> None:
             __tablename__ = "order_items"
             __table_args__ = {"extend_existing": True}
             id = Column(Integer, primary_key=True)
-            product_id = Column(
-                Integer, ForeignKey("products.id", ondelete="SET NULL"), nullable=True
-            )
+            product_id = Column(Integer, ForeignKey("products.id", ondelete="SET NULL"), nullable=True)
             order_id = Column(Integer, nullable=True)
             sku = Column(String(255), nullable=True)
 
@@ -1341,9 +1332,7 @@ def _maybe_install_orderitem_stub() -> None:
                 return f"<OrderItemStub id={self.id}>"
 
         globals()["OrderItem"] = _OrderItemStub
-        logger.warning(
-            "app.models.order not available — installed OrderItem stub to keep ORM mappers configurable."
-        )
+        logger.warning("app.models.order not available — installed OrderItem stub to keep ORM mappers configurable.")
     except Exception as e:
         logger.debug("OrderItem stub installation failed: %s", e)
 

@@ -12,7 +12,7 @@ import sys
 import time
 import uuid
 from collections import deque
-from collections.abc import Awaitable, Callable, AsyncIterator
+from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
 from contextvars import ContextVar
 from typing import Any
@@ -32,8 +32,9 @@ from fastapi.responses import JSONResponse, PlainTextResponse, RedirectResponse
 
 # ✅ агрегатор v1-роутеров (wallet/payments/campaigns/users/auth/products)
 from app.api.routes import mount_v1
-from app.core.exceptions import register_exception_handlers
+from app.core import config as core_config
 from app.core.config import settings
+from app.core.exceptions import register_exception_handlers
 
 try:
     from starlette.staticfiles import StaticFiles
@@ -87,6 +88,30 @@ class _RequestIdFilter(logging.Filter):
 
 
 logging.getLogger().addFilter(_RequestIdFilter())
+
+# DB diagnostics at startup (no secrets)
+try:
+    logging.getLogger(__name__).info(
+        "db_url_runtime",
+        extra={
+            "event_name": "db_url_runtime",
+            "db_url_source": getattr(settings, "DB_URL_SOURCE", ""),
+            "db_url_fingerprint": getattr(settings, "DB_URL_FINGERPRINT", ""),
+        },
+    )
+except Exception:
+    logger.debug("db_url_runtime log skipped", exc_info=False)
+
+# Fail fast if DB URL fallback is used outside local (skip during pytest)
+try:
+    env_val = str(getattr(settings, "ENVIRONMENT", "") or "").lower()
+    if not core_config._under_pytest() and env_val != "local" and getattr(settings, "DB_URL_SOURCE", "") == "DEFAULT":
+        raise RuntimeError("DATABASE_URL is required for non-local environments")
+except Exception as e:
+    # re-raise runtime errors; ignore logging issues
+    if isinstance(e, RuntimeError):
+        raise
+    logger.debug("DB URL startup guard skipped: %s", e)
 
 # ======================================================================================
 # GLOBAL STATE
@@ -147,9 +172,7 @@ except Exception:
             ["method", "path"],
             registry=prom_objs["registry"],
         )
-        prom_objs["health_status"] = Gauge(
-            "app_health_ok", "1 if health ok else 0", registry=prom_objs["registry"]
-        )
+        prom_objs["health_status"] = Gauge("app_health_ok", "1 if health ok else 0", registry=prom_objs["registry"])
         prom_objs["postgres_latency_seconds"] = Histogram(
             "postgres_latency_seconds",
             "Latency of Postgres probe in seconds",
@@ -356,9 +379,7 @@ async def _pg_probe(sync_url: str, timeout: float = 3.0) -> tuple[bool, str, dic
             out: dict[str, Any] = {}
             with engine.connect() as conn:
                 out["server_version"] = conn.execute(sql_text("SHOW server_version")).scalar()  # type: ignore
-                out["current_database"] = conn.execute(
-                    sql_text("SELECT current_database()")
-                ).scalar()  # type: ignore
+                out["current_database"] = conn.execute(sql_text("SELECT current_database()")).scalar()  # type: ignore
                 out["timezone"] = conn.execute(sql_text("SHOW TimeZone")).scalar()  # type: ignore
                 out["default_transaction_read_only"] = conn.execute(
                     sql_text("SHOW default_transaction_read_only")
@@ -369,11 +390,7 @@ async def _pg_probe(sync_url: str, timeout: float = 3.0) -> tuple[bool, str, dic
                     is_recovery = None
                 out["is_standby"] = bool(is_recovery) if is_recovery is not None else None
                 out["is_primary"] = (
-                    False
-                    if out.get("is_standby")
-                    else True
-                    if out.get("is_standby") is not None
-                    else None
+                    False if out.get("is_standby") else True if out.get("is_standby") is not None else None
                 )
 
                 try:
@@ -424,9 +441,7 @@ async def _pg_probe(sync_url: str, timeout: float = 3.0) -> tuple[bool, str, dic
                     prom_objs["postgres_is_primary"].set(1 if info["is_primary"] else 0)
                 if isinstance(info.get("default_transaction_read_only"), str):
                     prom_objs["postgres_is_readonly"].set(
-                        1
-                        if info["default_transaction_read_only"].lower() in ("on", "true", "1")
-                        else 0
+                        1 if info["default_transaction_read_only"].lower() in ("on", "true", "1") else 0
                     )
                 if isinstance(info.get("active_connections"), int):
                     prom_objs["postgres_active_connections"].set(info["active_connections"])
@@ -698,9 +713,7 @@ def _p99_ms() -> int:
 # ======================================================================================
 # Async profiling middleware (устойчив к исключениям)
 # ======================================================================================
-async def _profiled_call(
-    request: Request, call_next: Callable[[Request], Awaitable[Response]]
-) -> Response:
+async def _profiled_call(request: Request, call_next: Callable[[Request], Awaitable[Response]]) -> Response:
     start = time.perf_counter()
     response: Response | None = None
     try:
@@ -914,9 +927,7 @@ def create_app() -> FastAPI:
         app.add_middleware(HTTPSRedirectMiddleware)
 
     # CORS
-    cors_origins = getattr(settings, "CORS_ORIGINS", None) or getattr(
-        settings, "BACKEND_CORS_ORIGINS", None
-    )
+    cors_origins = getattr(settings, "CORS_ORIGINS", None) or getattr(settings, "BACKEND_CORS_ORIGINS", None)
     if isinstance(cors_origins, str):
         cors_origins = [o.strip() for o in cors_origins.split(",") if o.strip()]
     if not cors_origins:
@@ -951,9 +962,7 @@ def create_app() -> FastAPI:
             if _max_body > 0:
                 cl = request.headers.get("content-length")
                 if cl and cl.isdigit() and int(cl) > _max_body:
-                    return JSONResponse(
-                        status_code=413, content={"detail": "request_entity_too_large"}
-                    )
+                    return JSONResponse(status_code=413, content={"detail": "request_entity_too_large"})
         except Exception:
             pass
         return await call_next(request)
@@ -990,9 +999,7 @@ def create_app() -> FastAPI:
         response.headers.setdefault("Referrer-Policy", "strict-origin-when-cross-origin")
         # HSTS: только если включен FORCE_HTTPS
         if _env_truthy(os.getenv("FORCE_HTTPS", "0")):
-            response.headers.setdefault(
-                "Strict-Transport-Security", "max-age=31536000; includeSubDomains; preload"
-            )
+            response.headers.setdefault("Strict-Transport-Security", "max-age=31536000; includeSubDomains; preload")
         if csp_enabled:
             response.headers.setdefault("Content-Security-Policy", csp_value)
         # user-friendly Server header
@@ -1005,9 +1012,7 @@ def create_app() -> FastAPI:
     if OTEL_AVAILABLE:
         try:
             FastAPIInstrumentor().instrument_app(app)
-            if "OpenTelemetryMiddleware" not in [
-                type(m).__name__ for m in getattr(app, "user_middleware", [])
-            ]:
+            if "OpenTelemetryMiddleware" not in [type(m).__name__ for m in getattr(app, "user_middleware", [])]:
                 try:
                     from opentelemetry.instrumentation.asgi import (
                         OpenTelemetryMiddleware,  # type: ignore
@@ -1031,9 +1036,7 @@ def create_app() -> FastAPI:
                 response = await call_next(request)
             except Exception as e:
                 logger.exception("Unhandled error (rid=%s): %s", req_id, e)
-                return JSONResponse(
-                    status_code=500, content={"detail": "internal_error", "request_id": req_id}
-                )
+                return JSONResponse(status_code=500, content={"detail": "internal_error", "request_id": req_id})
             response.headers["X-Request-ID"] = req_id
             # полезные заголовки на каждом ответе
             response.headers.setdefault("X-Process-Id", str(os.getpid()))
@@ -1064,9 +1067,7 @@ def create_app() -> FastAPI:
     async def unhandled_exceptions(_: Request, exc: Exception) -> JSONResponse:
         rid = str(uuid.uuid4())
         logger.exception("Unhandled exception (rid=%s): %s", rid, exc)
-        return JSONResponse(
-            status_code=500, content={"detail": "internal_error", "request_id": rid}
-        )
+        return JSONResponse(status_code=500, content={"detail": "internal_error", "request_id": rid})
 
     # ----------------------------------------------------------------------------------
     # Base info helpers & endpoints
@@ -1159,22 +1160,16 @@ def create_app() -> FastAPI:
         do_integrations = _env_truthy(os.getenv("HEALTH_CHECK_INTEGRATIONS", "0"))
         do_celery = _env_truthy(os.getenv("HEALTH_CHECK_CELERY", "0"))
 
-        sync_url = (getattr(settings, "sqlalchemy_urls", {}) or {}).get("sync") or (
-            settings.DATABASE_URL or ""
-        )
+        sync_url = (getattr(settings, "sqlalchemy_urls", {}) or {}).get("sync") or (settings.DATABASE_URL or "")
         sync_url = (sync_url or "").strip()
         pg_ok, pg_msg, pg_info = (
-            await _pg_probe(sync_url, timeout=3.0)
-            if _is_postgres_url(sync_url)
-            else (False, "not_postgres_url", {})
+            await _pg_probe(sync_url, timeout=3.0) if _is_postgres_url(sync_url) else (False, "not_postgres_url", {})
         )
 
         settings_report = await _safe_settings_health_check()
 
         tasks: list[Awaitable[Any]] = [_check_redis(), _check_smtp()]
-        tasks.append(
-            _check_celery() if do_celery else asyncio.sleep(0, result=(True, "skipped", {}))
-        )
+        tasks.append(_check_celery() if do_celery else asyncio.sleep(0, result=(True, "skipped", {})))
         tasks.append(_check_integrations() if do_integrations else asyncio.sleep(0, result={}))
 
         (
@@ -1239,13 +1234,9 @@ def create_app() -> FastAPI:
         require_integrations = _env_truthy(os.getenv("READINESS_REQUIRE_INTEGRATIONS", "0"))
 
         require_secret = _env_truthy(os.getenv("READINESS_REQUIRE_SECRET", "0"))
-        secret_present = bool(
-            os.getenv("SESSION_SECRET_KEY") or os.getenv("SECRET_KEY") or os.getenv("APP_SECRET")
-        )
+        secret_present = bool(os.getenv("SESSION_SECRET_KEY") or os.getenv("SECRET_KEY") or os.getenv("APP_SECRET"))
 
-        sync_url = (getattr(settings, "sqlalchemy_urls", {}) or {}).get("sync") or (
-            settings.DATABASE_URL or ""
-        )
+        sync_url = (getattr(settings, "sqlalchemy_urls", {}) or {}).get("sync") or (settings.DATABASE_URL or "")
         sync_url = (sync_url or "").strip()
         pg_checked = _is_postgres_url(sync_url)
         if pg_checked:
@@ -1342,7 +1333,12 @@ def create_app() -> FastAPI:
         return RedirectResponse(url="/health", status_code=307)
 
     # Отдача OpenAPI в YAML для удобной интеграции с CI/CD / Kong / Tyk / etc
-    @app.get("/openapi.yaml", include_in_schema=False, response_class=PlainTextResponse, response_model=None)
+    @app.get(
+        "/openapi.yaml",
+        include_in_schema=False,
+        response_class=PlainTextResponse,
+        response_model=None,
+    )
     async def openapi_yaml() -> str:
         try:
             import yaml  # type: ignore
@@ -1361,9 +1357,7 @@ def create_app() -> FastAPI:
         """
         Безопасная сводка по БД без раскрытия паролей.
         """
-        safe_url = getattr(settings, "DATABASE_URL_SAFE", None) or getattr(
-            settings, "DATABASE_URL", ""
-        )  # type: ignore
+        safe_url = getattr(settings, "DATABASE_URL_SAFE", None) or getattr(settings, "DATABASE_URL", "")  # type: ignore
 
         try:
             drv = (getattr(settings, "sqlalchemy_urls", {}) or {}).get("driver") or "postgresql"
@@ -1428,9 +1422,10 @@ def create_app() -> FastAPI:
         app.add_route("/metrics", handle_metrics)
     else:
         try:
-            from prometheus_client import CONTENT_TYPE_LATEST, generate_latest  # type: ignore
+            from prometheus_client import CONTENT_TYPE_LATEST as _CONTENT_TYPE_LATEST  # type: ignore
+            from prometheus_client import generate_latest
         except Exception:  # pragma: no cover
-            CONTENT_TYPE_LATEST, generate_latest = (
+            _CONTENT_TYPE_LATEST, generate_latest = (
                 "text/plain",
                 lambda *_args, **_kw: b"# no prometheus\n",
             )
@@ -1629,9 +1624,7 @@ def create_app() -> FastAPI:
                 return item
 
             @fallback.post("/{cid}/tags", status_code=201)
-            async def add_tag(
-                cid: int = Path(..., ge=1), payload: dict[str, Any] = Body(...)
-            ) -> dict[str, Any]:
+            async def add_tag(cid: int = Path(..., ge=1), payload: dict[str, Any] = Body(...)) -> dict[str, Any]:
                 item = _find_campaign(cid)
                 if not item:
                     raise HTTPException(status_code=404, detail="not_found")
@@ -1645,9 +1638,7 @@ def create_app() -> FastAPI:
                 return {"id": cid, "tags": tags}
 
             @fallback.post("/{cid}/messages", status_code=201)
-            async def add_message(
-                cid: int = Path(..., ge=1), payload: dict[str, Any] = Body(...)
-            ) -> dict[str, Any]:
+            async def add_message(cid: int = Path(..., ge=1), payload: dict[str, Any] = Body(...)) -> dict[str, Any]:
                 item = _find_campaign(cid)
                 if not item:
                     raise HTTPException(status_code=404, detail="not_found")

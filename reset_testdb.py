@@ -1,8 +1,11 @@
 #!/usr/bin/env python3
 """Reset test database"""
+import os
 import psycopg2
 
-conn = psycopg2.connect('postgresql://postgres:admin123@localhost:5432/postgres')
+ADMIN_URL = os.getenv("ADMIN_DATABASE_URL") or os.getenv("DATABASE_URL") or "postgresql://postgres@localhost:5432/postgres"
+
+conn = psycopg2.connect(ADMIN_URL)
 conn.autocommit = True
 cur = conn.cursor()
 

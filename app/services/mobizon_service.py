@@ -85,9 +85,7 @@ class MobizonService:
         message = status_messages.get(status, f"Статус заказа {order_number} изменен на: {status}")
         return await self.send_sms(phone, message)
 
-    async def send_payment_notification(
-        self, phone: str, order_number: str, amount: float, status: str
-    ) -> bool:
+    async def send_payment_notification(self, phone: str, order_number: str, amount: float, status: str) -> bool:
         """Send payment notification"""
 
         if status == "success":
@@ -153,9 +151,7 @@ class MobizonService:
             logger.error(f"Mobizon message status error: {e}")
             return None
 
-    async def send_bulk_sms(
-        self, recipients: list[str], message: str, sender: str = "SmartSell"
-    ) -> dict[str, Any]:
+    async def send_bulk_sms(self, recipients: list[str], message: str, sender: str = "SmartSell") -> dict[str, Any]:
         """Send bulk SMS to multiple recipients"""
 
         results = {"total": len(recipients), "sent": 0, "failed": 0, "errors": []}

@@ -106,9 +106,7 @@ async def test_admin_switch_provider_publishesFC(async_client, async_db_session,
     assert resp.status_code == 200, resp.text
 
     res = await async_db_session.execute(
-        select(IntegrationProvider).where(
-            IntegrationProvider.domain == "otp", IntegrationProvider.provider == "noop"
-        )
+        select(IntegrationProvider).where(IntegrationProvider.domain == "otp", IntegrationProvider.provider == "noop")
     )
     active = res.scalar_one_or_none()
     assert active is not None
@@ -131,8 +129,10 @@ async def test_admin_switch_provider_publishesFC(async_client, async_db_session,
 
 
 @pytest.mark.asyncio
-async def test_otp_provider_hot_switch(async_client, async_db_session):
+async def test_otp_provider_hot_switch(async_client, async_db_session, monkeypatch):
     OtpProviderResolver.reset_cache()
+    monkeypatch.setenv("DEBUG_PROVIDER_INFO", "1")
+
     _, token = await _make_admin(async_db_session)
     headers = {"Authorization": f"Bearer {token}"}
 
@@ -150,7 +150,7 @@ async def test_otp_provider_hot_switch(async_client, async_db_session):
         headers=headers,
     )
     assert resp_activate_a.status_code == 200, resp_activate_a.text
-    version_a = resp_activate_a.json().get("version")
+    _version_a = resp_activate_a.json().get("version")
 
     resp_first = await async_client.post(
         "/api/v1/auth/request-otp",
@@ -198,9 +198,7 @@ async def test_access_control_admin_only(async_client, async_db_session):
     await async_db_session.refresh(user)
     token = create_access_token(subject=user.id)
 
-    resp = await async_client.get(
-        "/api/admin/integrations/providers", headers={"Authorization": f"Bearer {token}"}
-    )
+    resp = await async_client.get("/api/admin/integrations/providers", headers={"Authorization": f"Bearer {token}"})
     assert resp.status_code == 403
 
 

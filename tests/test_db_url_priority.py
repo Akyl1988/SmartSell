@@ -10,47 +10,108 @@ def _reset_settings_cache() -> None:
     importlib.reload(config)
 
 
-def test_pytest_requires_test_url(monkeypatch):
-    env_url = "postgresql+asyncpg://postgres:envpass@host1:5432/db_env"
+def test_testing_prefers_test_database_url(monkeypatch):
+    test_url = "postgresql://postgres:testpass@host2:5432/db_test"
+    env_url = "postgresql://postgres:envpass@host1:5432/db_env"
 
-    # Ensure no test overrides
-    for key in ("TEST_DATABASE_URL", "TEST_ASYNC_DATABASE_URL", "DATABASE_TEST_URL", "DB_URL"):
+    for key in ("TEST_DATABASE_URL", "TEST_ASYNC_DATABASE_URL", "DATABASE_TEST_URL", "DB_URL", "DATABASE_URL"):
         monkeypatch.delenv(key, raising=False)
 
-    # Provide temporary test URL so module reload (config.py) succeeds
-    monkeypatch.setenv("TEST_DATABASE_URL", "postgresql://tmp:tmp@tmp:5432/tmp")
+    monkeypatch.setenv("TESTING", "1")
+    monkeypatch.setenv("TEST_DATABASE_URL", test_url)
     monkeypatch.setenv("DATABASE_URL", env_url)
 
     _reset_settings_cache()
-    try:
-        # Now drop test URL and ensure get_settings fails under pytest without TEST_* DSN
-        monkeypatch.delenv("TEST_DATABASE_URL", raising=False)
-        config.get_settings.cache_clear()  # type: ignore[attr-defined]
-        with pytest.raises(ValueError):
-            config.get_settings()
-    finally:
-        # Restore a temporary test URL so config reload does not fail, then clear
-        monkeypatch.setenv("TEST_DATABASE_URL", "postgresql://tmp:tmp@tmp:5432/tmp")
-        _reset_settings_cache()
-        monkeypatch.delenv("TEST_DATABASE_URL", raising=False)
-        config.get_settings.cache_clear()  # type: ignore[attr-defined]
+    s = config.get_settings()
+    assert s.DATABASE_URL == test_url
+    assert getattr(s, "DB_URL_SOURCE", "") == "TEST_DATABASE_URL"
 
 
-def test_test_database_url_wins(monkeypatch):
-    env_url = "postgresql+asyncpg://postgres:envpass@host1:5432/db_env"
-    test_url = "postgresql://postgres:testpass@host2:5432/db_test"
+def test_testing_uses_database_url_when_no_test(monkeypatch):
+    env_url = "postgresql://postgres:envpass@host1:5432/db_env"
 
     for key in ("TEST_DATABASE_URL", "TEST_ASYNC_DATABASE_URL", "DATABASE_TEST_URL", "DB_URL"):
         monkeypatch.delenv(key, raising=False)
 
+    monkeypatch.setenv("TESTING", "1")
+    monkeypatch.setenv("DATABASE_URL", env_url)
+
+    _reset_settings_cache()
+    s = config.get_settings()
+    assert s.DATABASE_URL == env_url
+    assert getattr(s, "DB_URL_SOURCE", "") == "DATABASE_URL"
+
+
+def test_database_url_used_when_not_testing(monkeypatch):
+    env_url = "postgresql://postgres:envpass@host1:5432/db_env"
+
+    for key in ("TESTING", "TEST_DATABASE_URL", "TEST_ASYNC_DATABASE_URL", "DATABASE_TEST_URL", "DB_URL"):
+        monkeypatch.delenv(key, raising=False)
+    monkeypatch.setenv("DATABASE_URL", env_url)
+
+    _reset_settings_cache()
+    s = config.get_settings()
+    assert s.DATABASE_URL == env_url
+    assert getattr(s, "DB_URL_SOURCE", "") == "DATABASE_URL"
+
+
+def test_fallback_allowed_in_local_env(monkeypatch):
+    for key in (
+        "TESTING",
+        "TEST_DATABASE_URL",
+        "TEST_ASYNC_DATABASE_URL",
+        "DATABASE_TEST_URL",
+        "DB_URL",
+        "DATABASE_URL",
+        "TEST_DB_USER",
+        "TEST_DB_PASSWORD",
+        "TEST_DB_HOST",
+        "TEST_DB_PORT",
+        "TEST_DB_NAME",
+        "POSTGRES_USER",
+        "POSTGRES_PASSWORD",
+        "POSTGRES_HOST",
+        "POSTGRES_PORT",
+        "POSTGRES_DB",
+    ):
+        monkeypatch.delenv(key, raising=False)
+    monkeypatch.setenv("DATABASE_URL", "")
+    monkeypatch.setenv("TEST_DATABASE_URL", "")
+    monkeypatch.setenv("ENVIRONMENT", "local")
+
+    _reset_settings_cache()
+    s = config.get_settings()
+    assert getattr(s, "DB_URL_SOURCE", "") == "DEFAULT"
+    assert s.DATABASE_URL == "sqlite+aiosqlite:///./.smartsell_test.sqlite3"
+
+
+def test_no_fallback_outside_local(monkeypatch):
+    for key in ("TESTING", "TEST_DATABASE_URL", "TEST_ASYNC_DATABASE_URL", "DATABASE_TEST_URL", "DB_URL", "DATABASE_URL"):
+        monkeypatch.delenv(key, raising=False)
+    monkeypatch.setenv("DATABASE_URL", "")
+    monkeypatch.setenv("TEST_DATABASE_URL", "")
+    monkeypatch.setenv("ENVIRONMENT", "production")
+
+    with pytest.raises(ValueError):
+        config.resolve_database_url(config.Settings())
+
+
+def test_non_testing_prefers_database_url(monkeypatch):
+    env_url = "postgresql://postgres:envpass@host1:5432/db_env"
+    test_url = "postgresql://postgres:testpass@host2:5432/db_test"
+
+    for key in ("TESTING", "TEST_DATABASE_URL", "TEST_ASYNC_DATABASE_URL", "DATABASE_TEST_URL", "DB_URL"):
+        monkeypatch.delenv(key, raising=False)
+
+    monkeypatch.setenv("ENVIRONMENT", "development")
+    monkeypatch.setenv("TESTING", "0")
     monkeypatch.setenv("DATABASE_URL", env_url)
     monkeypatch.setenv("TEST_DATABASE_URL", test_url)
 
-    _reset_settings_cache()
-    try:
-        s = config.get_settings()
-        assert s.DATABASE_URL == test_url
-        assert s.sqlalchemy_sync_url and "host2" in s.sqlalchemy_sync_url
-        assert config.db_url_fingerprint(s.DATABASE_URL) == config.db_url_fingerprint(test_url)
-    finally:
-        _reset_settings_cache()
+    config.get_settings.cache_clear()  # type: ignore[attr-defined]
+    monkeypatch.setattr(config, "_under_pytest", lambda: False)
+    s = config.get_settings()
+
+    assert s.DATABASE_URL == env_url
+    assert getattr(s, "DB_URL_SOURCE", "") == "DATABASE_URL"
+    assert getattr(s, "DB_URL_FINGERPRINT", "") == config.db_url_fingerprint(env_url)

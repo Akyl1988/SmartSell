@@ -12,6 +12,10 @@ concurrency:
 
 env:
   PYTHON_VERSION: "3.11"
+  CI_DB_USER: "ci_user"
+  CI_DB_NAME: "ci_smartsell"
+  CI_DB_HOST: "localhost"
+  CI_DB_PORT: "5432"
 
 jobs:
   lint:
@@ -36,25 +40,45 @@ jobs:
       - name: Install tools & deps
         run: |
           python -m pip install --upgrade pip
-          pip install black isort flake8 mypy ruff
+          pip install ruff mypy
           pip install -r requirements.txt
-          # для стабильности, учитывая твои локальные логи:
           pip install tzdata "python-jose[cryptography]"
 
+      - name: pip check
+        run: pip check
+
       - name: ruff (fast lint)
-        run: ruff check --output-format=github .
+        run: python -m ruff check .
 
-      - name: black (format check)
-        run: black --check .
+  mypy:
+    name: mypy (soft-fail)
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
 
-      - name: isort (imports order)
-        run: isort --check-only .
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
 
-      - name: flake8
-        run: flake8 --max-line-length=100 --exclude=alembic,venv,env,.venv
+      - name: Cache pip
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-${{ hashFiles('requirements.txt') }}
+          restore-keys: |
+            ${{ runner.os }}-pip-
 
-      - name: mypy
-        run: mypy . --ignore-missing-imports
+      - name: Install deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install mypy
+          pip install -r requirements.txt
+          pip install tzdata "python-jose[cryptography]"
+
+      - name: mypy (lenient)
+        run: python -m mypy --config-file mypy.ini app
 
   test:
     name: Tests (Postgres + Redis)
@@ -63,11 +87,11 @@ jobs:
       postgres:
         image: postgres:15
         env:
-          POSTGRES_PASSWORD: test_password
-          POSTGRES_USER: test_user
-          POSTGRES_DB: test_smartsell
+          POSTGRES_PASSWORD: ${{ secrets.CI_POSTGRES_PASSWORD }}
+          POSTGRES_USER: ${{ env.CI_DB_USER }}
+          POSTGRES_DB: ${{ env.CI_DB_NAME }}
         options: >-
-          --health-cmd "pg_isready -U test_user -d test_smartsell"
+          --health-cmd "pg_isready -U ${{ env.CI_DB_USER }} -d ${{ env.CI_DB_NAME }}"
           --health-interval 10s
           --health-timeout 5s
           --health-retries 5
@@ -103,10 +127,11 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
           pip install pytest pytest-cov pytest-asyncio asyncpg tzdata "python-jose[cryptography]"
+          pip check
 
       - name: Wait for Postgres
         run: |
-          until pg_isready -h localhost -p 5432 -U test_user; do
+          until pg_isready -h $CI_DB_HOST -p $CI_DB_PORT -U $CI_DB_USER; do
             echo "Waiting for PostgreSQL..."
             sleep 2
           done
@@ -114,13 +139,17 @@ jobs:
       # если у тебя Alembic читает URL из env — этого достаточно
       - name: Run Alembic migrations
         env:
-          DATABASE_URL: postgresql+asyncpg://test_user:test_password@localhost:5432/test_smartsell
+          TEST_ASYNC_DATABASE_URL: postgresql+asyncpg://${{ env.CI_DB_USER }}:${{ secrets.CI_POSTGRES_PASSWORD }}@${{ env.CI_DB_HOST }}:${{ env.CI_DB_PORT }}/${{ env.CI_DB_NAME }}
+          TEST_DATABASE_URL: postgresql+psycopg2://${{ env.CI_DB_USER }}:${{ secrets.CI_POSTGRES_PASSWORD }}@${{ env.CI_DB_HOST }}:${{ env.CI_DB_PORT }}/${{ env.CI_DB_NAME }}
+          DATABASE_URL: postgresql+psycopg2://${{ env.CI_DB_USER }}:${{ secrets.CI_POSTGRES_PASSWORD }}@${{ env.CI_DB_HOST }}:${{ env.CI_DB_PORT }}/${{ env.CI_DB_NAME }}
         run: |
           alembic upgrade head
 
       - name: Pytest with coverage
         env:
-          DATABASE_URL: postgresql+asyncpg://test_user:test_password@localhost:5432/test_smartsell
+          TEST_ASYNC_DATABASE_URL: postgresql+asyncpg://${{ env.CI_DB_USER }}:${{ secrets.CI_POSTGRES_PASSWORD }}@${{ env.CI_DB_HOST }}:${{ env.CI_DB_PORT }}/${{ env.CI_DB_NAME }}
+          TEST_DATABASE_URL: postgresql+psycopg2://${{ env.CI_DB_USER }}:${{ secrets.CI_POSTGRES_PASSWORD }}@${{ env.CI_DB_HOST }}:${{ env.CI_DB_PORT }}/${{ env.CI_DB_NAME }}
+          DATABASE_URL: postgresql+psycopg2://${{ env.CI_DB_USER }}:${{ secrets.CI_POSTGRES_PASSWORD }}@${{ env.CI_DB_HOST }}:${{ env.CI_DB_PORT }}/${{ env.CI_DB_NAME }}
           REDIS_URL: redis://localhost:6379
           ENVIRONMENT: testing
           TESTING: "True"

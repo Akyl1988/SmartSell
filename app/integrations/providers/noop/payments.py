@@ -8,7 +8,12 @@ from app.integrations.ports.payments import PaymentGateway
 class NoOpPaymentGateway(PaymentGateway):
     """Minimal no-op gateway for testing/wiring."""
 
-    def __init__(self, name: str | None = None, config: dict[str, Any] | None = None, version: int | None = None):
+    def __init__(
+        self,
+        name: str | None = None,
+        config: dict[str, Any] | None = None,
+        version: int | None = None,
+    ):
         self.name = (name or "noop").strip() or "noop"
         self.config = config or {}
         self.version = int(version or 0)

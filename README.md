@@ -196,6 +196,17 @@ poetry run isort .
 poetry run pre-commit install
 ```
 
+## Branching & Releases
+
+- **Branches**: `dev` is the main development branch. `main` updates only via PRs (usually from release branches). Release preparation happens on `release/*` (e.g., `release/v0.1.0`) branched off `dev`.
+- **Tags**: Use SemVer tags with `v` prefix (e.g., `v0.1.0`). Tag on the release branch after it is ready.
+- **Release workflow (M0.1 pattern)**:
+  1. Create `release/v0.1.0` from `dev`.
+  2. Stabilize and update `CHANGELOG.md` on that branch.
+  3. Tag `v0.1.0` on the release branch.
+  4. Open a PR from `release/v*` into `main`; merge only after checks pass.
+- **Changelog rule**: Every release must update `CHANGELOG.md` (Keep a Changelog format) to record added/changed/fixed notes for the new version.
+
 ### Database Migrations
 
 ```bash

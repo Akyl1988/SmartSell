@@ -2,7 +2,7 @@
 """Patch conftest.py to use get_async_db instead of get_db."""
 import re
 
-with open("tests/conftest.py", "r", encoding="utf-8") as f:
+with open("tests/conftest.py", encoding="utf-8") as f:
     content = f.read()
 
 # Replace function
@@ -71,27 +71,23 @@ content_new = re.sub(old_func, new_func, content, flags=re.MULTILINE | re.DOTALL
 if content_new == content:
     print("Pattern not found, doing simple string replace")
     # Fallback: simple replacements
-    content_new = content.replace(
-        "from app.core.db import get_db as _get_db",
-        "from app.core.db import get_async_db as _get_async_db"
-    ).replace(
-        "from app.core.database import get_db as _get_db",
-        "from app.core.database import get_async_db as _get_async_db"
-    ).replace(
-        "get_db = _get_db",
-        "get_async_db_func = _get_async_db"
-    ).replace(
-        "get_db = None",
-        "get_async_db_func = None"
-    ).replace(
-        "if get_db is None:",
-        "if get_async_db_func is None:"
-    ).replace(
-        "return app, get_db  # type: ignore[return-value]",
-        "return app, get_async_db_func  # type: ignore[return-value]"
-    ).replace(
-        'f"Cannot import get_db from',
-        'f"Cannot import get_async_db from'
+    content_new = (
+        content.replace(
+            "from app.core.db import get_db as _get_db",
+            "from app.core.db import get_async_db as _get_async_db",
+        )
+        .replace(
+            "from app.core.database import get_db as _get_db",
+            "from app.core.database import get_async_db as _get_async_db",
+        )
+        .replace("get_db = _get_db", "get_async_db_func = _get_async_db")
+        .replace("get_db = None", "get_async_db_func = None")
+        .replace("if get_db is None:", "if get_async_db_func is None:")
+        .replace(
+            "return app, get_db  # type: ignore[return-value]",
+            "return app, get_async_db_func  # type: ignore[return-value]",
+        )
+        .replace('f"Cannot import get_db from', 'f"Cannot import get_async_db from')
     )
 
 with open("tests/conftest.py", "w", encoding="utf-8") as f:

@@ -1,16 +1,16 @@
 from __future__ import annotations
-import os
-from sqlalchemy import create_engine
+
 from sqlalchemy.orm import Session
-from app.models.base import Base  # единый источник истины для DeclarativeBase
-from app.core.db import engine as default_engine  # только engine, не Base
+
 from app.core.logging import get_logger
 
 log = get_logger(__name__)
 
+
 def bootstrap_database(engine=None) -> None:
     """DEV-режим: создание схемы отключено, используйте Alembic."""
     raise RuntimeError("Database schema must be managed by Alembic, not create_all")
+
 
 def ensure_seed_company(session: Session) -> int:
     """
@@ -18,9 +18,8 @@ def ensure_seed_company(session: Session) -> int:
     Удобно для быстрого старта экспортов/демо.
     """
     from app.models.company import Company  # избегаем циклических импортов
-    exists = session.execute(
-        Company.__table__.select().limit(1)
-    ).first()
+
+    exists = session.execute(Company.__table__.select().limit(1)).first()
     if exists:
         # вернуть любую существующую
         row = session.execute(Company.__table__.select().limit(1)).first()

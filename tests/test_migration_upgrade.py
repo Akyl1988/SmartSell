@@ -10,7 +10,10 @@ from alembic.config import Config
 from app.core.config import settings
 
 
-@pytest.mark.skipif(not settings.TEST_DATABASE_URL and not settings.DATABASE_URL, reason="Database URL not configured")
+@pytest.mark.skipif(
+    not settings.TEST_DATABASE_URL and not settings.DATABASE_URL,
+    reason="Database URL not configured",
+)
 def test_alembic_upgrade_head_runs(tmp_path: Path):
     cfg = Config(str(Path("alembic.ini").resolve()))
     db_url = settings.TEST_DATABASE_URL or settings.DATABASE_URL

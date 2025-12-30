@@ -194,7 +194,11 @@ class ProviderConfigService:
         try:
             cfg = await cls.get_provider_config(db, domain=domain, provider=provider)
             cls.validate_config_schema(domain, provider, cfg if cfg else {})
-            if domain_norm == "otp" and provider.lower() in {"mobizon", "otp-mobizon", "mobizon-otp"}:
+            if domain_norm == "otp" and provider.lower() in {
+                "mobizon",
+                "otp-mobizon",
+                "mobizon-otp",
+            }:
                 try:
                     from app.integrations.providers.mobizon.otp import MobizonOtpProvider
 
@@ -223,7 +227,9 @@ class ProviderConfigService:
                     if provider.lower().startswith("noop"):
                         status = "ok"
                     elif provider.lower().startswith("webhook"):
-                        from app.integrations.providers.webhook.messaging import WebhookMessagingProvider
+                        from app.integrations.providers.webhook.messaging import (
+                            WebhookMessagingProvider,
+                        )
 
                         provider_inst = WebhookMessagingProvider(config=cfg, name=provider, version=0)
                         hc = await provider_inst.healthcheck()
@@ -254,7 +260,12 @@ class ProviderConfigService:
             actor_user_id=actor_user_id,
             actor_email=actor_email,
         )
-        return {"status": status, "domain": _normalize_domain(domain), "provider": provider, "error": error}
+        return {
+            "status": status,
+            "domain": _normalize_domain(domain),
+            "provider": provider,
+            "error": error,
+        }
 
 
 __all__ = ["ProviderConfigService"]

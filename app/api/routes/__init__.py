@@ -25,6 +25,8 @@ from typing import Any, Union
 from fastapi import APIRouter, FastAPI
 from fastapi.responses import JSONResponse
 
+from app.core import config
+
 logger = logging.getLogger(__name__)
 if not logger.handlers:
     logging.basicConfig(
@@ -147,9 +149,7 @@ def register_v1_router(name: str, router: APIRouter, is_absolute: bool = False) 
         logger.info("Registered v1 router: %s (absolute=%s)", name, is_absolute)
 
 
-def register_optional_v1_router(
-    name: str, import_path: str, is_absolute_hint: bool | None = None
-) -> bool:
+def register_optional_v1_router(name: str, import_path: str, is_absolute_hint: bool | None = None) -> bool:
     """
     Опциональная регистрация роутера по строке импорта.
     Возвращает True, если модуль зарегистрирован; False — если отсутствует.
@@ -161,9 +161,7 @@ def register_optional_v1_router(
 
     abs_flag = bool(is_absolute_hint) or _router_prefix_startswith(r, "/api/v1")
     register_v1_router(name, r, abs_flag)
-    logger.info(
-        "Optional v1 router registered: %s from %s (absolute=%s)", name, import_path, abs_flag
-    )
+    logger.info("Optional v1 router registered: %s from %s (absolute=%s)", name, import_path, abs_flag)
     return True
 
 
@@ -231,9 +229,7 @@ def _get_or_init_mounted_set(target: Target) -> set:
     return getattr(target, "_mounted_router_ids")
 
 
-def _mount_once(
-    target: Target, router: APIRouter, base_prefix: str, is_absolute_flag: bool | None
-) -> str:
+def _mount_once(target: Target, router: APIRouter, base_prefix: str, is_absolute_flag: bool | None) -> str:
     """
     Подключает роутер один раз. Если уже подключали — возвращает пояснение и пропускает.
     """
@@ -279,7 +275,10 @@ def _mount_v1_diagnostics(target: Target, base_prefix: str) -> None:
 
     @diag_router.get("/_debug/routers", response_class=JSONResponse, summary="List loaded v1 routers")
     def _list_loaded_v1_routers():
-        return {"registered": get_v1_registry(), "time": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}
+        return {
+            "registered": get_v1_registry(),
+            "time": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        }
 
     @diag_router.get("/health-v1", summary="API v1 health (routers registry)")
     def _health_v1():
@@ -300,7 +299,12 @@ def mount_v1(target: Target, base_prefix: str = "/api/v1") -> None:
     защищает от двойного подключения. Работает как с FastAPI, так и с APIRouter.
     Также монтирует диагностические эндпоинты под /api/v1.
     """
+    current_settings = config.get_settings()
+    debug_enabled = bool(current_settings.DEBUG) or str(getattr(current_settings, "ENVIRONMENT", "")).lower() == "local"
+
     for name, router, is_absolute in V1_ROUTERS:
+        if name == "debug_db" and not debug_enabled:
+            continue
         try:
             note = _mount_once(target, router, base_prefix, is_absolute_flag=is_absolute)
             logger.debug("%s: %s", name, note)
@@ -308,10 +312,11 @@ def mount_v1(target: Target, base_prefix: str = "/api/v1") -> None:
             logger.exception("Failed to include router '%s': %s", name, e)
 
     # Диагностика (/_debug/routers и /health-v1)
-    try:
-        _mount_v1_diagnostics(target, base_prefix)
-    except Exception as e:
-        logger.debug("Mount v1 diagnostics skipped: %s", e)
+    if debug_enabled:
+        try:
+            _mount_v1_diagnostics(target, base_prefix)
+        except Exception as e:
+            logger.debug("Mount v1 diagnostics skipped: %s", e)
 
     logger.info(
         "API v1 routers mounted. Aliases: billing -> campaigns; wallet: %s; payments: %s; kaspi: %s",

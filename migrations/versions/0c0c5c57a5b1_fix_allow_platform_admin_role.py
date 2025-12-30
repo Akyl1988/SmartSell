@@ -7,8 +7,8 @@ Create Date: 2025-12-26
 
 from __future__ import annotations
 
-from alembic import op
 import sqlalchemy as sa
+from alembic import op
 
 # revision identifiers, used by Alembic.
 revision = "0c0c5c57a5b1"
@@ -34,26 +34,18 @@ OLD_ALLOWED_ROLES = (
 
 
 def upgrade() -> None:
-    op.drop_constraint(
-        op.f("ck__users__ck_user_role_allowed"), "users", type_="check"
-    )
+    op.drop_constraint(op.f("ck__users__ck_user_role_allowed"), "users", type_="check")
     op.create_check_constraint(
         op.f("ck__users__ck_user_role_allowed"),
         "users",
-        sa.text(
-            "role IN ('" + "','".join(NEW_ALLOWED_ROLES) + "')"
-        ),
+        sa.text("role IN ('" + "','".join(NEW_ALLOWED_ROLES) + "')"),
     )
 
 
 def downgrade() -> None:
-    op.drop_constraint(
-        op.f("ck__users__ck_user_role_allowed"), "users", type_="check"
-    )
+    op.drop_constraint(op.f("ck__users__ck_user_role_allowed"), "users", type_="check")
     op.create_check_constraint(
         op.f("ck__users__ck_user_role_allowed"),
         "users",
-        sa.text(
-            "role IN ('" + "','".join(OLD_ALLOWED_ROLES) + "')"
-        ),
+        sa.text("role IN ('" + "','".join(OLD_ALLOWED_ROLES) + "')"),
     )

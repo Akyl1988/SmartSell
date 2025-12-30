@@ -173,9 +173,7 @@ class InventoryOutbox(BaseModel, SoftDeleteMixin):
                     attempts=0,
                 )
                 if next_attempt_in_seconds is not None:
-                    ev.next_attempt_at = datetime.utcnow() + timedelta(
-                        seconds=int(next_attempt_in_seconds)
-                    )
+                    ev.next_attempt_at = datetime.utcnow() + timedelta(seconds=int(next_attempt_in_seconds))
                 session.add(ev)
                 # Ключевой момент: flush сразу, чтобы поймать «no such table»
                 session.flush()
@@ -226,11 +224,7 @@ class InventoryOutbox(BaseModel, SoftDeleteMixin):
                 )
             )
         q = q.limit(max(1, int(limit)))
-        q = q.order_by(
-            InventoryOutbox.created_at.asc()
-            if order_by_created_asc
-            else InventoryOutbox.created_at.desc()
-        )
+        q = q.order_by(InventoryOutbox.created_at.asc() if order_by_created_asc else InventoryOutbox.created_at.desc())
         return list(session.execute(q).scalars().all())
 
     # -------------------------------------------------------------------------
@@ -278,19 +272,11 @@ class InventoryOutbox(BaseModel, SoftDeleteMixin):
             "channel": self.channel,
             "status": self.status,
             "attempts": int(self.attempts or 0),
-            "next_attempt_at": self.next_attempt_at.isoformat(timespec="seconds")
-            if self.next_attempt_at
-            else None,
+            "next_attempt_at": self.next_attempt_at.isoformat(timespec="seconds") if self.next_attempt_at else None,
             "last_error": self.last_error,
-            "processed_at": self.processed_at.isoformat(timespec="seconds")
-            if self.processed_at
-            else None,
-            "created_at": self.created_at.isoformat(timespec="seconds")
-            if getattr(self, "created_at", None)
-            else None,
-            "updated_at": self.updated_at.isoformat(timespec="seconds")
-            if getattr(self, "updated_at", None)
-            else None,
+            "processed_at": self.processed_at.isoformat(timespec="seconds") if self.processed_at else None,
+            "created_at": self.created_at.isoformat(timespec="seconds") if getattr(self, "created_at", None) else None,
+            "updated_at": self.updated_at.isoformat(timespec="seconds") if getattr(self, "updated_at", None) else None,
         }
 
     # ---------- test/seed factory ----------

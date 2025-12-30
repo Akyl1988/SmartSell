@@ -147,7 +147,7 @@ def normalize_db_url(raw: Optional[str]) -> str:
     """
     default_url = os.getenv(
         "ALEMBIC_DEFAULT_URL",
-        "postgresql://postgres:admin123@127.0.0.1:5432/smartsell",
+        "postgresql://postgres@127.0.0.1:5432/smartsell",
     )
     if not raw:
         return default_url

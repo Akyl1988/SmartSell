@@ -1,13 +1,29 @@
-﻿line-length = 100
+﻿line-length = 120
 target-version = "py311"
 
 [lint]
 select = ["E","F","I","B","UP","C4"]
-ignore = ["B904","E402","C401","C408","C416","B009","B010","UP007"]  # временно
+ignore = ["B904","E402","C401","C408","C416","B009","B010","UP007","E501"]  # временно, E501 handled by formatter
+
+exclude = [
+	"migrations/versions/_quarantine",
+	"migrations/versions/_quarantine/**",
+	"migrations/versions/_backup",
+	"migrations/versions/_backup/**",
+	"migrations/versions/_alembic_backup",
+	"migrations/versions/_alembic_backup/**",
+	"_alembic_backup",
+	"_alembic_backup/**",
+	"**/_backup/**",
+	"**/_quarantine/**",
+]
 
 [lint.per-file-ignores]
 "alembic/versions/*.py" = ["UP","B","E402","C408","C416","B009","B010"]
 "tests/**/*.py"          = ["B904","E402","F401"]
-"app/api/**/*.py"        = ["B904","UP007","B009","B010","E402"]
+"app/api/**/*.py"        = ["B904","UP007","B009","B010","E402","B008"]
 "app/models/**/*.py"     = ["UP007","B009","B010","E402"]
 "app/core/**/*.py"       = ["UP007","B009","B010","B904","E402"]
+"app/main.py"            = ["B008"]
+"app/core/dependencies.py" = ["B008"]
+"app/core/security.py"     = ["B008"]

@@ -102,7 +102,7 @@ async def test_messaging_healthcheck_with_redis_down(monkeypatch, async_client, 
 
     transport = MockTransport(lambda request: Response(200, json={"ok": True}))
     real_async_client = httpx.AsyncClient
-    monkeypatch.setattr(httpx, "AsyncClient", lambda *a, **kw: real_async_client(transport=transport, *a, **kw))
+    monkeypatch.setattr(httpx, "AsyncClient", lambda *a, **kw: real_async_client(*a, transport=transport, **kw))
     monkeypatch.setattr(ProviderRegistry, "_redis_client", staticmethod(_raise))
 
     resp = await async_client.get(
@@ -133,13 +133,19 @@ async def test_messaging_hot_switch_and_events(monkeypatch, async_client, async_
 
     transport_send = MockTransport(lambda request: Response(200, json={"sent": True}))
     real_async_client = httpx.AsyncClient
-    monkeypatch.setattr(httpx, "AsyncClient", lambda *a, **kw: real_async_client(transport=transport_send, *a, **kw))
+    monkeypatch.setattr(httpx, "AsyncClient", lambda *a, **kw: real_async_client(*a, transport=transport_send, **kw))
 
     for provider, is_active in (("noop", True), ("webhook", False)):
         resp = await async_client.post(
             "/api/admin/integrations/providers",
             headers=headers,
-            json={"domain": "messaging", "provider": provider, "config": {}, "is_enabled": True, "is_active": is_active},
+            json={
+                "domain": "messaging",
+                "provider": provider,
+                "config": {},
+                "is_enabled": True,
+                "is_active": is_active,
+            },
         )
         assert resp.status_code in {200, 201}, resp.text
 

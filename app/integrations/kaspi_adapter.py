@@ -1,13 +1,16 @@
 from __future__ import annotations
+
 import json
 import shlex
 import subprocess
-from typing import Any, Dict, Optional
+from typing import Any, Optional
 
 from app.core.config import settings
 
+
 class KaspiAdapterError(RuntimeError):
     pass
+
 
 class KaspiAdapter:
     """

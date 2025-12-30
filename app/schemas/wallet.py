@@ -91,9 +91,7 @@ class WalletAccountBase(BaseModel):
     """Базовая схема для кошелька."""
 
     user_id: int = Field(..., ge=1, description="ID пользователя-владельца")
-    currency: str = Field(
-        ..., min_length=3, max_length=10, description="Код валюты ISO-подобный (например, KZT, USD)"
-    )
+    currency: str = Field(..., min_length=3, max_length=10, description="Код валюты ISO-подобный (например, KZT, USD)")
     model_config = ConfigDict(
         from_attributes=True,
         populate_by_name=True,

@@ -24,10 +24,10 @@ except Exception:  # pragma: no cover
     _HAS_REDIS_LIB = False
 
 log = logging.getLogger(__name__)
-_client: Optional["aioredis.Redis"] = None  # type: ignore[name-defined]
+_client: Optional[aioredis.Redis] = None  # type: ignore[name-defined]
 
 
-def get_redis() -> Optional["aioredis.Redis"]:  # type: ignore[name-defined]
+def get_redis() -> Optional[aioredis.Redis]:  # type: ignore[name-defined]
     cfg = getattr(settings, "redis_settings", {}) or {}
     url = cfg.get("url", getattr(settings, "REDIS_URL", "redis://localhost:6379"))
     password = cfg.get("password")

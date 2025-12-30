@@ -1,5 +1,5 @@
-# -*- coding: utf-8 -*-
 from __future__ import annotations
+
 """
 app/api/v1/kaspi.py — Полный, боевой роутер интеграции с Kaspi.
 
@@ -32,23 +32,24 @@ from typing import Any
 import sqlalchemy as sa
 from fastapi import APIRouter, Depends, HTTPException, Response, status
 from pydantic import BaseModel, Field, field_validator
-from sqlalchemy import text, bindparam
+from sqlalchemy import bindparam, text
 from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.core.db import get_async_db  # noqa — для совместимости импорт-алиас
 
 # БД (единый вход, обратная совместимость):
 from app.core.db import get_async_db as get_db
-from app.core.db import get_async_db  # noqa — для совместимости импорт-алиас
 
 # Доменные зависимости/схемы:
 from app.integrations.kaspi_adapter import KaspiAdapter, KaspiAdapterError
 from app.models import Product
 from app.models.marketplace import KaspiStoreToken
 from app.schemas.kaspi import (
+    ImportRequest,
+    ImportStatusQuery,
     KaspiTokenIn,
     KaspiTokenOut,
     OrdersQuery,
-    ImportRequest,
-    ImportStatusQuery,
 )
 from app.services.kaspi_service import KaspiService
 
@@ -67,6 +68,7 @@ def normalize_name(name: str) -> str:
 
 
 # ------------------------------- Локальные схемы -----------------------------
+
 
 class ConnectStoreInput(BaseModel):
     store_name: str = Field(..., min_length=3, description="Имя магазина (уникальное)")
@@ -107,6 +109,7 @@ class AvailabilityBulkIn(BaseModel):
 
 class KaspiTokenMaskedOut(BaseModel):
     """Ответ для карточки токена без раскрытия секрета."""
+
     id: str
     store_name: str
     token_hex_masked: str
@@ -115,6 +118,7 @@ class KaspiTokenMaskedOut(BaseModel):
 
 
 # ================================= CONNECT ===================================
+
 
 @router.post(
     "/connect",
@@ -170,6 +174,7 @@ async def connect_store(
 
 
 # ================================= TOKENS ====================================
+
 
 @router.post(
     "/tokens",
@@ -273,6 +278,7 @@ async def delete_token(store_name: str, session: AsyncSession = Depends(get_db))
 
 # ============================ Операции через адаптер ==========================
 
+
 @router.get(
     "/health/{store}",
     summary="Проверка здоровья Kaspi API для магазина",
@@ -330,6 +336,7 @@ async def kaspi_import_status(req: ImportStatusQuery):
 
 
 # ================================== Service ==================================
+
 
 @router.post(
     "/orders/sync",
@@ -404,9 +411,7 @@ async def kaspi_availability_bulk(
 ):
     try:
         svc = KaspiService()
-        stats = await svc.bulk_sync_availability(
-            company_id=payload.company_id, db=session, limit=payload.limit
-        )
+        stats = await svc.bulk_sync_availability(company_id=payload.company_id, db=session, limit=payload.limit)
         return stats
     except Exception as e:
         logger.error("Kaspi availability bulk failed: payload=%s err=%s", payload.model_dump(), e)
@@ -414,6 +419,7 @@ async def kaspi_availability_bulk(
 
 
 # ================================= DEBUG =====================================
+
 
 @router.get("/_debug/ping", summary="Kaspi debug ping")
 def kaspi_debug_ping():

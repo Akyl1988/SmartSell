@@ -28,15 +28,21 @@ from __future__ import annotations
 import logging
 from collections.abc import AsyncIterator, Iterable, Iterator, Sequence
 from contextlib import asynccontextmanager, contextmanager
-from datetime import datetime, timezone
-UTC = timezone.utc
+from datetime import UTC, datetime
+
+UTC = UTC
 from importlib import import_module
 from typing import Any, TypeVar
 
-from sqlalchemy import func  # для count/агрегаций
-from sqlalchemy import DateTime, Integer, MetaData
+from sqlalchemy import (
+    DateTime,
+    Integer,
+    MetaData,
+    func,  # для count/агрегаций
+    select,
+    text,
+)
 from sqlalchemy import exc as sa_exc
-from sqlalchemy import select, text
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, declared_attr, mapped_column
 
 # Optional async support (модуль может работать и без зависимости на async в рантайме)
@@ -164,9 +170,7 @@ class BaseModel(Base):
     __abstract__ = True
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime, default=datetime.utcnow, nullable=False, index=True
-    )
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False, index=True)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False, index=True
     )
@@ -470,11 +474,7 @@ def for_update_by_id(
     nowait=True  -> не ждать блокировку, при занятости — исключение.
     skip_locked=True -> пропустить заблокированные (вернёт None, если запись занята).
     """
-    q = (
-        select(model)
-        .where(model.id == obj_id)
-        .with_for_update(nowait=nowait, skip_locked=skip_locked)
-    )
+    q = select(model).where(model.id == obj_id).with_for_update(nowait=nowait, skip_locked=skip_locked)
     return session.execute(q).scalars().first()
 
 
@@ -670,11 +670,7 @@ async def afor_update_by_id(  # type: ignore[valid-type]
     nowait: bool = False,
     skip_locked: bool = False,
 ) -> T | None:
-    q = (
-        select(model)
-        .where(model.id == obj_id)
-        .with_for_update(nowait=nowait, skip_locked=skip_locked)
-    )
+    q = select(model).where(model.id == obj_id).with_for_update(nowait=nowait, skip_locked=skip_locked)
     res = await session.execute(q)
     return res.scalars().first()
 

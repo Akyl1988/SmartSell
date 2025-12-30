@@ -166,9 +166,7 @@ def _init_metrics() -> None:
             ["method", "path"],
             registry=_PROM_REGISTRY,
         )
-        _READY_GAUGE = Gauge(
-            "smartsell_ready", "Readiness status (1=ready,0=not_ready)", registry=_PROM_REGISTRY
-        )
+        _READY_GAUGE = Gauge("smartsell_ready", "Readiness status (1=ready,0=not_ready)", registry=_PROM_REGISTRY)
         _READY_GAUGE.set(0)
         log.info("Prometheus metrics initialized")
     else:
@@ -248,11 +246,7 @@ def _add_request_id_and_tracing_middleware(app: FastAPI) -> None:
 
     class RequestIDTracingMiddleware(BaseHTTPMiddleware):
         async def dispatch(self, request: Request, call_next):
-            req_id = (
-                request.headers.get("x-request-id")
-                or request.headers.get("x-correlation-id")
-                or str(uuid.uuid4())
-            )
+            req_id = request.headers.get("x-request-id") or request.headers.get("x-correlation-id") or str(uuid.uuid4())
 
             trace_id_hex = ""
             span_id_hex = ""
@@ -276,9 +270,7 @@ def _add_request_id_and_tracing_middleware(app: FastAPI) -> None:
 
             # метрики
             try:
-                _observe_request_metrics(
-                    request.method, request.url.path, getattr(response, "status_code", 500), dt
-                )
+                _observe_request_metrics(request.method, request.url.path, getattr(response, "status_code", 500), dt)
             except Exception:
                 pass
 
@@ -439,9 +431,7 @@ def _register_health_endpoints(app: FastAPI) -> None:
         if _HAS_PROM and _PROM_REGISTRY is not None:
             data = generate_latest(_PROM_REGISTRY)  # type: ignore
             return Response(content=data, media_type=CONTENT_TYPE_LATEST)
-        return PlainTextResponse(
-            "# metrics disabled (prometheus_client not installed)\n", status_code=200
-        )
+        return PlainTextResponse("# metrics disabled (prometheus_client not installed)\n", status_code=200)
 
     log.info("Health endpoints registered", endpoints=["/livez", "/readyz", "/metrics"])
 

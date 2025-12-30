@@ -148,9 +148,7 @@ def _send_via_smtp(smtp: SmtpConfig, msg: MIMEMultipart) -> None:
             server.login(smtp.user, smtp.password)
 
     if smtp.use_ssl:
-        with smtplib.SMTP_SSL(
-            host=smtp.host, port=smtp.port, timeout=smtp.connect_timeout
-        ) as server:
+        with smtplib.SMTP_SSL(host=smtp.host, port=smtp.port, timeout=smtp.connect_timeout) as server:
             _configure(server)
             server.send_message(msg)
     else:
@@ -159,9 +157,7 @@ def _send_via_smtp(smtp: SmtpConfig, msg: MIMEMultipart) -> None:
             server.send_message(msg)
 
 
-def _smtp_send_with_retry(
-    send_fn: Callable[[], None], *, retries: int = 2, base_delay: float = 0.7
-) -> None:
+def _smtp_send_with_retry(send_fn: Callable[[], None], *, retries: int = 2, base_delay: float = 0.7) -> None:
     last_err: Exception | None = None
     for attempt in range(retries + 1):
         try:
@@ -172,9 +168,7 @@ def _smtp_send_with_retry(
             if attempt >= retries:
                 break
             sleep_s = base_delay * (2**attempt)
-            logger.warning(
-                "SMTP send retry %s/%s через %.1fs: %s", attempt + 1, retries, sleep_s, e
-            )
+            logger.warning("SMTP send retry %s/%s через %.1fs: %s", attempt + 1, retries, sleep_s, e)
             time.sleep(sleep_s)
     assert last_err is not None
     raise last_err
@@ -195,16 +189,12 @@ def _on_scheduler_event(event):
     if event.code == EVENT_JOB_MISSED:
         logger.warning("APScheduler: пропущен запуск job_id=%s", getattr(event, "job_id", "?"))
     elif event.code == EVENT_JOB_MAX_INSTANCES:
-        logger.error(
-            "APScheduler: достигнут максимум инстансов job_id=%s", getattr(event, "job_id", "?")
-        )
+        logger.error("APScheduler: достигнут максимум инстансов job_id=%s", getattr(event, "job_id", "?"))
     elif event.code == EVENT_JOB_ERROR:
         logger.exception("APScheduler: ошибка в job_id=%s", getattr(event, "job_id", "?"))
 
 
-scheduler.add_listener(
-    _on_scheduler_event, EVENT_JOB_MISSED | EVENT_JOB_MAX_INSTANCES | EVENT_JOB_ERROR
-)
+scheduler.add_listener(_on_scheduler_event, EVENT_JOB_MISSED | EVENT_JOB_MAX_INSTANCES | EVENT_JOB_ERROR)
 
 
 # -------- Бизнес-логика -------- #
@@ -297,9 +287,7 @@ def process_scheduled_campaigns() -> None:
             if not pending:
                 # Если нечего слать — завершаем кампанию
                 campaign.status = CampaignStatus.COMPLETED
-                logger.info(
-                    "Кампания id=%s помечена как COMPLETED (нет PENDING сообщений)", campaign.id
-                )
+                logger.info("Кампания id=%s помечена как COMPLETED (нет PENDING сообщений)", campaign.id)
                 continue
 
             # Ставим каждое сообщение в очередь на ближайший запуск
@@ -338,9 +326,7 @@ def enqueue_campaign(campaign_id: int) -> dict[str, int]:
             raise ValueError(f"Campaign {campaign_id} не найдена")
 
         messages = (
-            db.query(Message)
-            .filter(Message.campaign_id == campaign_id, Message.status == MessageStatus.PENDING)
-            .all()
+            db.query(Message).filter(Message.campaign_id == campaign_id, Message.status == MessageStatus.PENDING).all()
         )
         for m in messages:
             try:

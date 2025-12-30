@@ -163,9 +163,7 @@ class IdempotencyManager:
 idempotency_manager = IdempotencyManager()
 
 
-async def ensure_idempotency(
-    db: AsyncSession, operation: str, identifier: str, ttl_hours: int = 24
-) -> bool:
+async def ensure_idempotency(db: AsyncSession, operation: str, identifier: str, ttl_hours: int = 24) -> bool:
     """Check if operation was already performed (database-based)"""
 
     try:
@@ -278,9 +276,7 @@ async def with_idempotency(
 # Convenience functions for common operations
 
 
-async def ensure_payment_idempotency(
-    order_id: int, amount: float, provider_invoice_id: str
-) -> bool:
+async def ensure_payment_idempotency(order_id: int, amount: float, provider_invoice_id: str) -> bool:
     """Ensure payment idempotency"""
 
     key = f"payment:{provider_invoice_id}"

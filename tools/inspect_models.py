@@ -23,7 +23,7 @@ def main():
     for name in Base.metadata.tables.keys():
         print("-", name)
 
-    insp = inspect(engine)
+    _insp = inspect(engine)
 
     print_header("FOREIGN KEYS (by table)")
     for tname, table in Base.metadata.tables.items():

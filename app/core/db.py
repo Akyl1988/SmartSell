@@ -24,7 +24,6 @@ Unified database configuration and session management for SmartSell (async + syn
 from __future__ import annotations
 
 import logging
-import hashlib
 import os
 import time as _time
 from collections.abc import AsyncIterator, Generator, Iterator
@@ -50,7 +49,12 @@ logger = logging.getLogger(__name__)
 # Settings (безопасный импорт)
 # -----------------------------------------------------------------------------
 try:
-    from app.core.config import get_settings, db_url_fingerprint  # type: ignore
+    from app.core.config import (
+        _under_pytest,
+        db_url_fingerprint,
+        get_settings,
+        resolve_database_url,
+    )
 
     settings = get_settings()
 except Exception:
@@ -69,6 +73,9 @@ except Exception:
 
     settings = _S()  # type: ignore
 
+    def _under_pytest() -> bool:  # type: ignore
+        return False
+
 
 # -----------------------------------------------------------------------------
 # Base импортируется из models (единая точка истины для DeclarativeBase)
@@ -78,6 +85,7 @@ try:
 except ImportError:
     # Fallback на случай ранних импортов (до инициализации models пакета)
     from sqlalchemy.orm import DeclarativeBase
+
     class Base(DeclarativeBase):
         pass
 
@@ -87,7 +95,7 @@ __all__ = [
     "Base",
     # Async
     "get_async_db",
-    "get_async_session",   # совместимость
+    "get_async_session",  # совместимость
     "init_db_async",
     "close_db_async",
     "reload_async_engine",
@@ -95,7 +103,7 @@ __all__ = [
     "ensure_extensions_async",
     # Sync
     "get_db",
-    "get_session",         # совместимость
+    "get_session",  # совместимость
     "session_scope",
     "init_db",
     "drop_db",
@@ -160,24 +168,35 @@ def _normalize_pg_to_asyncpg(url: str) -> str:
 
 
 def _normalize_pg_to_psycopg2(url: str) -> str:
-    if url.startswith("postgres://"):
-        url = url.replace("postgres://", "postgresql://", 1)
-    if url.startswith("postgresql+"):
-        return url  # уже указан драйвер (в т.ч. psycopg2)
-    if url.startswith("postgresql://"):
-        return url.replace("postgresql://", "postgresql+psycopg2://", 1)
-    return url
+    try:
+        if url.startswith("postgres://"):
+            url = url.replace("postgres://", "postgresql://", 1)
+        u = make_url(url)
+        base_driver = u.drivername.split("+", 1)[0]
+        u = u.set(drivername=f"{base_driver}+psycopg2")
+        return str(u)
+    except Exception:
+        if url.startswith("postgresql+psycopg2://"):
+            return url
+        if url.startswith("postgresql+asyncpg://"):
+            return url.replace("postgresql+asyncpg://", "postgresql+psycopg2://", 1)
+        if url.startswith("postgresql://"):
+            return url.replace("postgresql://", "postgresql+psycopg2://", 1)
+        return url
+
+
+def _assert_non_local_has_real_db(source: str) -> None:
+    if _under_pytest():
+        return
+    env_val = str(getattr(settings, "ENVIRONMENT", "") or "").lower()
+    if source == "DEFAULT" and env_val != "local":
+        raise RuntimeError("DATABASE_URL is required for non-local environments")
 
 
 def _validate_is_postgres(url: str) -> None:
-    if not (
-        url.startswith("postgresql://")
-        or url.startswith("postgresql+")
-        or url.startswith("postgres://")
-    ):
+    if not (url.startswith("postgresql://") or url.startswith("postgresql+") or url.startswith("postgres://")):
         raise RuntimeError(
-            f"PostgreSQL required, got DATABASE_URL='{url}'. "
-            "Use 'postgresql+psycopg2://user:pass@host:port/dbname'."
+            f"PostgreSQL required, got DATABASE_URL='{url}'. " "Use 'postgresql+psycopg2://user:pass@host:port/dbname'."
         )
 
 
@@ -185,71 +204,71 @@ def _validate_is_postgres(url: str) -> None:
 # Определение URL с дефолтами/фолбэками
 # -----------------------------------------------------------------------------
 def _resolve_async_url() -> str:
-    # порядок: settings.sqlalchemy_async_url -> settings.sqlalchemy_urls['async'] -> DATABASE_URL -> sqlite memory
+    base_url, source, _ = resolve_database_url(settings)
+    _assert_non_local_has_real_db(source)
+
+    candidates: list[str] = []
     try:
-        url = getattr(settings, "sqlalchemy_async_url", "").strip()
-        if url:
-            # Normalize to asyncpg and strip unsupported params
-            url = _normalize_pg_to_asyncpg(url)
-            make_url(url)
-            return url
+        override = getattr(settings, "sqlalchemy_async_url", "").strip()
+        if override:
+            candidates.append(override)
     except Exception:
         pass
 
     try:
         urls = getattr(settings, "sqlalchemy_urls", {}) or {}
-        url = (urls.get("async") or "").strip()
-        if url:
-            url = _normalize_pg_to_asyncpg(url)
-            make_url(url)
-            return url
+        async_url = (urls.get("async") or "").strip()
+        if async_url:
+            candidates.append(async_url)
     except Exception:
         pass
 
-    raw = (getattr(settings, "DATABASE_URL", "") or os.getenv("DATABASE_URL", "")).strip()
-    if raw:
+    candidates.append(base_url.strip())
+
+    for raw in candidates:
+        if not raw:
+            continue
         try:
             url = _normalize_pg_to_asyncpg(raw)
             make_url(url)
             return url
         except Exception:
-            logger.warning(
-                "Invalid async DATABASE_URL; falling back to sqlite memory.", exc_info=False
-            )
+            logger.warning("Invalid async DB URL candidate skipped", exc_info=False)
 
     return "sqlite+aiosqlite:///:memory:"
 
 
 def _resolve_sync_pg_url() -> str:
-    # порядок: settings.sqlalchemy_sync_url -> settings.sqlalchemy_urls['sync'] -> DATABASE_URL (strict PG)
+    base_url, source, _ = resolve_database_url(settings)
+    _assert_non_local_has_real_db(source)
+
+    candidates: list[str] = []
     try:
-        url = getattr(settings, "sqlalchemy_sync_url", "").strip()
-        if url:
-            _validate_is_postgres(url)
-            url = _normalize_pg_to_psycopg2(url)
-            make_url(url)
-            return url
+        override = getattr(settings, "sqlalchemy_sync_url", "").strip()
+        if override:
+            candidates.append(override)
     except Exception:
         pass
 
     try:
         urls = getattr(settings, "sqlalchemy_urls", {}) or {}
-        url = (urls.get("sync") or "").strip()
-        if url:
-            _validate_is_postgres(url)
-            url = _normalize_pg_to_psycopg2(url)
-            make_url(url)
-            return url
+        sync_url = (urls.get("sync") or "").strip()
+        if sync_url:
+            candidates.append(sync_url)
     except Exception:
         pass
 
-    raw = (getattr(settings, "DATABASE_URL", "") or os.getenv("DATABASE_URL", "")).strip()
-    if not raw:
-        raise RuntimeError("DATABASE_URL is not set. PostgreSQL is required for sync engine.")
-    _validate_is_postgres(raw)
-    url = _normalize_pg_to_psycopg2(raw)
-    make_url(url)
-    return url
+    candidates.append(base_url.strip())
+
+    for raw in candidates:
+        if not raw:
+            continue
+        _validate_is_postgres(raw)
+        url = _normalize_pg_to_psycopg2(raw)
+        make_url(url)
+        return url
+
+    raise RuntimeError("DATABASE_URL is not set. PostgreSQL is required for sync engine.")
 
 
 # -----------------------------------------------------------------------------
@@ -382,9 +401,7 @@ def _get_async_engine() -> AsyncEngine:
         try:
             rep_url = _normalize_pg_to_asyncpg(rep)
             make_url(rep_url)
-            _ASYNC_REPLICA_ENGINE = create_async_engine(
-                rep_url, **_engine_options(async_engine=True)
-            )
+            _ASYNC_REPLICA_ENGINE = create_async_engine(rep_url, **_engine_options(async_engine=True))
         except Exception as e:
             logger.warning("Async replica init failed; primary will be used. %s", e)
 
@@ -406,9 +423,7 @@ def _get_sync_engine() -> Engine:
         return _SYNC_ENGINE
 
     def _install_pg_connection_events(engine: Engine) -> None:
-        app_name = f"{getattr(settings, 'PROJECT_NAME', 'SmartSell')}@{getattr(settings, 'VERSION', '')}".strip(
-            "@"
-        )
+        app_name = f"{getattr(settings, 'PROJECT_NAME', 'SmartSell')}@{getattr(settings, 'VERSION', '')}".strip("@")
         pg_search_path = getattr(settings, "PG_SEARCH_PATH", "") or os.getenv("PG_SEARCH_PATH", "")
         try:
             stmt_timeout_ms = int(getattr(settings, "POSTGRES_STATEMENT_TIMEOUT_MS", 0) or 0)
@@ -437,9 +452,7 @@ def _get_sync_engine() -> Engine:
     _log_effective_url(url, mode="sync")
     _SYNC_ENGINE = create_engine(url, **_engine_options(async_engine=False))
     _install_pg_connection_events(_SYNC_ENGINE)
-    _SYNC_SESSION_MAKER = sessionmaker(
-        bind=_SYNC_ENGINE, autocommit=False, autoflush=False, expire_on_commit=False
-    )
+    _SYNC_SESSION_MAKER = sessionmaker(bind=_SYNC_ENGINE, autocommit=False, autoflush=False, expire_on_commit=False)
 
     # replica (опционально)
     rep = (os.getenv("DATABASE_REPLICA_URL_SYNC", "") or "").strip()
@@ -536,13 +549,9 @@ async def health_check_db_async(timeout_seconds: int = 2) -> dict:
             version = None
             try:
                 if str(eng.url).startswith("sqlite"):
-                    version = (
-                        await conn.execute(sqltext("SELECT sqlite_version()"))
-                    ).scalar_one_or_none()
+                    version = (await conn.execute(sqltext("SELECT sqlite_version()"))).scalar_one_or_none()
                 else:
-                    version = (
-                        await conn.execute(sqltext("SHOW server_version"))
-                    ).scalar_one_or_none()
+                    version = (await conn.execute(sqltext("SHOW server_version"))).scalar_one_or_none()
             except Exception:
                 version = None
         return {"ok": True, "error": None, "server_version": version}

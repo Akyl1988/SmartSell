@@ -7,8 +7,8 @@ Create Date: 2025-12-26
 
 from __future__ import annotations
 
-from alembic import op
 import sqlalchemy as sa
+from alembic import op
 from sqlalchemy.dialects import postgresql
 
 # revision identifiers, used by Alembic.
@@ -50,7 +50,9 @@ def upgrade() -> None:
             nullable=False,
         ),
         sa.Column("updated_by_user_id", sa.Integer(), sa.ForeignKey("users.id"), nullable=True),
-        sa.UniqueConstraint("domain", "provider", name=op.f("uq__integration_providers__domain_provider")),
+        sa.UniqueConstraint(
+            "domain", "provider", name=op.f("uq__integration_providers__domain_provider")
+        ),
     )
     op.create_index(
         op.f("ix__integration_providers__domain"),
@@ -106,8 +108,13 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    op.drop_index(op.f("ix__integration_provider_events__created_at"), table_name="integration_provider_events")
-    op.drop_index(op.f("ix__integration_provider_events__domain"), table_name="integration_provider_events")
+    op.drop_index(
+        op.f("ix__integration_provider_events__created_at"),
+        table_name="integration_provider_events",
+    )
+    op.drop_index(
+        op.f("ix__integration_provider_events__domain"), table_name="integration_provider_events"
+    )
     op.drop_table("integration_provider_events")
 
     op.drop_index("uq__integration_providers__domain_active", table_name="integration_providers")

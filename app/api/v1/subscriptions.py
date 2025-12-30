@@ -199,8 +199,8 @@ async def list_subscriptions(
     db: AsyncSession = Depends(get_async_db),
     user: User = Depends(_auth_user),
 ):
-    company = await ensure_company(db, company_id)
-    ensure_company_access(user, company)
+    _company = await ensure_company(db, company_id)
+    ensure_company_access(user, _company)
 
     is_admin = getattr(user, "role", None) in {"platform_admin", "superadmin"}
     include_deleted = include_deleted if is_admin else False
@@ -218,12 +218,14 @@ async def list_subscriptions(
         stmt = stmt.where(Subscription.next_billing_date <= to_date)
 
     rows = (
-        await db.execute(
-            stmt.order_by(
-                Subscription.next_billing_date.is_(None), Subscription.next_billing_date.asc()
+        (
+            await db.execute(
+                stmt.order_by(Subscription.next_billing_date.is_(None), Subscription.next_billing_date.asc())
             )
         )
-    ).scalars().all()
+        .scalars()
+        .all()
+    )
     return rows
 
 
@@ -233,20 +235,22 @@ async def get_current_subscription(
     db: AsyncSession = Depends(get_async_db),
     user: User = Depends(_auth_user),
 ):
-    company = await ensure_company(db, company_id)
-    ensure_company_access(user, company)
+    _company = await ensure_company(db, company_id)
+    ensure_company_access(user, _company)
 
     rows = (
-        await db.execute(
-            select(Subscription)
-            .where(Subscription.company_id == company_id)
-            .where(Subscription.deleted_at.is_(None))
-            .where(Subscription.status.in_(list(ACTIVE_STATES)))
-            .order_by(
-                Subscription.next_billing_date.is_(None), Subscription.next_billing_date.asc()
+        (
+            await db.execute(
+                select(Subscription)
+                .where(Subscription.company_id == company_id)
+                .where(Subscription.deleted_at.is_(None))
+                .where(Subscription.status.in_(list(ACTIVE_STATES)))
+                .order_by(Subscription.next_billing_date.is_(None), Subscription.next_billing_date.asc())
             )
         )
-    ).scalars().all()
+        .scalars()
+        .all()
+    )
     return rows[0] if rows else None
 
 
@@ -256,8 +260,8 @@ async def create_subscription(
     db: AsyncSession = Depends(get_async_db),
     user: User = Depends(_auth_user),
 ):
-    company = await ensure_company(db, payload.company_id)
-    ensure_company_access(user, company)
+    _company = await ensure_company(db, payload.company_id)
+    ensure_company_access(user, _company)
 
     try:
         # бизнес-правило: только одна «текущая» подписка
@@ -302,7 +306,7 @@ async def update_subscription(
     sub = await db.get(Subscription, subscription_id)
     if not sub:
         raise HTTPException(status_code=404, detail="Subscription not found")
-    company = await ensure_sub_access(user, sub, db)
+    _company = await ensure_sub_access(user, sub, db)
 
     try:
         if payload.plan is not None:
@@ -338,7 +342,7 @@ async def cancel_subscription(
     sub = await db.get(Subscription, subscription_id)
     if not sub:
         raise HTTPException(status_code=404, detail="Subscription not found")
-    company = await ensure_sub_access(user, sub, db)
+    _company = await ensure_sub_access(user, sub, db)
 
     if sub.status == "canceled":
         return sub  # идемпотентно
@@ -359,13 +363,11 @@ async def resume_subscription(
     sub = await db.get(Subscription, subscription_id)
     if not sub:
         raise HTTPException(status_code=404, detail="Subscription not found")
-    company = await ensure_sub_access(user, sub, db)
+    _company = await ensure_sub_access(user, sub, db)
 
     # Бизнес-правило: нельзя «возобновлять», если подписка давно отменена и срок истёк (пример)
     if sub.status == "canceled" and sub.expires_at and sub.expires_at < utc_now():
-        raise HTTPException(
-            status_code=422, detail="Canceled and expired; create a new subscription"
-        )
+        raise HTTPException(status_code=422, detail="Canceled and expired; create a new subscription")
 
     now = utc_now()
     sub.status = "active"
@@ -393,7 +395,7 @@ async def renew_subscription(
     sub = await db.get(Subscription, subscription_id)
     if not sub:
         raise HTTPException(status_code=404, detail="Subscription not found")
-    company = await ensure_sub_access(user, sub, db)
+    _company = await ensure_sub_access(user, sub, db)
 
     now = utc_now()
     sub.status = "active"
@@ -415,7 +417,7 @@ async def end_trial(
     sub = await db.get(Subscription, subscription_id)
     if not sub:
         raise HTTPException(status_code=404, detail="Subscription not found")
-    company = await ensure_sub_access(user, sub, db)
+    _company = await ensure_sub_access(user, sub, db)
 
     if sub.status != "trial":
         raise HTTPException(status_code=422, detail="Subscription is not in trial")
@@ -442,7 +444,7 @@ async def archive_subscription(
     if not sub:
         raise HTTPException(status_code=404, detail="Subscription not found")
 
-    await ensure_sub_access(user, sub, db, allow_deleted=True)
+    _company = await ensure_sub_access(user, sub, db, allow_deleted=True)
 
     if sub.deleted_at:
         return sub

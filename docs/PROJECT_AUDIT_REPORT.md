@@ -3,7 +3,7 @@
 ## Executive summary
 - Runtime now: `fastapi 0.104.1`, `starlette 0.27.0`, `anyio 3.7.1`, `trio 0.22.2` (from importlib); pins in pyproject/requirements target `fastapi 0.115.5` + `starlette 0.41.3` + `anyio 4.x` + `trio 0.31.0` — env drift, no lockfile.
 - Architecture: FastAPI app in `app/main.py` mounts v1 routers via `app.api.routes.mount_v1`; settings via `app/core/config.py`; DB layer `app/core/db.py` provides async/sync engines; security/JWT helpers in `app/core/security.py`; debug DB endpoint `/api/v1/_debug/db` exposes DSN metadata.
-- Risks: default `SECRET_KEY="changeme"`, permissive DB fallbacks (SQLite or default Postgres creds), Alembic default URL with password, `/api/v1/_debug/db` unauthenticated, ALLOW_DROPS flag enables destructive DDL.
+- Risks: default `SECRET_KEY="changeme"`, permissive DB fallbacks (SQLite or default Postgres creds), Alembic default URL with embedded password, `/api/v1/_debug/db` unauthenticated, ALLOW_DROPS flag enables destructive DDL.
 - Migrations: single head now `20251228_active_subscription_uniqueness` (adds partial unique index for active/trial/overdue/paused) and `uq_subscription_company_active_states`; older .bak/quarantine artifacts remain.
 - Data protections: subscriptions payments endpoint now scoped by `subscription_id`; SMTP in TESTING/pytest forced to port 587 to avoid leaking insecure `.env` overrides.
 - Tests: previously green (`pytest -q` 116 passed, 5 skipped); new subscription/SMTP regression tests added; current env may diverge until deps are reinstalled.
@@ -20,7 +20,7 @@
 
 ## Риски и регрессии
 - High: Default `SECRET_KEY="changeme"` and permissive JWT defaults — must override in env; risk of token forgery.
-- High: Config/DB fallbacks allow SQLite or default Postgres with password `admin123`; Alembic default URL includes credentials; risk of mis-pointing to prod or shipping weak creds.
+- High: Config/DB fallbacks allow SQLite or default Postgres with weak embedded password; Alembic default URL includes credentials; risk of mis-pointing to prod or shipping weak creds.
 - Med: Debug endpoint `/api/v1/_debug/db` exposes DB host/user and connectivity; should be gated by auth/flag or disabled in prod.
 - Med: `ALLOW_DROPS` gate in Alembic can enable destructive DDL; ensure disabled in prod CI.
 - Med: Tests force anyio backend to asyncio; if trio backend is desired in prod, parity tests missing.
@@ -36,7 +36,7 @@
 - Head: `alembic heads` → `20251228_active_subscription_uniqueness` (single head).
 - New guard: partial unique index `uq_subscription_company_active_states` prevents >1 active/trial/overdue/paused subscription per company (SoftDelete-aware).
 - Artifacts: `.bak` and `_quarantine` files present alongside versions — risk of accidental heads if picked up; clean in follow-up.
-- Alembic env normalizes URLs, blocks DROPs unless `ALLOW_DROPS=1`, but default URL includes password `admin123` — must override via env in CI/prod.
+- Alembic env normalizes URLs, blocks DROPs unless `ALLOW_DROPS=1`, but default URL embeds a password — must override via env in CI/prod.
 - Tests: ephemeral DB via `TEST_ASYNC_DATABASE_URL`, downgrade-to-base after session, TRUNCATE cleanup.
 
 ## Tests audit
@@ -65,7 +65,7 @@ Approx readiness: MVP ~45%, Production ~20%. Top blockers: secure secrets/DSN ha
 ## Security P0/P1/P2 and fixes
 - P0
 	- SECRET_KEY default `changeme`; set via env/secret store; add check in `app/core/config.py` or `app/main.py` to refuse default.
-	- DB URLs default to SQLite or weak Postgres (`admin123`); require `DATABASE_URL`/`TEST_ASYNC_DATABASE_URL` in prod/CI; remove password from Alembic default in `migrations/env.py`.
+	- DB URLs default to SQLite or weak Postgres creds; require `DATABASE_URL`/`TEST_ASYNC_DATABASE_URL` in prod/CI; remove password from Alembic default in `migrations/env.py`.
 	- `/api/v1/_debug/db` unauthenticated; gate behind feature flag/env (e.g., `DEBUG_DB_ENABLED`) and auth dependency in `app/api/v1/debug_db.py`.
 - P1
 	- ALLOW_DROPS allows destructive Alembic operations; ensure unset in prod/CI and document; consider guard in `migrations/env.py`.
