@@ -3,25 +3,27 @@
 # ============================================
 from __future__ import annotations
 
-import hashlib
 import json
 import logging
 import os
 import platform
 import sys
 import time
-
-# -------------------- ДОБАВЛЕНО --------------------
-from datetime import datetime
 from functools import lru_cache
 from logging.handlers import RotatingFileHandler
 from pathlib import Path, PurePosixPath
 from typing import Any, Literal, cast
 from urllib.parse import parse_qs, quote, urlencode, urlparse, urlunparse
-from zoneinfo import ZoneInfo
 
-from pydantic import AliasChoices, AnyHttpUrl, EmailStr, Field, ValidationInfo, field_validator
+import hashlib
+
+from pydantic import AliasChoices, AnyHttpUrl, EmailStr, Field, field_validator
+from pydantic import ValidationInfo
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+# -------------------- ДОБАВЛЕНО --------------------
+from datetime import datetime
+from zoneinfo import ZoneInfo
 
 # Константы JSON:API (Kaspi Shop Orders)
 JSONAPI_MIME: str = "application/vnd.api+json"
@@ -98,7 +100,7 @@ def _is_local_env(env_value: str, debug: bool) -> bool:
     return debug or env_norm in {"local", "development", "dev"}
 
 
-def resolve_database_url(settings: Settings | None = None) -> tuple[str, str, str]:
+def resolve_database_url(settings: "Settings" | None = None) -> tuple[str, str, str]:
     """
     Single source of truth for DB URL resolution.
     Priority:
@@ -119,7 +121,9 @@ def resolve_database_url(settings: Settings | None = None) -> tuple[str, str, st
         env.get("TEST_DATABASE_URL")
         or env.get("TEST_ASYNC_DATABASE_URL")
         or env.get("DATABASE_TEST_URL")
-        or (s.TEST_DATABASE_URL or s.DATABASE_TEST_URL)
+        or s.TEST_DATABASE_URL
+        or s.TEST_ASYNC_DATABASE_URL
+        or s.DATABASE_TEST_URL
     )
     db_candidate = env.get("DATABASE_URL") or env.get("DB_URL") or s.DATABASE_URL
 
@@ -182,7 +186,7 @@ def _mask_nested(obj: Any, key_hint: str | None = None) -> Any:
         out: dict[str, Any] = {}
         for k, v in obj.items():
             if isinstance(k, str) and _is_secret_key_name(k):
-                if isinstance(v, dict | list | tuple):
+                if isinstance(v, (dict, list, tuple)):
                     out[k] = _mask_nested(v, key_hint=k)
                 else:
                     out[k] = _mask_secret(v)
@@ -210,13 +214,8 @@ def _writable(p: Path) -> bool:
 
 
 def _default_test_db_url() -> str:
-    """Build a password-bearing asyncpg DSN for tests when none is provided."""
-    user = os.getenv("TEST_DB_USER") or os.getenv("POSTGRES_USER") or "postgres"
-    password = os.getenv("TEST_DB_PASSWORD") or os.getenv("POSTGRES_PASSWORD") or "admin123"
-    host = os.getenv("TEST_DB_HOST") or "127.0.0.1"
-    port = os.getenv("TEST_DB_PORT") or "5432"
-    dbname = os.getenv("TEST_DB_NAME") or "SmartSellTest"
-    return f"postgresql+asyncpg://{quote(user, safe='')}:{quote(password, safe='')}" f"@{host}:{port}/{dbname}"
+    """Local-only safe fallback for development (no secrets, file-based)."""
+    return "sqlite+aiosqlite:///./.smartsell_test.sqlite3"
 
 
 # ================================
@@ -245,16 +244,22 @@ class Settings(BaseSettings):
     PROJECT_NAME: str = Field(default="SmartSell", description="Project name")
     VERSION: str = Field(default="0.1.0", description="Application version")
     DEBUG: bool = Field(default=False, description="Debug mode", validation_alias="DEBUG")
-    ENVIRONMENT: str = Field(default="development", description="Environment", validation_alias="ENVIRONMENT")
+    ENVIRONMENT: str = Field(
+        default="development", description="Environment", validation_alias="ENVIRONMENT"
+    )
     TESTING: bool = Field(default=False, description="Testing mode", validation_alias="TESTING")
     API_V1_STR: str = Field(default="/api/v1", description="API v1 prefix")
     HOST: str = Field(default="127.0.0.1", description="Server host", validation_alias="HOST")
     PORT: int = Field(default=8000, description="Server port", validation_alias="PORT")
     SCHEME: str = Field(default="http", description="Public scheme", validation_alias="SCHEME")
-    PUBLIC_URL: AnyHttpUrl | None = Field(default=None, description="Public API URL", validation_alias="PUBLIC_URL")
+    PUBLIC_URL: AnyHttpUrl | None = Field(
+        default=None, description="Public API URL", validation_alias="PUBLIC_URL"
+    )
 
     # ---- security/JWT
-    SECRET_KEY: str = Field(default="changeme", description="JWT secret key", validation_alias="SECRET_KEY")
+    SECRET_KEY: str = Field(
+        default="changeme", description="JWT secret key", validation_alias="SECRET_KEY"
+    )
     ACCESS_TOKEN_EXPIRE_MINUTES: int = Field(
         default=30,
         description="Access token expiry",
@@ -263,8 +268,12 @@ class Settings(BaseSettings):
     REFRESH_TOKEN_EXPIRE_DAYS: int = Field(
         default=7, description="Refresh token expiry", validation_alias="REFRESH_TOKEN_EXPIRE_DAYS"
     )
-    ALGORITHM: str = Field(default="HS256", description="JWT algorithm", validation_alias="ALGORITHM")
-    MAX_LOGIN_ATTEMPTS: int = Field(default=5, description="Max login attempts", validation_alias="MAX_LOGIN_ATTEMPTS")
+    ALGORITHM: str = Field(
+        default="HS256", description="JWT algorithm", validation_alias="ALGORITHM"
+    )
+    MAX_LOGIN_ATTEMPTS: int = Field(
+        default=5, description="Max login attempts", validation_alias="MAX_LOGIN_ATTEMPTS"
+    )
     PASSWORD_MIN_LENGTH: int = Field(
         default=8, description="Password min length", validation_alias="PASSWORD_MIN_LENGTH"
     )
@@ -281,7 +290,12 @@ class Settings(BaseSettings):
     TEST_DATABASE_URL: str | None = Field(
         default=None, description="Test database URL", validation_alias="TEST_DATABASE_URL"
     )
-    SQLALCHEMY_POOL_SIZE: int = Field(default=10, description="Pool size", validation_alias="SQLALCHEMY_POOL_SIZE")
+    TEST_ASYNC_DATABASE_URL: str | None = Field(
+        default=None, description="Test async database URL", validation_alias="TEST_ASYNC_DATABASE_URL"
+    )
+    SQLALCHEMY_POOL_SIZE: int = Field(
+        default=10, description="Pool size", validation_alias="SQLALCHEMY_POOL_SIZE"
+    )
     SQLALCHEMY_MAX_OVERFLOW: int = Field(
         default=20, description="Max overflow", validation_alias="SQLALCHEMY_MAX_OVERFLOW"
     )
@@ -293,8 +307,12 @@ class Settings(BaseSettings):
     )
 
     # ---- Redis/Celery
-    REDIS_URL: str = Field(default="redis://localhost:6379", description="Redis URL", validation_alias="REDIS_URL")
-    REDIS_PASSWORD: str | None = Field(default=None, description="Redis password", validation_alias="REDIS_PASSWORD")
+    REDIS_URL: str = Field(
+        default="redis://localhost:6379", description="Redis URL", validation_alias="REDIS_URL"
+    )
+    REDIS_PASSWORD: str | None = Field(
+        default=None, description="Redis password", validation_alias="REDIS_PASSWORD"
+    )
     REDIS_DB: int = Field(default=0, description="Redis db index", validation_alias="REDIS_DB")
     REDIS_CLIENT_STRICT: bool = Field(
         default=False,
@@ -348,7 +366,9 @@ class Settings(BaseSettings):
         description="Rate limit window (seconds)",
         validation_alias="RATE_LIMIT_WINDOW_SECONDS",
     )
-    RATE_LIMIT_BURST: int = Field(default=100, description="Rate limit burst", validation_alias="RATE_LIMIT_BURST")
+    RATE_LIMIT_BURST: int = Field(
+        default=100, description="Rate limit burst", validation_alias="RATE_LIMIT_BURST"
+    )
     RATE_LIMIT_ENABLED: bool = Field(
         default=True,
         description="Master switch for rate limiting",
@@ -399,15 +419,27 @@ class Settings(BaseSettings):
     )
 
     # ---- Файлы/логи
-    STATIC_DIR: str = Field(default="static", description="Static directory", validation_alias="STATIC_DIR")
-    MEDIA_DIR: str = Field(default="media", description="Media directory", validation_alias="MEDIA_DIR")
-    UPLOAD_DIR: str = Field(default="uploads", description="Upload directory", validation_alias="UPLOAD_DIR")
+    STATIC_DIR: str = Field(
+        default="static", description="Static directory", validation_alias="STATIC_DIR"
+    )
+    MEDIA_DIR: str = Field(
+        default="media", description="Media directory", validation_alias="MEDIA_DIR"
+    )
+    UPLOAD_DIR: str = Field(
+        default="uploads", description="Upload directory", validation_alias="UPLOAD_DIR"
+    )
     MAX_UPLOAD_SIZE: int = Field(
         default=10 * 1024 * 1024, description="Max upload size", validation_alias="MAX_UPLOAD_SIZE"
     )
-    LOG_PATH: str = Field(default="logs/app.log", description="Log file path", validation_alias="LOG_PATH")
-    LOG_LEVEL: str = Field(default="INFO", description="Logging level", validation_alias="LOG_LEVEL")
-    LOG_FORMAT: str = Field(default="json", description="Logging format (json|text)", validation_alias="LOG_FORMAT")
+    LOG_PATH: str = Field(
+        default="logs/app.log", description="Log file path", validation_alias="LOG_PATH"
+    )
+    LOG_LEVEL: str = Field(
+        default="INFO", description="Logging level", validation_alias="LOG_LEVEL"
+    )
+    LOG_FORMAT: str = Field(
+        default="json", description="Logging format (json|text)", validation_alias="LOG_FORMAT"
+    )
 
     # ---- Frontend
     FRONTEND_URL: AnyHttpUrl | str = Field(
@@ -415,7 +447,9 @@ class Settings(BaseSettings):
     )
 
     # ---- Провайдеры
-    MOBIZON_API_KEY: str | None = Field(default=None, description="Mobizon API key", validation_alias="MOBIZON_API_KEY")
+    MOBIZON_API_KEY: str | None = Field(
+        default=None, description="Mobizon API key", validation_alias="MOBIZON_API_KEY"
+    )
     MOBIZON_API_URL: str = Field(default="https://api.mobizon.kz", description="Mobizon API URL")
 
     CLOUDINARY_CLOUD_NAME: str | None = Field(
@@ -431,12 +465,16 @@ class Settings(BaseSettings):
     KASPI_MERCHANT_ID: str | None = Field(
         default=None, description="Kaspi merchant ID", validation_alias="KASPI_MERCHANT_ID"
     )
-    KASPI_API_KEY: str | None = Field(default=None, description="Kaspi API key", validation_alias="KASPI_API_KEY")
+    KASPI_API_KEY: str | None = Field(
+        default=None, description="Kaspi API key", validation_alias="KASPI_API_KEY"
+    )
     KASPI_API_URL: str = Field(default="https://api.kaspi.kz", description="Kaspi API URL")
 
     # -------------------- ДОБАВЛЕНО --------------------
     # Отдельный базовый URL для Shop Orders JSON:API (по документации Kaspi)
-    KASPI_SHOP_API_URL: str = Field(default="https://kaspi.kz/shop/api", description="Kaspi Shop JSON:API base URL")
+    KASPI_SHOP_API_URL: str = Field(
+        default="https://kaspi.kz/shop/api", description="Kaspi Shop JSON:API base URL"
+    )
     # Таймзона приложения для конвертаций (по умолчанию Asia/Almaty)
     APP_TIMEZONE: str = Field(default="Asia/Almaty", description="App timezone for Kaspi filters")
     # Максимальный размер страницы по документации (до 100)
@@ -459,9 +497,7 @@ class Settings(BaseSettings):
     )
     # Явный Python-интерпретатор для запуска адаптера (если нужен)
     KASPI_PYTHON: str = Field(
-        default=sys.executable,
-        description="Python executable for adapter",
-        validation_alias="KASPI_PYTHON",
+        default=sys.executable, description="Python executable for adapter", validation_alias="KASPI_PYTHON"
     )
     # ДОБАВЛЕНО: явные пути к шеллам для .ps1 (Windows)
     KASPI_PWSH: str | None = Field(
@@ -498,9 +534,7 @@ class Settings(BaseSettings):
         validation_alias="KASPI_FEED_OUT_DIR",
     )
     KASPI_TMP_DIR: str = Field(
-        default="var/kaspi/tmp",
-        description="Temp dir for Kaspi operations",
-        validation_alias="KASPI_TMP_DIR",
+        default="var/kaspi/tmp", description="Temp dir for Kaspi operations", validation_alias="KASPI_TMP_DIR"
     )
 
     # Полезные флаги
@@ -508,9 +542,7 @@ class Settings(BaseSettings):
         default=True, description="Enable internal Kaspi adapter endpoints (/api/v1/kaspi/*)"
     )
     KASPI_STORE_ALIAS_DEFAULT: str | None = Field(
-        default=None,
-        description="Optional default store alias",
-        validation_alias="KASPI_STORE_ALIAS_DEFAULT",
+        default=None, description="Optional default store alias", validation_alias="KASPI_STORE_ALIAS_DEFAULT"
     )
     # ---------------------------------------------------
 
@@ -520,17 +552,23 @@ class Settings(BaseSettings):
     TIPTOP_PAY_SECRET_KEY: str | None = Field(
         default=None, description="TipTop Pay secret key", validation_alias="TIPTOP_PAY_SECRET_KEY"
     )
-    TIPTOP_API_KEY: str | None = Field(default=None, description="TipTop API key", validation_alias="TIPTOP_API_KEY")
+    TIPTOP_API_KEY: str | None = Field(
+        default=None, description="TipTop API key", validation_alias="TIPTOP_API_KEY"
+    )
     TIPTOP_API_SECRET: str | None = Field(
         default=None, description="TipTop API secret", validation_alias="TIPTOP_API_SECRET"
     )
     TIPTOP_API_URL: str = Field(default="https://api.tippy.kz", description="TipTop API URL")
 
     # ---- SMTP
-    SMTP_HOST: str = Field(default="smtp.gmail.com", description="SMTP host", validation_alias="SMTP_HOST")
+    SMTP_HOST: str = Field(
+        default="smtp.gmail.com", description="SMTP host", validation_alias="SMTP_HOST"
+    )
     SMTP_PORT: int = Field(default=587, description="SMTP port", validation_alias="SMTP_PORT")
     SMTP_USER: str = Field(default="", description="SMTP user", validation_alias="SMTP_USER")
-    SMTP_PASSWORD: str = Field(default="", description="SMTP password", validation_alias="SMTP_PASSWORD")
+    SMTP_PASSWORD: str = Field(
+        default="", description="SMTP password", validation_alias="SMTP_PASSWORD"
+    )
     SMTP_FROM_EMAIL: EmailStr | None = Field(
         default=None, description="Sender email", validation_alias="SMTP_FROM_EMAIL"
     )
@@ -552,20 +590,30 @@ class Settings(BaseSettings):
     )
 
     # ---- Observability/Runtime
-    SENTRY_DSN: str | None = Field(default=None, description="Sentry DSN", validation_alias="SENTRY_DSN")
+    SENTRY_DSN: str | None = Field(
+        default=None, description="Sentry DSN", validation_alias="SENTRY_DSN"
+    )
     OTEL_EXPORTER_OTLP_ENDPOINT: str | None = Field(
         default=None, description="OTLP endpoint", validation_alias="OTEL_EXPORTER_OTLP_ENDPOINT"
     )
     OTEL_SERVICE_NAME: str | None = Field(
         default=None, description="OTEL service name", validation_alias="OTEL_SERVICE_NAME"
     )
-    UVICORN_WORKERS: int = Field(default=1, description="Uvicorn workers count", validation_alias="UVICORN_WORKERS")
-    ROOT_PATH: str = Field(default="", description="ASGI root_path for reverse proxy", validation_alias="ROOT_PATH")
+    UVICORN_WORKERS: int = Field(
+        default=1, description="Uvicorn workers count", validation_alias="UVICORN_WORKERS"
+    )
+    ROOT_PATH: str = Field(
+        default="", description="ASGI root_path for reverse proxy", validation_alias="ROOT_PATH"
+    )
 
     # ---- PostgreSQL доп-настройки
-    POSTGRES_STATEMENT_TIMEOUT_MS: int | None = Field(default=None, validation_alias="POSTGRES_STATEMENT_TIMEOUT_MS")
+    POSTGRES_STATEMENT_TIMEOUT_MS: int | None = Field(
+        default=None, validation_alias="POSTGRES_STATEMENT_TIMEOUT_MS"
+    )
     POSTGRES_SSLMODE: str | None = Field(default=None, validation_alias="POSTGRES_SSLMODE")
-    POSTGRES_SET_TIMEOUT_DIRECT: bool = Field(default=False, validation_alias="POSTGRES_SET_TIMEOUT_DIRECT")
+    POSTGRES_SET_TIMEOUT_DIRECT: bool = Field(
+        default=False, validation_alias="POSTGRES_SET_TIMEOUT_DIRECT"
+    )
 
     # ---- Release metadata
     GIT_COMMIT_SHA: str | None = Field(
@@ -573,8 +621,12 @@ class Settings(BaseSettings):
         description="Git commit SHA",
         validation_alias=AliasChoices("GIT_COMMIT", "GIT_COMMIT_SHA"),
     )
-    GIT_BRANCH: str | None = Field(default=None, description="Git branch name", validation_alias="GIT_BRANCH")
-    BUILD_TIMESTAMP: str | None = Field(default=None, description="Build timestamp", validation_alias="BUILD_TIMESTAMP")
+    GIT_BRANCH: str | None = Field(
+        default=None, description="Git branch name", validation_alias="GIT_BRANCH"
+    )
+    BUILD_TIMESTAMP: str | None = Field(
+        default=None, description="Build timestamp", validation_alias="BUILD_TIMESTAMP"
+    )
 
     # --------- валидаторы ---------
     @field_validator("CORS_ORIGINS", mode="before")
@@ -665,7 +717,6 @@ class Settings(BaseSettings):
         if s not in {"auto", "python", "pwsh", "powershell", "cmd"}:
             raise ValueError("KASPI_SHELL must be one of: auto|python|pwsh|powershell|cmd")
         return s
-
     # ---------------------------------------------------
 
     # --------- удобные свойства ---------
@@ -750,20 +801,26 @@ class Settings(BaseSettings):
 
     def check_allowed_hosts(self) -> None:
         if self.is_production and self.ALLOWED_HOSTS == ["*"]:
-            logging.getLogger(__name__).warning("ALLOWED_HOSTS='*' в production — небезопасно. Задайте список доменов.")
+            logging.getLogger(__name__).warning(
+                "ALLOWED_HOSTS='*' в production — небезопасно. Задайте список доменов."
+            )
 
     def check_cors_frontend(self) -> None:
         try:
             if self.is_production and self.FRONTEND_URL:
                 origin = str(self.FRONTEND_URL).rstrip("/")
                 if self.CORS_ORIGINS != ["*"] and origin not in self.CORS_ORIGINS:
-                    logging.getLogger(__name__).warning("FRONTEND_URL not present in CORS_ORIGINS: %s", origin)
+                    logging.getLogger(__name__).warning(
+                        "FRONTEND_URL not present in CORS_ORIGINS: %s", origin
+                    )
         except Exception:
             pass
 
     def check_smtp(self) -> None:
         if (self.SMTP_HOST and (self.SMTP_USER or self.SMTP_PASSWORD)) and not self.SMTP_FROM_EMAIL:
-            logging.getLogger(__name__).warning("SMTP_FROM_EMAIL is empty while SMTP credentials are set.")
+            logging.getLogger(__name__).warning(
+                "SMTP_FROM_EMAIL is empty while SMTP credentials are set."
+            )
         if self.SMTP_TLS and self.SMTP_SSL:
             logging.getLogger(__name__).warning(
                 "SMTP_TLS and SMTP_SSL are both True; prefer SMTP_SSL (465) or TLS (587), not both."
@@ -821,7 +878,9 @@ class Settings(BaseSettings):
         if self.LOG_PATH:
             log_file = self.resolve_path(self.LOG_PATH)
             log_file.parent.mkdir(parents=True, exist_ok=True)
-            fh = RotatingFileHandler(str(log_file), maxBytes=10 * 1024 * 1024, backupCount=5, encoding="utf-8")
+            fh = RotatingFileHandler(
+                str(log_file), maxBytes=10 * 1024 * 1024, backupCount=5, encoding="utf-8"
+            )
             fh.setLevel(level)
             fh.setFormatter(formatter)
             logger.addHandler(fh)
@@ -851,7 +910,9 @@ class Settings(BaseSettings):
             safe_netloc = parsed.hostname or ""
             if parsed.port:
                 safe_netloc += f":{parsed.port}"
-            return urlunparse((parsed.scheme.split("+")[0], safe_netloc, parsed.path, "", "", ""))
+            return urlunparse(
+                (parsed.scheme.split("+")[0], safe_netloc, parsed.path, "", "", "")
+            )
         except Exception:
             return ""
 
@@ -919,9 +980,7 @@ class Settings(BaseSettings):
                         "kaspi_encryption_enabled": self.kaspi_encryption_enabled,
                         "kaspi_script": str(self.kaspi_script_path()) if self.kaspi_script_path() else "",
                         "kaspi_shell_mode": self.kaspi_shell_mode(),
-                        "exec_preview": " ".join(self.kaspi_adapter_exec_preview(["health"]))
-                        if self.kaspi_script_path()
-                        else "",
+                        "exec_preview": " ".join(self.kaspi_adapter_exec_preview(["health"])) if self.kaspi_script_path() else "",
                         "bridge_outbox": str(self.bridge_outbox_dir()) if self.bridge_outbox_dir() else "",
                     },
                     ensure_ascii=False,
@@ -929,7 +988,6 @@ class Settings(BaseSettings):
             )
         except Exception:
             pass
-
     # ---------------------------------------------------
 
     # --------- групповые представления настроек ---------
@@ -977,7 +1035,9 @@ class Settings(BaseSettings):
 
     def normalized_smtp(self) -> dict:
         if self.SMTP_TLS and self.SMTP_SSL:
-            logging.getLogger(__name__).warning("Both SMTP_TLS and SMTP_SSL are True; forcing SSL semantics.")
+            logging.getLogger(__name__).warning(
+                "Both SMTP_TLS and SMTP_SSL are True; forcing SSL semantics."
+            )
         use_ssl = bool(self.SMTP_SSL)
         port = self.SMTP_PORT
         if use_ssl and port == 587:
@@ -1062,7 +1122,6 @@ class Settings(BaseSettings):
             },
             "store_alias_default": self.KASPI_STORE_ALIAS_DEFAULT or "",
         }
-
     # ---------------------------------------------------
 
     @property
@@ -1298,7 +1357,7 @@ class Settings(BaseSettings):
         for k, v in self.model_dump().items():
             if v is None:
                 val = ""
-            elif isinstance(v, list | dict):
+            elif isinstance(v, (list, dict)):
                 val = json.dumps(v, ensure_ascii=False)
             else:
                 val = str(v)
@@ -1348,7 +1407,9 @@ class Settings(BaseSettings):
                 }
             )
             provider = TracerProvider(resource=resource)
-            processor = BatchSpanProcessor(OTLPSpanExporter(endpoint=self.OTEL_EXPORTER_OTLP_ENDPOINT))
+            processor = BatchSpanProcessor(
+                OTLPSpanExporter(endpoint=self.OTEL_EXPORTER_OTLP_ENDPOINT)
+            )
             provider.add_span_processor(processor)
             trace.set_tracer_provider(provider)
             logging.getLogger(__name__).info("OpenTelemetry initialized")
@@ -1513,7 +1574,8 @@ class Settings(BaseSettings):
             key = (self.SECRET_KEY or "").strip()
         if len(key) < 16:
             raise ValueError(
-                "KASPI token encryption key is too short. " "Set PGCRYPTO_KEY (or KASPI_TOKEN_KEY) with length >= 16."
+                "KASPI token encryption key is too short. "
+                "Set PGCRYPTO_KEY (or KASPI_TOKEN_KEY) with length >= 16."
             )
         return key
 
@@ -1569,7 +1631,7 @@ class Settings(BaseSettings):
         """
         forced = (self.KASPI_SHELL or "auto").lower()
         sp = self.kaspi_script_path()
-        ext = sp.suffix.lower() if sp else ""
+        ext = (sp.suffix.lower() if sp else "")
 
         def has(path: str | None) -> bool:
             return bool(path and Path(path).exists())
@@ -1640,7 +1702,6 @@ class Settings(BaseSettings):
 
         # На крайний случай — запуск как исполняемого файла
         return [script, *args]
-
     # -------------------------------------------------------------------------
 
 
@@ -1696,7 +1757,9 @@ def get_settings() -> Settings:
             host = p.hostname or "localhost"
             port = p.port or 6379
             username = p.username or ""
-            password = s.REDIS_PASSWORD if s.REDIS_PASSWORD not in (None, "") else (p.password or "")
+            password = (
+                s.REDIS_PASSWORD if s.REDIS_PASSWORD not in (None, "") else (p.password or "")
+            )
             username_q = quote(username, safe="") if username else ""
             password_q = quote(password, safe="") if password else ""
             if username_q and password_q:
@@ -1710,7 +1773,9 @@ def get_settings() -> Settings:
             current_db = p.path.lstrip("/") if p.path else "0"
             path_db = str(s.REDIS_DB) if s.REDIS_DB is not None else current_db
             path = f"/{path_db}"
-            new_url = urlunparse((scheme, f"{auth}{host}:{port}", path, p.params, p.query, p.fragment))
+            new_url = urlunparse(
+                (scheme, f"{auth}{host}:{port}", path, p.params, p.query, p.fragment)
+            )
             object.__setattr__(s, "REDIS_URL", new_url)
         except Exception:
             pass

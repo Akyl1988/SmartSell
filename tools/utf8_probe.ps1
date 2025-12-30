@@ -7,10 +7,10 @@ $ErrorActionPreference = "Stop"
 
 # Defaults if env vars are not set
 if (-not $RuntimeUrl) {
-    $RuntimeUrl = "postgresql://smartsell:admin123@127.0.0.1:5432/smartsell_main"
+    $RuntimeUrl = "postgresql://smartsell@127.0.0.1:5432/smartsell_main"
 }
 if (-not $TestUrl) {
-    $TestUrl = "postgresql://smartsell:admin123@127.0.0.1:5432/smartsell_test"
+    $TestUrl = "postgresql://smartsell@127.0.0.1:5432/smartsell_test"
 }
 
 $root = (Get-Location)

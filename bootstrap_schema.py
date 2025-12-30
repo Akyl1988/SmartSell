@@ -23,52 +23,61 @@ TODO: Fix baseline migration (7b7794c032f7) with deferred FK constraints
 """
 
 import asyncio
-
+import os
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import create_async_engine
-
 from app.models.base import Base, ensure_models_loaded
-
 
 async def bootstrap_schema():
     """Create all tables using SQLAlchemy models."""
-
+    
     print("📦 Loading and registering all models...")
     ensure_models_loaded()
-
+    
     # Async URL for metadata operations
-    async_url = "postgresql+asyncpg://smartsell:admin123@127.0.0.1:5432/smartsell_test"
+    async_url = (
+        os.getenv("BOOTSTRAP_ASYNC_DATABASE_URL")
+        or os.getenv("TEST_ASYNC_DATABASE_URL")
+        or os.getenv("DATABASE_URL")
+        or os.getenv("DB_URL")
+    )
 
-    print("\n📦 Bootstrapping schema for smartsell_test...")
+    if not async_url:
+        raise SystemExit(
+            "Set BOOTSTRAP_ASYNC_DATABASE_URL or TEST_ASYNC_DATABASE_URL/DATABASE_URL first."
+        )
+
+    if async_url.startswith("postgresql://"):
+        async_url = "postgresql+asyncpg://" + async_url.split("postgresql://", 1)[1]
+    elif async_url.startswith("postgres://"):
+        async_url = "postgresql+asyncpg://" + async_url.split("postgres://", 1)[1]
+    
+    print(f"\n📦 Bootstrapping schema for smartsell_test...")
     print(f"   Tables registered: {len(Base.metadata.tables)}")
     print(f"   Using engine: {async_url}")
-
+    
     # Create async engine
     engine = create_async_engine(async_url, echo=False)
-
+    
     try:
         # Create all tables
         async with engine.begin() as conn:
             await conn.run_sync(Base.metadata.create_all)
         print("✅ All tables created successfully")
-
+        
         # Verify tables exist
         async with engine.begin() as conn:
-            result = await conn.execute(
-                text("SELECT count(*) FROM information_schema.tables WHERE table_schema = 'public'")
-            )
+            result = await conn.execute(text("SELECT count(*) FROM information_schema.tables WHERE table_schema = 'public'"))
             table_count = result.fetchone()[0]
             print(f"✅ Verified: {table_count} tables in public schema")
-
+        
     except Exception as e:
         print(f"❌ Error: {e}")
         import traceback
-
         traceback.print_exc()
         raise
     finally:
         await engine.dispose()
-
 
 if __name__ == "__main__":
     asyncio.run(bootstrap_schema())

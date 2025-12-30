@@ -1,7 +1,7 @@
 # Prod Readiness Checklist
 
 ## P0 (must before prod)
-- [ ] SECRET_KEY and DB URLs set via secrets manager; no defaults (`changeme`, `admin123`).
+- [ ] SECRET_KEY and DB URLs set via secrets manager; no weak defaults (e.g., `changeme`, vendor factory passwords).
 - [ ] Disable or protect `/api/v1/_debug/db` behind auth/feature flag in production.
 - [ ] Confirm Alembic head (`alembic heads`) single; remove backup/quarantine migrations; set secure `ALEMBIC_DEFAULT_URL`.
 - [ ] Backups and rollback plan documented for DB migrations.

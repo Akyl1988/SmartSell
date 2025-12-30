@@ -1,6 +1,10 @@
+import os
 from sqlalchemy import create_engine, text
 
-ADMIN_URL = "postgresql+psycopg2://postgres:admin123@localhost:5432/postgres"
+ADMIN_URL = os.getenv(
+    "ADMIN_URL",
+    "postgresql+psycopg2://postgres@localhost:5432/postgres",
+)
 TARGET_DB = "SmartSellTest"
 
 engine = create_engine(ADMIN_URL, isolation_level="AUTOCOMMIT")

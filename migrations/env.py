@@ -58,18 +58,22 @@ if load_dotenv:
     load_dotenv()
 
 # --- Alembic / SQLAlchemy -----------------------------------------------
+from sqlalchemy import MetaData, text, event
 import sqlalchemy as sa
-from alembic import context
-from alembic.config import Config
-from alembic.runtime.environment import EnvironmentContext
-from sqlalchemy import MetaData, create_engine, text
 from sqlalchemy import schema as sa_schema  # noqa: F401  (зарезервировано на будущее)
 from sqlalchemy.engine import Connection
 from sqlalchemy.engine.url import make_url
+from sqlalchemy.exc import OperationalError, ProgrammingError
+from sqlalchemy.orm import declarative_base
+from sqlalchemy import create_engine
+
+from alembic import context
+from alembic.runtime.environment import EnvironmentContext
+from alembic.config import Config
 
 # SmartSell config
 try:
-    from app.core.config import db_connection_fingerprint, get_settings
+    from app.core.config import get_settings, db_connection_fingerprint
 except Exception:  # pragma: no cover
     get_settings = None  # type: ignore
     db_connection_fingerprint = None  # type: ignore
@@ -143,7 +147,7 @@ def normalize_db_url(raw: Optional[str]) -> str:
     """
     default_url = os.getenv(
         "ALEMBIC_DEFAULT_URL",
-        "postgresql://postgres:admin123@127.0.0.1:5432/smartsell",
+        "postgresql://postgres@127.0.0.1:5432/smartsell",
     )
     if not raw:
         return default_url
@@ -190,15 +194,14 @@ def _collect_bases() -> list[tuple[MetaData, str]]:
     # Кандидаты для поиска декларативной базы
     # ПРИОРИТЕТ: app.models.base.Base — единственный источник истины
     base_candidates = [
-        "app.models.base:Base",  # ОСНОВНОЙ источник (единственный DeclarativeBase)
-        "app.models:Base",  # реэкспорт из __init__
-        "app.core.db:Base",  # fallback импорт (должен быть тот же Base)
+        "app.models.base:Base",   # ОСНОВНОЙ источник (единственный DeclarativeBase)
+        "app.models:Base",        # реэкспорт из __init__
+        "app.core.db:Base",       # fallback импорт (должен быть тот же Base)
     ]
 
     # Явно вызываем ensure_models_loaded() для загрузки всех моделей
     try:
         from app.models import ensure_models_loaded
-
         ensure_models_loaded()
         _debug("Модели загружены через ensure_models_loaded()")
     except Exception as e:
@@ -295,11 +298,7 @@ def get_url_from_env_or_cfg() -> str:
             url = settings.sqlalchemy_sync_url
             source = settings.db_url_source() if hasattr(settings, "db_url_source") else "settings"
             safe = getattr(settings, "db_url_safe", "")
-            fp = (
-                db_connection_fingerprint(url or "", include_password=False)
-                if db_connection_fingerprint
-                else ""
-            )
+            fp = db_connection_fingerprint(url or "", include_password=False) if db_connection_fingerprint else ""
             logger.info("alembic_db_url_resolved source=%s url=%s fp=%s", source, safe, fp)
         except Exception as e:  # pragma: no cover
             logger.warning("get_settings() failed in Alembic env: %s", e)
@@ -310,11 +309,7 @@ def get_url_from_env_or_cfg() -> str:
         source = "env-fallback" if env_url else "ini"
         safe = url or ""
         try:
-            fp = (
-                db_connection_fingerprint(url or "", include_password=False)
-                if db_connection_fingerprint
-                else ""
-            )
+            fp = db_connection_fingerprint(url or "", include_password=False) if db_connection_fingerprint else ""
         except Exception:
             fp = ""
         logger.info("alembic_db_url_resolved source=%s url=%s fp=%s", source, safe, fp)
@@ -330,7 +325,6 @@ _found_metas = _collect_bases()
 # Явно используем единую MetaData из app.models.base.Base
 try:
     from app.models.base import Base as _ModelsBase  # единый DeclarativeBase
-
     target_metadata = _ModelsBase.metadata
     _meta_sources = ["app.models.base:Base"]
     _debug("Target metadata set to app.models.base.Base.metadata")
@@ -349,7 +343,7 @@ if target_metadata is None:
 # ======================================================================
 
 SYSTEM_TABLE_PREFIXES = (
-    "pg_",  # PostgreSQL системные
+    "pg_",          # PostgreSQL системные
     "sqlalchemy_",  # служебные таблицы SQLAlchemy
 )
 
@@ -418,34 +412,26 @@ def include_name(name: str | None, type_: str | None, parent_names) -> bool:
 
 
 def _ensure_version_table_size(connection: Connection, schema: str | None) -> None:
-    """Ensure alembic_version.version_num supports long revision ids (256 chars)."""
-    vt_schema = schema or DEFAULT_SCHEMA or "public"
-    try:
-        sql = f"""
-        DO $$
-        BEGIN
-            IF NOT EXISTS (
-                SELECT 1 FROM information_schema.tables
-                 WHERE table_schema='{vt_schema}'
-                   AND table_name='{ALEMBIC_VERSION_TABLE}'
-            ) THEN
-                EXECUTE 'CREATE TABLE "{vt_schema}"."{ALEMBIC_VERSION_TABLE}" (version_num VARCHAR(256) NOT NULL, CONSTRAINT pk_{ALEMBIC_VERSION_TABLE} PRIMARY KEY (version_num));';
-            END IF;
-
-            IF EXISTS (
-                SELECT 1 FROM information_schema.columns
-                 WHERE table_schema='{vt_schema}'
-                     AND table_name='{ALEMBIC_VERSION_TABLE}'
-                     AND column_name='version_num'
-                     AND (character_maximum_length < 256 OR character_maximum_length IS NULL)
-            ) THEN
-                EXECUTE 'ALTER TABLE "{vt_schema}"."{ALEMBIC_VERSION_TABLE}" ALTER COLUMN version_num TYPE VARCHAR(256)';
-            END IF;
-        END$$;
-        """
-        connection.execute(text(sql))
-    except Exception as e:  # pragma: no cover - diagnostic only
-        _debug(f"Version table size check skipped: {e!r}")
+        """Ensure alembic_version.version_num can store long revision ids (256 chars) if table already exists."""
+        vt_schema = schema or DEFAULT_SCHEMA or "public"
+        try:
+                sql = f"""
+                DO $$
+                BEGIN
+                    IF EXISTS (
+                        SELECT 1 FROM information_schema.columns
+                         WHERE table_schema='{vt_schema}'
+                             AND table_name='{ALEMBIC_VERSION_TABLE}'
+                             AND column_name='version_num'
+                             AND (character_maximum_length < 256 OR character_maximum_length IS NULL)
+                    ) THEN
+                        EXECUTE 'ALTER TABLE "{vt_schema}"."{ALEMBIC_VERSION_TABLE}" ALTER COLUMN version_num TYPE VARCHAR(256)';
+                    END IF;
+                END$$;
+                """
+                connection.execute(text(sql))
+        except Exception as e:  # pragma: no cover - diagnostic only
+                _debug(f"Version table size check skipped: {e!r}")
 
 
 # ======================================================================
@@ -691,11 +677,12 @@ def run_migrations_online() -> None:
                 # Дополнительно: убеждаемся, что таблица версий действительно в 'public'
                 try:
                     if _is_postgres_url(url):
-                        connection.execute(text(f'CREATE SCHEMA IF NOT EXISTS "{DEFAULT_SCHEMA}";'))
+                        connection.execute(text(
+                            f'CREATE SCHEMA IF NOT EXISTS "{DEFAULT_SCHEMA}";'
+                        ))
                         # Принудительно привязываем таблицу версий к нужной схеме, если её вдруг создали не там
-                        connection.execute(
-                            text(
-                                f"""
+                        connection.execute(text(
+                            f"""
                             DO $$
                             BEGIN
                               IF NOT EXISTS (
@@ -710,8 +697,7 @@ def run_migrations_online() -> None:
                               END IF;
                             END$$;
                             """
-                            )
-                        )
+                        ))
                 except Exception as e:
                     _debug(f"Проверка/создание схемы или version table пропущены: {e!r}")
 

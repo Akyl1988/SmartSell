@@ -1,6 +1,6 @@
 SECRET_KEY
 changeme
-admin123
+admin-default-password
 _debug/db
 /api/v1/_debug/db
 ALLOW_DROPS
