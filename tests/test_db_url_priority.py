@@ -86,7 +86,14 @@ def test_fallback_allowed_in_local_env(monkeypatch):
 
 
 def test_no_fallback_outside_local(monkeypatch):
-    for key in ("TESTING", "TEST_DATABASE_URL", "TEST_ASYNC_DATABASE_URL", "DATABASE_TEST_URL", "DB_URL", "DATABASE_URL"):
+    for key in (
+        "TESTING",
+        "TEST_DATABASE_URL",
+        "TEST_ASYNC_DATABASE_URL",
+        "DATABASE_TEST_URL",
+        "DB_URL",
+        "DATABASE_URL",
+    ):
         monkeypatch.delenv(key, raising=False)
     monkeypatch.setenv("DATABASE_URL", "")
     monkeypatch.setenv("TEST_DATABASE_URL", "")
