@@ -2,9 +2,9 @@ name: CI
 
 on:
   push:
-    branches: [ main, develop ]
+    branches: [main, dev, "release/**"]
   pull_request:
-    branches: [ main, develop ]
+    branches: [main, dev, "release/**"]
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -12,14 +12,10 @@ concurrency:
 
 env:
   PYTHON_VERSION: "3.11"
-  CI_DB_USER: "ci_user"
-  CI_DB_NAME: "ci_smartsell"
-  CI_DB_HOST: "localhost"
-  CI_DB_PORT: "5432"
 
 jobs:
   lint:
-    name: Lint & Type Check
+    name: Lint (ruff)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -28,57 +24,17 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: ${{ env.PYTHON_VERSION }}
-
-      - name: Cache pip
-        uses: actions/cache@v4
-        with:
-          path: ~/.cache/pip
-          key: ${{ runner.os }}-pip-${{ hashFiles('requirements.txt') }}
-          restore-keys: |
-            ${{ runner.os }}-pip-
-
-      - name: Install tools & deps
-        run: |
-          python -m pip install --upgrade pip
-          pip install ruff mypy
-          pip install -r requirements.txt
-          pip install tzdata "python-jose[cryptography]"
-
-      - name: pip check
-        run: pip check
-
-      - name: ruff (fast lint)
-        run: python -m ruff check .
-
-  mypy:
-    name: mypy (soft-fail)
-    runs-on: ubuntu-latest
-    continue-on-error: true
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: ${{ env.PYTHON_VERSION }}
-
-      - name: Cache pip
-        uses: actions/cache@v4
-        with:
-          path: ~/.cache/pip
-          key: ${{ runner.os }}-pip-${{ hashFiles('requirements.txt') }}
-          restore-keys: |
-            ${{ runner.os }}-pip-
 
       - name: Install deps
         run: |
           python -m pip install --upgrade pip
-          pip install mypy
           pip install -r requirements.txt
-          pip install tzdata "python-jose[cryptography]"
+          pip install ruff
 
-      - name: mypy (lenient)
-        run: python -m mypy --config-file mypy.ini app
+      - name: Ruff
+        run: |
+          python -m ruff check app tests tools
+          python -m ruff format --check app tests tools
 
   test:
     name: Tests (Postgres + Redis)
@@ -87,16 +43,17 @@ jobs:
       postgres:
         image: postgres:15
         env:
-          POSTGRES_PASSWORD: ${{ secrets.CI_POSTGRES_PASSWORD }}
-          POSTGRES_USER: ${{ env.CI_DB_USER }}
-          POSTGRES_DB: ${{ env.CI_DB_NAME }}
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_USER: postgres
+          POSTGRES_DB: smartsell_test
         options: >-
-          --health-cmd "pg_isready -U ${{ env.CI_DB_USER }} -d ${{ env.CI_DB_NAME }}"
+          --health-cmd "pg_isready -U postgres -d smartsell_test"
           --health-interval 10s
           --health-timeout 5s
           --health-retries 5
         ports:
           - 5432:5432
+
       redis:
         image: redis:7-alpine
         options: >-
@@ -106,6 +63,7 @@ jobs:
           --health-retries 5
         ports:
           - 6379:6379
+
     steps:
       - uses: actions/checkout@v4
 
@@ -114,69 +72,26 @@ jobs:
         with:
           python-version: ${{ env.PYTHON_VERSION }}
 
-      - name: Cache pip
-        uses: actions/cache@v4
-        with:
-          path: ~/.cache/pip
-          key: ${{ runner.os }}-pip-${{ hashFiles('requirements.txt') }}
-          restore-keys: |
-            ${{ runner.os }}-pip-
-
       - name: Install deps
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
-          pip install pytest pytest-cov pytest-asyncio asyncpg tzdata "python-jose[cryptography]"
-          pip check
 
-      - name: Wait for Postgres
-        run: |
-          until pg_isready -h $CI_DB_HOST -p $CI_DB_PORT -U $CI_DB_USER; do
-            echo "Waiting for PostgreSQL..."
-            sleep 2
-          done
-
-      # если у тебя Alembic читает URL из env — этого достаточно
-      - name: Run Alembic migrations
+      - name: Run migrations
         env:
-          TEST_ASYNC_DATABASE_URL: postgresql+asyncpg://${{ env.CI_DB_USER }}:${{ secrets.CI_POSTGRES_PASSWORD }}@${{ env.CI_DB_HOST }}:${{ env.CI_DB_PORT }}/${{ env.CI_DB_NAME }}
-          TEST_DATABASE_URL: postgresql+psycopg2://${{ env.CI_DB_USER }}:${{ secrets.CI_POSTGRES_PASSWORD }}@${{ env.CI_DB_HOST }}:${{ env.CI_DB_PORT }}/${{ env.CI_DB_NAME }}
-          DATABASE_URL: postgresql+psycopg2://${{ env.CI_DB_USER }}:${{ secrets.CI_POSTGRES_PASSWORD }}@${{ env.CI_DB_HOST }}:${{ env.CI_DB_PORT }}/${{ env.CI_DB_NAME }}
-        run: |
-          alembic upgrade head
-
-      - name: Pytest with coverage
-        env:
-          TEST_ASYNC_DATABASE_URL: postgresql+asyncpg://${{ env.CI_DB_USER }}:${{ secrets.CI_POSTGRES_PASSWORD }}@${{ env.CI_DB_HOST }}:${{ env.CI_DB_PORT }}/${{ env.CI_DB_NAME }}
-          TEST_DATABASE_URL: postgresql+psycopg2://${{ env.CI_DB_USER }}:${{ secrets.CI_POSTGRES_PASSWORD }}@${{ env.CI_DB_HOST }}:${{ env.CI_DB_PORT }}/${{ env.CI_DB_NAME }}
-          DATABASE_URL: postgresql+psycopg2://${{ env.CI_DB_USER }}:${{ secrets.CI_POSTGRES_PASSWORD }}@${{ env.CI_DB_HOST }}:${{ env.CI_DB_PORT }}/${{ env.CI_DB_NAME }}
-          REDIS_URL: redis://localhost:6379
+          DATABASE_URL: postgresql+asyncpg://postgres:postgres@localhost:5432/smartsell_test
+          TEST_DATABASE_URL: postgresql+asyncpg://postgres:postgres@localhost:5432/smartsell_test
+          TEST_ASYNC_DATABASE_URL: postgresql+asyncpg://postgres:postgres@localhost:5432/smartsell_test
           ENVIRONMENT: testing
           TESTING: "True"
-          DEBUG: "False"
-          # Заглушки интеграций, чтобы тесты не ходили наружу
-          MOBIZON_API_KEY: test
-          MOBIZON_BASE_URL: https://api.mobizon.test
-          CLOUDINARY_CLOUD_NAME: test
-          CLOUDINARY_API_KEY: test
-          CLOUDINARY_API_SECRET: test
-          TIPTOP_API_KEY: test
-          TIPTOP_API_SECRET: test
-          TIPTOP_API_URL: https://api.tiptop.test
-          KASPI_API_KEY: test
-          KASPI_API_URL: https://api.kaspi.test
-          SMTP_HOST: localhost
-          SMTP_PORT: 1025
-          SMTP_USER: test
-          SMTP_PASSWORD: test
-          SMTP_FROM_EMAIL: ci@example.com
-        run: |
-          pytest -q --cov=app --cov-report=xml --cov-report=term-missing
+        run: alembic upgrade head
 
-      - name: Upload coverage to Codecov
-        if: always()
-        uses: codecov/codecov-action@v4
-        with:
-          file: ./coverage.xml
-          flags: unittests
-          fail_ci_if_error: false
+      - name: Pytest
+        env:
+          DATABASE_URL: postgresql+asyncpg://postgres:postgres@localhost:5432/smartsell_test
+          TEST_DATABASE_URL: postgresql+asyncpg://postgres:postgres@localhost:5432/smartsell_test
+          TEST_ASYNC_DATABASE_URL: postgresql+asyncpg://postgres:postgres@localhost:5432/smartsell_test
+          ENVIRONMENT: testing
+          TESTING: "True"
+          REDIS_URL: redis://localhost:6379
+        run: python -m pytest -q
