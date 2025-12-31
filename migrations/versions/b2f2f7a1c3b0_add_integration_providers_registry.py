@@ -120,3 +120,4 @@ def downgrade() -> None:
     op.drop_index("uq__integration_providers__domain_active", table_name="integration_providers")
     op.drop_index(op.f("ix__integration_providers__domain"), table_name="integration_providers")
     op.drop_table("integration_providers")
+

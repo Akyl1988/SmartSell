@@ -49,3 +49,4 @@ def downgrade() -> None:
         "users",
         sa.text("role IN ('" + "','".join(OLD_ALLOWED_ROLES) + "')"),
     )
+

@@ -2391,3 +2391,4 @@ def downgrade() -> None:
     op.drop_index(op.f("ix__billing_payments__authorized_at"), table_name="billing_payments")
     op.drop_table("billing_payments")
     # ### end Alembic commands ###
+
