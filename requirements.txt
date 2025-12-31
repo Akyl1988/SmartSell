@@ -18,6 +18,8 @@ email-validator>=2.3.0,<3.0.0
 # Security
 python-jose[cryptography]==3.3.0
 passlib[bcrypt]==1.7.4
+passlib[argon2]>=1.7.4
+argon2-cffi>=23.1.0
 
 # HTTP requests
 httpx==0.25.2
