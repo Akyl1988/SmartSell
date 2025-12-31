@@ -3,6 +3,22 @@
 - CD gated to main with Docker push/login only when secrets exist; build still runs without secrets
 - security workflow skips Code Scanning when disabled and guards uploads; release CI/CD merges finalized for v0.1.0
 
+## [2025-12-31] CI/CD
+
+### Added
+- Новый job `alembic-smoke` в CI: быстрый smoke-тест миграций (`alembic upgrade head`, `alembic current`, `alembic heads`) на чистой Postgres 15 (GitHub Actions).
+- Добавлен `.gitattributes` с правилами: `*.yml text eol=lf`, `*.yaml text eol=lf` (устранение CRLF-churn на Windows).
+
+### Changed
+- CD workflow (`cd.yml`):
+  - Убраны все job-level if/выражения с `secrets.*` (валидно для GitHub Actions).
+  - Секреты DockerHub теперь пробрасываются через job-level env.
+  - Docker login и push выполняются только если оба секрета заданы; если нет — выполняется build-only (без push), чтобы CD не падал.
+
+### Notes
+- CI теперь гарантирует применимость всех миграций на чистую базу Postgres (smoke-проверка alembic).
+- CD больше не ломается при отсутствии DockerHub secrets: всегда выполняется build, push — только если секреты заданы.
+
 ## [2025-12-31] Deps
 - ensure passlib ships with argon2 backend in CI (add argon2-cffi and passlib[argon2])
 
