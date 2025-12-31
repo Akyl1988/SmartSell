@@ -72,7 +72,7 @@
 - Added: provider listing endpoint with filters + pagination (service layer + admin API).
 - Added: events listing endpoint with filters (domain/provider/actor) + pagination; ordered results.
 - Tests: extended tests/test_admin_integrations.py for listing + events filtering; pytest green (warnings only).
-- Notes: existing warnings remain (Pydantic v1 @validator deprecations, SQLAlchemy Query.get legacy, Trio deprecations).
+- Notes: существующие предупреждения остаются (Pydantic v1 @validator deprecations, SQLAlchemy Query.get legacy, Trio deprecations).
 
 ## [2025-12-26] OTP / Integrations
 - added: runtime OTP provider resolution (OtpProviderResolver) with caching and safe fallback when registry/redis unavailable
@@ -90,3 +90,19 @@
 - commits: `feat(db): provider config storage`; `feat(integrations): provider config management and healthcheck`
 - added: `integration_provider_configs` table with encrypted payloads + key metadata; service-layer set/get/redaction/healthcheck; admin API endpoints for config read/write/healthcheck with idempotency and events; healthcheck resilient to redis failure; migration test added
 - tests: config redaction/no secret leakage, healthcheck survives redis down, provider switch still works with resolver after config writes; alembic upgrade head smoke test
+
+## [2025-12-31] Docs/env
+
+### Added
+- Документация по переменным окружения: `docs/env.md` (локальный запуск, примеры, безопасность).
+- Пример env-файла: `.env.example` (безопасные значения, все ключевые переменные для dev/CI).
+
+### Changed
+- Полностью переписаны `docs/env.md` и `.env.example`:
+  - Минимальный и безопасный .env.example (только реально используемые переменные, без дублирования и unsafe значений).
+  - Документация по переменным и запуску приведена к актуальному состоянию репозитория.
+  - Все внешние ключи только как OPTIONAL с плейсхолдерами.
+
+### Notes
+- Упрощён старт проекта и настройка окружения для новых разработчиков и CI.
+- Все примеры безопасны для публикации, реальные секреты не коммитятся.
