@@ -1,3 +1,23 @@
+## [2025-12-31] CI
+- tighten CI workflow: minimal ruff+pytest pipeline, fix invalid env contexts in Postgres service, set SECRET_KEY for tests, and keep SARIF upload optional with artifact retention
+- CD gated to main with Docker push/login only when secrets exist; build still runs without secrets
+- security workflow skips Code Scanning when disabled and guards uploads; release CI/CD merges finalized for v0.1.0
+
+## [2025-12-31] Deps
+- ensure passlib ships with argon2 backend in CI (add argon2-cffi and passlib[argon2])
+
+## [2025-12-31] Migrations
+- shorten Alembic revision id length to fit version_num column limits
+
+## [2025-12-30] Docs
+- document branching/release policy and add changelog with proper GitHub links
+
+## [2025-12-30] Tests/Style
+- resolve ruff pyupgrade warnings (isinstance unions) and fix conftest lint/UP038 issues
+
+## [2025-12-29] Repo/DB
+- enforce strict ruff+pytest gate (mypy soft-fail); clean legacy migration archives and ignore paths
+- stabilize DB URL resolution and guard default DB usage; normalize drivers and debug route gating
 ## [2025-12-27] Merge integration center to dev/main
 - merged: `feature/system-integration-center-v1` -> `dev`, then `dev` -> `main` (integration center v1, provider registry/configs, messaging webhook provider).
 - commands: `alembic upgrade head`; `pytest -q`.
