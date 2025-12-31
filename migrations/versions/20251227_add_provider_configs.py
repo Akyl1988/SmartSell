@@ -52,3 +52,4 @@ def downgrade() -> None:
     )
     op.drop_table("integration_provider_configs")
 
+

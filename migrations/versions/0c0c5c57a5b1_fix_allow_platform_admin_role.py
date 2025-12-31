@@ -50,3 +50,4 @@ def downgrade() -> None:
         sa.text("role IN ('" + "','".join(OLD_ALLOWED_ROLES) + "')"),
     )
 
+

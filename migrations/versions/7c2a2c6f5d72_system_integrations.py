@@ -76,3 +76,4 @@ def downgrade() -> None:
     op.drop_index(op.f("ix__system_integrations__domain"), table_name="system_integrations")
     op.drop_table("system_integrations")
 
+
