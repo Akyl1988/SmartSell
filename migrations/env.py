@@ -58,22 +58,18 @@ if load_dotenv:
     load_dotenv()
 
 # --- Alembic / SQLAlchemy -----------------------------------------------
-from sqlalchemy import MetaData, text, event
 import sqlalchemy as sa
+from alembic import context
+from alembic.config import Config
+from alembic.runtime.environment import EnvironmentContext
+from sqlalchemy import MetaData, create_engine, text
 from sqlalchemy import schema as sa_schema  # noqa: F401  (зарезервировано на будущее)
 from sqlalchemy.engine import Connection
 from sqlalchemy.engine.url import make_url
-from sqlalchemy.exc import OperationalError, ProgrammingError
-from sqlalchemy.orm import declarative_base
-from sqlalchemy import create_engine
-
-from alembic import context
-from alembic.runtime.environment import EnvironmentContext
-from alembic.config import Config
 
 # SmartSell config
 try:
-    from app.core.config import get_settings, db_connection_fingerprint
+    from app.core.config import db_connection_fingerprint, get_settings
 except Exception:  # pragma: no cover
     get_settings = None  # type: ignore
     db_connection_fingerprint = None  # type: ignore

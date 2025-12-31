@@ -2,10 +2,11 @@
 """Create tables using SQLAlchemy directly (bypasses Alembic)"""
 import os
 import sys
-from sqlalchemy import create_engine, MetaData
+
+from sqlalchemy import MetaData, create_engine
 
 # Import models
-from app.models import ensure_models_loaded, Base
+from app.models import Base, ensure_models_loaded
 
 # Load models
 print("Loading models...")

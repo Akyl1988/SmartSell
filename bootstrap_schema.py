@@ -24,9 +24,12 @@ TODO: Fix baseline migration (7b7794c032f7) with deferred FK constraints
 
 import asyncio
 import os
+
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import create_async_engine
+
 from app.models.base import Base, ensure_models_loaded
+
 
 async def bootstrap_schema():
     """Create all tables using SQLAlchemy models."""
@@ -52,7 +55,7 @@ async def bootstrap_schema():
     elif async_url.startswith("postgres://"):
         async_url = "postgresql+asyncpg://" + async_url.split("postgres://", 1)[1]
     
-    print(f"\n📦 Bootstrapping schema for smartsell_test...")
+    print("\n📦 Bootstrapping schema for smartsell_test...")
     print(f"   Tables registered: {len(Base.metadata.tables)}")
     print(f"   Using engine: {async_url}")
     
