@@ -39,6 +39,8 @@ jobs:
   test:
     name: Tests (Postgres + Redis)
     runs-on: ubuntu-latest
+    env:
+      SECRET_KEY: "ci-test-secret-key-only"
     services:
       postgres:
         image: postgres:15
@@ -94,3 +96,4 @@ jobs:
           TESTING: "True"
           REDIS_URL: redis://localhost:6379
         run: python -m pytest -q
+
