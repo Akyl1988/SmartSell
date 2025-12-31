@@ -51,3 +51,5 @@ def downgrade() -> None:
         "ix_integration_provider_configs_domain", table_name="integration_provider_configs"
     )
     op.drop_table("integration_provider_configs")
+
+

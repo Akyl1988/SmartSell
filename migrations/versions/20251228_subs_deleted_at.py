@@ -1,7 +1,7 @@
 """add deleted_at and ended_at to subscriptions
 
-Revision ID: 20251228_add_subscriptions_deleted_at
-Revises: 20251228_active_subscription_uniqueness
+Revision ID: 20251228_subs_deleted_at
+Revises: 20251228_active_sub_uniq
 Create Date: 2025-12-28 00:30:00.000000
 """
 
@@ -11,8 +11,8 @@ import sqlalchemy as sa
 from alembic import context, op
 
 # revision identifiers, used by Alembic.
-revision = "20251228_add_subscriptions_deleted_at"
-down_revision = "20251228_active_subscription_uniqueness"
+revision = "20251228_subs_deleted_at"
+down_revision = "20251228_active_sub_uniq"
 branch_labels = None
 depends_on = None
 
@@ -94,3 +94,5 @@ def downgrade() -> None:
     op.drop_index("ix_subscriptions_deleted_at", table_name="subscriptions")
     op.drop_column("subscriptions", "ended_at")
     op.drop_column("subscriptions", "deleted_at")
+
+
