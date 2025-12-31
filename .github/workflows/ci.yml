@@ -97,3 +97,47 @@ jobs:
           REDIS_URL: redis://localhost:6379
         run: python -m pytest -q
 
+  alembic-smoke:
+    name: Alembic smoke (Postgres)
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:15
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_USER: postgres
+          POSTGRES_DB: smartsell_test
+        options: >-
+          --health-cmd "pg_isready -U postgres -d smartsell_test"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 5432:5432
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Install deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install alembic
+
+      - name: Run alembic upgrade head
+        env:
+          DATABASE_URL: postgresql+psycopg://postgres:postgres@localhost:5432/smartsell_test
+        run: alembic upgrade head
+
+      - name: Show alembic current and heads
+        env:
+          DATABASE_URL: postgresql+psycopg://postgres:postgres@localhost:5432/smartsell_test
+        run: |
+          alembic current
+          alembic heads
+
+
