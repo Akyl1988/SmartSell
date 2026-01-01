@@ -94,15 +94,27 @@
 ## [2025-12-31] Docs/env
 
 ### Added
-- Документация по переменным окружения: `docs/env.md` (локальный запуск, примеры, безопасность).
-- Пример env-файла: `.env.example` (безопасные значения, все ключевые переменные для dev/CI).
 
 ### Changed
-- Полностью переписаны `docs/env.md` и `.env.example`:
   - Минимальный и безопасный .env.example (только реально используемые переменные, без дублирования и unsafe значений).
   - Документация по переменным и запуску приведена к актуальному состоянию репозитория.
   - Все внешние ключи только как OPTIONAL с плейсхолдерами.
 
 ### Notes
-- Упрощён старт проекта и настройка окружения для новых разработчиков и CI.
-- Все примеры безопасны для публикации, реальные секреты не коммитятся.
+
+## [2026-01-01] Release v0.1.1
+
+### Added
+- Tag v0.1.1 created from current main/dev (commit db3896b).
+- GitHub Release v0.1.1 published with notes: env docs + CI Alembic smoke + CD gating.
+
+### Notes
+- v0.1.0 tag/release remains pointing to 72d114a (historical). We did not rewrite tags.
+## [2026-01-01] Release v0.1.0
+
+### Added
+- GitHub Release: v0.1.0 (notes include CI stabilized + Alembic smoke + env docs).
+- Tag v0.1.0 exists and is published.
+
+### Notes
+- main and dev are aligned and CI is green.
