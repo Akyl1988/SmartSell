@@ -18588,7 +18588,6 @@ outbox
 scripts
 scripts\db-stamp-head.ps1
 scripts\db-upgrade.ps1
-scripts\dev.ps1
 scripts\diag_kaspi.ps1
 scripts\env_kaspi.ps1
 scripts\run_server.ps1
@@ -18660,3 +18659,4 @@ STRUCTURE.project.txt
 test.sql
 tools_create_smart_sell_test_db.py
 tools_create_test_db.py
+
