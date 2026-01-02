@@ -302,3 +302,9 @@ migrations/versions/_quarantine/
 /_diff_clean.txt
 /_rg_dbnames.txt
 
+
+# local audit/report artifacts (do not commit)
+_audit_check_db.py
+_changes_*_report.txt
+_diff_clean.txt
+
