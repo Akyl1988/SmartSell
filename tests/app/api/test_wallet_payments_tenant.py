@@ -8,8 +8,6 @@ def _get_user_by_phone(db_session, phone: str) -> User:
 
 
 @pytest.mark.anyio
-
-
 async def test_wallet_accounts_hidden_across_companies(
     client,
     db_session,
@@ -37,8 +35,6 @@ async def test_wallet_accounts_hidden_across_companies(
 
 
 @pytest.mark.anyio
-
-
 async def test_payments_hidden_across_companies(
     client,
     db_session,

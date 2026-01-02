@@ -139,9 +139,7 @@ async def _ensure_account_access(account_id: int, current_user: User, db: Sessio
     return acc
 
 
-async def _ensure_payment_visible(
-    payment: dict[str, Any] | None, current_user: User, db: Session
-) -> dict[str, Any]:
+async def _ensure_payment_visible(payment: dict[str, Any] | None, current_user: User, db: Session) -> dict[str, Any]:
     if not payment:
         raise HTTPException(status_code=404, detail="payment not found")
     await _ensure_user_in_company(int(payment.get("user_id", 0)), current_user, db)
