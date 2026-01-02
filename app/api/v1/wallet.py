@@ -4,6 +4,7 @@ from __future__ import annotations
 import inspect
 import logging
 from decimal import Decimal, InvalidOperation
+from functools import lru_cache
 from typing import Any
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Path, Query, status
@@ -118,7 +119,7 @@ async def _load_company_map(db: Session, user_ids: set[int]) -> dict[int, Any]:
 
 
 async def _ensure_account_access(account_id: int, current_user: User, db: Session) -> dict[str, Any]:
-    acc = storage.get_account(account_id)
+    acc = _get_storage().get_account(account_id)
     if not acc:
         raise HTTPException(status_code=404, detail="account not found")
     await _ensure_user_in_company(int(acc.get("user_id", 0)), current_user, db)
@@ -241,24 +242,32 @@ class StatsOut(BaseModel):
 
 
 # =============================================================================
-# Storage backend (SQL реализация)
+# Storage backend (SQL реализация) — ленивое получение
 # =============================================================================
-try:
-    from app.storage.wallet_sql import WalletStorageSQL  # type: ignore
+_BACKEND = "sql"
 
-    storage = WalletStorageSQL()
-    _BACKEND = "sql"
-except Exception as e:
-    raise RuntimeError(f"Wallet storage init failed: {e}")
 
-# ---- Возможные расширенные методы (работаем мягко, если их нет) -------------
-_HAS_GET_ACC_BY_UC = hasattr(storage, "get_account_by_user_currency")
-_HAS_LIST_ACC_EXT = (
-    "currency" in inspect.signature(storage.list_accounts).parameters if hasattr(storage, "list_accounts") else False
-)
-_HAS_ADJUST = hasattr(storage, "adjust_balance")
-_HAS_HEALTH = hasattr(storage, "health")
-_HAS_STATS = hasattr(storage, "stats")
+@lru_cache(maxsize=1)
+def _get_storage():
+    try:
+        from app.storage.wallet_sql import WalletStorageSQL  # type: ignore
+
+        return WalletStorageSQL()
+    except Exception as e:
+        logger.exception("wallet storage init failed: %s", e)
+        raise HTTPException(status_code=500, detail="wallet storage unavailable")
+
+
+def _storage_caps() -> dict[str, bool]:
+    s = _get_storage()
+    return {
+        "has_get_uc": hasattr(s, "get_account_by_user_currency"),
+        "has_list_ext": hasattr(s, "list_accounts") and "currency" in inspect.signature(s.list_accounts).parameters,  # type: ignore[arg-type]
+        "has_adjust": hasattr(s, "adjust_balance"),
+        "has_health": hasattr(s, "health"),
+        "has_stats": hasattr(s, "stats"),
+    }
+
 
 # =============================================================================
 # Router
@@ -282,20 +291,24 @@ router = APIRouter(
 # =============================================================================
 @router.get("/health", response_model=HealthOut, summary="Здоровье storage-слоя")
 def health() -> HealthOut:
-    if _HAS_HEALTH:
+    caps = _storage_caps()
+    storage = _get_storage()
+    if caps.get("has_health"):
         try:
             data = storage.health()  # type: ignore[attr-defined]
             return HealthOut(**data) if isinstance(data, dict) else HealthOut(ok=_safe_bool(data))
         except Exception as e:
             logger.exception("wallet.health failed: %s", e)
-            return HealthOut(ok=False, error=str(e))
+            return HealthOut(ok=False, error="wallet storage unavailable")
     # Базовый ответ, если метод отсутствует
     return HealthOut(ok=True, engine=_BACKEND)
 
 
 @router.get("/stats", response_model=StatsOut, summary="Агрегированная статистика")
 def stats() -> StatsOut:
-    if _HAS_STATS:
+    caps = _storage_caps()
+    storage = _get_storage()
+    if caps.get("has_stats"):
         try:
             data = storage.stats()  # type: ignore[attr-defined]
             # ожидание: {"accounts": int, "ledger_entries": int, "total_balance": str|Decimal}
@@ -307,7 +320,7 @@ def stats() -> StatsOut:
                     total_balance=tb,
                 )
         except Exception as e:
-            raise HTTPException(status_code=_pick_http_status(e), detail=str(e))
+            raise HTTPException(status_code=_pick_http_status(e), detail="wallet storage unavailable")
     # Fallback — без агрегации из БД
     try:
         rows = storage.list_accounts()  # type: ignore[call-arg]
@@ -336,6 +349,7 @@ async def create_account(
     try:
         await _ensure_user_in_company(req.user_id, current_user, db)
         ccy = _norm_ccy(req.currency)
+        storage = _get_storage()
         acc = storage.create_account(req.user_id, ccy, initial_balance=req.balance)  # type: ignore[call-arg]
         acc["currency"] = _norm_ccy(acc.get("currency", ccy))
         acc["balance"] = _to_dec_str(acc.get("balance", "0"))
@@ -372,7 +386,10 @@ async def list_accounts(
             if allowed_ids is not None and not allowed_ids:
                 allowed_ids = [-1]
 
-        if _HAS_LIST_ACC_EXT:
+        caps = _storage_caps()
+        storage = _get_storage()
+
+        if caps.get("has_list_ext"):
             rows = storage.list_accounts(user_id=user_id, currency=ccy, page=page, size=size, user_ids=allowed_ids)  # type: ignore[attr-defined]
         else:
             rows = storage.list_accounts(user_id=user_id, user_ids=allowed_ids)  # type: ignore[call-arg]
@@ -436,7 +453,10 @@ async def get_account_by_user_currency(
     db: Session = Depends(get_db),
 ) -> WalletAccountOut:
     await _ensure_user_in_company(user_id, current_user, db)
-    if not _HAS_GET_ACC_BY_UC:
+    caps = _storage_caps()
+    storage = _get_storage()
+
+    if not caps.get("has_get_uc"):
         rows = storage.list_accounts(user_id=user_id)  # type: ignore[call-arg]
         items = rows["items"] if isinstance(rows, dict) and "items" in rows else rows
         if not isinstance(items, list):
@@ -475,14 +495,14 @@ async def get_balance(
 ) -> BalanceOut:
     try:
         await _ensure_account_access(account_id, current_user, db)
-        bal = storage.get_balance(account_id)
+        bal = _get_storage().get_balance(account_id)
         if isinstance(bal, dict):
             return BalanceOut(
                 account_id=int(bal.get("account_id", account_id)),
                 currency=_norm_ccy(bal.get("currency", "")),
                 balance=_to_dec_str(bal.get("balance", "0")),
             )
-        acc = storage.get_account(account_id)
+        acc = _get_storage().get_account(account_id)
         ccy = _norm_ccy(acc["currency"]) if acc and "currency" in acc else ""
         return BalanceOut(account_id=account_id, currency=ccy, balance=_to_dec_str(bal))
     except Exception as e:
@@ -506,7 +526,7 @@ async def deposit(
 ) -> WalletTransactionOut:
     try:
         await _ensure_account_access(account_id, current_user, db)
-        out = storage.deposit(account_id, req.amount, getattr(req, "reference", None))
+        out = _get_storage().deposit(account_id, req.amount, getattr(req, "reference", None))
         return WalletTransactionOut(
             account_id=int(out.get("account_id", account_id)),
             currency=_norm_ccy(out.get("currency", "")),
@@ -531,7 +551,7 @@ async def withdraw(
 ) -> WalletTransactionOut:
     try:
         await _ensure_account_access(account_id, current_user, db)
-        out = storage.withdraw(account_id, req.amount, getattr(req, "reference", None))
+        out = _get_storage().withdraw(account_id, req.amount, getattr(req, "reference", None))
         return WalletTransactionOut(
             account_id=int(out.get("account_id", account_id)),
             currency=_norm_ccy(out.get("currency", "")),
@@ -568,7 +588,7 @@ async def transfer(
             if src_company != dst_company:
                 raise HTTPException(status_code=404, detail="account not found")
 
-        out = storage.transfer(
+        out = _get_storage().transfer(
             req.source_account_id,
             req.destination_account_id,
             req.amount,
@@ -615,7 +635,7 @@ async def ledger(
 ) -> LedgerPage:
     try:
         await _ensure_account_access(account_id, current_user, db)
-        page_obj = storage.list_ledger(account_id, page, size)
+        page_obj = _get_storage().list_ledger(account_id, page, size)
         items = page_obj.get("items", []) if isinstance(page_obj, dict) else []
         meta = (
             page_obj.get("meta", {"page": page, "size": size, "total": len(items)})
@@ -659,14 +679,15 @@ async def adjust_balance(
     current_user: User = Depends(require_role("admin")),
     db: Session = Depends(get_db),
 ):
-    if not _HAS_ADJUST:
+    caps = _storage_caps()
+    if not caps.get("has_adjust"):
         raise HTTPException(
             status_code=status.HTTP_501_NOT_IMPLEMENTED,
             detail="adjust_balance not supported by storage",
         )
     try:
         await _ensure_account_access(account_id, current_user, db)
-        out = storage.adjust_balance(account_id, payload.new_balance, payload.reference)  # type: ignore[attr-defined]
+        out = _get_storage().adjust_balance(account_id, payload.new_balance, payload.reference)  # type: ignore[attr-defined]
         return WalletTransactionOut(
             account_id=int(out.get("account_id", account_id)),
             currency=_norm_ccy(out.get("currency", "")),

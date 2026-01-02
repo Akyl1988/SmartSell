@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import logging
 from decimal import Decimal
+from functools import lru_cache
 from typing import Any
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Path, Query, status
@@ -66,21 +67,30 @@ async def _ensure_user_in_company(
     return user
 
 
-# Storage
-try:
-    from app.storage.payments_sql import PaymentsStorageSQL
+# Storage (lazy to avoid import-time failures)
+_BACKEND = "sql"
 
-    storage = PaymentsStorageSQL()
-    _BACKEND = "sql"
-except Exception as e:
-    raise RuntimeError(f"Payments storage init failed: {e}")
 
-try:
-    from app.storage.wallet_sql import WalletStorageSQL
+@lru_cache(maxsize=1)
+def _get_payment_storage():
+    try:
+        from app.storage.payments_sql import PaymentsStorageSQL
 
-    wallet_storage = WalletStorageSQL()
-except Exception as e:
-    raise RuntimeError(f"Wallet storage init failed for payments API: {e}")
+        return PaymentsStorageSQL()
+    except Exception as e:
+        logger.exception("payments storage init failed: %s", e)
+        raise HTTPException(status_code=500, detail="payments storage unavailable")
+
+
+@lru_cache(maxsize=1)
+def _get_wallet_storage():
+    try:
+        from app.storage.wallet_sql import WalletStorageSQL
+
+        return WalletStorageSQL()
+    except Exception as e:
+        logger.exception("wallet storage init failed for payments API: %s", e)
+        raise HTTPException(status_code=500, detail="wallet storage unavailable")
 
 
 # --------- Schemas ----------
@@ -130,7 +140,7 @@ class PaymentList(BaseModel):
 
 
 async def _ensure_account_access(account_id: int, current_user: User, db: Session) -> dict:
-    acc = wallet_storage.get_account(account_id)
+    acc = _get_wallet_storage().get_account(account_id)
     if not acc:
         raise HTTPException(status_code=404, detail="wallet account not found")
     await _ensure_user_in_company(
@@ -170,6 +180,7 @@ async def create_and_capture(
         acc = await _ensure_account_access(req.wallet_account_id, current_user, db)
         if int(acc.get("user_id", 0)) != req.user_id:
             raise HTTPException(status_code=404, detail="wallet account not found")
+        storage = _get_payment_storage()
         p = storage.create_and_capture(req.user_id, req.wallet_account_id, req.amount, req.currency, req.reference)
         return Payment(**p)
     except HTTPException:
@@ -189,6 +200,7 @@ async def refund(
     db: Session = Depends(get_db),
 ):
     try:
+        storage = _get_payment_storage()
         payment = await _ensure_payment_visible(storage.get(payment_id), current_user, db)
         await _ensure_account_access(int(payment.get("wallet_account_id", 0)), current_user, db)
         p = storage.refund(payment_id, req.amount, req.reference)
@@ -210,6 +222,7 @@ async def cancel(
     db: Session = Depends(get_db),
 ):
     try:
+        storage = _get_payment_storage()
         payment = await _ensure_payment_visible(storage.get(payment_id), current_user, db)
         await _ensure_account_access(int(payment.get("wallet_account_id", 0)), current_user, db)
         p = storage.cancel(payment_id, req.reason if req else None)
@@ -226,6 +239,7 @@ async def get_payment(
     current_user: User = Depends(_auth_user),
     db: Session = Depends(get_db),
 ):
+    storage = _get_payment_storage()
     p = await _ensure_payment_visible(storage.get(payment_id), current_user, db)
     await _ensure_account_access(int(p.get("wallet_account_id", 0)), current_user, db)
     return Payment(**p)
@@ -249,6 +263,7 @@ async def list_payments(
             allowed_ids = [uid for uid in allowed_ids if uid == user_id]
         if allowed_ids is not None and not allowed_ids:
             allowed_ids = [-1]
+    storage = _get_payment_storage()
     out = storage.list(user_id, page, size, user_ids=allowed_ids)
     items = [Payment(**i) for i in out["items"]]
     if not _is_platform_admin(current_user):
