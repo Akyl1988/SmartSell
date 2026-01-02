@@ -1055,3 +1055,65 @@ async def auth_headers(async_client: AsyncClient):
         token = create_access_token(subject=user.id)
 
     return {"Authorization": f"Bearer {token}"}
+
+
+def _make_company_headers(*, company_id: int, role: str, phone: str) -> dict[str, str]:
+    """Seed user with a specific role/company and return bearer headers."""
+    from app.core.security import create_access_token, get_password_hash  # type: ignore
+    from app.models.company import Company  # type: ignore
+    from app.models.user import User  # type: ignore
+
+    SessionLocal = sessionmaker(bind=sync_engine, expire_on_commit=False, autoflush=False)
+    with SessionLocal() as s:
+        company = s.get(Company, company_id)
+        if company is None:
+            company = Company(id=company_id, name=f"Company {company_id}")
+            s.add(company)
+            s.flush()
+
+        user = s.query(User).filter(User.phone == phone).first()
+        if not user:
+            user = User(
+                company_id=company.id,
+                phone=phone,
+                hashed_password=get_password_hash("Secret123!"),
+                role=role,
+                is_active=True,
+                is_verified=True,
+            )
+            s.add(user)
+        else:
+            user.company_id = company.id
+            user.role = role
+            user.is_active = True
+            user.is_verified = True
+        s.commit()
+        s.refresh(user)
+        token = create_access_token(subject=user.id)
+
+    return {"Authorization": f"Bearer {token}"}
+
+
+@pytest.fixture
+def company_a_admin_headers() -> dict[str, str]:
+    return _make_company_headers(company_id=1001, role="admin", phone="+70000010001")
+
+
+@pytest.fixture
+def company_b_admin_headers() -> dict[str, str]:
+    return _make_company_headers(company_id=2001, role="admin", phone="+70000020001")
+
+
+@pytest.fixture
+def company_a_manager_headers() -> dict[str, str]:
+    return _make_company_headers(company_id=1001, role="manager", phone="+70000010002")
+
+
+@pytest.fixture
+def company_a_analyst_headers() -> dict[str, str]:
+    return _make_company_headers(company_id=1001, role="analyst", phone="+70000010003")
+
+
+@pytest.fixture
+def company_a_storekeeper_headers() -> dict[str, str]:
+    return _make_company_headers(company_id=1001, role="storekeeper", phone="+70000010004")

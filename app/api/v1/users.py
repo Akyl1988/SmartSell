@@ -90,7 +90,7 @@ async def update_current_user(
     """Update current user information."""
     changes: dict[str, dict[str, Any]] = {}
 
-    for field, value in user_update.dict(exclude_unset=True).items():
+    for field, value in user_update.model_dump(exclude_unset=True).items():
         if hasattr(current_user, field):
             old = getattr(current_user, field)
             if old != value:
