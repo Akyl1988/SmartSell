@@ -9,6 +9,11 @@ from alembic import op
 import sqlalchemy as sa
 from sqlalchemy import inspect
 
+try:
+    from migrations.utils.pghelpers import safe_inspect
+except Exception:  # pragma: no cover - fallback if utils import fails
+    safe_inspect = None  # type: ignore
+
 
 # revision identifiers, used by Alembic.
 revision = "20260102_wallet_and_payments"
@@ -22,9 +27,9 @@ _DECIMAL_PLACES = 6
 
 def upgrade():
     bind = op.get_bind()
-    insp = inspect(bind)
+    insp = safe_inspect(bind) if safe_inspect else inspect(bind)
 
-    if not insp.has_table("wallet_accounts"):
+    if not insp or not insp.has_table("wallet_accounts"):
         op.create_table(
             "wallet_accounts",
             sa.Column("id", sa.Integer(), primary_key=True),
@@ -40,7 +45,7 @@ def upgrade():
         op.create_index("ix_wallet_accounts_user_currency", "wallet_accounts", ["user_id", "currency"], unique=False)
         op.create_index("ix_wallet_accounts_updated_at", "wallet_accounts", ["updated_at"], unique=False)
 
-    if not insp.has_table("wallet_ledger"):
+    if not insp or not insp.has_table("wallet_ledger"):
         op.create_table(
             "wallet_ledger",
             sa.Column("id", sa.Integer(), primary_key=True),
@@ -54,7 +59,7 @@ def upgrade():
         op.create_index("ix_wallet_ledger_account_id", "wallet_ledger", ["account_id"], unique=False)
         op.create_index("ix_wallet_ledger_created_at", "wallet_ledger", ["created_at"], unique=False)
 
-    if not insp.has_table("wallet_payments"):
+    if not insp or not insp.has_table("wallet_payments"):
         op.create_table(
             "wallet_payments",
             sa.Column("id", sa.Integer(), primary_key=True),
@@ -76,9 +81,9 @@ def upgrade():
 
 def downgrade():
     bind = op.get_bind()
-    insp = inspect(bind)
+    insp = safe_inspect(bind) if safe_inspect else inspect(bind)
 
-    if insp.has_table("wallet_payments"):
+    if not insp or insp.has_table("wallet_payments"):
         for idx in (
             "ix_wallet_payments_status",
             "ix_wallet_payments_currency",
@@ -91,7 +96,7 @@ def downgrade():
                 pass
         op.drop_table("wallet_payments")
 
-    if insp.has_table("wallet_ledger"):
+    if not insp or insp.has_table("wallet_ledger"):
         for idx in ("ix_wallet_ledger_created_at", "ix_wallet_ledger_account_id"):
             try:
                 op.drop_index(idx, table_name="wallet_ledger")
@@ -99,7 +104,7 @@ def downgrade():
                 pass
         op.drop_table("wallet_ledger")
 
-    if insp.has_table("wallet_accounts"):
+    if not insp or insp.has_table("wallet_accounts"):
         for idx in (
             "ix_wallet_accounts_updated_at",
             "ix_wallet_accounts_user_currency",

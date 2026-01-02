@@ -16,6 +16,7 @@ from collections.abc import Sequence
 
 import sqlalchemy as sa
 from sqlalchemy import text
+from sqlalchemy.exc import NoInspectionAvailable
 from sqlalchemy.dialects import postgresql as psql
 from sqlalchemy.engine import Connection
 
@@ -196,3 +197,32 @@ def add_not_null_column_safely(
         )
     except Exception:
         pass
+
+
+# -----------------
+# Inspection helper
+# -----------------
+def safe_inspect(conn: Connection | None):
+    """Return Inspector or None when inspection is not possible (offline/mock).
+
+    - If Alembic context is offline (as_sql), skip inspecting because bind is a MockConnection.
+    - If connection comes from a mock engine (engine.mock=True), skip.
+    - Swallow NoInspectionAvailable and return None.
+    """
+    if conn is None:
+        return None
+    try:  # Alembic may be absent in some import contexts
+        from alembic import context
+
+        if context.is_offline_mode():
+            return None
+    except Exception:
+        pass
+
+    if getattr(getattr(conn, "engine", None), "mock", False):
+        return None
+
+    try:
+        return sa.inspect(conn)
+    except NoInspectionAvailable:
+        return None

@@ -363,10 +363,19 @@ async def list_accounts(
         if user_id is not None:
             await _ensure_user_in_company(user_id, current_user, db)
 
+        allowed_ids: list[int] | None = None
+        if not _is_platform_admin(current_user):
+            rows = db.execute(select(User.id).where(User.company_id == getattr(current_user, "company_id", None)))
+            allowed_ids = [int(r[0]) for r in rows]
+            if user_id is not None:
+                allowed_ids = [uid for uid in allowed_ids if uid == user_id]
+            if allowed_ids is not None and not allowed_ids:
+                allowed_ids = [-1]
+
         if _HAS_LIST_ACC_EXT:
-            rows = storage.list_accounts(user_id=user_id, currency=ccy, page=page, size=size)  # type: ignore[attr-defined]
+            rows = storage.list_accounts(user_id=user_id, currency=ccy, page=page, size=size, user_ids=allowed_ids)  # type: ignore[attr-defined]
         else:
-            rows = storage.list_accounts(user_id=user_id)  # type: ignore[call-arg]
+            rows = storage.list_accounts(user_id=user_id, user_ids=allowed_ids)  # type: ignore[call-arg]
             items = rows["items"] if isinstance(rows, dict) and "items" in rows else rows
             if not isinstance(items, list):
                 items = []

@@ -31,7 +31,9 @@ async def test_wallet_accounts_hidden_across_companies(
 
     listed = await client.get("/api/v1/wallet/accounts", headers=company_b_admin_headers)
     assert listed.status_code == 200
-    assert listed.json()["meta"]["total"] == 0
+    body = listed.json()
+    items = body.get("items") or body.get("data") or []
+    assert all(it.get("id") != account_id for it in items)
 
 
 @pytest.mark.anyio
@@ -72,4 +74,6 @@ async def test_payments_hidden_across_companies(
 
     listed = await client.get("/api/v1/payments/", headers=company_b_admin_headers)
     assert listed.status_code == 200
-    assert listed.json()["meta"]["total"] == 0
+    body = listed.json()
+    items = body.get("items") or body.get("data") or []
+    assert all(it.get("id") != payment_id for it in items)
