@@ -293,3 +293,12 @@ docs/db_audit_all/*
 _alembic_backup/
 migrations/versions/_backup/
 migrations/versions/_quarantine/
+
+# local artifacts
+/_artifacts/
+/_audit_check_db.py
+/_changes_*_report.txt
+/_changes_full_report.txt
+/_diff_clean.txt
+/_rg_dbnames.txt
+
