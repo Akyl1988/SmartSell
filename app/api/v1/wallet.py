@@ -68,6 +68,8 @@ def _to_dec_str(v: Any) -> str:
 
 
 def _pick_http_status(exc: Exception) -> int:
+    if isinstance(exc, HTTPException):
+        raise exc
     msg = str(exc).lower()
     if "not found" in msg:
         return status.HTTP_404_NOT_FOUND
@@ -253,6 +255,8 @@ def _get_storage():
         from app.storage.wallet_sql import WalletStorageSQL  # type: ignore
 
         return WalletStorageSQL()
+    except HTTPException:
+        raise
     except Exception as e:
         logger.exception("wallet storage init failed: %s", e)
         raise HTTPException(status_code=500, detail="wallet storage unavailable")
@@ -297,6 +301,8 @@ def health() -> HealthOut:
         try:
             data = storage.health()  # type: ignore[attr-defined]
             return HealthOut(**data) if isinstance(data, dict) else HealthOut(ok=_safe_bool(data))
+        except HTTPException:
+            raise
         except Exception as e:
             logger.exception("wallet.health failed: %s", e)
             return HealthOut(ok=False, error="wallet storage unavailable")
@@ -319,6 +325,8 @@ def stats() -> StatsOut:
                     ledger_entries=int(data.get("ledger_entries", 0)),
                     total_balance=tb,
                 )
+        except HTTPException:
+            raise
         except Exception as e:
             raise HTTPException(status_code=_pick_http_status(e), detail="wallet storage unavailable")
     # Fallback — без агрегации из БД
@@ -327,6 +335,8 @@ def stats() -> StatsOut:
         items = rows["items"] if isinstance(rows, dict) and "items" in rows else rows
         acc_count = len(items) if isinstance(items, list) else 0
         return StatsOut(accounts=acc_count, ledger_entries=0, total_balance="0")
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=_pick_http_status(e), detail=str(e))
 
@@ -354,6 +364,8 @@ async def create_account(
         acc["currency"] = _norm_ccy(acc.get("currency", ccy))
         acc["balance"] = _to_dec_str(acc.get("balance", "0"))
         return WalletAccountOut(**acc)
+    except HTTPException:
+        raise
     except Exception as e:
         logger.warning("create_account failed; rid=%s; err=%s", x_request_id, e)
         raise HTTPException(status_code=_pick_http_status(e), detail=str(e))
@@ -416,6 +428,8 @@ async def list_accounts(
 
         meta = {"page": page, "size": size, "total": total}
         return WalletAccountsPage(items=[WalletAccountOut(**r) for r in page_items], meta=PageMeta(**meta))
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=_pick_http_status(e), detail=str(e))
 
@@ -505,6 +519,8 @@ async def get_balance(
         acc = _get_storage().get_account(account_id)
         ccy = _norm_ccy(acc["currency"]) if acc and "currency" in acc else ""
         return BalanceOut(account_id=account_id, currency=ccy, balance=_to_dec_str(bal))
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=_pick_http_status(e), detail=str(e))
 
@@ -532,6 +548,8 @@ async def deposit(
             currency=_norm_ccy(out.get("currency", "")),
             balance=_to_dec_str(out.get("balance", "0")),
         )
+    except HTTPException:
+        raise
     except Exception as e:
         logger.warning("deposit failed (id=%s rid=%s): %s", account_id, x_request_id, e)
         raise HTTPException(status_code=_pick_http_status(e), detail=str(e))
@@ -557,6 +575,8 @@ async def withdraw(
             currency=_norm_ccy(out.get("currency", "")),
             balance=_to_dec_str(out.get("balance", "0")),
         )
+    except HTTPException:
+        raise
     except Exception as e:
         logger.warning("withdraw failed (id=%s rid=%s): %s", account_id, x_request_id, e)
         raise HTTPException(status_code=_pick_http_status(e), detail=str(e))
@@ -607,6 +627,8 @@ async def transfer(
             balance=_to_dec_str(dst.get("balance", "0")),
         )
         return WalletTransferOut(source=source, destination=destination)
+    except HTTPException:
+        raise
     except Exception as e:
         logger.warning(
             "transfer failed %s->%s; rid=%s; err=%s",
@@ -656,6 +678,8 @@ async def ledger(
                 )
             )
         return LedgerPage(items=norm_items, meta=PageMeta(**meta))
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=_pick_http_status(e), detail=str(e))
 
@@ -693,5 +717,7 @@ async def adjust_balance(
             currency=_norm_ccy(out.get("currency", "")),
             balance=_to_dec_str(out.get("balance", "0")),
         )
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=_pick_http_status(e), detail=str(e))

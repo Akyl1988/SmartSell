@@ -19,6 +19,7 @@ from __future__ import annotations
 """
 
 import logging
+import os
 import time
 from typing import Any, Union
 
@@ -38,11 +39,37 @@ if not logger.handlers:
 # ------------------------------------------------------------------------------
 # Помощники импорта
 # ------------------------------------------------------------------------------
+def _is_test_or_ci_mode() -> bool:
+    if os.getenv("GITHUB_ACTIONS") == "true":
+        return True
+    if os.getenv("CI") == "true":
+        return True
+    if os.getenv("PYTEST_CURRENT_TEST"):
+        return True
+    env = (os.getenv("ENVIRONMENT") or "").strip().lower()
+    if env == "testing":
+        return True
+    testing = (os.getenv("TESTING") or "").strip().lower()
+    if testing in ("1", "true", "yes", "on"):
+        return True
+    return False
+
+
+_STRICT_IMPORTS_IN_TESTS = {
+    "app.api.v1.wallet",
+    "app.api.v1.payments",
+    "app.api.v1.subscriptions",
+}
+
+
 def _try_import(path: str) -> Any | None:
     try:
         return __import__(path, fromlist=["router"])
     except Exception as e:
-        logger.debug("module not available: %s (%s)", path, e)
+        if _is_test_or_ci_mode() and path in _STRICT_IMPORTS_IN_TESTS:
+            logger.exception("Failed to import %s in test/CI mode", path)
+            raise
+        logger.warning("module not available: %s (%s)", path, e)
         return None
 
 

@@ -77,6 +77,8 @@ def _get_payment_storage():
         from app.storage.payments_sql import PaymentsStorageSQL
 
         return PaymentsStorageSQL()
+    except HTTPException:
+        raise
     except Exception as e:
         logger.exception("payments storage init failed: %s", e)
         raise HTTPException(status_code=500, detail="payments storage unavailable")
@@ -88,6 +90,8 @@ def _get_wallet_storage():
         from app.storage.wallet_sql import WalletStorageSQL
 
         return WalletStorageSQL()
+    except HTTPException:
+        raise
     except Exception as e:
         logger.exception("wallet storage init failed for payments API: %s", e)
         raise HTTPException(status_code=500, detail="wallet storage unavailable")
