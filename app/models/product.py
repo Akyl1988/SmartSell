@@ -495,7 +495,11 @@ class Product(LenientInitMixin, VersionedMixin, BaseModel):
         if v is None:
             return None
         vv = v.strip()
-        return vv.lower() if key in ("slug", "sku") else vv
+        if key == "slug":
+            return vv.lower()
+        if key == "sku":
+            return vv.upper()
+        return vv
 
     @validates("price", "cost_price", "sale_price", "min_price", "max_price", "preorder_deposit")
     def _validate_money(self, key: str, value: Decimal | None) -> Decimal | None:

@@ -28,7 +28,7 @@ from app.core.dependencies import (
     get_current_verified_user,
     get_pagination,
 )
-from app.core.exceptions import ConflictError, NotFoundError, SmartSellValidationError
+from app.core.exceptions import AuthorizationError, ConflictError, NotFoundError, SmartSellValidationError
 from app.core.logging import audit_logger
 from app.models.product import Category, Product
 from app.models.user import User
@@ -175,6 +175,35 @@ def _is_admin(user: User) -> bool:
     return False
 
 
+_PRODUCT_READ_ROLES = {"admin", "manager", "analyst", "storekeeper"}
+_PRODUCT_WRITE_ROLES = {"admin", "manager"}
+_STOCK_WRITE_ROLES = {"admin", "manager", "storekeeper"}
+
+
+def _ensure_role(user: User, allowed: set[str]) -> None:
+    role = (getattr(user, "role", "") or "").lower()
+    if role == "platform_admin":
+        return
+    if role not in allowed:
+        raise AuthorizationError("Insufficient permissions", "INSUFFICIENT_PERMISSIONS")
+
+
+def _filter_company(query, user: User):
+    cid = getattr(user, "company_id", None)
+    if cid is not None:
+        query = query.filter(Product.company_id == cid)
+    return query
+
+
+def _get_product_or_404(db: Session, product_id: int, user: User) -> Product:
+    query = db.query(Product).filter(Product.id == product_id)
+    query = _filter_company(query, user)
+    product = query.first()
+    if not product:
+        raise NotFoundError("Product not found", "PRODUCT_NOT_FOUND")
+    return product
+
+
 # ---------------------------------------------------------------------------
 # Основные CRUD
 # ---------------------------------------------------------------------------
@@ -186,10 +215,13 @@ async def list_products(
     pagination: Pagination = Depends(get_pagination),
     sort_by: str = Query("created_at", description=f"One of: {', '.join(_ALLOWED_SORT_FIELDS.keys())}"),
     sort_order: str = Query("desc", pattern="^(?i)(asc|desc)$"),
+    current_user: User = Depends(get_current_verified_user),
     db: Session = Depends(get_db),
 ):
     """List products with filtering, sorting and pagination."""
-    query = db.query(Product)
+    _ensure_role(current_user, _PRODUCT_READ_ROLES)
+
+    query = _filter_company(db.query(Product), current_user)
     query = _apply_filters(query, filters)
 
     # Всегда обнуляем order_by перед count (на всякий случай)
@@ -204,13 +236,12 @@ async def list_products(
 @router.get("/{product_id}", response_model=ProductResponse)
 async def get_product(
     product_id: int = Path(..., ge=1),
+    current_user: User = Depends(get_current_verified_user),
     db: Session = Depends(get_db),
 ):
     """Get product by ID."""
-    product = db.query(Product).filter(Product.id == product_id).first()
-    if not product:
-        raise NotFoundError("Product not found", "PRODUCT_NOT_FOUND")
-    return product
+    _ensure_role(current_user, _PRODUCT_READ_ROLES)
+    return _get_product_or_404(db, product_id, current_user)
 
 
 @router.post("", response_model=ProductResponse)
@@ -220,6 +251,7 @@ async def create_product(
     db: Session = Depends(get_db),
 ):
     """Create a new product."""
+    _ensure_role(current_user, _PRODUCT_WRITE_ROLES)
     try:
         # Validate category exists if provided
         if product_data.category_id:
@@ -227,7 +259,11 @@ async def create_product(
             if not category:
                 raise NotFoundError("Category not found", "CATEGORY_NOT_FOUND")
 
-        product = Product(**product_data.dict())
+        payload = product_data.model_dump()
+        if payload.get("sku"):
+            payload["sku"] = payload["sku"].strip().upper()
+        payload["company_id"] = getattr(current_user, "company_id", None)
+        product = Product(**payload)
         db.add(product)
         db.commit()
         db.refresh(product)
@@ -237,7 +273,7 @@ async def create_product(
             action="create",
             resource_type="product",
             resource_id=str(product.id),
-            changes=product_data.dict(),
+            changes=product_data.model_dump(),
         )
 
         return product
@@ -260,15 +296,16 @@ async def update_product(
     db: Session = Depends(get_db),
 ):
     """Update product by ID."""
-    product = db.query(Product).filter(Product.id == product_id).first()
-    if not product:
-        raise NotFoundError("Product not found", "PRODUCT_NOT_FOUND")
+    _ensure_role(current_user, _PRODUCT_WRITE_ROLES)
+    product = _get_product_or_404(db, product_id, current_user)
 
     try:
         changes: dict[str, Any] = {}
 
-        for field, value in product_update.dict(exclude_unset=True).items():
+        for field, value in product_update.model_dump(exclude_unset=True).items():
             if hasattr(product, field):
+                if field == "sku" and value is not None:
+                    value = value.strip().upper()
                 old = getattr(product, field)
                 if old != value:
                     setattr(product, field, value)
@@ -304,9 +341,8 @@ async def delete_product(
     db: Session = Depends(get_db),
 ):
     """Soft delete product by setting is_active=False."""
-    product = db.query(Product).filter(Product.id == product_id).first()
-    if not product:
-        raise NotFoundError("Product not found", "PRODUCT_NOT_FOUND")
+    _ensure_role(current_user, _PRODUCT_WRITE_ROLES)
+    product = _get_product_or_404(db, product_id, current_user)
 
     if not product.is_active:
         return SuccessResponse(message="Product already inactive")
@@ -334,12 +370,12 @@ async def delete_product(
 @router.get("/{product_id}/stock", response_model=dict)
 async def get_product_stock(
     product_id: int,
+    current_user: User = Depends(get_current_verified_user),
     db: Session = Depends(get_db),
 ):
     """Get product stock information."""
-    product = db.query(Product).filter(Product.id == product_id).first()
-    if not product:
-        raise NotFoundError("Product not found", "PRODUCT_NOT_FOUND")
+    _ensure_role(current_user, _PRODUCT_READ_ROLES)
+    product = _get_product_or_404(db, product_id, current_user)
 
     return {
         "product_id": product.id,
@@ -363,9 +399,8 @@ async def update_product_stock(
     db: Session = Depends(get_db),
 ):
     """Update product stock quantity."""
-    product = db.query(Product).filter(Product.id == product_id).first()
-    if not product:
-        raise NotFoundError("Product not found", "PRODUCT_NOT_FOUND")
+    _ensure_role(current_user, _STOCK_WRITE_ROLES)
+    product = _get_product_or_404(db, product_id, current_user)
 
     old_quantity = product.stock_quantity
     product.stock_quantity = stock_quantity
@@ -395,9 +430,8 @@ async def set_featured(
     db: Session = Depends(get_db),
 ):
     """Set or unset product's featured flag."""
-    product = db.query(Product).filter(Product.id == product_id).first()
-    if not product:
-        raise NotFoundError("Product not found", "PRODUCT_NOT_FOUND")
+    _ensure_role(current_user, _PRODUCT_WRITE_ROLES)
+    product = _get_product_or_404(db, product_id, current_user)
 
     old = product.is_featured
     if old == featured:
@@ -423,9 +457,8 @@ async def activate_product(
     db: Session = Depends(get_db),
 ):
     """Activate a product (is_active=True)."""
-    product = db.query(Product).filter(Product.id == product_id).first()
-    if not product:
-        raise NotFoundError("Product not found", "PRODUCT_NOT_FOUND")
+    _ensure_role(current_user, _PRODUCT_WRITE_ROLES)
+    product = _get_product_or_404(db, product_id, current_user)
     if product.is_active:
         return SuccessResponse(message="Product already active")
 
@@ -450,9 +483,8 @@ async def deactivate_product(
     db: Session = Depends(get_db),
 ):
     """Deactivate a product (is_active=False)."""
-    product = db.query(Product).filter(Product.id == product_id).first()
-    if not product:
-        raise NotFoundError("Product not found", "PRODUCT_NOT_FOUND")
+    _ensure_role(current_user, _PRODUCT_WRITE_ROLES)
+    product = _get_product_or_404(db, product_id, current_user)
     if not product.is_active:
         return SuccessResponse(message="Product already inactive")
 
@@ -482,6 +514,7 @@ async def bulk_create_products(
     db: Session = Depends(get_db),
 ):
     """Bulk create products. Возвращает счётчики и ошибки по индексам."""
+    _ensure_role(current_user, _PRODUCT_WRITE_ROLES)
     created = 0
     errors: list[dict[str, Any]] = []
 
@@ -493,7 +526,10 @@ async def bulk_create_products(
                     errors.append({"index": idx, "error": "CATEGORY_NOT_FOUND"})
                     continue
 
-            obj = Product(**data.dict())
+            row = data.model_dump()
+            if row.get("sku"):
+                row["sku"] = row["sku"].strip().upper()
+            obj = Product(**row, company_id=getattr(current_user, "company_id", None))
             db.add(obj)
             db.flush()  # чтобы поймать ошибки уникальности до коммита
             created += 1
@@ -503,7 +539,7 @@ async def bulk_create_products(
                 action="create",
                 resource_type="product",
                 resource_id="pending",
-                changes=data.dict(),
+                changes=data.model_dump(),
             )
         except IntegrityError as e:
             db.rollback()
@@ -765,7 +801,7 @@ async def set_repricing_config(
     service = RepricingService(db)
 
     # Сохраняем конфиг через сервис
-    saved = service.set_config(product, RepricingConfig(**cfg.dict()))
+    saved = service.set_config(product, RepricingConfig(**cfg.model_dump()))
 
     # Синхронизируем с моделью Product, где это возможно
     changes: dict[str, Any] = {}
@@ -794,10 +830,10 @@ async def set_repricing_config(
             action="repricing_config",
             resource_type="product",
             resource_id=str(product.id),
-            changes=changes | {"repricing_config": cfg.dict()},
+            changes=changes | {"repricing_config": cfg.model_dump()},
         )
 
-    return RepricingConfigOut(**saved.dict())
+    return RepricingConfigOut(**saved.model_dump())
 
 
 @router.post("/{product_id}/repricing/tick", response_model=RepricingTickOut)
