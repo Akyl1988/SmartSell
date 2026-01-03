@@ -5,6 +5,7 @@ import logging
 import os
 import threading
 import time
+from contextvars import ContextVar
 from datetime import UTC, datetime
 from enum import Enum
 from typing import Any, Literal
@@ -298,6 +299,7 @@ class RateLimiter:
 
 
 rate_limiter = RateLimiter()
+_campaign_user_ctx: ContextVar[User | None] = ContextVar("campaign_user_ctx", default=None)
 
 
 async def _auth_user(
@@ -316,6 +318,7 @@ async def _auth_user(
         user = db.get(User, user_id)
     if not user:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Not authenticated")
+    _campaign_user_ctx.set(user)
     return user
 
 
@@ -475,6 +478,7 @@ class Campaign(BaseModel):
     description: str | None = None
     active: bool = True
     archived: bool = False
+    company_id: int | None = None
     tags: list[str] = Field(default_factory=list)
     messages: list[Message] = Field(default_factory=list)
     created_at: str | None = None
@@ -576,10 +580,15 @@ class BulkUpsertMessageRequest(BaseModel):
 # ------------------------------------------------------------------------------
 # ХЕЛПЕРЫ ДЛЯ КАМПАНИЙ / СООБЩЕНИЙ
 # ------------------------------------------------------------------------------
-def _get_campaign_or_404(campaign_id: int) -> Campaign:
+def _get_campaign_or_404(campaign_id: int, user: User | None = None) -> Campaign:
+    user = user or _campaign_user_ctx.get(None)
     data = storage.get_campaign(campaign_id)
     if not data:
         raise HTTPException(status_code=404, detail="Campaign not found")
+    if user is not None:
+        cid = data.get("company_id")
+        if cid is not None and cid != getattr(user, "company_id", None):
+            raise HTTPException(status_code=404, detail="Campaign not found")
     msgs = [Message(**m) if isinstance(m, dict) else m for m in data.get("messages") or []]
     data = {**data, "messages": [mm.model_dump() for mm in msgs]}
     return Campaign(**data)
@@ -681,6 +690,7 @@ async def create_campaign(campaign: Campaign = Body(...), user: User = Depends(_
     # подготовим payload
     payload = campaign.model_dump()
     payload["id"] = new_id
+    payload["company_id"] = getattr(user, "company_id", None)
     payload["tags"] = _normalize_tags(payload.get("tags"))
     payload["created_at"] = _now_iso()
     payload["updated_at"] = _now_iso()
@@ -722,8 +732,14 @@ async def list_campaigns(
     size: int = Query(20, ge=1, le=100),
     sort: Literal["created_at", "updated_at", "title"] = Query("created_at"),
     order: Literal["asc", "desc"] = Query("desc"),
+    user: User = Depends(_auth_user),
 ):
-    campaigns = [Campaign(**c) for c in storage.list_campaigns()]
+    campaigns = []
+    for c in storage.list_campaigns():
+        cid = c.get("company_id")
+        if cid is not None and cid != getattr(user, "company_id", None):
+            continue
+        campaigns.append(Campaign(**c))
     if active is not None:
         campaigns = [c for c in campaigns if c.active == active]
     if archived is not None:
@@ -1021,8 +1037,8 @@ async def get_campaign_draft(campaign_id: int = Path(..., ge=1)):
 
 # ---- DYNAMIC PATHS (/{campaign_id}...) ---------------------------------------
 @router.get("/{campaign_id}", response_model=Campaign)
-async def get_campaign(campaign_id: int = Path(..., ge=1)):
-    return _get_campaign_or_404(campaign_id)
+async def get_campaign(campaign_id: int = Path(..., ge=1), user: User = Depends(_auth_user)):
+    return _get_campaign_or_404(campaign_id, user)
 
 
 @router.put(
@@ -1032,7 +1048,9 @@ async def get_campaign(campaign_id: int = Path(..., ge=1)):
 )
 async def update_campaign(campaign_id: int, campaign: Campaign = Body(...), user: User = Depends(_auth_user)):
     current = storage.get_campaign(campaign_id)
-    if not current:
+    if (not current) or (
+        current.get("company_id") is not None and current.get("company_id") != getattr(user, "company_id", None)
+    ):
         raise HTTPException(status_code=404, detail="Campaign not found")
     ensure_owner_or_admin(current.get("owner"), user)
     # проверим уникальность названия, если пришло новое
@@ -1044,6 +1062,7 @@ async def update_campaign(campaign_id: int, campaign: Campaign = Body(...), user
         raise HTTPException(status_code=400, detail="title must be unique")
     updated = {**current, **campaign.model_dump(exclude_unset=True)}
     updated["id"] = campaign_id
+    updated["company_id"] = current.get("company_id", getattr(user, "company_id", None))
     updated["tags"] = _normalize_tags(updated.get("tags"))
     updated["updated_at"] = _now_iso()
     updated["owner"] = owner or current.get("owner")
@@ -1083,7 +1102,9 @@ async def update_campaign(campaign_id: int, campaign: Campaign = Body(...), user
 )
 async def delete_campaign(campaign_id: int, user: User = Depends(_auth_user)):
     data = storage.get_campaign(campaign_id)
-    if not data:
+    if (not data) or (
+        data.get("company_id") is not None and data.get("company_id") != getattr(user, "company_id", None)
+    ):
         return
     ensure_owner_or_admin(data.get("owner"), user)
     storage.delete_campaign(campaign_id)
@@ -1106,7 +1127,7 @@ def _message_recipient(m: Any) -> str | None:
     dependencies=[Depends(require_role("admin", "manager"))],
 )
 async def add_message_to_campaign(campaign_id: int, message: Message = Body(...), user: User = Depends(_auth_user)):
-    camp = _get_campaign_or_404(campaign_id)
+    camp = _get_campaign_or_404(campaign_id, user)
     ensure_owner_or_admin(camp.owner, user)
     _ensure_unique_recipient_in_campaign(camp, message.recipient, message.channel)
     new_id = storage.next_id("messages")
@@ -1122,14 +1143,14 @@ async def add_message_to_campaign(campaign_id: int, message: Message = Body(...)
 
 
 @router.get("/{campaign_id}/messages", response_model=list[Message])
-async def list_campaign_messages(campaign_id: int):
-    camp = _get_campaign_or_404(campaign_id)
+async def list_campaign_messages(campaign_id: int, user: User = Depends(_auth_user)):
+    camp = _get_campaign_or_404(campaign_id, user)
     return camp.messages
 
 
 @router.get("/{campaign_id}/messages/{message_id}", response_model=Message)
-async def get_campaign_message(campaign_id: int, message_id: int):
-    camp = _get_campaign_or_404(campaign_id)
+async def get_campaign_message(campaign_id: int, message_id: int, user: User = Depends(_auth_user)):
+    camp = _get_campaign_or_404(campaign_id, user)
     _, found = _find_message_in_campaign(camp, message_id)
     if not found:
         raise HTTPException(status_code=404, detail="Message not found")
@@ -1147,7 +1168,7 @@ async def update_campaign_message(
     message: Message = Body(...),
     user: User = Depends(_auth_user),
 ):
-    camp = _get_campaign_or_404(campaign_id)
+    camp = _get_campaign_or_404(campaign_id, user)
     ensure_owner_or_admin(camp.owner, user)
     idx, found = _find_message_in_campaign(camp, message_id)
     if not found:
@@ -1174,7 +1195,7 @@ async def update_campaign_message(
     dependencies=[Depends(require_role("admin", "manager"))],
 )
 async def delete_campaign_message(campaign_id: int, message_id: int, user: User = Depends(_auth_user)):
-    camp = _get_campaign_or_404(campaign_id)
+    camp = _get_campaign_or_404(campaign_id, user)
     ensure_owner_or_admin(camp.owner, user)
     storage.delete_message(message_id)
     camp.messages = [m for m in camp.messages if m.id != message_id]
@@ -1191,7 +1212,7 @@ async def delete_campaign_message(campaign_id: int, message_id: int, user: User 
     dependencies=[Depends(require_role("admin", "manager"))],
 )
 async def upsert_message_by_recipient(campaign_id: int, req: UpsertMessageRequest, user: User = Depends(_auth_user)):
-    camp = _get_campaign_or_404(campaign_id)
+    camp = _get_campaign_or_404(campaign_id, user)
     ensure_owner_or_admin(camp.owner, user)
     for m in camp.messages:
         if m.recipient.strip().lower() == req.recipient.strip().lower() and str(m.channel) == str(req.channel):
