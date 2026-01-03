@@ -19,6 +19,7 @@ from sqlalchemy import (
     UniqueConstraint,
     func,
     select,
+    text,
 )
 from sqlalchemy.sql import Select
 
@@ -59,6 +60,20 @@ def _norm_currency(code: str) -> str:
     if not (3 <= len(v) <= 10):
         raise ValueError("currency must be 3..10 chars")
     return v
+
+
+def _ensure_account_company(db: Session, account_id: int, company_id: Optional[int]) -> None:
+    if company_id is None:
+        return
+    row = db.execute(
+        text(
+            "SELECT 1 FROM wallet_accounts wa JOIN users u ON u.id = wa.user_id "
+            "WHERE wa.id = :id AND u.company_id = :cid"
+        ),
+        {"id": account_id, "cid": company_id},
+    ).first()
+    if not row:
+        raise NotFoundError("account not found")
 
 
 metadata = MetaData()
@@ -295,8 +310,23 @@ class WalletStorageSQL:
             )
             return _account_row_to_dict(row)
 
-    def get_account(self, account_id: int) -> Optional[dict[str, Any]]:
-        row = self._db.execute(select(wallet_accounts).where(wallet_accounts.c.id == account_id)).mappings().first()
+    def get_account(self, account_id: int, *, company_id: Optional[int] = None) -> Optional[dict[str, Any]]:
+        _ensure_account_company(self._db, account_id, company_id)
+        if company_id is None:
+            stmt = select(wallet_accounts).where(wallet_accounts.c.id == account_id)
+            row = self._db.execute(stmt).mappings().first()
+        else:
+            row = (
+                self._db.execute(
+                    text(
+                        "SELECT wa.* FROM wallet_accounts wa JOIN users u ON u.id = wa.user_id "
+                        "WHERE wa.id = :id AND u.company_id = :cid"
+                    ),
+                    {"id": account_id, "cid": company_id},
+                )
+                .mappings()
+                .first()
+            )
         return _account_row_to_dict(row) if row else None
 
     def get_account_by_user_currency(self, user_id: int, currency: str) -> Optional[dict[str, Any]]:
@@ -318,7 +348,22 @@ class WalletStorageSQL:
         user_id: Optional[int] = None,
         *,
         user_ids: Optional[list[int]] = None,
+        company_id: Optional[int] = None,
     ) -> list[dict[str, Any]]:
+        if company_id is not None:
+            base_sql = "SELECT wa.* FROM wallet_accounts wa JOIN users u ON u.id = wa.user_id WHERE 1=1"
+            params: dict[str, Any] = {}
+            if user_id is not None:
+                base_sql += " AND wa.user_id = :uid"
+                params["uid"] = user_id
+            if user_ids:
+                base_sql += " AND wa.user_id = ANY(:uids)"
+                params["uids"] = user_ids
+            base_sql += " AND u.company_id = :cid ORDER BY wa.id DESC"
+            params["cid"] = company_id
+            rows = self._db.execute(text(base_sql), params).mappings().all()
+            return [_account_row_to_dict(r) for r in rows]
+
         q = select(wallet_accounts)
         if user_id is not None:
             q = q.where(wallet_accounts.c.user_id == user_id)
@@ -329,7 +374,8 @@ class WalletStorageSQL:
 
     # ------------------------ Баланс / операции -------------------------------
 
-    def get_balance(self, account_id: int) -> dict[str, Any]:
+    def get_balance(self, account_id: int, *, company_id: Optional[int] = None) -> dict[str, Any]:
+        _ensure_account_company(self._db, account_id, company_id)
         row = (
             self._db.execute(
                 select(
@@ -349,7 +395,9 @@ class WalletStorageSQL:
             "currency": str(row["currency"]).upper(),
         }
 
-    def deposit(self, account_id: int, amount: Decimal, reference: Optional[str]) -> dict[str, Any]:
+    def deposit(
+        self, account_id: int, amount: Decimal, reference: Optional[str], *, company_id: Optional[int] = None
+    ) -> dict[str, Any]:
         amt = _to_decimal(amount)
         if amt <= 0:
             raise WalletError("amount must be positive")
@@ -359,6 +407,7 @@ class WalletStorageSQL:
             ref = ref[:255]
 
         with _tx(self._db):
+            _ensure_account_company(self._db, account_id, company_id)
             stmt = _with_for_update(self._db, select(wallet_accounts).where(wallet_accounts.c.id == account_id))
             acc = self._db.execute(stmt).mappings().first()
             if not acc:
@@ -386,7 +435,9 @@ class WalletStorageSQL:
                 "currency": str(acc["currency"]).upper(),
             }
 
-    def withdraw(self, account_id: int, amount: Decimal, reference: Optional[str]) -> dict[str, Any]:
+    def withdraw(
+        self, account_id: int, amount: Decimal, reference: Optional[str], *, company_id: Optional[int] = None
+    ) -> dict[str, Any]:
         amt = _to_decimal(amount)
         if amt <= 0:
             raise WalletError("amount must be positive")
@@ -396,6 +447,7 @@ class WalletStorageSQL:
             ref = ref[:255]
 
         with _tx(self._db):
+            _ensure_account_company(self._db, account_id, company_id)
             stmt = _with_for_update(self._db, select(wallet_accounts).where(wallet_accounts.c.id == account_id))
             acc = self._db.execute(stmt).mappings().first()
             if not acc:
@@ -428,7 +480,13 @@ class WalletStorageSQL:
             }
 
     def transfer(
-        self, src_account_id: int, dst_account_id: int, amount: Decimal, reference: Optional[str]
+        self,
+        src_account_id: int,
+        dst_account_id: int,
+        amount: Decimal,
+        reference: Optional[str],
+        *,
+        company_id: Optional[int] = None,
     ) -> dict[str, Any]:
         if src_account_id == dst_account_id:
             raise WalletError("source and destination must differ")
@@ -441,6 +499,8 @@ class WalletStorageSQL:
             ref = ref[:255]
 
         with _tx(self._db):
+            _ensure_account_company(self._db, src_account_id, company_id)
+            _ensure_account_company(self._db, dst_account_id, company_id)
             # Стабильный порядок блокировок для противодействия дедлокам
             a, b = (
                 (src_account_id, dst_account_id)
@@ -505,7 +565,9 @@ class WalletStorageSQL:
                 "destination": {"account_id": int(dst_account_id), "balance": str(dst_bal_new), "currency": dst_cur},
             }
 
-    def adjust_balance(self, account_id: int, new_balance: Decimal, reference: Optional[str]) -> dict[str, Any]:
+    def adjust_balance(
+        self, account_id: int, new_balance: Decimal, reference: Optional[str], *, company_id: Optional[int] = None
+    ) -> dict[str, Any]:
         """
         Административная правка баланса (ledger: adjustment).
         Использовать осознанно — сумма коррекции = new - old.
@@ -517,6 +579,7 @@ class WalletStorageSQL:
             ref = ref[:255]
 
         with _tx(self._db):
+            _ensure_account_company(self._db, account_id, company_id)
             stmt = _with_for_update(self._db, select(wallet_accounts).where(wallet_accounts.c.id == account_id))
             acc = self._db.execute(stmt).mappings().first()
             if not acc:
@@ -545,7 +608,14 @@ class WalletStorageSQL:
 
     # ------------------------ Ледгер / пагинация ------------------------------
 
-    def list_ledger(self, account_id: int, page: int, size: int) -> dict[str, Any]:
+    def list_ledger(
+        self,
+        account_id: int,
+        page: int,
+        size: int,
+        *,
+        company_id: Optional[int] = None,
+    ) -> dict[str, Any]:
         if page < 1:
             page = 1
         if size < 1:
@@ -553,21 +623,12 @@ class WalletStorageSQL:
         if size > 200:
             size = 200
         off = (page - 1) * size
+        _ensure_account_company(self._db, account_id, company_id)
+        base_stmt = select(wallet_ledger).where(wallet_ledger.c.account_id == account_id)
+        total_stmt = select(func.count()).select_from(wallet_ledger).where(wallet_ledger.c.account_id == account_id)
 
-        total = self._db.execute(
-            select(func.count()).select_from(wallet_ledger).where(wallet_ledger.c.account_id == account_id)
-        ).scalar_one()
-        rows = (
-            self._db.execute(
-                select(wallet_ledger)
-                .where(wallet_ledger.c.account_id == account_id)
-                .order_by(wallet_ledger.c.id.desc())
-                .offset(off)
-                .limit(size)
-            )
-            .mappings()
-            .all()
-        )
+        total = self._db.execute(total_stmt).scalar_one()
+        rows = self._db.execute(base_stmt.order_by(wallet_ledger.c.id.desc()).offset(off).limit(size)).mappings().all()
 
         items = [_ledger_row_to_item(r) for r in rows]
         return {

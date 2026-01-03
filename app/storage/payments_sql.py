@@ -43,6 +43,29 @@ wallet_payments = Table(
 )
 
 
+def _ensure_user_company(db: Session, user_id: int, company_id: Optional[int]) -> None:
+    if company_id is None:
+        return
+    row = db.execute(text("SELECT company_id FROM users WHERE id=:uid"), {"uid": user_id}).mappings().first()
+    if not row or row.get("company_id") != company_id:
+        raise ValueError("user not found")
+
+
+def _ensure_account_company(db: Session, account_id: int, company_id: Optional[int]) -> None:
+    if company_id is None:
+        return
+    row = (
+        db.execute(
+            text("SELECT u.company_id FROM wallet_accounts wa JOIN users u ON u.id = wa.user_id " "WHERE wa.id = :aid"),
+            {"aid": account_id},
+        )
+        .mappings()
+        .first()
+    )
+    if not row or row.get("company_id") != company_id:
+        raise ValueError("wallet account not found")
+
+
 class PaymentsStorageSQL:
     """Production storage для платежей (захват средств из wallet, возвраты)."""
 
@@ -52,9 +75,19 @@ class PaymentsStorageSQL:
         self._db = db
 
     # --- helpers
-    def _get_payment(self, s, pid: int):
+    def _get_payment(self, s, pid: int, *, company_id: Optional[int] = None):
         row = s.execute(select(wallet_payments).where(wallet_payments.c.id == pid)).mappings().first()
-        return dict(row) if row else None
+        if not row:
+            return None
+        if company_id is not None:
+            company_row = (
+                s.execute(text("SELECT company_id FROM users WHERE id=:uid"), {"uid": row["user_id"]})
+                .mappings()
+                .first()
+            )
+            if not company_row or company_row.get("company_id") != company_id:
+                return None
+        return dict(row)
 
     # --- CRUD/ops
     def create_and_capture(
@@ -64,6 +97,8 @@ class PaymentsStorageSQL:
         amount: Decimal,
         currency: str,
         reference: Optional[str],
+        *,
+        company_id: Optional[int] = None,
     ) -> dict[str, Any]:
         """Создаёт платёж и сразу списывает средства из кошелька (capture)."""
         from app.storage.wallet_sql import wallet_ledger  # for FK-less checks
@@ -76,16 +111,24 @@ class PaymentsStorageSQL:
 
         # Общая транзакция по тому же движку (важно для согласованности)
         with _tx(self._db):
+            _ensure_user_company(self._db, user_id, company_id)
             # 1) Проверим аккаунт и валюту
             acc = (
                 self._db.execute(
-                    text("SELECT * FROM wallet_accounts WHERE id=:id FOR UPDATE"),
+                    text(
+                        "SELECT wa.*, u.company_id FROM wallet_accounts wa JOIN users u ON u.id = wa.user_id "
+                        "WHERE wa.id=:id FOR UPDATE"
+                    ),
                     {"id": wallet_account_id},
                 )
                 .mappings()
                 .first()
             )
             if not acc:
+                raise ValueError("wallet account not found")
+            if company_id is not None and acc.get("company_id") != company_id:
+                raise ValueError("wallet account not found")
+            if int(acc.get("user_id", 0)) != int(user_id):
                 raise ValueError("wallet account not found")
             if (acc["currency"] or "").upper() != currency:
                 raise ValueError("currency mismatch with wallet account")
@@ -127,7 +170,9 @@ class PaymentsStorageSQL:
             row = self._db.execute(select(wallet_payments).where(wallet_payments.c.id == pid)).mappings().first()
             return dict(row)
 
-    def refund(self, payment_id: int, amount: Decimal, reference: Optional[str]) -> dict[str, Any]:
+    def refund(
+        self, payment_id: int, amount: Decimal, reference: Optional[str], *, company_id: Optional[int] = None
+    ) -> dict[str, Any]:
         """Возврат (частичный/полный) -> депозит на кошелёк, учёт refund_amount, статус."""
         from app.storage.wallet_sql import wallet_ledger
 
@@ -137,7 +182,7 @@ class PaymentsStorageSQL:
         now = _utcnow_iso()
 
         with _tx(self._db):
-            p = self._db.execute(select(wallet_payments).where(wallet_payments.c.id == payment_id)).mappings().first()
+            p = self._get_payment(self._db, payment_id, company_id=company_id)
             if not p:
                 raise ValueError("payment not found")
             if p["status"] not in ("captured", "refunded"):
@@ -149,10 +194,10 @@ class PaymentsStorageSQL:
                 raise ValueError("refund amount exceeds remaining")
 
             # депозит в кошелёк
+            _ensure_account_company(self._db, int(p["wallet_account_id"]), company_id)
             acc = (
                 self._db.execute(
-                    text("SELECT * FROM wallet_accounts WHERE id=:id FOR UPDATE"),
-                    {"id": int(p["wallet_account_id"])},
+                    text("SELECT * FROM wallet_accounts WHERE id=:id FOR UPDATE"), {"id": int(p["wallet_account_id"])}
                 )
                 .mappings()
                 .first()
@@ -189,11 +234,11 @@ class PaymentsStorageSQL:
             row = self._db.execute(select(wallet_payments).where(wallet_payments.c.id == payment_id)).mappings().first()
             return dict(row)
 
-    def cancel(self, payment_id: int, reason: Optional[str]) -> dict[str, Any]:
+    def cancel(self, payment_id: int, reason: Optional[str], *, company_id: Optional[int] = None) -> dict[str, Any]:
         """Отмена только если платёж ещё не захвачен (status=created)."""
         now = _utcnow_iso()
         with _tx(self._db):
-            p = self._db.execute(select(wallet_payments).where(wallet_payments.c.id == payment_id)).mappings().first()
+            p = self._get_payment(self._db, payment_id, company_id=company_id)
             if not p:
                 raise ValueError("payment not found")
             if p["status"] != "created":
@@ -206,8 +251,8 @@ class PaymentsStorageSQL:
             row = self._db.execute(select(wallet_payments).where(wallet_payments.c.id == payment_id)).mappings().first()
             return dict(row)
 
-    def get(self, payment_id: int) -> Optional[dict[str, Any]]:
-        r = self._db.execute(select(wallet_payments).where(wallet_payments.c.id == payment_id)).mappings().first()
+    def get(self, payment_id: int, *, company_id: Optional[int] = None) -> Optional[dict[str, Any]]:
+        r = self._get_payment(self._db, payment_id, company_id=company_id)
         return dict(r) if r else None
 
     def list(
@@ -217,13 +262,32 @@ class PaymentsStorageSQL:
         size: int,
         *,
         user_ids: Optional[list[int]] = None,
+        company_id: Optional[int] = None,
     ) -> dict[str, Any]:
         off = (page - 1) * size
         q = select(wallet_payments)
-        if user_id is not None:
-            q = q.where(wallet_payments.c.user_id == user_id)
-        if user_ids:
-            q = q.where(wallet_payments.c.user_id.in_(user_ids))
+        if company_id is not None:
+            allowed_users = (
+                self._db.execute(
+                    text("SELECT id FROM users WHERE company_id=:cid"),
+                    {"cid": company_id},
+                )
+                .scalars()
+                .all()
+            )
+            if user_ids:
+                allowed_users = [uid for uid in allowed_users if uid in user_ids]
+            if user_id is not None:
+                allowed_users = [uid for uid in allowed_users if uid == user_id]
+            if not allowed_users:
+                return {"items": [], "meta": {"page": page, "size": size, "total": 0}}
+            q = q.where(wallet_payments.c.user_id.in_(allowed_users))
+        else:
+            if user_id is not None:
+                q = q.where(wallet_payments.c.user_id == user_id)
+            if user_ids:
+                q = q.where(wallet_payments.c.user_id.in_(user_ids))
+
         total = self._db.execute(select(func.count()).select_from(q.subquery())).scalar_one()
         rows = self._db.execute(q.order_by(wallet_payments.c.id.desc()).offset(off).limit(size)).mappings().all()
         return {

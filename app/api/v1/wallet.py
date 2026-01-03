@@ -125,7 +125,7 @@ async def _ensure_account_access(
     db: Session,
     storage,
 ) -> dict[str, Any]:
-    acc = storage.get_account(account_id)
+    acc = storage.get_account(account_id, company_id=getattr(current_user, "company_id", None))
     if not acc:
         logger.warning(
             "wallet access denied: account missing; account_id=%s user_id=%s company_id=%s",
@@ -388,12 +388,15 @@ async def create_account(
 async def list_accounts(
     user_id: int | None = Query(None, ge=1),
     currency: str | None = Query(None, min_length=3, max_length=10),
+    company_id: int | None = Query(None, ge=1),
     page: int = Query(1, ge=1),
     size: int = Query(50, ge=1, le=200),
     current_user: User = Depends(_auth_user),
     db: Session = Depends(get_db),
 ) -> WalletAccountsPage:
     try:
+        if company_id is not None and company_id != getattr(current_user, "company_id", None):
+            raise HTTPException(status_code=403, detail="forbidden")
         ccy = _norm_ccy(currency) if currency else None
         if user_id is not None:
             await _ensure_user_in_company(user_id, current_user, db)
@@ -411,9 +414,18 @@ async def list_accounts(
         caps = _storage_caps(storage)
 
         if caps.get("has_list_ext"):
-            rows = storage.list_accounts(user_id=user_id, currency=ccy, page=page, size=size, user_ids=allowed_ids)  # type: ignore[attr-defined]
+            rows = storage.list_accounts(
+                user_id=user_id,
+                currency=ccy,
+                page=page,
+                size=size,
+                user_ids=allowed_ids,
+                company_id=getattr(current_user, "company_id", None),
+            )  # type: ignore[attr-defined]
         else:
-            rows = storage.list_accounts(user_id=user_id, user_ids=allowed_ids)  # type: ignore[call-arg]
+            rows = storage.list_accounts(
+                user_id=user_id, user_ids=allowed_ids, company_id=getattr(current_user, "company_id", None)
+            )  # type: ignore[call-arg]
             items = rows["items"] if isinstance(rows, dict) and "items" in rows else rows
             if not isinstance(items, list):
                 items = []
@@ -520,7 +532,7 @@ async def get_balance(
     try:
         storage = _get_storage(db)
         await _ensure_account_access(account_id, current_user, db, storage)
-        bal = storage.get_balance(account_id)
+        bal = storage.get_balance(account_id, company_id=getattr(current_user, "company_id", None))
         if isinstance(bal, dict):
             return BalanceOut(
                 account_id=int(bal.get("account_id", account_id)),
@@ -554,7 +566,12 @@ async def deposit(
     try:
         storage = _get_storage(db)
         await _ensure_account_access(account_id, current_user, db, storage)
-        out = storage.deposit(account_id, req.amount, getattr(req, "reference", None))
+        out = storage.deposit(
+            account_id,
+            req.amount,
+            getattr(req, "reference", None),
+            company_id=getattr(current_user, "company_id", None),
+        )
         return WalletTransactionOut(
             account_id=int(out.get("account_id", account_id)),
             currency=_norm_ccy(out.get("currency", "")),
@@ -582,7 +599,12 @@ async def withdraw(
     try:
         storage = _get_storage(db)
         await _ensure_account_access(account_id, current_user, db, storage)
-        out = storage.withdraw(account_id, req.amount, getattr(req, "reference", None))
+        out = storage.withdraw(
+            account_id,
+            req.amount,
+            getattr(req, "reference", None),
+            company_id=getattr(current_user, "company_id", None),
+        )
         return WalletTransactionOut(
             account_id=int(out.get("account_id", account_id)),
             currency=_norm_ccy(out.get("currency", "")),
@@ -627,6 +649,7 @@ async def transfer(
             req.destination_account_id,
             req.amount,
             getattr(req, "reference", None),
+            company_id=getattr(current_user, "company_id", None),
         )
         src = out.get("source", {}) if isinstance(out, dict) else {}
         dst = out.get("destination", {}) if isinstance(out, dict) else {}
@@ -672,7 +695,12 @@ async def ledger(
     try:
         storage = _get_storage(db)
         await _ensure_account_access(account_id, current_user, db, storage)
-        page_obj = storage.list_ledger(account_id, page, size)
+        page_obj = storage.list_ledger(
+            account_id,
+            page,
+            size,
+            company_id=getattr(current_user, "company_id", None),
+        )
         items = page_obj.get("items", []) if isinstance(page_obj, dict) else []
         meta = (
             page_obj.get("meta", {"page": page, "size": size, "total": len(items)})
@@ -727,7 +755,12 @@ async def adjust_balance(
         )
     try:
         await _ensure_account_access(account_id, current_user, db, storage)
-        out = storage.adjust_balance(account_id, payload.new_balance, payload.reference)  # type: ignore[attr-defined]
+        out = storage.adjust_balance(
+            account_id,
+            payload.new_balance,
+            payload.reference,
+            company_id=getattr(current_user, "company_id", None),
+        )  # type: ignore[attr-defined]
         return WalletTransactionOut(
             account_id=int(out.get("account_id", account_id)),
             currency=_norm_ccy(out.get("currency", "")),
