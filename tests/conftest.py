@@ -739,6 +739,10 @@ def _override_get_db_sync() -> Iterator[Any]:
     db = SessionLocal()
     try:
         yield db
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise
     finally:
         db.close()
 

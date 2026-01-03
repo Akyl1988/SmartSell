@@ -5,8 +5,8 @@ Revises: 20251228_subs_deleted_at
 Create Date: 2026-01-02 13:25:00.000000
 """
 
-from alembic import op
 import sqlalchemy as sa
+from alembic import op
 from sqlalchemy import inspect
 
 try:

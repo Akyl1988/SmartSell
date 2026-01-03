@@ -16,9 +16,9 @@ from collections.abc import Sequence
 
 import sqlalchemy as sa
 from sqlalchemy import text
-from sqlalchemy.exc import NoInspectionAvailable
 from sqlalchemy.dialects import postgresql as psql
 from sqlalchemy.engine import Connection
+from sqlalchemy.exc import NoInspectionAvailable
 
 # -----------------
 # Базовый логгер

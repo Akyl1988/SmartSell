@@ -73,3 +73,20 @@ async def test_payments_hidden_across_companies(
     body = listed.json()
     items = body.get("items") or body.get("data") or []
     assert all(it.get("id") != payment_id for it in items)
+
+
+@pytest.mark.anyio
+async def test_wallet_account_visible_same_company(client, db_session, company_a_admin_headers):
+    """Ensure newly created wallet account is immediately readable by the same tenant."""
+    user_a = _get_user_by_phone(db_session, "+70000010001")
+
+    created = await client.post(
+        "/api/v1/wallet/accounts",
+        json={"user_id": user_a.id, "currency": "KZT"},
+        headers=company_a_admin_headers,
+    )
+    assert created.status_code == 201, created.text
+    account_id = created.json()["id"]
+
+    got = await client.get(f"/api/v1/wallet/accounts/{account_id}", headers=company_a_admin_headers)
+    assert got.status_code == 200, got.text
