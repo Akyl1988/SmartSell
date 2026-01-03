@@ -1,3 +1,28 @@
+## [2026-01-03] Tenant isolation: billing + wallet/payments; storage alignment
+
+### Added
+- Tenant-isolation tests for billing: `tests/app/test_tenant_isolation_billing.py`. [local]
+- Tenant-scope API tests for wallet/payments: `tests/app/api/test_wallet_payments_tenant.py`. [local]
+
+### Changed
+- Wallet/Payments storages and API wiring aligned to tenant-scoped behavior (wallet/payments/campaigns sql storage adjustments). [32b6e1b, 69a5e40, 10afcf0]
+- Request-scoped storage/session usage reinforced for wallet/payments to avoid cross-tenant leakage. [69a5e40]
+
+### Fixed
+- Stabilized tenant isolation behavior for billing + wallet/payments with coverage and guardrails. [32b6e1b, 69a5e40]
+
+### Verified
+- `python -m pytest -q tests/app/test_tenant_isolation_billing.py` → **4 passed**.
+- `python -m pytest -q tests/app/api/test_wallet_payments_tenant.py` → **3 passed**.
+
+### Notes / Follow-ups
+- Keep tenant-scope pattern consistent in future wallet/payments/billing routes and storages; add tests first for any new query endpoints.
+
+Commits (per git show):
+- 69a5e40 …
+- 10afcf0 …
+- 32b6e1b …
+
 ## [2025-12-31] CI
 - tighten CI workflow: minimal ruff+pytest pipeline, fix invalid env contexts in Postgres service, set SECRET_KEY for tests, and keep SARIF upload optional with artifact retention
 - CD gated to main with Docker push/login only when secrets exist; build still runs without secrets
@@ -118,3 +143,4 @@
 
 ### Notes
 - main and dev are aligned and CI is green.
+
