@@ -311,3 +311,9 @@ _changes_*_report.txt
 _diff_clean.txt
 
 
+
+# Python caches
+__pycache__/
+*.py[cod]
+*.class
+
