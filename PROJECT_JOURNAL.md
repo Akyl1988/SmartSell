@@ -228,3 +228,20 @@ Commits (per git show):
 - `python -m pytest -q tests/app/test_tenant_isolation_billing.py` → OK
 - `python -m pytest -q tests/app/test_tenant_isolation_subscriptions.py` → OK
 - `python -m pytest -q` → OK
+## [2026-01-03] Tenant scope: Campaigns (storage + API) + isolation tests
+
+### Changed
+- Enforced tenant scoping across campaigns flows:
+  - `app/storage/campaigns_sql.py` (company-aware reads/writes and lookups)
+  - `app/api/v1/campaigns.py` (company-scoped access; cross-tenant access returns 404)
+
+### Tests
+- Added tenant isolation regression coverage:
+  - `tests/app/test_tenant_isolation_campaigns.py`
+
+### Verification
+- `python -m ruff format --check app tests tools` → OK
+- `python -m ruff check app tests tools` → OK
+- `python -m pytest -q tests/test_campaigns.py` → OK
+- `python -m pytest -q tests/app/test_tenant_isolation_campaigns.py` → OK
+- `python -m pytest -q tests/app/test_tenant_isolation.py -k "campaign"` → OK
