@@ -8,6 +8,7 @@ from typing import Any
 from fastapi import APIRouter, Body, Depends, HTTPException, Path, Query, status
 from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import Session
 
 from app.core.db import get_db
@@ -19,7 +20,7 @@ logger = logging.getLogger(__name__)
 
 async def _auth_user(
     token_data: dict = Depends(get_current_user_security),
-    db: Session = Depends(get_db),
+    db: Session | AsyncSession = Depends(get_db),
 ) -> User:
     sub = token_data.get("sub")
     try:
@@ -27,7 +28,10 @@ async def _auth_user(
     except Exception:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Not authenticated")
 
-    user = db.get(User, user_id)
+    if isinstance(db, AsyncSession):
+        user = await db.get(User, user_id)
+    else:
+        user = db.get(User, user_id)
     if not user:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Not authenticated")
     return user
@@ -67,11 +71,14 @@ def _is_platform_admin(user: User | None) -> bool:
 async def _ensure_user_in_company(
     target_user_id: int,
     current_user: User,
-    db: Session,
+    db: Session | AsyncSession,
     *,
     not_found_detail: str = "payment not found",
 ) -> User:
-    user = db.get(User, target_user_id)
+    if isinstance(db, AsyncSession):
+        user = await db.get(User, target_user_id)
+    else:
+        user = db.get(User, target_user_id)
     if not user:
         raise HTTPException(status_code=404, detail=not_found_detail)
     if _is_platform_admin(current_user):
@@ -155,7 +162,9 @@ class PaymentList(BaseModel):
     meta: PageMeta
 
 
-async def _ensure_account_access(account_id: int, current_user: User, db: Session, wallet_storage) -> dict:
+async def _ensure_account_access(
+    account_id: int, current_user: User, db: Session | AsyncSession, wallet_storage
+) -> dict:
     acc = wallet_storage.get_account(account_id, company_id=getattr(current_user, "company_id", None))
     if not acc:
         raise HTTPException(status_code=404, detail="wallet account not found")
@@ -165,7 +174,9 @@ async def _ensure_account_access(account_id: int, current_user: User, db: Sessio
     return acc
 
 
-async def _ensure_payment_visible(payment: dict[str, Any] | None, current_user: User, db: Session) -> dict[str, Any]:
+async def _ensure_payment_visible(
+    payment: dict[str, Any] | None, current_user: User, db: Session | AsyncSession
+) -> dict[str, Any]:
     if not payment:
         raise HTTPException(status_code=404, detail="payment not found")
     await _ensure_user_in_company(int(payment.get("user_id", 0)), current_user, db)
@@ -280,7 +291,7 @@ async def cancel(
 async def get_payment(
     payment_id: int = Path(..., ge=1),
     current_user: User = Depends(_auth_user),
-    db: Session = Depends(get_db),
+    db: Session | AsyncSession = Depends(get_db),
 ):
     storage = _get_payment_storage(db)
     p = await _ensure_payment_visible(
@@ -300,7 +311,7 @@ async def list_payments(
     page: int = Query(1, ge=1),
     size: int = Query(20, ge=1, le=200),
     current_user: User = Depends(_auth_user),
-    db: Session = Depends(get_db),
+    db: Session | AsyncSession = Depends(get_db),
 ):
     allowed_ids: list[int] | None = None
     if company_id is not None and company_id != getattr(current_user, "company_id", None):
@@ -308,7 +319,11 @@ async def list_payments(
     if user_id is not None:
         await _ensure_user_in_company(user_id, current_user, db, not_found_detail="payment not found")
     if not _is_platform_admin(current_user):
-        result = db.execute(select(User.id).where(User.company_id == getattr(current_user, "company_id", None)))
+        stmt = select(User.id).where(User.company_id == getattr(current_user, "company_id", None))
+        if isinstance(db, AsyncSession):
+            result = (await db.execute(stmt)).all()
+        else:
+            result = db.execute(stmt).all()
         allowed_ids = [int(r[0]) for r in result]
         if user_id is not None:
             allowed_ids = [uid for uid in allowed_ids if uid == user_id]
@@ -327,7 +342,11 @@ async def list_payments(
         ids = {p.user_id for p in items}
         allowed_map: dict[int, Any] = {}
         if ids:
-            rows = db.execute(select(User.id, User.company_id).where(User.id.in_(ids)))
+            stmt = select(User.id, User.company_id).where(User.id.in_(ids))
+            if isinstance(db, AsyncSession):
+                rows = (await db.execute(stmt)).all()
+            else:
+                rows = db.execute(stmt).all()
             allowed_map = {int(r[0]): r[1] for r in rows}
         items = [p for p in items if allowed_map.get(p.user_id) == getattr(current_user, "company_id", None)]
         meta = PageMeta(page=page, size=size, total=len(items))

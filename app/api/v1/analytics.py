@@ -57,6 +57,13 @@ async def require_analyst(user: User = Depends(_auth_user)) -> User:
     return user
 
 
+def _resolve_company_id(current_user: User) -> int:
+    company_id = getattr(current_user, "company_id", None)
+    if company_id is None:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="forbidden")
+    return int(company_id)
+
+
 def _parse_dt_or_default(value: str | None, default: datetime) -> datetime:
     if not value:
         return default
@@ -98,12 +105,13 @@ async def get_dashboard_stats(
     db: AsyncSession = Depends(get_db),
 ):
     """Get dashboard statistics for current company."""
+    resolved_company_id = _resolve_company_id(current_user)
 
     # total orders
     total_orders = (
         await db.execute(
             select(func.count(Order.id)).where(
-                and_(Order.company_id == current_user.company_id, Order.is_deleted.is_(False))
+                and_(Order.company_id == resolved_company_id, Order.is_deleted.is_(False))
             )
         )
     ).scalar() or 0
@@ -113,7 +121,7 @@ async def get_dashboard_stats(
         await db.execute(
             select(func.coalesce(func.sum(Order.total_amount), 0)).where(
                 and_(
-                    Order.company_id == current_user.company_id,
+                    Order.company_id == resolved_company_id,
                     Order.status.in_(["completed", "paid"]),
                     Order.is_deleted.is_(False),
                 )
@@ -126,7 +134,7 @@ async def get_dashboard_stats(
     total_products = (
         await db.execute(
             select(func.count(Product.id)).where(
-                and_(Product.company_id == current_user.company_id, Product.is_deleted.is_(False))
+                and_(Product.company_id == resolved_company_id, Product.is_deleted.is_(False))
             )
         )
     ).scalar() or 0
@@ -136,7 +144,7 @@ async def get_dashboard_stats(
         await db.execute(
             select(func.count(func.distinct(Order.customer_phone))).where(
                 and_(
-                    Order.company_id == current_user.company_id,
+                    Order.company_id == resolved_company_id,
                     Order.customer_phone.isnot(None),
                     Order.is_deleted.is_(False),
                 )
@@ -149,7 +157,7 @@ async def get_dashboard_stats(
         await db.execute(
             select(func.count(Order.id)).where(
                 and_(
-                    Order.company_id == current_user.company_id,
+                    Order.company_id == resolved_company_id,
                     Order.status == "pending",
                     Order.is_deleted.is_(False),
                 )
@@ -160,7 +168,7 @@ async def get_dashboard_stats(
     # recent orders
     recent_orders_res = await db.execute(
         select(Order)
-        .where(and_(Order.company_id == current_user.company_id, Order.is_deleted.is_(False)))
+        .where(and_(Order.company_id == resolved_company_id, Order.is_deleted.is_(False)))
         .order_by(desc(Order.created_at))
         .limit(5)
     )
@@ -182,7 +190,7 @@ async def get_dashboard_stats(
     start_date = end_date - timedelta(days=6)
     sales_data = await get_sales_data(
         db=db,
-        company_id=current_user.company_id,
+        current_user=current_user,
         start_date=start_date,
         end_date=end_date,
         interval="day",
@@ -199,7 +207,7 @@ async def get_dashboard_stats(
         .join(Order, Order.id == OrderItem.order_id)
         .where(
             and_(
-                Order.company_id == current_user.company_id,
+                Order.company_id == resolved_company_id,
                 Order.status.in_(["completed", "paid"]),
                 Order.is_deleted.is_(False),
             )
@@ -255,7 +263,7 @@ async def get_sales_analytics(
 
     return await get_sales_data(
         db=db,
-        company_id=current_user.company_id,
+        current_user=current_user,
         start_date=start_date,
         end_date=end_date,
         interval=interval,
@@ -273,6 +281,7 @@ async def get_customer_analytics(
     db: AsyncSession = Depends(get_db),
 ):
     """Get customer analytics data."""
+    resolved_company_id = _resolve_company_id(current_user)
     end_dt_default = datetime.utcnow()
     start_dt_default = end_dt_default - timedelta(days=30)
     end_date = _parse_dt_or_default(filter_params.date_to, end_dt_default)
@@ -286,7 +295,7 @@ async def get_customer_analytics(
         await db.execute(
             select(func.count(func.distinct(Order.customer_phone))).where(
                 and_(
-                    Order.company_id == current_user.company_id,
+                    Order.company_id == resolved_company_id,
                     Order.customer_phone.isnot(None),
                     Order.created_at >= start_date,
                     Order.created_at <= end_date,
@@ -301,7 +310,7 @@ async def get_customer_analytics(
         select(Order.customer_phone, func.count(Order.id).label("order_count"))
         .where(
             and_(
-                Order.company_id == current_user.company_id,
+                Order.company_id == resolved_company_id,
                 Order.customer_phone.isnot(None),
                 Order.created_at >= start_date,
                 Order.created_at <= end_date,
@@ -329,7 +338,7 @@ async def get_customer_analytics(
         )
         .where(
             and_(
-                Order.company_id == current_user.company_id,
+                Order.company_id == resolved_company_id,
                 Order.customer_phone.isnot(None),
                 Order.status.in_(["completed", "paid"]),
                 Order.created_at >= start_date,
@@ -372,6 +381,7 @@ async def get_product_analytics(
     db: AsyncSession = Depends(get_db),
 ):
     """Get product analytics data."""
+    resolved_company_id = _resolve_company_id(current_user)
     end_dt_default = datetime.utcnow()
     start_dt_default = end_dt_default - timedelta(days=30)
     end_date = _parse_dt_or_default(filter_params.date_to, end_dt_default)
@@ -393,7 +403,7 @@ async def get_product_analytics(
         .join(Order, Order.id == OrderItem.order_id)
         .where(
             and_(
-                Order.company_id == current_user.company_id,
+                Order.company_id == resolved_company_id,
                 Order.status.in_(["completed", "paid"]),
                 Order.created_at >= start_date,
                 Order.created_at <= end_date,
@@ -426,7 +436,7 @@ async def get_product_analytics(
         .join(Order, Order.id == OrderItem.order_id)
         .where(
             and_(
-                Order.company_id == current_user.company_id,
+                Order.company_id == resolved_company_id,
                 Order.status.in_(["completed", "paid"]),
                 Order.created_at >= start_date,
                 Order.created_at <= end_date,
@@ -469,18 +479,19 @@ async def export_analytics(
     Идемпотентность включена через ensure_idempotency (Idempotency-Key).
     """
     try:
+        company_id = _resolve_company_id(current_user)
         fmt = (export_request.format or "").lower()
         if fmt == "xlsx":
             file_path = await export_analytics_to_excel(
                 export_type=export_request.export_type,
-                company_id=current_user.company_id,
+                company_id=company_id,
                 filters=export_request.filters or {},
                 db=db,
             )
         elif fmt == "pdf":
             file_path = await export_analytics_to_pdf(
                 export_type=export_request.export_type,
-                company_id=current_user.company_id,
+                company_id=company_id,
                 filters=export_request.filters or {},
                 db=db,
             )
@@ -497,7 +508,8 @@ async def export_analytics(
 
 async def get_sales_data(
     db: AsyncSession,
-    company_id: int,
+    *,
+    current_user: User,
     start_date: datetime,
     end_date: datetime,
     interval: str,
@@ -516,6 +528,10 @@ async def get_sales_data(
     else:  # month
         date_trunc = func.date_trunc("month", Order.created_at)
 
+    resolved_company_id = getattr(current_user, "company_id", None)
+    if resolved_company_id is None:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="forbidden")
+
     res = await db.execute(
         select(
             date_trunc.label("period"),
@@ -523,7 +539,7 @@ async def get_sales_data(
         )
         .where(
             and_(
-                Order.company_id == company_id,
+                Order.company_id == resolved_company_id,
                 Order.status.in_(["completed", "paid"]),
                 Order.created_at >= start_date,
                 Order.created_at <= end_date,

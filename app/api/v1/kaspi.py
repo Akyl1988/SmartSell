@@ -39,11 +39,13 @@ from app.core.db import get_async_db  # noqa — для совместимост
 
 # БД (единый вход, обратная совместимость):
 from app.core.db import get_async_db as get_db
+from app.core.security import get_current_user as get_current_user_security
 
 # Доменные зависимости/схемы:
 from app.integrations.kaspi_adapter import KaspiAdapter, KaspiAdapterError
 from app.models import Product
 from app.models.marketplace import KaspiStoreToken
+from app.models.user import User
 from app.schemas.kaspi import (
     ImportRequest,
     ImportStatusQuery,
@@ -65,6 +67,31 @@ MASK_CHAR = "..."
 
 def normalize_name(name: str) -> str:
     return name.strip().lower()
+
+
+async def _auth_user(
+    token_data: dict = Depends(get_current_user_security),
+    db: AsyncSession = Depends(get_db),
+) -> User:
+    sub = token_data.get("sub")
+    try:
+        user_id = int(sub)
+    except Exception:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Not authenticated")
+
+    user = await db.get(User, user_id)
+    if not user:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Not authenticated")
+    return user
+
+
+def _resolve_company_id(current_user: User, company_id: int | None) -> int:
+    resolved = getattr(current_user, "company_id", None)
+    if company_id is not None and company_id != resolved:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Forbidden: cross-tenant access")
+    if resolved is None:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Forbidden: cross-tenant access")
+    return resolved
 
 
 # ------------------------------- Локальные схемы -----------------------------
@@ -344,11 +371,13 @@ async def kaspi_import_status(req: ImportStatusQuery):
 )
 async def kaspi_orders_sync(
     payload: OrdersSyncIn,
+    current_user: User = Depends(_auth_user),
     session: AsyncSession = Depends(get_db),
 ):
     try:
         svc = KaspiService()
-        result = await svc.sync_orders(company_id=payload.company_id, db=session)
+        resolved_company_id = _resolve_company_id(current_user, payload.company_id)
+        result = await svc.sync_orders(company_id=resolved_company_id, db=session)
         return result
     except RuntimeError as e:
         raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(e))
@@ -364,11 +393,13 @@ async def kaspi_orders_sync(
 )
 async def kaspi_generate_feed(
     company_id: int,
+    current_user: User = Depends(_auth_user),
     session: AsyncSession = Depends(get_db),
 ):
     try:
+        resolved_company_id = _resolve_company_id(current_user, company_id)
         svc = KaspiService()
-        xml_body = await svc.generate_product_feed(company_id=company_id, db=session)
+        xml_body = await svc.generate_product_feed(company_id=resolved_company_id, db=session)
         return Response(content=xml_body, media_type="application/xml")
     except RuntimeError as e:
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e))
@@ -383,10 +414,14 @@ async def kaspi_generate_feed(
 )
 async def kaspi_availability_sync_one(
     payload: AvailabilitySyncIn,
+    current_user: User = Depends(_auth_user),
     session: AsyncSession = Depends(get_db),
 ):
     try:
-        res = await session.execute(sa.select(Product).where(Product.id == payload.product_id))
+        resolved_company_id = _resolve_company_id(current_user, None)
+        res = await session.execute(
+            sa.select(Product).where(Product.id == payload.product_id, Product.company_id == resolved_company_id)
+        )
         product: Product | None = res.scalar_one_or_none()
         if not product:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Product not found")
@@ -407,11 +442,13 @@ async def kaspi_availability_sync_one(
 )
 async def kaspi_availability_bulk(
     payload: AvailabilityBulkIn,
+    current_user: User = Depends(_auth_user),
     session: AsyncSession = Depends(get_db),
 ):
     try:
+        resolved_company_id = _resolve_company_id(current_user, payload.company_id)
         svc = KaspiService()
-        stats = await svc.bulk_sync_availability(company_id=payload.company_id, db=session, limit=payload.limit)
+        stats = await svc.bulk_sync_availability(company_id=resolved_company_id, db=session, limit=payload.limit)
         return stats
     except Exception as e:
         logger.error("Kaspi availability bulk failed: payload=%s err=%s", payload.model_dump(), e)
