@@ -245,3 +245,14 @@ Commits (per git show):
 - `python -m pytest -q tests/test_campaigns.py` → OK
 - `python -m pytest -q tests/app/test_tenant_isolation_campaigns.py` → OK
 - `python -m pytest -q tests/app/test_tenant_isolation.py -k "campaign"` → OK
+## [2026-01-03] Tenant scope: Kaspi + Analytics + async-safe DB access (wallet/payments)
+
+### Changed
+- Enforced tenant scoping in analytics: all queries resolve effective company from authenticated user; foreign/missing company_id is rejected (403) where applicable.
+- Kaspi endpoints: import order fixed and scoping safety improved for company/product operations.
+- Wallet/Payments: hardened user loading and DB calls to be async-safe (AsyncSession-aware), avoiding sync `db.get()` usage on async paths.
+
+### Verification
+- `python -m ruff format --check app tests tools` → OK
+- `python -m ruff check app tests tools` → OK
+- `python -m pytest -q` → OK
