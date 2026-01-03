@@ -145,3 +145,43 @@ Commits (per git show):
 - main and dev are aligned and CI is green.
 
 
+## [2026-01-03] Migrations + Tenant Isolation (Invoices/Subscriptions) + CI green
+
+### Context
+- Цель: устранить падение alembic offline/static SQL генерации (MockConnection) из-за инспекций и закрепить tenant isolation тестами для billing-сущностей.
+- Ветка PR: feat/tenant-isolation-invoices-subscriptions → смержено в main (PR #20), dev приведён к main (FF).
+
+### Changed
+- Migrations:
+  - `migrations/versions/20251228_subs_deleted_at.py` переписана на offline-safe DDL без инспекций (используются `IF EXISTS/IF NOT EXISTS`).
+  - `migrations/versions/20260102_wallet_and_payments.py` устранены прямые `inspect(bind)` в пользу `safe_inspect(...)` или `None` в offline/mock сценариях.
+  - CRLF-артефакты в миграциях нормализованы.
+- API:
+  - Добавлен `app/api/v1/invoices.py`.
+  - Обновлён роутинг в `app/api/routes/__init__.py` для подключения invoices.
+- Tests:
+  - Добавлены tenant isolation тесты:
+    - `tests/app/test_tenant_isolation_invoices.py`
+    - `tests/app/test_tenant_isolation_subscriptions.py`
+  - `tests/conftest.py` — корректировки под новые сценарии/фикстуры.
+
+### Verification
+- Clean tree: `git status` → clean.
+- Ruff:
+  - `python -m ruff format --check app tests tools` → OK
+  - `python -m ruff check app tests tools` → OK
+- Pytest:
+  - `tests/test_migration_upgrade.py::test_alembic_upgrade_head_runs` → PASS
+  - `tests/app/test_tenant_isolation_invoices.py` + `...subscriptions.py` → 4 PASS
+- Alembic:
+  - `python -m alembic heads` → single head: `20260102_wallet_and_payments`
+  - `python -m alembic current` → `20260102_wallet_and_payments (head)`
+- GitHub checks: all green (CI lint/tests/alembic smoke/security).
+
+### Impact
+- Offline/static SQL генерация Alembic больше не падает из-за инспекций.
+- Tenant isolation для invoices/subscriptions зафиксирован тестами.
+- main и dev синхронизированы (FF), feature-ветка удалена.
+
+### Notes / Follow-ups
+- Дальше: расширять tenant isolation на wallet/payments/billing сценарии и держать миграции offline-safe по умолчанию.
