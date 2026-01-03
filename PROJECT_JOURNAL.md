@@ -267,3 +267,5 @@ Commits (per git show):
 ### Verification
 - `python -m ruff check app tests tools` → OK
 - `python -m pytest -q tests/app/api/test_no_sync_db_calls.py` → OK
+### Also changed
+- `app/api/v1/wallet.py`, `app/api/v1/payments.py`: removed sync `db.get()` usage; all `db.get(` calls are awaited (AsyncSession-only API).
