@@ -112,14 +112,135 @@ async def test_subscriptions_isolation_between_companies(
         params={"company_id": user_b.company_id},
         headers=company_a_admin_headers,
     )
-    assert foreign_list.status_code == 404
+    assert foreign_list.status_code == 403
 
     foreign_current = await client.get(
         "/api/v1/subscriptions/current",
         params={"company_id": user_b.company_id},
         headers=company_a_admin_headers,
     )
-    assert foreign_current.status_code == 404
+    assert foreign_current.status_code == 403
+
+
+@pytest.mark.anyio
+async def test_subscriptions_get_by_id_cross_company_forbidden(
+    client,
+    db_session,
+    company_a_admin_headers,
+    company_b_admin_headers,
+):
+    user_b = _get_user_by_phone(db_session, "+70000020001")
+
+    created = await client.post(
+        "/api/v1/subscriptions",
+        json={
+            "company_id": user_b.company_id,
+            "plan": "Beta",
+            "billing_cycle": "monthly",
+            "price": "100.00",
+            "currency": "KZT",
+            "trial_days": 0,
+        },
+        headers=company_b_admin_headers,
+    )
+    assert created.status_code == 201, created.text
+    sub_id = created.json()["id"]
+
+    # cross-tenant GET by id
+    foreign_get = await client.get(
+        f"/api/v1/subscriptions/{sub_id}",
+        headers=company_a_admin_headers,
+    )
+    assert foreign_get.status_code == 404
+
+
+@pytest.mark.anyio
+async def test_subscriptions_payments_cross_company_forbidden(
+    client,
+    db_session,
+    company_a_admin_headers,
+    company_b_admin_headers,
+):
+    user_b = _get_user_by_phone(db_session, "+70000020001")
+
+    created = await client.post(
+        "/api/v1/subscriptions",
+        json={
+            "company_id": user_b.company_id,
+            "plan": "Gamma",
+            "billing_cycle": "monthly",
+            "price": "50.00",
+            "currency": "KZT",
+            "trial_days": 0,
+        },
+        headers=company_b_admin_headers,
+    )
+    assert created.status_code == 201, created.text
+    sub_id = created.json()["id"]
+
+    payments = await client.get(
+        f"/api/v1/subscriptions/{sub_id}/payments",
+        headers=company_a_admin_headers,
+    )
+    assert payments.status_code == 404
+
+
+@pytest.mark.anyio
+async def test_subscriptions_company_param_bypass_forbidden(
+    client,
+    db_session,
+    company_a_admin_headers,
+    company_b_admin_headers,
+):
+    user_a = _get_user_by_phone(db_session, "+70000010001")
+    # company B tries to pass company_id of A
+    resp = await client.get(
+        "/api/v1/subscriptions",
+        params={"company_id": user_a.company_id},
+        headers=company_b_admin_headers,
+    )
+    assert resp.status_code == 403
+
+
+@pytest.mark.anyio
+async def test_invoices_company_param_bypass_forbidden(
+    client,
+    db_session,
+    company_a_admin_headers,
+    company_b_admin_headers,
+):
+    user_a = _get_user_by_phone(db_session, "+70000010001")
+    resp = await client.get(
+        "/api/v1/invoices",
+        params={"company_id": user_a.company_id},
+        headers=company_b_admin_headers,
+    )
+    assert resp.status_code == 403
+
+
+@pytest.mark.anyio
+async def test_invoices_cross_tenant_get_by_id_forbidden(
+    client,
+    db_session,
+    company_a_admin_headers,
+    company_b_admin_headers,
+):
+    user_a = _get_user_by_phone(db_session, "+70000010001")
+
+    created = await client.post(
+        "/api/v1/invoices",
+        json={"amount": "10.00", "currency": "KZT", "status": "draft", "description": "iso"},
+        headers=company_a_admin_headers,
+    )
+    assert created.status_code == 201, created.text
+    inv_id = created.json()["id"]
+
+    resp = await client.get(
+        f"/api/v1/invoices/{inv_id}",
+        params={"company_id": user_a.company_id},
+        headers=company_b_admin_headers,
+    )
+    assert resp.status_code == 403 or resp.status_code == 404
 
 
 @pytest.mark.anyio
