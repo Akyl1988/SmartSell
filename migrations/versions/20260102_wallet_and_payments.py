@@ -27,7 +27,7 @@ _DECIMAL_PLACES = 6
 
 def upgrade():
     bind = op.get_bind()
-    insp = safe_inspect(bind) if safe_inspect else inspect(bind)
+    insp = safe_inspect(bind) if safe_inspect else None
 
     if not insp or not insp.has_table("wallet_accounts"):
         op.create_table(
@@ -81,7 +81,7 @@ def upgrade():
 
 def downgrade():
     bind = op.get_bind()
-    insp = safe_inspect(bind) if safe_inspect else inspect(bind)
+    insp = safe_inspect(bind) if safe_inspect else None
 
     if not insp or insp.has_table("wallet_payments"):
         for idx in (
@@ -116,3 +116,4 @@ def downgrade():
             except Exception:
                 pass
         op.drop_table("wallet_accounts")
+
