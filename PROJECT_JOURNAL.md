@@ -19,9 +19,9 @@
 - Keep tenant-scope pattern consistent in future wallet/payments/billing routes and storages; add tests first for any new query endpoints.
 
 Commits (per git show):
-- 69a5e40 …
-- 10afcf0 …
-- 32b6e1b …
+- 69a5e40 fix(wallet/payments): safe nested tx + request-scoped storage; stabilize tests
+- 10afcf0 fix(ci): unignore app/storage and commit wallet/payments storages
+- 32b6e1b fix(billing): stabilize tenant tests; add safe_inspect for offline alembic; tenant-aware wallet listing
 
 ## [2025-12-31] CI
 - tighten CI workflow: minimal ruff+pytest pipeline, fix invalid env contexts in Postgres service, set SECRET_KEY for tests, and keep SARIF upload optional with artifact retention
@@ -143,4 +143,5 @@ Commits (per git show):
 
 ### Notes
 - main and dev are aligned and CI is green.
+
 
