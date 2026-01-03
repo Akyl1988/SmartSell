@@ -42,6 +42,21 @@ def require_role(*roles: str):
     return dep
 
 
+def _pick_http_status(exc: Exception) -> int:
+    if isinstance(exc, HTTPException):
+        raise exc
+    msg = str(exc).lower()
+    if "not found" in msg:
+        return status.HTTP_404_NOT_FOUND
+    if "insufficient" in msg and "fund" in msg:
+        return status.HTTP_409_CONFLICT
+    if "mismatch" in msg:
+        return status.HTTP_409_CONFLICT
+    if "unique" in msg or "duplicate" in msg or "already exist" in msg or "conflict" in msg:
+        return status.HTTP_409_CONFLICT
+    return status.HTTP_400_BAD_REQUEST
+
+
 def _is_platform_admin(user: User | None) -> bool:
     try:
         return str(getattr(user, "role", "")).lower() == "platform_admin"
@@ -141,7 +156,7 @@ class PaymentList(BaseModel):
 
 
 async def _ensure_account_access(account_id: int, current_user: User, db: Session, wallet_storage) -> dict:
-    acc = wallet_storage.get_account(account_id)
+    acc = wallet_storage.get_account(account_id, company_id=getattr(current_user, "company_id", None))
     if not acc:
         raise HTTPException(status_code=404, detail="wallet account not found")
     await _ensure_user_in_company(
@@ -183,12 +198,19 @@ async def create_and_capture(
         if int(acc.get("user_id", 0)) != req.user_id:
             raise HTTPException(status_code=404, detail="wallet account not found")
         storage = _get_payment_storage(db)
-        p = storage.create_and_capture(req.user_id, req.wallet_account_id, req.amount, req.currency, req.reference)
+        p = storage.create_and_capture(
+            req.user_id,
+            req.wallet_account_id,
+            req.amount,
+            req.currency,
+            req.reference,
+            company_id=getattr(current_user, "company_id", None),
+        )
         return Payment(**p)
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(status_code=400, detail=str(e))
+        raise HTTPException(status_code=_pick_http_status(e), detail=str(e))
 
 
 @router.post(
@@ -203,15 +225,24 @@ async def refund(
 ):
     try:
         storage = _get_payment_storage(db)
-        payment = await _ensure_payment_visible(storage.get(payment_id), current_user, db)
+        payment = await _ensure_payment_visible(
+            storage.get(payment_id, company_id=getattr(current_user, "company_id", None)),
+            current_user,
+            db,
+        )
         wallet_storage = _get_wallet_storage(db)
         await _ensure_account_access(int(payment.get("wallet_account_id", 0)), current_user, db, wallet_storage)
-        p = storage.refund(payment_id, req.amount, req.reference)
+        p = storage.refund(
+            payment_id,
+            req.amount,
+            req.reference,
+            company_id=getattr(current_user, "company_id", None),
+        )
         return Payment(**p)
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(status_code=400, detail=str(e))
+        raise HTTPException(status_code=_pick_http_status(e), detail=str(e))
 
 
 @router.post(
@@ -226,15 +257,23 @@ async def cancel(
 ):
     try:
         storage = _get_payment_storage(db)
-        payment = await _ensure_payment_visible(storage.get(payment_id), current_user, db)
+        payment = await _ensure_payment_visible(
+            storage.get(payment_id, company_id=getattr(current_user, "company_id", None)),
+            current_user,
+            db,
+        )
         wallet_storage = _get_wallet_storage(db)
         await _ensure_account_access(int(payment.get("wallet_account_id", 0)), current_user, db, wallet_storage)
-        p = storage.cancel(payment_id, req.reason if req else None)
+        p = storage.cancel(
+            payment_id,
+            req.reason if req else None,
+            company_id=getattr(current_user, "company_id", None),
+        )
         return Payment(**p)
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(status_code=400, detail=str(e))
+        raise HTTPException(status_code=_pick_http_status(e), detail=str(e))
 
 
 @router.get("/{payment_id}", response_model=Payment)
@@ -244,7 +283,11 @@ async def get_payment(
     db: Session = Depends(get_db),
 ):
     storage = _get_payment_storage(db)
-    p = await _ensure_payment_visible(storage.get(payment_id), current_user, db)
+    p = await _ensure_payment_visible(
+        storage.get(payment_id, company_id=getattr(current_user, "company_id", None)),
+        current_user,
+        db,
+    )
     wallet_storage = _get_wallet_storage(db)
     await _ensure_account_access(int(p.get("wallet_account_id", 0)), current_user, db, wallet_storage)
     return Payment(**p)
@@ -253,12 +296,15 @@ async def get_payment(
 @router.get("/", response_model=PaymentList)
 async def list_payments(
     user_id: int | None = Query(None, ge=1),
+    company_id: int | None = Query(None, ge=1),
     page: int = Query(1, ge=1),
     size: int = Query(20, ge=1, le=200),
     current_user: User = Depends(_auth_user),
     db: Session = Depends(get_db),
 ):
     allowed_ids: list[int] | None = None
+    if company_id is not None and company_id != getattr(current_user, "company_id", None):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="forbidden")
     if user_id is not None:
         await _ensure_user_in_company(user_id, current_user, db, not_found_detail="payment not found")
     if not _is_platform_admin(current_user):
@@ -269,7 +315,13 @@ async def list_payments(
         if allowed_ids is not None and not allowed_ids:
             allowed_ids = [-1]
     storage = _get_payment_storage(db)
-    out = storage.list(user_id, page, size, user_ids=allowed_ids)
+    out = storage.list(
+        user_id,
+        page,
+        size,
+        user_ids=allowed_ids,
+        company_id=getattr(current_user, "company_id", None),
+    )
     items = [Payment(**i) for i in out["items"]]
     if not _is_platform_admin(current_user):
         ids = {p.user_id for p in items}
