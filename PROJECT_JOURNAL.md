@@ -185,3 +185,28 @@ Commits (per git show):
 
 ### Notes / Follow-ups
 - Дальше: расширять tenant isolation на wallet/payments/billing сценарии и держать миграции offline-safe по умолчанию.
+## [2026-01-03] Tenant scope: Wallet + Payments (storage+API) + expanded tests
+
+### Context
+- Закрываем tenant isolation для wallet/payments на уровне SQL storage + API.
+- Ветка: feat/tenant-scope-wallet-payments.
+
+### Changed
+- Wallet:
+  - Усилен tenant scoping в `app/storage/wallet_sql.py` и `app/api/v1/wallet.py` (account/ledger/deposit/withdraw/transfer).
+- Payments:
+  - Усилен tenant scoping в `app/storage/payments_sql.py` и `app/api/v1/payments.py` (create/refund/cancel/get/list + защита от query-param bypass).
+- Tests:
+  - `tests/app/api/test_wallet_payments_tenant.py` расширен до 10 кейсов (ledger, deposit/withdraw, transfer, create payment, cross-tenant + bypass guards).
+
+### Verification
+- `python -m ruff format --check app tests tools` → OK
+- `python -m ruff check app tests tools` → OK
+- `python -m pytest -q tests/app/api/test_wallet_payments_tenant.py` → 10 passed
+- `python -m pytest -q tests/test_migration_upgrade.py::test_alembic_upgrade_head_runs` → 1 passed
+
+### Impact
+- Tenant isolation для wallet/payments закреплён в storage+API, тесты блокируют регрессии.
+
+### Notes / Follow-ups
+- Дальше: пройтись по остальным storage-слоям на паттерн “select by id без company constraint” и закрыть аналогично тестами.
