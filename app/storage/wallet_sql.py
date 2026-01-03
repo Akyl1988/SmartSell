@@ -2,17 +2,25 @@
 from __future__ import annotations
 
 import logging
-from contextlib import contextmanager, asynccontextmanager
-from decimal import Decimal, ROUND_HALF_UP, InvalidOperation
-from typing import Any, Dict, List, Optional, Tuple
+from contextlib import contextmanager
+from datetime import UTC, datetime
+from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
+from typing import Any, Optional
 
 from sqlalchemy import (
-    MetaData, Table, Column, Integer, String, Numeric,
-    ForeignKey, select, func, Index, UniqueConstraint
+    Column,
+    ForeignKey,
+    Index,
+    Integer,
+    MetaData,
+    Numeric,
+    String,
+    Table,
+    UniqueConstraint,
+    func,
+    select,
 )
-from sqlalchemy.orm import Session
 from sqlalchemy.sql import Select
-from datetime import datetime, timezone
 
 logger = logging.getLogger(__name__)
 
@@ -22,9 +30,11 @@ logger = logging.getLogger(__name__)
 
 _DECIMAL_PLACES = 6  # для Numeric(18, 6)
 
+
 def _q(v: Decimal) -> Decimal:
     step = Decimal(1) / (Decimal(10) ** _DECIMAL_PLACES)
     return v.quantize(step, rounding=ROUND_HALF_UP)
+
 
 def _to_decimal(v: Any) -> Decimal:
     if isinstance(v, Decimal):
@@ -36,9 +46,11 @@ def _to_decimal(v: Any) -> Decimal:
             raise ValueError("invalid decimal value")
     return _q(d)
 
+
 def _utcnow_iso() -> str:
     # ISO8601 без микросекунд, с 'Z' для однообразия в JSON
-    return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+    return datetime.now(UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+
 
 def _norm_currency(code: str) -> str:
     if code is None:
@@ -48,8 +60,9 @@ def _norm_currency(code: str) -> str:
         raise ValueError("currency must be 3..10 chars")
     return v
 
+
 metadata = MetaData()
-metadata = MetaData()
+
 
 def _is_sqlite_engine(db: Session) -> bool:
     try:
@@ -59,6 +72,30 @@ def _is_sqlite_engine(db: Session) -> bool:
         return (bind.dialect.name or "").lower() == "sqlite"
     except Exception:
         return False
+
+
+from functools import lru_cache
+
+from sqlalchemy import create_engine
+from sqlalchemy.engine import Engine
+from sqlalchemy.orm import Session, sessionmaker
+
+
+@lru_cache(maxsize=1)
+def _ensure_engine_and_session() -> tuple[Engine, sessionmaker[Session]]:
+    """Ad-hoc fallback for session_scope().
+
+    Production code uses injected SQLAlchemy Session in WalletStorageSQL(db).
+    """
+    import os
+
+    url = os.getenv("DATABASE_URL") or os.getenv("DB_URL")
+    if not url:
+        raise RuntimeError("DATABASE_URL (or DB_URL) is not set; session_scope() is for local scripts only.")
+
+    engine = create_engine(url)
+    maker = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False)
+    return engine, maker
 
 
 @contextmanager
@@ -75,6 +112,7 @@ def _tx(session):
     else:
         with session.begin():
             yield
+
 
 # =============================================================================
 # Схема (SQLAlchemy Core)
@@ -117,6 +155,7 @@ Index("ix_wallet_ledger_created_at", wallet_ledger.c.created_at)
 # Сессия
 # =============================================================================
 
+
 @contextmanager
 def session_scope():
     _, maker = _ensure_engine_and_session()
@@ -130,11 +169,13 @@ def session_scope():
     finally:
         s.close()
 
+
 # =============================================================================
 # Маппинг рядов БД -> dict API
 # =============================================================================
 
-def _account_row_to_dict(row: Any) -> Dict[str, Any]:
+
+def _account_row_to_dict(row: Any) -> dict[str, Any]:
     return {
         "id": int(row["id"]),
         "user_id": int(row["user_id"]),
@@ -144,7 +185,8 @@ def _account_row_to_dict(row: Any) -> Dict[str, Any]:
         "updated_at": str(row["updated_at"]),
     }
 
-def _ledger_row_to_item(row: Any) -> Dict[str, Any]:
+
+def _ledger_row_to_item(row: Any) -> dict[str, Any]:
     return {
         "id": int(row["id"]),
         "account_id": int(row["account_id"]),
@@ -155,25 +197,32 @@ def _ledger_row_to_item(row: Any) -> Dict[str, Any]:
         "created_at": str(row["created_at"]),
     }
 
+
 # =============================================================================
 # Ошибки (базируемся на ValueError для обратной совместимости)
 # =============================================================================
 
+
 class WalletError(ValueError):
     pass
+
 
 class NotFoundError(WalletError):
     pass
 
+
 class InsufficientFundsError(WalletError):
     pass
+
 
 class CurrencyMismatchError(WalletError):
     pass
 
+
 # =============================================================================
 # Вспомогалки для блокировок
 # =============================================================================
+
 
 def _with_for_update(db: Session, stmt: Select) -> Select:
     """
@@ -186,9 +235,11 @@ def _with_for_update(db: Session, stmt: Select) -> Select:
     except Exception:
         return stmt
 
+
 # =============================================================================
 # Storage API
 # =============================================================================
+
 
 class WalletStorageSQL:
     """Production storage для кошельков/балансов (SQLAlchemy Core, транзакции)."""
@@ -200,7 +251,7 @@ class WalletStorageSQL:
 
     # ------------------------ Аккаунты ----------------------------------------
 
-    def create_account(self, user_id: int, currency: str, initial_balance: Optional[Decimal] = None) -> Dict[str, Any]:
+    def create_account(self, user_id: int, currency: str, initial_balance: Optional[Decimal] = None) -> dict[str, Any]:
         """
         Идемпотентное создание (апсерт по user_id+currency).
         Если аккаунт уже есть — возвращаем его.
@@ -210,12 +261,16 @@ class WalletStorageSQL:
         now = _utcnow_iso()
         init_bal = _to_decimal(initial_balance or Decimal("0"))
         with _tx(self._db):
-            existing = self._db.execute(
-                select(wallet_accounts).where(
-                    wallet_accounts.c.user_id == user_id,
-                    wallet_accounts.c.currency == cur,
+            existing = (
+                self._db.execute(
+                    select(wallet_accounts).where(
+                        wallet_accounts.c.user_id == user_id,
+                        wallet_accounts.c.currency == cur,
+                    )
                 )
-            ).mappings().first()
+                .mappings()
+                .first()
+            )
             if existing:
                 return _account_row_to_dict(existing)
 
@@ -228,34 +283,42 @@ class WalletStorageSQL:
                     updated_at=now,
                 )
             )
-            row = self._db.execute(
-                select(wallet_accounts).where(
-                    wallet_accounts.c.user_id == user_id,
-                    wallet_accounts.c.currency == cur,
+            row = (
+                self._db.execute(
+                    select(wallet_accounts).where(
+                        wallet_accounts.c.user_id == user_id,
+                        wallet_accounts.c.currency == cur,
+                    )
                 )
-            ).mappings().first()
+                .mappings()
+                .first()
+            )
             return _account_row_to_dict(row)
 
-    def get_account(self, account_id: int) -> Optional[Dict[str, Any]]:
+    def get_account(self, account_id: int) -> Optional[dict[str, Any]]:
         row = self._db.execute(select(wallet_accounts).where(wallet_accounts.c.id == account_id)).mappings().first()
         return _account_row_to_dict(row) if row else None
 
-    def get_account_by_user_currency(self, user_id: int, currency: str) -> Optional[Dict[str, Any]]:
+    def get_account_by_user_currency(self, user_id: int, currency: str) -> Optional[dict[str, Any]]:
         cur = _norm_currency(currency)
-        row = self._db.execute(
+        row = (
+            self._db.execute(
                 select(wallet_accounts).where(
                     wallet_accounts.c.user_id == user_id,
                     wallet_accounts.c.currency == cur,
                 )
-            ).mappings().first()
+            )
+            .mappings()
+            .first()
+        )
         return _account_row_to_dict(row) if row else None
 
     def list_accounts(
         self,
         user_id: Optional[int] = None,
         *,
-        user_ids: Optional[List[int]] = None,
-    ) -> List[Dict[str, Any]]:
+        user_ids: Optional[list[int]] = None,
+    ) -> list[dict[str, Any]]:
         q = select(wallet_accounts)
         if user_id is not None:
             q = q.where(wallet_accounts.c.user_id == user_id)
@@ -266,14 +329,18 @@ class WalletStorageSQL:
 
     # ------------------------ Баланс / операции -------------------------------
 
-    def get_balance(self, account_id: int) -> Dict[str, Any]:
-        row = self._db.execute(
-            select(
-                wallet_accounts.c.id,
-                wallet_accounts.c.balance,
-                wallet_accounts.c.currency,
-            ).where(wallet_accounts.c.id == account_id)
-        ).mappings().first()
+    def get_balance(self, account_id: int) -> dict[str, Any]:
+        row = (
+            self._db.execute(
+                select(
+                    wallet_accounts.c.id,
+                    wallet_accounts.c.balance,
+                    wallet_accounts.c.currency,
+                ).where(wallet_accounts.c.id == account_id)
+            )
+            .mappings()
+            .first()
+        )
         if not row:
             raise NotFoundError("account not found")
         return {
@@ -282,7 +349,7 @@ class WalletStorageSQL:
             "currency": str(row["currency"]).upper(),
         }
 
-    def deposit(self, account_id: int, amount: Decimal, reference: Optional[str]) -> Dict[str, Any]:
+    def deposit(self, account_id: int, amount: Decimal, reference: Optional[str]) -> dict[str, Any]:
         amt = _to_decimal(amount)
         if amt <= 0:
             raise WalletError("amount must be positive")
@@ -319,7 +386,7 @@ class WalletStorageSQL:
                 "currency": str(acc["currency"]).upper(),
             }
 
-    def withdraw(self, account_id: int, amount: Decimal, reference: Optional[str]) -> Dict[str, Any]:
+    def withdraw(self, account_id: int, amount: Decimal, reference: Optional[str]) -> dict[str, Any]:
         amt = _to_decimal(amount)
         if amt <= 0:
             raise WalletError("amount must be positive")
@@ -360,7 +427,9 @@ class WalletStorageSQL:
                 "currency": str(acc["currency"]).upper(),
             }
 
-    def transfer(self, src_account_id: int, dst_account_id: int, amount: Decimal, reference: Optional[str]) -> Dict[str, Any]:
+    def transfer(
+        self, src_account_id: int, dst_account_id: int, amount: Decimal, reference: Optional[str]
+    ) -> dict[str, Any]:
         if src_account_id == dst_account_id:
             raise WalletError("source and destination must differ")
         amt = _to_decimal(amount)
@@ -373,7 +442,11 @@ class WalletStorageSQL:
 
         with _tx(self._db):
             # Стабильный порядок блокировок для противодействия дедлокам
-            a, b = (src_account_id, dst_account_id) if src_account_id < dst_account_id else (dst_account_id, src_account_id)
+            a, b = (
+                (src_account_id, dst_account_id)
+                if src_account_id < dst_account_id
+                else (dst_account_id, src_account_id)
+            )
             stmt = _with_for_update(self._db, select(wallet_accounts).where(wallet_accounts.c.id.in_([a, b])))
             locked = self._db.execute(stmt).mappings().all()
             accs = {int(r["id"]): dict(r) for r in locked}
@@ -408,14 +481,22 @@ class WalletStorageSQL:
 
             self._db.execute(
                 wallet_ledger.insert().values(
-                    account_id=src_account_id, entry_type="transfer_out",
-                    amount=amt, currency=src_cur, reference=ref, created_at=now
+                    account_id=src_account_id,
+                    entry_type="transfer_out",
+                    amount=amt,
+                    currency=src_cur,
+                    reference=ref,
+                    created_at=now,
                 )
             )
             self._db.execute(
                 wallet_ledger.insert().values(
-                    account_id=dst_account_id, entry_type="transfer_in",
-                    amount=amt, currency=dst_cur, reference=ref, created_at=now
+                    account_id=dst_account_id,
+                    entry_type="transfer_in",
+                    amount=amt,
+                    currency=dst_cur,
+                    reference=ref,
+                    created_at=now,
                 )
             )
 
@@ -424,7 +505,7 @@ class WalletStorageSQL:
                 "destination": {"account_id": int(dst_account_id), "balance": str(dst_bal_new), "currency": dst_cur},
             }
 
-    def adjust_balance(self, account_id: int, new_balance: Decimal, reference: Optional[str]) -> Dict[str, Any]:
+    def adjust_balance(self, account_id: int, new_balance: Decimal, reference: Optional[str]) -> dict[str, Any]:
         """
         Административная правка баланса (ledger: adjustment).
         Использовать осознанно — сумма коррекции = new - old.
@@ -448,9 +529,7 @@ class WalletStorageSQL:
                 return {"account_id": int(account_id), "balance": str(old), "currency": str(acc["currency"]).upper()}
 
             self._db.execute(
-                wallet_accounts.update()
-                .where(wallet_accounts.c.id == account_id)
-                .values(balance=nb, updated_at=now)
+                wallet_accounts.update().where(wallet_accounts.c.id == account_id).values(balance=nb, updated_at=now)
             )
             self._db.execute(
                 wallet_ledger.insert().values(
@@ -466,7 +545,7 @@ class WalletStorageSQL:
 
     # ------------------------ Ледгер / пагинация ------------------------------
 
-    def list_ledger(self, account_id: int, page: int, size: int) -> Dict[str, Any]:
+    def list_ledger(self, account_id: int, page: int, size: int) -> dict[str, Any]:
         if page < 1:
             page = 1
         if size < 1:
@@ -476,15 +555,19 @@ class WalletStorageSQL:
         off = (page - 1) * size
 
         total = self._db.execute(
-                select(func.count()).select_from(wallet_ledger).where(wallet_ledger.c.account_id == account_id)
-            ).scalar_one()
-        rows = self._db.execute(
-            select(wallet_ledger)
-            .where(wallet_ledger.c.account_id == account_id)
-            .order_by(wallet_ledger.c.id.desc())
-            .offset(off)
-            .limit(size)
-        ).mappings().all()
+            select(func.count()).select_from(wallet_ledger).where(wallet_ledger.c.account_id == account_id)
+        ).scalar_one()
+        rows = (
+            self._db.execute(
+                select(wallet_ledger)
+                .where(wallet_ledger.c.account_id == account_id)
+                .order_by(wallet_ledger.c.id.desc())
+                .offset(off)
+                .limit(size)
+            )
+            .mappings()
+            .all()
+        )
 
         items = [_ledger_row_to_item(r) for r in rows]
         return {
@@ -494,7 +577,7 @@ class WalletStorageSQL:
 
     # ------------------------ Здоровье/статистика -----------------------------
 
-    def health(self) -> Dict[str, Any]:
+    def health(self) -> dict[str, Any]:
         """
         Быстрый health-check хранилища.
         """
@@ -510,7 +593,7 @@ class WalletStorageSQL:
             logger.error("Wallet storage health error: %s", e)
             return {"ok": False, "error": str(e)}
 
-    def stats(self) -> Dict[str, Any]:
+    def stats(self) -> dict[str, Any]:
         """
         Лёгкая статистика: количества аккаунтов/записей ледгера, суммарный баланс.
         """

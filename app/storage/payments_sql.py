@@ -2,14 +2,12 @@
 from __future__ import annotations
 
 import logging
-from decimal import Decimal, ROUND_HALF_UP
-from typing import Any, Dict, List, Optional
-from datetime import datetime, timezone
+from datetime import UTC, datetime
+from decimal import ROUND_HALF_UP, Decimal
+from typing import Any, Optional
 
-from sqlalchemy import (
-    MetaData, Table, Column, Integer, String, Numeric,
-    Text as SA_Text, select, func, text
-)
+from sqlalchemy import Column, Integer, MetaData, Numeric, String, Table, func, select, text
+from sqlalchemy import Text as SA_Text
 from sqlalchemy.orm import Session
 
 from app.storage.wallet_sql import _tx
@@ -18,7 +16,7 @@ logger = logging.getLogger(__name__)
 
 
 def _utcnow_iso() -> str:
-    return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+    return datetime.now(UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
 
 def _to_dec(v: Any) -> Decimal:
@@ -37,12 +35,13 @@ wallet_payments = Table(
     Column("wallet_account_id", Integer, nullable=False, index=True),
     Column("amount", Numeric(18, 6), nullable=False),
     Column("currency", String(10), nullable=False, index=True),
-    Column("status", String(20), nullable=False, index=True),   # created|captured|refunded|cancelled|failed
+    Column("status", String(20), nullable=False, index=True),  # created|captured|refunded|cancelled|failed
     Column("refund_amount", Numeric(18, 6), nullable=False, server_default="0"),
     Column("reference", SA_Text, nullable=True),
     Column("created_at", String(40), nullable=False),
     Column("updated_at", String(40), nullable=False),
 )
+
 
 class PaymentsStorageSQL:
     """Production storage для платежей (захват средств из wallet, возвраты)."""
@@ -65,9 +64,9 @@ class PaymentsStorageSQL:
         amount: Decimal,
         currency: str,
         reference: Optional[str],
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """Создаёт платёж и сразу списывает средства из кошелька (capture)."""
-        from app.storage.wallet_sql import wallet_accounts, wallet_ledger  # for FK-less checks
+        from app.storage.wallet_sql import wallet_ledger  # for FK-less checks
 
         amount = _to_dec(amount)
         if amount <= 0:
@@ -78,10 +77,14 @@ class PaymentsStorageSQL:
         # Общая транзакция по тому же движку (важно для согласованности)
         with _tx(self._db):
             # 1) Проверим аккаунт и валюту
-            acc = self._db.execute(
-                text("SELECT * FROM wallet_accounts WHERE id=:id FOR UPDATE"),
-                {"id": wallet_account_id},
-            ).mappings().first()
+            acc = (
+                self._db.execute(
+                    text("SELECT * FROM wallet_accounts WHERE id=:id FOR UPDATE"),
+                    {"id": wallet_account_id},
+                )
+                .mappings()
+                .first()
+            )
             if not acc:
                 raise ValueError("wallet account not found")
             if (acc["currency"] or "").upper() != currency:
@@ -124,9 +127,9 @@ class PaymentsStorageSQL:
             row = self._db.execute(select(wallet_payments).where(wallet_payments.c.id == pid)).mappings().first()
             return dict(row)
 
-    def refund(self, payment_id: int, amount: Decimal, reference: Optional[str]) -> Dict[str, Any]:
+    def refund(self, payment_id: int, amount: Decimal, reference: Optional[str]) -> dict[str, Any]:
         """Возврат (частичный/полный) -> депозит на кошелёк, учёт refund_amount, статус."""
-        from app.storage.wallet_sql import wallet_accounts, wallet_ledger
+        from app.storage.wallet_sql import wallet_ledger
 
         amount = _to_dec(amount)
         if amount <= 0:
@@ -146,10 +149,14 @@ class PaymentsStorageSQL:
                 raise ValueError("refund amount exceeds remaining")
 
             # депозит в кошелёк
-            acc = self._db.execute(
-                text("SELECT * FROM wallet_accounts WHERE id=:id FOR UPDATE"),
-                {"id": int(p["wallet_account_id"])},
-            ).mappings().first()
+            acc = (
+                self._db.execute(
+                    text("SELECT * FROM wallet_accounts WHERE id=:id FOR UPDATE"),
+                    {"id": int(p["wallet_account_id"])},
+                )
+                .mappings()
+                .first()
+            )
             if not acc:
                 raise ValueError("wallet account not found")
             new_balance = _to_dec(acc["balance"]) + amount
@@ -171,7 +178,9 @@ class PaymentsStorageSQL:
             refunded_new = refunded + amount
             new_status = "refunded" if refunded_new >= paid else "captured"
             self._db.execute(
-                wallet_payments.update().where(wallet_payments.c.id == payment_id).values(
+                wallet_payments.update()
+                .where(wallet_payments.c.id == payment_id)
+                .values(
                     refund_amount=refunded_new,
                     status=new_status,
                     updated_at=now,
@@ -180,7 +189,7 @@ class PaymentsStorageSQL:
             row = self._db.execute(select(wallet_payments).where(wallet_payments.c.id == payment_id)).mappings().first()
             return dict(row)
 
-    def cancel(self, payment_id: int, reason: Optional[str]) -> Dict[str, Any]:
+    def cancel(self, payment_id: int, reason: Optional[str]) -> dict[str, Any]:
         """Отмена только если платёж ещё не захвачен (status=created)."""
         now = _utcnow_iso()
         with _tx(self._db):
@@ -190,14 +199,14 @@ class PaymentsStorageSQL:
             if p["status"] != "created":
                 raise ValueError("only 'created' payments can be cancelled")
             self._db.execute(
-                wallet_payments.update().where(wallet_payments.c.id == payment_id).values(
-                    status="cancelled", updated_at=now, reference=(p["reference"] or reason)
-                )
+                wallet_payments.update()
+                .where(wallet_payments.c.id == payment_id)
+                .values(status="cancelled", updated_at=now, reference=(p["reference"] or reason))
             )
             row = self._db.execute(select(wallet_payments).where(wallet_payments.c.id == payment_id)).mappings().first()
             return dict(row)
 
-    def get(self, payment_id: int) -> Optional[Dict[str, Any]]:
+    def get(self, payment_id: int) -> Optional[dict[str, Any]]:
         r = self._db.execute(select(wallet_payments).where(wallet_payments.c.id == payment_id)).mappings().first()
         return dict(r) if r else None
 
@@ -208,7 +217,7 @@ class PaymentsStorageSQL:
         size: int,
         *,
         user_ids: Optional[list[int]] = None,
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         off = (page - 1) * size
         q = select(wallet_payments)
         if user_id is not None:

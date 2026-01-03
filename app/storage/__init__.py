@@ -22,13 +22,14 @@ import importlib
 import logging
 import os
 from types import ModuleType
-from typing import Any, Dict, List, Optional, Tuple, Type
+from typing import Any, Optional
 
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # 0) Внутренние утилиты
 # ---------------------------------------------------------------------------
+
 
 def _lazy_import(module: str) -> ModuleType:
     """Безопасный ленивый импорт с логированием."""
@@ -38,7 +39,8 @@ def _lazy_import(module: str) -> ModuleType:
         logger.debug("lazy import failed for %s: %s", module, e)
         raise
 
-def _maybe_import_class(module: str, class_name: str) -> Optional[Type[Any]]:
+
+def _maybe_import_class(module: str, class_name: str) -> Optional[type[Any]]:
     """
     Пытается импортировать класс <class_name> из модуля <module>.
     Возвращает класс или None (ничего не валит).
@@ -54,35 +56,28 @@ def _maybe_import_class(module: str, class_name: str) -> Optional[Type[Any]]:
         logger.debug("optional import failed for %s.%s: %s", module, class_name, e)
         return None
 
+
 # ---------------------------------------------------------------------------
 # 1) Пытаемся импортировать известные SQL стораджи. Ничего не падает — логируем и идём дальше.
 # ---------------------------------------------------------------------------
 
 # Campaigns
-_CampaignsStorageSQL: Optional[Type[Any]] = _maybe_import_class(
-    "app.storage.campaigns_sql", "CampaignsStorageSQL"
-)
+_CampaignsStorageSQL: Optional[type[Any]] = _maybe_import_class("app.storage.campaigns_sql", "CampaignsStorageSQL")
 
 # Wallet
-_WalletStorageSQL: Optional[Type[Any]] = _maybe_import_class(
-    "app.storage.wallet_sql", "WalletStorageSQL"
-)
+_WalletStorageSQL: Optional[type[Any]] = _maybe_import_class("app.storage.wallet_sql", "WalletStorageSQL")
 
 # Products (если есть)
-_ProductsStorageSQL: Optional[Type[Any]] = _maybe_import_class(
-    "app.storage.products_sql", "ProductsStorageSQL"
-)
+_ProductsStorageSQL: Optional[type[Any]] = _maybe_import_class("app.storage.products_sql", "ProductsStorageSQL")
 
 # Payments (если есть)
-_PaymentsStorageSQL: Optional[Type[Any]] = _maybe_import_class(
-    "app.storage.payments_sql", "PaymentsStorageSQL"
-)
+_PaymentsStorageSQL: Optional[type[Any]] = _maybe_import_class("app.storage.payments_sql", "PaymentsStorageSQL")
 
 # ---------------------------------------------------------------------------
 # 2) Публичные ре-экспорты: только те, что реально доступны.
 # ---------------------------------------------------------------------------
 
-__all__: List[str] = [
+__all__: list[str] = [
     # функции фабрики/утилит (экспортируются всегда)
     "list_available_storages",
     "get_storage",
@@ -120,17 +115,20 @@ if _PaymentsStorageSQL is not None:
 
 _DEFAULT_BACKEND = (os.getenv("SMARTSELL_STORAGE_DEFAULT_BACKEND") or "sql").strip().lower() or "sql"
 
+
 def get_default_backend() -> str:
     return _DEFAULT_BACKEND
+
 
 def set_default_backend(backend: str) -> None:
     """Позволяет сменить дефолт на лету (например, в тестах)."""
     global _DEFAULT_BACKEND
     _DEFAULT_BACKEND = (backend or "sql").strip().lower() or "sql"
 
+
 # Ключи реестра: (service, backend) -> класс
 # service: "campaigns" | "wallet" | "products" | "payments"
-_STORAGE_REGISTRY: Dict[Tuple[str, str], Type[Any]] = {}
+_STORAGE_REGISTRY: dict[tuple[str, str], type[Any]] = {}
 
 if _CampaignsStorageSQL is not None:
     _STORAGE_KEY = ("campaigns", "sql")
@@ -153,31 +151,30 @@ if _PaymentsStorageSQL is not None:
     del _STORAGE_KEY
 
 # Синглтоны по (service, backend)
-_SINGLETONS: Dict[Tuple[str, str], Any] = {}
+_SINGLETONS: dict[tuple[str, str], Any] = {}
 
 
-def list_available_storages() -> Dict[str, List[str]]:
+def list_available_storages() -> dict[str, list[str]]:
     """
     Возвращает доступные бекенды по сервисам.
     Пример: {"wallet": ["sql"], "campaigns": ["sql"]}
     """
-    out: Dict[str, List[str]] = {}
-    for (service, backend) in _STORAGE_REGISTRY.keys():
+    out: dict[str, list[str]] = {}
+    for service, backend in _STORAGE_REGISTRY.keys():
         out.setdefault(service, []).append(backend)
     for k in out:
         out[k].sort()
     return out
 
 
-def _resolve_storage_class(service: str, backend: Optional[str]) -> Type[Any]:
+def _resolve_storage_class(service: str, backend: Optional[str]) -> type[Any]:
     svc = (service or "").strip().lower()
     bkd = (backend or _DEFAULT_BACKEND).strip().lower()
     key = (svc, bkd)
     cls = _STORAGE_REGISTRY.get(key)
     if cls is None:
         raise LookupError(
-            f"Storage not available for service='{svc}', backend='{bkd}'. "
-            f"Available: {list_available_storages()}"
+            f"Storage not available for service='{svc}', backend='{bkd}'. " f"Available: {list_available_storages()}"
         )
     return cls
 
@@ -233,7 +230,7 @@ def get_payments_storage(backend: Optional[str] = None, *, force_new: bool = Fal
     return get_storage("payments", backend=backend, force_new=force_new, **kwargs)
 
 
-def clear_storage_singletons(*, services: Optional[List[str]] = None) -> None:
+def clear_storage_singletons(*, services: Optional[list[str]] = None) -> None:
     """
     Сбрасывает кэш синглтонов. Полезно для тестов/канареек.
     Если services не указан — чистим всё.
@@ -246,19 +243,21 @@ def clear_storage_singletons(*, services: Optional[List[str]] = None) -> None:
         _SINGLETONS.pop(k, None)
 
 
-def debug_dump_registry() -> Dict[str, Dict[str, str]]:
+def debug_dump_registry() -> dict[str, dict[str, str]]:
     """
     Диагностическая сводка: какие сервисы зарегистрированы, из каких модулей и классов.
     """
-    out: Dict[str, Dict[str, str]] = {}
+    out: dict[str, dict[str, str]] = {}
     for (svc, bkd), cls in _STORAGE_REGISTRY.items():
         out.setdefault(svc, {})[bkd] = f"{cls.__module__}.{cls.__name__}"
     return out
+
 
 # ---------------------------------------------------------------------------
 # 4) Инициализация схем БД «по требованию»
 #    Если модуль стораджа предоставляет ensure_schema/_ensure_schema — вызовем.
 # ---------------------------------------------------------------------------
+
 
 def _try_call_schema_initializer(module_obj: Any) -> None:
     for name in ("ensure_schema", "_ensure_schema"):
@@ -269,8 +268,9 @@ def _try_call_schema_initializer(module_obj: Any) -> None:
                 logger.info("Schema initializer called: %s.%s()", getattr(module_obj, "__name__", module_obj), name)
                 return
             except Exception as e:
-                logger.warning("Schema initializer failed for %s.%s(): %s",
-                               getattr(module_obj, "__name__", module_obj), name, e)
+                logger.warning(
+                    "Schema initializer failed for %s.%s(): %s", getattr(module_obj, "__name__", module_obj), name, e
+                )
 
 
 def ensure_schema_for(service: str, backend: Optional[str] = None) -> None:
@@ -327,6 +327,7 @@ def ensure_all_schemas() -> None:
             _try_call_schema_initializer(_mod_payments)
         except Exception as e:
             logger.debug("ensure schema: payments skipped: %s", e)
+
 
 # ---------------------------------------------------------------------------
 # 5) Backwards compatibility (как было в исходнике) — уже обеспечено выше
