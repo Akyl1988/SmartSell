@@ -59,6 +59,7 @@ _STRICT_IMPORTS_IN_TESTS = {
     "app.api.v1.wallet",
     "app.api.v1.payments",
     "app.api.v1.subscriptions",
+    "app.api.v1.invoices",
 }
 
 
@@ -85,6 +86,7 @@ analytics_mod = _try_import("app.api.v1.analytics")
 # Опциональные
 wallet = _try_import("app.api.v1.wallet")
 payments = _try_import("app.api.v1.payments")
+invoices = _try_import("app.api.v1.invoices")
 kaspi_mod = _try_import("app.api.v1.kaspi")  # ⬅ добавлено
 debug_db_mod = _try_import("app.api.v1.debug_db")
 
@@ -153,6 +155,9 @@ if wallet and _router_or_none(wallet):
 if payments and _router_or_none(payments):
     # ожидаемый prefix '/api/v1/payments'
     V1_ROUTERS.append(("payments", payments.router, True))
+if invoices and _router_or_none(invoices):
+    # ожидаемый prefix '/api/v1/invoices'
+    V1_ROUTERS.append(("invoices", invoices.router, True))
 
 # ⬇⬇⬇ ДОБАВЛЕНО: регистрация Kaspi
 if kaspi_mod and _router_or_none(kaspi_mod):

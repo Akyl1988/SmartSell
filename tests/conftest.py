@@ -654,7 +654,20 @@ def test_db() -> Iterator[None]:
 
     temp_engine = sa.create_engine(sync_url, future=True)
     try:
+        # ORM models
         Base.metadata.create_all(temp_engine)
+
+        # Wallet/payments are Core-only; ensure migrations created them
+        from sqlalchemy import inspect
+
+        insp = inspect(temp_engine)
+        missing_tables = [
+            name
+            for name in ("wallet_accounts", "wallet_ledger", "wallet_payments")
+            if not insp.has_table(name, schema="public")
+        ]
+        if missing_tables:
+            raise RuntimeError(f"Test DB missing tables after migration: {', '.join(missing_tables)}")
     finally:
         temp_engine.dispose()
 
