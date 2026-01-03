@@ -6,7 +6,7 @@ ADMIN_URL = os.getenv(
     "ADMIN_URL",
     "postgresql+psycopg2://postgres@localhost:5432/postgres",
 )
-TARGET_DB = "smartselltest2"
+TARGET_DB = "smartsell_test"
 engine = create_engine(ADMIN_URL, isolation_level="AUTOCOMMIT")
 with engine.connect() as conn:
     exists = conn.execute(
@@ -17,3 +17,4 @@ with engine.connect() as conn:
     else:
         conn.execute(text(f'CREATE DATABASE "{TARGET_DB}" ENCODING ' "UTF8" " TEMPLATE template1"))
         print(f"[OK] Database '{TARGET_DB}' created")
+

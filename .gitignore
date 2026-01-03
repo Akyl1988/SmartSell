@@ -177,7 +177,9 @@ frontend/package-lock.json   # при желании репродьюс билд
 # =========================
 uploads/
 media/
-storage/
+/storage/
+!app/storage/
+!app/storage/**
 data/
 local/
 local2/
@@ -293,3 +295,25 @@ docs/db_audit_all/*
 _alembic_backup/
 migrations/versions/_backup/
 migrations/versions/_quarantine/
+
+# local artifacts
+/_artifacts/
+/_audit_check_db.py
+/_changes_*_report.txt
+/_changes_full_report.txt
+/_diff_clean.txt
+/_rg_dbnames.txt
+
+
+# local audit/report artifacts (do not commit)
+_audit_check_db.py
+_changes_*_report.txt
+_diff_clean.txt
+
+
+
+# Python caches
+__pycache__/
+*.py[cod]
+*.class
+

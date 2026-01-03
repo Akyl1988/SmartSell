@@ -113,9 +113,9 @@ def ensure_company_access(user, company: Company) -> None:
 
     if role in {"platform_admin", "superadmin"}:
         return
-    if user_company_id == company.id and role in {"owner", "company_admin", "manager"}:
+    if user_company_id == company.id and role in {"owner", "company_admin", "manager", "admin"}:
         return
-    raise HTTPException(status_code=403, detail="Forbidden")
+    raise HTTPException(status_code=404, detail="Company not found")
 
 
 def _is_platform_admin(user: User | None) -> bool:

@@ -604,6 +604,13 @@ def get_db(use_routing: bool = False) -> Generator[Session, None, None]:
     db = maker()
     try:
         yield db
+        db.commit()
+    except Exception:
+        try:
+            db.rollback()
+        except Exception:
+            pass
+        raise
     finally:
         try:
             db.close()
