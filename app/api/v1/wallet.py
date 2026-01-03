@@ -9,6 +9,7 @@ from typing import Any
 from fastapi import APIRouter, Depends, Header, HTTPException, Path, Query, status
 from pydantic import BaseModel, Field, conint, constr
 from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import Session
 
 from app.core.db import get_db
@@ -23,7 +24,7 @@ logger = logging.getLogger(__name__)
 
 async def _auth_user(
     token_data: dict = Depends(get_current_user_security),
-    db: Session = Depends(get_db),
+    db: Session | AsyncSession = Depends(get_db),
 ) -> User:
     sub = token_data.get("sub")
     try:
@@ -31,7 +32,10 @@ async def _auth_user(
     except Exception:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Not authenticated")
 
-    user = db.get(User, user_id)
+    if isinstance(db, AsyncSession):
+        user = await db.get(User, user_id)
+    else:
+        user = db.get(User, user_id)
     if not user:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Not authenticated")
     return user
@@ -98,11 +102,14 @@ def _is_platform_admin(user: User | None) -> bool:
 async def _ensure_user_in_company(
     target_user_id: int,
     current_user: User,
-    db: Session,
+    db: Session | AsyncSession,
     *,
     not_found_detail: str = "account not found",
 ) -> User:
-    user = db.get(User, target_user_id)
+    if isinstance(db, AsyncSession):
+        user = await db.get(User, target_user_id)
+    else:
+        user = db.get(User, target_user_id)
     if not user:
         raise HTTPException(status_code=404, detail=not_found_detail)
     if _is_platform_admin(current_user):
@@ -112,17 +119,21 @@ async def _ensure_user_in_company(
     return user
 
 
-async def _load_company_map(db: Session, user_ids: set[int]) -> dict[int, Any]:
+async def _load_company_map(db: Session | AsyncSession, user_ids: set[int]) -> dict[int, Any]:
     if not user_ids:
         return {}
-    rows = db.execute(select(User.id, User.company_id).where(User.id.in_(user_ids)))
+    stmt = select(User.id, User.company_id).where(User.id.in_(user_ids))
+    if isinstance(db, AsyncSession):
+        rows = (await db.execute(stmt)).all()
+    else:
+        rows = db.execute(stmt).all()
     return {int(r[0]): r[1] for r in rows}
 
 
 async def _ensure_account_access(
     account_id: int,
     current_user: User,
-    db: Session,
+    db: Session | AsyncSession,
     storage,
 ) -> dict[str, Any]:
     acc = storage.get_account(account_id, company_id=getattr(current_user, "company_id", None))
@@ -139,7 +150,7 @@ async def _ensure_account_access(
 
 
 async def _filter_accounts_for_user(
-    items: list[dict[str, Any]], current_user: User, db: Session
+    items: list[dict[str, Any]], current_user: User, db: Session | AsyncSession
 ) -> list[dict[str, Any]]:
     if _is_platform_admin(current_user):
         return items
@@ -392,7 +403,7 @@ async def list_accounts(
     page: int = Query(1, ge=1),
     size: int = Query(50, ge=1, le=200),
     current_user: User = Depends(_auth_user),
-    db: Session = Depends(get_db),
+    db: Session | AsyncSession = Depends(get_db),
 ) -> WalletAccountsPage:
     try:
         if company_id is not None and company_id != getattr(current_user, "company_id", None):
@@ -403,7 +414,11 @@ async def list_accounts(
 
         allowed_ids: list[int] | None = None
         if not _is_platform_admin(current_user):
-            rows = db.execute(select(User.id).where(User.company_id == getattr(current_user, "company_id", None)))
+            stmt = select(User.id).where(User.company_id == getattr(current_user, "company_id", None))
+            if isinstance(db, AsyncSession):
+                rows = (await db.execute(stmt)).all()
+            else:
+                rows = db.execute(stmt).all()
             allowed_ids = [int(r[0]) for r in rows]
             if user_id is not None:
                 allowed_ids = [uid for uid in allowed_ids if uid == user_id]
