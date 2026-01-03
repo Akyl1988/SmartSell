@@ -210,3 +210,21 @@ Commits (per git show):
 
 ### Notes / Follow-ups
 - Дальше: пройтись по остальным storage-слоям на паттерн “select by id без company constraint” и закрыть аналогично тестами.
+## [2026-01-03] Tenant scope: Billing (Invoices + Subscriptions) + tests
+
+### Changed
+- Enforced tenant scoping in:
+  - `app/api/v1/invoices.py` (list/get; rejects cross-tenant company_id bypass)
+  - `app/api/v1/subscriptions.py` (scoped queries; rejects mismatched company_id; nested payments scoped)
+
+### Tests
+- Expanded billing tenant isolation coverage:
+  - `tests/app/test_tenant_isolation_billing.py`
+  - `tests/app/test_tenant_isolation_subscriptions.py`
+
+### Verification
+- `python -m ruff format --check app tests tools` → OK
+- `python -m ruff check app tests tools` → OK
+- `python -m pytest -q tests/app/test_tenant_isolation_billing.py` → OK
+- `python -m pytest -q tests/app/test_tenant_isolation_subscriptions.py` → OK
+- `python -m pytest -q` → OK
