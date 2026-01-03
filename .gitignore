@@ -177,7 +177,9 @@ frontend/package-lock.json   # при желании репродьюс билд
 # =========================
 uploads/
 media/
-storage/
+/storage/
+!app/storage/
+!app/storage/**
 data/
 local/
 local2/
@@ -307,4 +309,5 @@ migrations/versions/_quarantine/
 _audit_check_db.py
 _changes_*_report.txt
 _diff_clean.txt
+
 
