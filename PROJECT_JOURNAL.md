@@ -256,3 +256,16 @@ Commits (per git show):
 - `python -m ruff format --check app tests tools` → OK
 - `python -m ruff check app tests tools` → OK
 - `python -m pytest -q` → OK
+## [2026-01-03] API hardening: async-only DB deps in v1 (campaigns) + guard test
+
+### Changed
+- `app/api/v1/campaigns.py`: switched DB dependency to `get_async_db` and removed sync `Session` path; user load now uses `await db.get(...)` only.
+
+### Tests
+- `tests/app/api/test_no_sync_db_calls.py`: guard test ensuring `db.get(` is always awaited in `app/api/v1/**`.
+
+### Verification
+- `python -m ruff check app tests tools` → OK
+- `python -m pytest -q tests/app/api/test_no_sync_db_calls.py` → OK
+### Also changed
+- `app/api/v1/wallet.py`, `app/api/v1/payments.py`: removed sync `db.get()` usage; all `db.get(` calls are awaited (AsyncSession-only API).
