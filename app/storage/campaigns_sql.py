@@ -114,7 +114,8 @@ campaigns = Table(
     Column("updated_at", String(40), nullable=True),  # ISO строка (как в API)
     Column("schedule", String(40), nullable=True),  # ISO строка
     Column("owner", String(100), nullable=True),
-    UniqueConstraint("title", name="uq_campaign_title"),
+    Column("company_id", Integer, nullable=True, index=True),
+    UniqueConstraint("company_id", "title", name="uq_campaign_company_title"),
 )
 
 messages = Table(
@@ -135,6 +136,7 @@ messages = Table(
 # Индексы (ускорение выборок)
 Index("ix_campaigns_active_archived", campaigns.c.active, campaigns.c.archived)
 Index("ix_campaigns_title_lower", func.lower(campaigns.c.title))
+Index("ix_campaigns_company_id", campaigns.c.company_id)
 Index("ix_messages_status", messages.c.status)
 Index("ix_messages_channel", messages.c.channel)
 
@@ -208,6 +210,43 @@ def _ensure_db_objects() -> None:
 
     # Затем удаляем FK у messages.campaign_id (если он появился в прошлых версиях схемы)
     _drop_message_fk_if_exists()
+
+    # Готовим колонку company_id и уникальный индекс по (company_id, title)
+    if _is_postgres():
+        try:
+            with _ENGINE.begin() as conn:
+                conn.execute(text("ALTER TABLE campaigns ADD COLUMN IF NOT EXISTS company_id INTEGER"))
+                conn.execute(text("ALTER TABLE campaigns DROP CONSTRAINT IF EXISTS uq_campaign_title"))
+                conn.execute(
+                    text(
+                        """
+                        DO $$
+                        BEGIN
+                            IF NOT EXISTS (
+                                SELECT 1 FROM pg_indexes WHERE schemaname = current_schema() AND indexname = 'uq_campaign_company_title'
+                            ) THEN
+                                CREATE UNIQUE INDEX uq_campaign_company_title ON campaigns(company_id, title);
+                            END IF;
+                        END $$;
+                        """
+                    )
+                )
+                conn.execute(
+                    text(
+                        """
+                        DO $$
+                        BEGIN
+                            IF NOT EXISTS (
+                                SELECT 1 FROM pg_indexes WHERE schemaname = current_schema() AND indexname = 'ix_campaigns_company_id'
+                            ) THEN
+                                CREATE INDEX ix_campaigns_company_id ON campaigns(company_id);
+                            END IF;
+                        END $$;
+                        """
+                    )
+                )
+        except Exception as e:
+            logger.debug("Ensure company_id/index skipped: %s", e)
 
 
 _ensure_db_objects()
@@ -307,6 +346,7 @@ def _row_to_campaign_dict(row) -> dict[str, Any]:
         "updated_at": row.updated_at,
         "schedule": row.schedule,
         "owner": row.owner,
+        "company_id": getattr(row, "company_id", None),
         "messages": [],  # заполним отдельно
     }
 
@@ -399,14 +439,15 @@ class CampaignsStorageSQL:
                     "updated_at": data.get("updated_at") or now_iso,
                     "schedule": data.get("schedule"),
                     "owner": data.get("owner"),
+                    "company_id": data.get("company_id"),
                 }
 
                 # INSERT ... ON CONFLICT (id) DO UPDATE (created_at не трогаем)
                 s.execute(
                     text(
                         """
-                        INSERT INTO campaigns(id, title, description, active, archived, tags, created_at, updated_at, schedule, owner)
-                        VALUES (:id, :title, :description, :active, :archived, :tags, :created_at, :updated_at, :schedule, :owner)
+                        INSERT INTO campaigns(id, title, description, active, archived, tags, created_at, updated_at, schedule, owner, company_id)
+                        VALUES (:id, :title, :description, :active, :archived, :tags, :created_at, :updated_at, :schedule, :owner, :company_id)
                         ON CONFLICT (id) DO UPDATE SET
                             title = EXCLUDED.title,
                             description = EXCLUDED.description,
@@ -415,7 +456,8 @@ class CampaignsStorageSQL:
                             tags = EXCLUDED.tags,
                             updated_at = EXCLUDED.updated_at,
                             schedule = EXCLUDED.schedule,
-                            owner = EXCLUDED.owner
+                            owner = EXCLUDED.owner,
+                            company_id = EXCLUDED.company_id
                         """
                     ),
                     payload,
@@ -461,6 +503,7 @@ class CampaignsStorageSQL:
         archived: Optional[bool] = None,
         owner: Optional[str] = None,
         tag: Optional[str] = None,
+        company_id: Optional[int] = None,
         offset: int = 0,
         limit: int = 200,
         with_messages: bool = True,
@@ -481,6 +524,8 @@ class CampaignsStorageSQL:
                 # грубый contains по CSV
                 t = tag.strip().lower()
                 conds.append(func.lower(campaigns.c.tags).like(f"%{t}%"))
+            if company_id is not None:
+                conds.append(campaigns.c.company_id == int(company_id))
 
             base = select(campaigns)
             if conds:
@@ -514,12 +559,14 @@ class CampaignsStorageSQL:
                     item["messages"] = grouped.get(int(item["id"]), [])
             return out
 
-    def title_exists(self, title: str, exclude_id: Optional[int] = None) -> bool:
+    def title_exists(self, title: str, exclude_id: Optional[int] = None, company_id: Optional[int] = None) -> bool:
         t = (title or "").strip().lower()
         if not t:
             return False
         with session_scope() as s:
             q = select(func.count()).select_from(campaigns).where(func.lower(campaigns.c.title) == t)
+            if company_id is not None:
+                q = q.where(campaigns.c.company_id == int(company_id))
             if exclude_id is not None:
                 q = q.where(campaigns.c.id != int(exclude_id))
             cnt = s.execute(q).scalar_one()
