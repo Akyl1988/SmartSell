@@ -832,6 +832,13 @@ async def db_reset(async_db_session: AsyncSession) -> AsyncIterator[None]:
             continue
         tablenames.append(f'"{schema}"."{table}"' if schema else f'"{table}"')
 
+    # Wallet/payments tables live outside Base.metadata; truncate them explicitly if present
+    for tbl in ("wallet_accounts", "wallet_ledger", "wallet_payments"):
+        if ("public", tbl) in existing:
+            quoted = f'"public"."{tbl}"'
+            if quoted not in tablenames:
+                tablenames.append(quoted)
+
     if not tablenames:
         return
 

@@ -4,11 +4,10 @@ User management endpoints (enterprise-ready).
 
 from __future__ import annotations
 
-from collections.abc import Callable
-from typing import Any, TypeVar
+from typing import Any
 
 from fastapi import APIRouter, Depends, Path, Query
-from sqlalchemy import or_, select, update
+from sqlalchemy import func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.db import get_async_db
@@ -28,12 +27,6 @@ from app.schemas.user import UserResponse, UserUpdate
 
 router = APIRouter(prefix="/users", tags=["Users"], dependencies=[Depends(api_rate_limit)])
 
-T = TypeVar("T")
-
-
-async def _run_sync(db: AsyncSession, fn: Callable[[Any], T]) -> T:
-    return await db.run_sync(fn)
-
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -45,20 +38,20 @@ def _is_admin(user: User) -> bool:
     return bool(getattr(user, "is_superuser", False) or getattr(user, "is_admin", False))
 
 
-def _apply_user_filters(query, search: str | None, is_active: bool | None):
+def _apply_user_filters(stmt, search: str | None, is_active: bool | None):
     if is_active is not None:
-        query = query.filter(User.is_active == is_active)
+        stmt = stmt.where(User.is_active == is_active)
 
     if search:
         s = f"%{search}%"
-        query = query.filter(
+        stmt = stmt.where(
             or_(
                 User.full_name.ilike(s),
                 User.phone.ilike(s),
                 User.email.ilike(s),
             )
         )
-    return query
+    return stmt
 
 
 _ALLOWED_SORT_FIELDS = {
@@ -72,9 +65,9 @@ _ALLOWED_SORT_FIELDS = {
 }
 
 
-def _apply_sorting(query, sort_by: str, sort_order: str):
+def _apply_sorting(stmt, sort_by: str, sort_order: str):
     col = _ALLOWED_SORT_FIELDS.get(sort_by, _ALLOWED_SORT_FIELDS["created_at"])
-    return query.order_by(col.asc() if sort_order.lower() == "asc" else col.desc())
+    return stmt.order_by(col.asc() if sort_order.lower() == "asc" else col.desc())
 
 
 # ---------------------------------------------------------------------------
@@ -363,15 +356,12 @@ async def list_users(
                 items=items, total=total, page=pagination.page, per_page=pagination.per_page
             )
 
-    def _sync_fetch(session: Any):
-        q = session.query(User)
-        q = _apply_user_filters(q, search, is_active)
-        total_local = q.order_by(None).count()
-        q = _apply_sorting(q, sort_by, sort_order)
-        items = q.offset(pagination.offset).limit(pagination.limit).all()
-        return total_local, items
-
-    total, users = await _run_sync(db, _sync_fetch)
+    stmt = select(User)
+    stmt = _apply_user_filters(stmt, search, is_active)
+    total_stmt = select(func.count()).select_from(stmt.subquery())
+    total = int((await db.execute(total_stmt)).scalar_one())
+    items_stmt = _apply_sorting(stmt, sort_by, sort_order).offset(pagination.offset).limit(pagination.limit)
+    users = (await db.execute(items_stmt)).scalars().all()
 
     return PaginatedResponse.create(items=users, total=total, page=pagination.page, per_page=pagination.per_page)
 

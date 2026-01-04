@@ -43,3 +43,17 @@ def test_no_get_db_dependency_in_v1():
     assert not bad_lines, "get_db (sync) dependency is forbidden in app/api/v1 (use get_async_db):\n" + "\n".join(
         bad_lines
     )
+
+
+def test_no_run_sync_in_v1():
+    root, files = _iter_v1_files()
+    bad_lines: list[str] = []
+
+    for py_file in files:
+        for lineno, line in enumerate(py_file.read_text(encoding="utf-8").splitlines(), start=1):
+            if "run_sync(" not in line:
+                continue
+            rel = py_file.relative_to(root)
+            bad_lines.append(f"{rel}:{lineno}: {line.strip()}")
+
+    assert not bad_lines, "run_sync is forbidden in app/api/v1 (async-native only):\n" + "\n".join(bad_lines)

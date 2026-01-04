@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import inspect
 import logging
-from collections.abc import Callable
 from decimal import Decimal, InvalidOperation
 from typing import Any, TypeVar
 
@@ -15,6 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.db import get_async_db
 from app.core.security import get_current_user as get_current_user_security
 from app.models.user import User
+from app.storage.wallet_sql import WalletStorageSQL
 
 # =============================================================================
 # ЛОГИРОВАНИЕ
@@ -129,10 +129,8 @@ async def _ensure_account_access(
     current_user: User,
     db: AsyncSession,
 ) -> dict[str, Any]:
-    acc = await _with_storage(
-        db,
-        lambda storage: storage.get_account(account_id, company_id=getattr(current_user, "company_id", None)),
-    )
+    storage = await _get_storage(db)
+    acc = await storage.get_account(account_id, company_id=getattr(current_user, "company_id", None))
     if not acc:
         logger.warning(
             "wallet access denied: account missing; account_id=%s user_id=%s company_id=%s",
@@ -150,10 +148,18 @@ async def _filter_accounts_for_user(
 ) -> list[dict[str, Any]]:
     if _is_platform_admin(current_user):
         return items
-    user_ids = {int(i.get("user_id")) for i in items if i.get("user_id") is not None}
-    company_map = await _load_company_map(db, user_ids)
     current_company = getattr(current_user, "company_id", None)
-    return [i for i in items if company_map.get(int(i.get("user_id", 0))) == current_company]
+    if current_company is None:
+        return []
+    filtered: list[dict[str, Any]] = []
+    for i in items:
+        uid = i.get("user_id")
+        if uid is None:
+            continue
+        user = await db.get(User, int(uid))
+        if user and getattr(user, "company_id", None) == current_company:
+            filtered.append(i)
+    return filtered
 
 
 # =============================================================================
@@ -277,25 +283,8 @@ def _storage_caps(storage) -> dict[str, bool]:
     }
 
 
-async def _with_storage(db: AsyncSession, fn: Callable[[Any], T]) -> T:
-    try:
-
-        def _run(sync_session: Any):
-            storage = _init_storage(sync_session)
-            return fn(storage)
-
-        return await db.run_sync(_run)
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.exception("wallet storage call failed: %s", e)
-        raise HTTPException(status_code=_pick_http_status(e), detail=str(e))
-
-
-def _init_storage(sync_db: Any):
-    from app.storage.wallet_sql import WalletStorageSQL  # type: ignore
-
-    return WalletStorageSQL(sync_db)
+async def _get_storage(db: AsyncSession) -> WalletStorageSQL:
+    return WalletStorageSQL(db)
 
 
 # =============================================================================
@@ -320,41 +309,37 @@ router = APIRouter(
 # =============================================================================
 @router.get("/health", response_model=HealthOut, summary="Здоровье storage-слоя")
 async def health(db: AsyncSession = Depends(get_async_db)) -> HealthOut:
-    def _run(storage):
-        caps = _storage_caps(storage)
-        if caps.get("has_health"):
-            try:
-                data = storage.health()  # type: ignore[attr-defined]
-                return HealthOut(**data) if isinstance(data, dict) else HealthOut(ok=_safe_bool(data))
-            except HTTPException:
-                raise
-            except Exception as e:  # noqa: PERF203 — need detail for ops
-                logger.exception("wallet.health failed: %s", e)
-                return HealthOut(ok=False, error="wallet storage unavailable")
-        return HealthOut(ok=True, engine=_BACKEND)
-
-    return await _with_storage(db, _run)
+    storage = await _get_storage(db)
+    caps = _storage_caps(storage)
+    if caps.get("has_health"):
+        try:
+            data = await storage.health()  # type: ignore[attr-defined]
+            return HealthOut(**data) if isinstance(data, dict) else HealthOut(ok=_safe_bool(data))
+        except HTTPException:
+            raise
+        except Exception as e:  # noqa: PERF203 — need detail for ops
+            logger.exception("wallet.health failed: %s", e)
+            return HealthOut(ok=False, error="wallet storage unavailable")
+    return HealthOut(ok=True, engine=_BACKEND)
 
 
 @router.get("/stats", response_model=StatsOut, summary="Агрегированная статистика")
 async def stats(db: AsyncSession = Depends(get_async_db)) -> StatsOut:
-    def _run(storage):
-        caps = _storage_caps(storage)
-        if caps.get("has_stats"):
-            data = storage.stats()  # type: ignore[attr-defined]
-            if isinstance(data, dict):
-                tb = _to_dec_str(data.get("total_balance", "0"))
-                return StatsOut(
-                    accounts=int(data.get("accounts", 0)),
-                    ledger_entries=int(data.get("ledger_entries", 0)),
-                    total_balance=tb,
-                )
-        rows = storage.list_accounts()  # type: ignore[call-arg]
-        items = rows["items"] if isinstance(rows, dict) and "items" in rows else rows
-        acc_count = len(items) if isinstance(items, list) else 0
-        return StatsOut(accounts=acc_count, ledger_entries=0, total_balance="0")
-
-    return await _with_storage(db, _run)
+    storage = await _get_storage(db)
+    caps = _storage_caps(storage)
+    if caps.get("has_stats"):
+        data = await storage.stats()  # type: ignore[attr-defined]
+        if isinstance(data, dict):
+            tb = _to_dec_str(data.get("total_balance", "0"))
+            return StatsOut(
+                accounts=int(data.get("accounts", 0)),
+                ledger_entries=int(data.get("ledger_entries", 0)),
+                total_balance=tb,
+            )
+    rows = await storage.list_accounts()  # type: ignore[call-arg]
+    items = rows["items"] if isinstance(rows, dict) and "items" in rows else rows
+    acc_count = len(items) if isinstance(items, list) else 0
+    return StatsOut(accounts=acc_count, ledger_entries=0, total_balance="0")
 
 
 # =============================================================================
@@ -375,10 +360,8 @@ async def create_account(
     try:
         await _ensure_user_in_company(req.user_id, current_user, db)
         ccy = _norm_ccy(req.currency)
-        acc = await _with_storage(
-            db,
-            lambda storage: storage.create_account(req.user_id, ccy, initial_balance=req.balance),  # type: ignore[call-arg]
-        )
+        storage = await _get_storage(db)
+        acc = await storage.create_account(req.user_id, ccy, initial_balance=req.balance)
         acc["currency"] = _norm_ccy(acc.get("currency", ccy))
         acc["balance"] = _to_dec_str(acc.get("balance", "0"))
         await db.commit()
@@ -422,27 +405,24 @@ async def list_accounts(
             if allowed_ids is not None and not allowed_ids:
                 allowed_ids = [-1]
 
-        caps = await _with_storage(db, _storage_caps)
+        storage = await _get_storage(db)
+        caps = _storage_caps(storage)
 
         if caps.get("has_list_ext"):
-            rows = await _with_storage(
-                db,
-                lambda storage: storage.list_accounts(
-                    user_id=user_id,
-                    currency=ccy,
-                    page=page,
-                    size=size,
-                    user_ids=allowed_ids,
-                    company_id=getattr(current_user, "company_id", None),
-                ),
-            )  # type: ignore[attr-defined]
+            rows = await storage.list_accounts(
+                user_id=user_id,
+                currency=ccy,
+                page=page,
+                size=size,
+                user_ids=allowed_ids,
+                company_id=getattr(current_user, "company_id", None),
+            )
         else:
-            rows = await _with_storage(
-                db,
-                lambda storage: storage.list_accounts(
-                    user_id=user_id, user_ids=allowed_ids, company_id=getattr(current_user, "company_id", None)
-                ),
-            )  # type: ignore[call-arg]
+            rows = await storage.list_accounts(
+                user_id=user_id,
+                user_ids=allowed_ids,
+                company_id=getattr(current_user, "company_id", None),
+            )
             items = rows["items"] if isinstance(rows, dict) and "items" in rows else rows
             if not isinstance(items, list):
                 items = []
@@ -505,10 +485,11 @@ async def get_account_by_user_currency(
     db: AsyncSession = Depends(get_async_db),
 ) -> WalletAccountOut:
     await _ensure_user_in_company(user_id, current_user, db)
-    caps = await _with_storage(db, _storage_caps)
+    storage = await _get_storage(db)
+    caps = _storage_caps(storage)
 
     if not caps.get("has_get_uc"):
-        rows = await _with_storage(db, lambda storage: storage.list_accounts(user_id=user_id))  # type: ignore[call-arg]
+        rows = await storage.list_accounts(user_id=user_id)
         items = rows["items"] if isinstance(rows, dict) and "items" in rows else rows
         if not isinstance(items, list):
             items = []
@@ -521,9 +502,7 @@ async def get_account_by_user_currency(
                 return WalletAccountOut(**r)
         raise HTTPException(status_code=404, detail="account not found")
     try:
-        acc = await _with_storage(
-            db, lambda storage: storage.get_account_by_user_currency(user_id=user_id, currency=_norm_ccy(currency))
-        )  # type: ignore[attr-defined]
+        acc = await storage.get_account_by_user_currency(user_id=user_id, currency=_norm_ccy(currency))
         if not acc:
             raise HTTPException(status_code=404, detail="account not found")
         await _ensure_user_in_company(int(acc.get("user_id", 0)), current_user, db)
@@ -548,16 +527,15 @@ async def get_balance(
 ) -> BalanceOut:
     try:
         await _ensure_account_access(account_id, current_user, db)
-        bal = await _with_storage(
-            db, lambda storage: storage.get_balance(account_id, company_id=getattr(current_user, "company_id", None))
-        )
+        storage = await _get_storage(db)
+        bal = await storage.get_balance(account_id, company_id=getattr(current_user, "company_id", None))
         if isinstance(bal, dict):
             return BalanceOut(
                 account_id=int(bal.get("account_id", account_id)),
                 currency=_norm_ccy(bal.get("currency", "")),
                 balance=_to_dec_str(bal.get("balance", "0")),
             )
-        acc = await _with_storage(db, lambda storage: storage.get_account(account_id))
+        acc = await storage.get_account(account_id)
         ccy = _norm_ccy(acc["currency"]) if acc and "currency" in acc else ""
         return BalanceOut(account_id=account_id, currency=ccy, balance=_to_dec_str(bal))
     except HTTPException:
@@ -583,14 +561,12 @@ async def deposit(
 ) -> WalletTransactionOut:
     try:
         await _ensure_account_access(account_id, current_user, db)
-        out = await _with_storage(
-            db,
-            lambda storage: storage.deposit(
-                account_id,
-                req.amount,
-                getattr(req, "reference", None),
-                company_id=getattr(current_user, "company_id", None),
-            ),
+        storage = await _get_storage(db)
+        out = await storage.deposit(
+            account_id,
+            req.amount,
+            getattr(req, "reference", None),
+            company_id=getattr(current_user, "company_id", None),
         )
         await db.commit()
         return WalletTransactionOut(
@@ -620,14 +596,12 @@ async def withdraw(
 ) -> WalletTransactionOut:
     try:
         await _ensure_account_access(account_id, current_user, db)
-        out = await _with_storage(
-            db,
-            lambda storage: storage.withdraw(
-                account_id,
-                req.amount,
-                getattr(req, "reference", None),
-                company_id=getattr(current_user, "company_id", None),
-            ),
+        storage = await _get_storage(db)
+        out = await storage.withdraw(
+            account_id,
+            req.amount,
+            getattr(req, "reference", None),
+            company_id=getattr(current_user, "company_id", None),
         )
         await db.commit()
         return WalletTransactionOut(
@@ -669,15 +643,13 @@ async def transfer(
             if src_company != dst_company:
                 raise HTTPException(status_code=404, detail="account not found")
 
-        out = await _with_storage(
-            db,
-            lambda storage: storage.transfer(
-                req.source_account_id,
-                req.destination_account_id,
-                req.amount,
-                getattr(req, "reference", None),
-                company_id=getattr(current_user, "company_id", None),
-            ),
+        storage = await _get_storage(db)
+        out = await storage.transfer(
+            req.source_account_id,
+            req.destination_account_id,
+            req.amount,
+            getattr(req, "reference", None),
+            company_id=getattr(current_user, "company_id", None),
         )
         await db.commit()
         src = out.get("source", {}) if isinstance(out, dict) else {}
@@ -724,14 +696,12 @@ async def ledger(
 ) -> LedgerPage:
     try:
         await _ensure_account_access(account_id, current_user, db)
-        page_obj = await _with_storage(
-            db,
-            lambda storage: storage.list_ledger(
-                account_id,
-                page,
-                size,
-                company_id=getattr(current_user, "company_id", None),
-            ),
+        storage = await _get_storage(db)
+        page_obj = await storage.list_ledger(
+            account_id,
+            page,
+            size,
+            company_id=getattr(current_user, "company_id", None),
         )
         items = page_obj.get("items", []) if isinstance(page_obj, dict) else []
         meta = (
@@ -778,7 +748,8 @@ async def adjust_balance(
     current_user: User = Depends(require_role("admin")),
     db: AsyncSession = Depends(get_async_db),
 ):
-    caps = await _with_storage(db, _storage_caps)
+    storage = await _get_storage(db)
+    caps = _storage_caps(storage)
     if not caps.get("has_adjust"):
         raise HTTPException(
             status_code=status.HTTP_501_NOT_IMPLEMENTED,
@@ -786,15 +757,12 @@ async def adjust_balance(
         )
     try:
         await _ensure_account_access(account_id, current_user, db)
-        out = await _with_storage(
-            db,
-            lambda storage: storage.adjust_balance(
-                account_id,
-                payload.new_balance,
-                payload.reference,
-                company_id=getattr(current_user, "company_id", None),
-            ),
-        )  # type: ignore[attr-defined]
+        out = await storage.adjust_balance(
+            account_id,
+            payload.new_balance,
+            payload.reference,
+            company_id=getattr(current_user, "company_id", None),
+        )
         await db.commit()
         return WalletTransactionOut(
             account_id=int(out.get("account_id", account_id)),
