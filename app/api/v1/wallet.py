@@ -12,7 +12,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.db import get_async_db
-from app.core.security import get_current_user as get_current_user_security
+from app.core.security import get_current_user, require_company_admin, require_manager
 from app.models.user import User
 from app.storage.wallet_sql import WalletStorageSQL
 
@@ -25,29 +25,8 @@ logger = logging.getLogger(__name__)
 T = TypeVar("T")
 
 
-async def _auth_user(
-    token_data: dict = Depends(get_current_user_security),
-    db: AsyncSession = Depends(get_async_db),
-) -> User:
-    sub = token_data.get("sub")
-    try:
-        user_id = int(sub)
-    except Exception:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Not authenticated")
-
-    user = await db.get(User, user_id)
-    if not user:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Not authenticated")
-    return user
-
-
-def require_role(*roles: str):
-    async def dep(user: User = Depends(_auth_user)):
-        if getattr(user, "role", None) not in roles:
-            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="forbidden")
-        return user
-
-    return dep
+async def _auth_user(current_user: User = Depends(get_current_user)) -> User:
+    return current_user
 
 
 # =============================================================================
@@ -354,7 +333,7 @@ async def stats(db: AsyncSession = Depends(get_async_db)) -> StatsOut:
 async def create_account(
     req: WalletAccountCreate,
     x_request_id: str | None = Header(default=None, alias="X-Request-Id"),
-    current_user: User = Depends(require_role("admin", "manager")),
+    current_user: User = Depends(require_manager),
     db: AsyncSession = Depends(get_async_db),
 ) -> WalletAccountOut:
     try:
@@ -556,7 +535,7 @@ async def deposit(
     account_id: int = Path(..., ge=1),
     req: WalletDeposit = ...,
     x_request_id: str | None = Header(default=None, alias="X-Request-Id"),
-    current_user: User = Depends(require_role("admin", "manager")),
+    current_user: User = Depends(require_manager),
     db: AsyncSession = Depends(get_async_db),
 ) -> WalletTransactionOut:
     try:
@@ -591,7 +570,7 @@ async def withdraw(
     account_id: int = Path(..., ge=1),
     req: WalletWithdraw = ...,
     x_request_id: str | None = Header(default=None, alias="X-Request-Id"),
-    current_user: User = Depends(require_role("admin", "manager")),
+    current_user: User = Depends(require_manager),
     db: AsyncSession = Depends(get_async_db),
 ) -> WalletTransactionOut:
     try:
@@ -625,7 +604,7 @@ async def withdraw(
 async def transfer(
     req: WalletTransfer,
     x_request_id: str | None = Header(default=None, alias="X-Request-Id"),
-    current_user: User = Depends(require_role("admin", "manager")),
+    current_user: User = Depends(require_manager),
     db: AsyncSession = Depends(get_async_db),
 ) -> WalletTransferOut:
     if req.source_account_id == req.destination_account_id:
@@ -745,7 +724,7 @@ class AdjustIn(BaseModel):
 async def adjust_balance(
     account_id: int = Path(..., ge=1),
     payload: AdjustIn = ...,
-    current_user: User = Depends(require_role("admin")),
+    current_user: User = Depends(require_company_admin),
     db: AsyncSession = Depends(get_async_db),
 ):
     storage = await _get_storage(db)

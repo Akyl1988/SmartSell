@@ -82,9 +82,7 @@ deferred_fks = {}
 for table, skip_deps in CIRCULAR_FIXES.items():
     if table in tables:
         original_deps = tables[table]["dependencies"].copy()
-        tables[table]["dependencies"] = [
-            d for d in tables[table]["dependencies"] if d not in skip_deps
-        ]
+        tables[table]["dependencies"] = [d for d in tables[table]["dependencies"] if d not in skip_deps]
         # Track what we removed
         removed = [d for d in original_deps if d in skip_deps]
         if removed:
@@ -122,9 +120,7 @@ new_upgrade_func = "\n".join(new_upgrade_lines)
 
 # Find downgrade function
 downgrade_match = re.search(r"(def downgrade\(\) -> None:.*)", content, re.DOTALL)
-downgrade_func = (
-    downgrade_match.group(1) if downgrade_match else "def downgrade() -> None:\n    pass"
-)
+downgrade_func = downgrade_match.group(1) if downgrade_match else "def downgrade() -> None:\n    pass"
 
 # Build new file
 header = content.split("def upgrade() -> None:")[0]

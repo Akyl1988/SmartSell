@@ -749,8 +749,10 @@ def validate_csrf_token(session_id: str, token: str) -> bool:
 # =============================================================================
 # Public wrappers (backward compatibility)
 # =============================================================================
-def create_access_token(subject: str | Any, expires_delta: timedelta | None = None) -> str:
-    return create_jwt(subject, token_type="access", expires_delta=expires_delta)
+def create_access_token(
+    subject: str | Any, expires_delta: timedelta | None = None, extra: dict[str, Any] | None = None
+) -> str:
+    return create_jwt(subject, token_type="access", expires_delta=expires_delta, extra=extra)
 
 
 def create_refresh_token(subject: str | Any, expires_delta: timedelta | None = None) -> str:
@@ -786,6 +788,10 @@ def verify_token(token: str) -> str | None:
 try:
     from fastapi import Depends, HTTPException, status
     from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+    from sqlalchemy.ext.asyncio import AsyncSession
+
+    from app.core.db import get_async_db
+    from app.models.user import User
 
     _HAS_FASTAPI = True
 except Exception:
@@ -810,9 +816,10 @@ if _HAS_FASTAPI:
         return payload["sub"]
 
     # Backward-compat: некоторые модули ожидают get_current_user (вернём словарь или sub)
-    def get_current_user(
+    async def get_current_user(
         credentials: HTTPAuthorizationCredentials | None = Depends(http_bearer),
-    ) -> dict:
+        db: AsyncSession = Depends(get_async_db),
+    ) -> User:
         if not credentials or not credentials.scheme.lower() == "bearer":
             raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Not authenticated")
         token = credentials.credentials
@@ -823,7 +830,55 @@ if _HAS_FASTAPI:
         jti = payload.get("jti")
         if jti and is_token_revoked(jti):
             raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Token revoked")
-        return {"sub": payload["sub"], "claims": payload}
+
+        try:
+            user_id = int(payload.get("sub"))
+        except Exception:
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Not authenticated")
+
+        user = await db.get(User, user_id)
+        if not user:
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Not authenticated")
+
+        token_company = payload.get("company_id")
+        if token_company is not None and getattr(user, "company_id", None) != token_company:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="forbidden")
+
+        token_role = payload.get("role") or payload.get("roles")
+        if token_role is not None:
+            tok_role = token_role[0] if isinstance(token_role, list | tuple | set) else token_role
+            tok_role = (tok_role or "").lower()
+            user_role = (getattr(user, "role", "") or "").lower()
+            if tok_role and user_role and tok_role != user_role and user_role != "platform_admin":
+                raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="forbidden")
+
+        setattr(user, "_token_claims", payload)
+        return user
+
+    def _user_role(user: User) -> str:
+        try:
+            return str(getattr(user, "role", "") or "").lower()
+        except Exception:
+            return ""
+
+    def _enforce_roles(user: User, allowed: set[str]) -> User:
+        role = _user_role(user)
+        if role == "platform_admin":
+            return user
+        if role not in allowed:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="forbidden")
+        return user
+
+    async def require_platform_admin(user: User = Depends(get_current_user)) -> User:
+        if _user_role(user) not in {"platform_admin"}:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="forbidden")
+        return user
+
+    async def require_company_admin(user: User = Depends(get_current_user)) -> User:
+        return _enforce_roles(user, {"admin"})
+
+    async def require_manager(user: User = Depends(get_current_user)) -> User:
+        return _enforce_roles(user, {"admin", "manager"})
 
     # Удобный геттер самого схемного объекта
     def auth_scheme() -> HTTPBearer:
@@ -949,6 +1004,9 @@ __all__ = [
     # fastapi helpers
     "get_current_user_sub",
     "get_current_user",
+    "require_platform_admin",
+    "require_company_admin",
+    "require_manager",
     "auth_scheme",
     # idp hooks
     "build_oidc_client",
