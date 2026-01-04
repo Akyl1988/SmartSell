@@ -35,7 +35,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
 from app.core.db import get_async_db
-from app.core.db import get_async_db as get_db
 from app.core.dependencies import (
     auth_rate_limit,
     get_client_info,
@@ -488,7 +487,7 @@ async def refresh_token(refresh_data: RefreshTokenRequest, db: AsyncSession = De
 
 
 @router.post("/token/refresh", response_model=TokenResponse)
-async def refresh_token_alias(refresh_data: RefreshTokenRequest, db: AsyncSession = Depends(get_db)):
+async def refresh_token_alias(refresh_data: RefreshTokenRequest, db: AsyncSession = Depends(get_async_db)):
     """Legacy alias for /auth/refresh used by tests/older clients."""
     return await refresh_token(refresh_data, db)
 
@@ -524,7 +523,7 @@ class ChangePasswordPayload(BaseModel):
 async def change_password(
     payload: ChangePasswordPayload,
     current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_async_db),
 ):
     """Change password for current user and revoke active refresh sessions."""
     if not verify_password(payload.current_password, current_user.hashed_password):
@@ -840,7 +839,7 @@ async def request_otp_alias(
 async def send_otp_alias(
     phone: str = Query(...),
     purpose: str = Query("login"),
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_async_db),
     otp_service: OtpProvider = Depends(get_otp_service),
 ):
     """Алиас для /request-otp (backward compatibility) - принимает query параметры"""

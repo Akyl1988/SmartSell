@@ -11,7 +11,6 @@ from fastapi import APIRouter, Depends, Header, HTTPException, Path, Query, stat
 from pydantic import BaseModel, Field, conint, constr
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import Session
 
 from app.core.db import get_async_db
 from app.core.security import get_current_user as get_current_user_security
@@ -281,7 +280,7 @@ def _storage_caps(storage) -> dict[str, bool]:
 async def _with_storage(db: AsyncSession, fn: Callable[[Any], T]) -> T:
     try:
 
-        def _run(sync_session: Session):
+        def _run(sync_session: Any):
             storage = _init_storage(sync_session)
             return fn(storage)
 
@@ -293,7 +292,7 @@ async def _with_storage(db: AsyncSession, fn: Callable[[Any], T]) -> T:
         raise HTTPException(status_code=_pick_http_status(e), detail=str(e))
 
 
-def _init_storage(sync_db: Session):
+def _init_storage(sync_db: Any):
     from app.storage.wallet_sql import WalletStorageSQL  # type: ignore
 
     return WalletStorageSQL(sync_db)

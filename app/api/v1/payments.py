@@ -10,7 +10,6 @@ from fastapi import APIRouter, Body, Depends, HTTPException, Path, Query, status
 from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import Session
 
 from app.core.db import get_async_db
 from app.core.security import get_current_user as get_current_user_security
@@ -88,13 +87,13 @@ async def _ensure_user_in_company(
 _BACKEND = "sql"
 
 
-def _init_payment_storage(sync_db: Session):
+def _init_payment_storage(sync_db: Any):
     from app.storage.payments_sql import PaymentsStorageSQL
 
     return PaymentsStorageSQL(sync_db)
 
 
-def _init_wallet_storage(sync_db: Session):
+def _init_wallet_storage(sync_db: Any):
     from app.storage.wallet_sql import WalletStorageSQL
 
     return WalletStorageSQL(sync_db)
@@ -103,7 +102,7 @@ def _init_wallet_storage(sync_db: Session):
 async def _with_payment_storage(db: AsyncSession, fn: Callable[[Any], T]) -> T:
     try:
 
-        def _run(sync_session: Session):
+        def _run(sync_session: Any):
             storage = _init_payment_storage(sync_session)
             return fn(storage)
 
@@ -118,7 +117,7 @@ async def _with_payment_storage(db: AsyncSession, fn: Callable[[Any], T]) -> T:
 async def _with_wallet_storage(db: AsyncSession, fn: Callable[[Any], T]) -> T:
     try:
 
-        def _run(sync_session: Session):
+        def _run(sync_session: Any):
             storage = _init_wallet_storage(sync_session)
             return fn(storage)
 
