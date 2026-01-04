@@ -513,9 +513,7 @@ async def get_sales_data(
     else:  # month
         date_trunc = func.date_trunc("month", Order.created_at)
 
-    resolved_company_id = getattr(current_user, "company_id", None)
-    if resolved_company_id is None:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="forbidden")
+    resolved_company_id = resolve_tenant_company_id(current_user)
 
     res = await db.execute(
         select(

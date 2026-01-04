@@ -30,6 +30,7 @@ from app.core.dependencies import (
 )
 from app.core.exceptions import AuthorizationError, ConflictError, NotFoundError, SmartSellValidationError
 from app.core.logging import audit_logger
+from app.core.security import resolve_tenant_company_id
 from app.models.product import Category, Product
 from app.models.user import User
 from app.schemas.base import PaginatedResponse, SuccessResponse
@@ -186,9 +187,8 @@ def _ensure_role(user: User, allowed: set[str]) -> None:
 
 
 def _filter_company(stmt, user: User):
-    cid = getattr(user, "company_id", None)
-    if cid is not None:
-        stmt = stmt.where(Product.company_id == cid)
+    cid = resolve_tenant_company_id(user)
+    stmt = stmt.where(Product.company_id == cid)
     return stmt
 
 
@@ -255,10 +255,11 @@ async def create_product(
             if not category:
                 raise NotFoundError("Category not found", "CATEGORY_NOT_FOUND")
 
+        resolved_company_id = resolve_tenant_company_id(current_user)
         payload = product_data.model_dump()
         if payload.get("sku"):
             payload["sku"] = payload["sku"].strip().upper()
-        payload["company_id"] = getattr(current_user, "company_id", None)
+        payload["company_id"] = resolved_company_id
         product = Product(**payload)
         db.add(product)
         await db.flush()
