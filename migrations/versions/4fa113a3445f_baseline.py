@@ -44,9 +44,7 @@ def upgrade() -> None:
         sa.Column("description", sa.Text(), nullable=True),
         sa.Column("meta", sa.Text(), nullable=True),
         sa.Column("deleted_at", sa.DateTime(), nullable=True),
-        sa.CheckConstraint(
-            "amount >= 0", name=op.f("ck__billing_payments__ck_bp_amount_non_negative")
-        ),
+        sa.CheckConstraint("amount >= 0", name=op.f("ck__billing_payments__ck_bp_amount_non_negative")),
         sa.PrimaryKeyConstraint("id", name=op.f("pk__billing_payments")),
         sa.UniqueConstraint("provider", "provider_payment_id", name="uq_bp_provider_payment"),
     )
@@ -56,52 +54,30 @@ def upgrade() -> None:
         ["authorized_at"],
         unique=False,
     )
-    op.create_index(
-        op.f("ix__billing_payments__captured_at"), "billing_payments", ["captured_at"], unique=False
-    )
-    op.create_index(
-        op.f("ix__billing_payments__company_id"), "billing_payments", ["company_id"], unique=False
-    )
-    op.create_index(
-        op.f("ix__billing_payments__created_at"), "billing_payments", ["created_at"], unique=False
-    )
-    op.create_index(
-        op.f("ix__billing_payments__deleted_at"), "billing_payments", ["deleted_at"], unique=False
-    )
-    op.create_index(
-        op.f("ix__billing_payments__failed_at"), "billing_payments", ["failed_at"], unique=False
-    )
+    op.create_index(op.f("ix__billing_payments__captured_at"), "billing_payments", ["captured_at"], unique=False)
+    op.create_index(op.f("ix__billing_payments__company_id"), "billing_payments", ["company_id"], unique=False)
+    op.create_index(op.f("ix__billing_payments__created_at"), "billing_payments", ["created_at"], unique=False)
+    op.create_index(op.f("ix__billing_payments__deleted_at"), "billing_payments", ["deleted_at"], unique=False)
+    op.create_index(op.f("ix__billing_payments__failed_at"), "billing_payments", ["failed_at"], unique=False)
     op.create_index(op.f("ix__billing_payments__id"), "billing_payments", ["id"], unique=False)
-    op.create_index(
-        op.f("ix__billing_payments__method"), "billing_payments", ["method"], unique=False
-    )
-    op.create_index(
-        op.f("ix__billing_payments__order_id"), "billing_payments", ["order_id"], unique=False
-    )
-    op.create_index(
-        op.f("ix__billing_payments__provider"), "billing_payments", ["provider"], unique=False
-    )
+    op.create_index(op.f("ix__billing_payments__method"), "billing_payments", ["method"], unique=False)
+    op.create_index(op.f("ix__billing_payments__order_id"), "billing_payments", ["order_id"], unique=False)
+    op.create_index(op.f("ix__billing_payments__provider"), "billing_payments", ["provider"], unique=False)
     op.create_index(
         op.f("ix__billing_payments__provider_payment_id"),
         "billing_payments",
         ["provider_payment_id"],
         unique=False,
     )
-    op.create_index(
-        op.f("ix__billing_payments__refunded_at"), "billing_payments", ["refunded_at"], unique=False
-    )
-    op.create_index(
-        op.f("ix__billing_payments__status"), "billing_payments", ["status"], unique=False
-    )
+    op.create_index(op.f("ix__billing_payments__refunded_at"), "billing_payments", ["refunded_at"], unique=False)
+    op.create_index(op.f("ix__billing_payments__status"), "billing_payments", ["status"], unique=False)
     op.create_index(
         op.f("ix__billing_payments__subscription_id"),
         "billing_payments",
         ["subscription_id"],
         unique=False,
     )
-    op.create_index(
-        op.f("ix__billing_payments__updated_at"), "billing_payments", ["updated_at"], unique=False
-    )
+    op.create_index(op.f("ix__billing_payments__updated_at"), "billing_payments", ["updated_at"], unique=False)
     op.create_index(
         "ix_billing_payments_company_created",
         "billing_payments",
@@ -145,29 +121,21 @@ def upgrade() -> None:
     op.create_index(op.f("ix__categories__id"), "categories", ["id"], unique=False)
     op.create_index(op.f("ix__categories__parent_id"), "categories", ["parent_id"], unique=False)
     op.create_index(op.f("ix__categories__slug"), "categories", ["slug"], unique=True)
-    op.create_index(
-        "ix_category_parent_active", "categories", ["parent_id", "is_active"], unique=False
-    )
+    op.create_index("ix_category_parent_active", "categories", ["parent_id", "is_active"], unique=False)
     op.create_table(
         "users",
         sa.Column("id", sa.Integer(), nullable=False),
         sa.Column("username", sa.String(length=50), nullable=True),
         sa.Column("phone", sa.String(length=20), nullable=True),
         sa.Column("email", sa.String(length=255), nullable=True),
-        sa.Column(
-            "hashed_password", sa.String(length=255), server_default=sa.text("''"), nullable=False
-        ),
-        sa.Column(
-            "role", sa.String(length=32), server_default=sa.text("'manager'"), nullable=False
-        ),
+        sa.Column("hashed_password", sa.String(length=255), server_default=sa.text("''"), nullable=False),
+        sa.Column("role", sa.String(length=32), server_default=sa.text("'manager'"), nullable=False),
         sa.Column("is_active", sa.Boolean(), server_default=sa.text("true"), nullable=False),
         sa.Column("is_verified", sa.Boolean(), server_default=sa.text("false"), nullable=False),
         sa.Column("is_superuser", sa.Boolean(), server_default=sa.text("false"), nullable=False),
         sa.Column("full_name", sa.String(length=255), nullable=True),
         sa.Column("last_login_at", sa.DateTime(), nullable=True),
-        sa.Column(
-            "failed_login_attempts", sa.Integer(), server_default=sa.text("0"), nullable=False
-        ),
+        sa.Column("failed_login_attempts", sa.Integer(), server_default=sa.text("0"), nullable=False),
         sa.Column("locked_until", sa.DateTime(), nullable=True),
         sa.Column("company_id", sa.Integer(), nullable=True),
         sa.Column("last_modified_by", sa.Integer(), nullable=True),
@@ -183,9 +151,7 @@ def upgrade() -> None:
             "role IN ('admin','manager','storekeeper','analyst')",
             name=op.f("ck__users__ck_user_role_allowed"),
         ),
-        sa.CheckConstraint(
-            "failed_login_attempts >= 0", name=op.f("ck__users__ck_user_failed_login_nonneg")
-        ),
+        sa.CheckConstraint("failed_login_attempts >= 0", name=op.f("ck__users__ck_user_failed_login_nonneg")),
         sa.PrimaryKeyConstraint("id", name=op.f("pk__users")),
     )
     op.create_index("ix_users_active_role", "users", ["is_active", "role"], unique=False)
@@ -249,9 +215,7 @@ def upgrade() -> None:
             "email IS NULL OR length(email) <= 255",
             name=op.f("ck__companies__ck_company_email_len"),
         ),
-        sa.CheckConstraint(
-            "phone IS NULL OR length(phone) <= 32", name=op.f("ck__companies__ck_company_phone_len")
-        ),
+        sa.CheckConstraint("phone IS NULL OR length(phone) <= 32", name=op.f("ck__companies__ck_company_phone_len")),
         sa.PrimaryKeyConstraint("id", name=op.f("pk__companies")),
     )
     op.create_index(op.f("ix__companies__bin_iin"), "companies", ["bin_iin"], unique=True)
@@ -259,9 +223,7 @@ def upgrade() -> None:
     op.create_index(op.f("ix__companies__deleted_at"), "companies", ["deleted_at"], unique=False)
     op.create_index(op.f("ix__companies__deleted_by"), "companies", ["deleted_by"], unique=False)
     op.create_index(op.f("ix__companies__external_id"), "companies", ["external_id"], unique=True)
-    op.create_index(
-        op.f("ix__companies__gdpr_consent_at"), "companies", ["gdpr_consent_at"], unique=False
-    )
+    op.create_index(op.f("ix__companies__gdpr_consent_at"), "companies", ["gdpr_consent_at"], unique=False)
     op.create_index(
         op.f("ix__companies__gdpr_consent_version"),
         "companies",
@@ -270,9 +232,7 @@ def upgrade() -> None:
     )
     op.create_index(op.f("ix__companies__id"), "companies", ["id"], unique=False)
     op.create_index(op.f("ix__companies__is_active"), "companies", ["is_active"], unique=False)
-    op.create_index(
-        op.f("ix__companies__kaspi_store_id"), "companies", ["kaspi_store_id"], unique=True
-    )
+    op.create_index(op.f("ix__companies__kaspi_store_id"), "companies", ["kaspi_store_id"], unique=True)
     op.create_index(
         op.f("ix__companies__last_sync_error_code"),
         "companies",
@@ -285,9 +245,7 @@ def upgrade() -> None:
     op.create_index(op.f("ix__companies__sync_source"), "companies", ["sync_source"], unique=False)
     op.create_index(op.f("ix__companies__synced_at"), "companies", ["synced_at"], unique=False)
     op.create_index(op.f("ix__companies__updated_at"), "companies", ["updated_at"], unique=False)
-    op.create_index(
-        "ix_company_active_plan", "companies", ["is_active", "subscription_plan"], unique=False
-    )
+    op.create_index("ix_company_active_plan", "companies", ["is_active", "subscription_plan"], unique=False)
 
     # Отдельно создаём взаимные FK после наличия обеих таблиц,
     # чтобы избежать циклов при апгрейде.
@@ -341,9 +299,7 @@ def upgrade() -> None:
     op.create_index(op.f("ix__customers__deleted_at"), "customers", ["deleted_at"], unique=False)
     op.create_index(op.f("ix__customers__email"), "customers", ["email"], unique=True)
     op.create_index(op.f("ix__customers__id"), "customers", ["id"], unique=False)
-    op.create_index(
-        op.f("ix__customers__last_modified_by"), "customers", ["last_modified_by"], unique=False
-    )
+    op.create_index(op.f("ix__customers__last_modified_by"), "customers", ["last_modified_by"], unique=False)
     op.create_index(op.f("ix__customers__tenant_id"), "customers", ["tenant_id"], unique=False)
     op.create_index("ix_customers_active_email", "customers", ["is_active", "email"], unique=False)
     op.create_index("ix_customers_phone", "customers", ["phone"], unique=False)
@@ -360,9 +316,7 @@ def upgrade() -> None:
         sa.Column("attempts", sa.Integer(), nullable=False),
         sa.Column("next_attempt_at", sa.DateTime(), nullable=True),
         sa.Column("last_error", sa.Text(), nullable=True),
-        sa.CheckConstraint(
-            "attempts >= 0", name=op.f("ck__integration_outbox__ck_outbox_attempts_nonneg")
-        ),
+        sa.CheckConstraint("attempts >= 0", name=op.f("ck__integration_outbox__ck_outbox_attempts_nonneg")),
         sa.PrimaryKeyConstraint("id", name=op.f("pk__integration_outbox")),
     )
     op.create_index(
@@ -390,12 +344,8 @@ def upgrade() -> None:
         unique=False,
     )
     op.create_index(op.f("ix__integration_outbox__id"), "integration_outbox", ["id"], unique=False)
-    op.create_index(
-        op.f("ix__integration_outbox__status"), "integration_outbox", ["status"], unique=False
-    )
-    op.create_index(
-        "ix_outbox_status_due", "integration_outbox", ["status", "next_attempt_at"], unique=False
-    )
+    op.create_index(op.f("ix__integration_outbox__status"), "integration_outbox", ["status"], unique=False)
+    op.create_index("ix_outbox_status_due", "integration_outbox", ["status", "next_attempt_at"], unique=False)
     op.create_table(
         "inventory_outbox",
         sa.Column("id", sa.Integer(), nullable=False),
@@ -416,9 +366,7 @@ def upgrade() -> None:
             "status in ('pending','sent','failed')",
             name=op.f("ck__inventory_outbox__ck_inv_outbox_status_allowed"),
         ),
-        sa.CheckConstraint(
-            "attempts >= 0", name=op.f("ck__inventory_outbox__ck_inv_outbox_attempts_nonneg")
-        ),
+        sa.CheckConstraint("attempts >= 0", name=op.f("ck__inventory_outbox__ck_inv_outbox_attempts_nonneg")),
         sa.PrimaryKeyConstraint("id", name=op.f("pk__inventory_outbox")),
     )
     op.create_index(
@@ -433,18 +381,10 @@ def upgrade() -> None:
         ["aggregate_type"],
         unique=False,
     )
-    op.create_index(
-        op.f("ix__inventory_outbox__channel"), "inventory_outbox", ["channel"], unique=False
-    )
-    op.create_index(
-        op.f("ix__inventory_outbox__created_at"), "inventory_outbox", ["created_at"], unique=False
-    )
-    op.create_index(
-        op.f("ix__inventory_outbox__deleted_at"), "inventory_outbox", ["deleted_at"], unique=False
-    )
-    op.create_index(
-        op.f("ix__inventory_outbox__event_type"), "inventory_outbox", ["event_type"], unique=False
-    )
+    op.create_index(op.f("ix__inventory_outbox__channel"), "inventory_outbox", ["channel"], unique=False)
+    op.create_index(op.f("ix__inventory_outbox__created_at"), "inventory_outbox", ["created_at"], unique=False)
+    op.create_index(op.f("ix__inventory_outbox__deleted_at"), "inventory_outbox", ["deleted_at"], unique=False)
+    op.create_index(op.f("ix__inventory_outbox__event_type"), "inventory_outbox", ["event_type"], unique=False)
     op.create_index(op.f("ix__inventory_outbox__id"), "inventory_outbox", ["id"], unique=False)
     op.create_index(
         op.f("ix__inventory_outbox__next_attempt_at"),
@@ -458,21 +398,15 @@ def upgrade() -> None:
         ["processed_at"],
         unique=False,
     )
-    op.create_index(
-        op.f("ix__inventory_outbox__status"), "inventory_outbox", ["status"], unique=False
-    )
-    op.create_index(
-        op.f("ix__inventory_outbox__updated_at"), "inventory_outbox", ["updated_at"], unique=False
-    )
+    op.create_index(op.f("ix__inventory_outbox__status"), "inventory_outbox", ["status"], unique=False)
+    op.create_index(op.f("ix__inventory_outbox__updated_at"), "inventory_outbox", ["updated_at"], unique=False)
     op.create_index(
         "ix_inv_outbox_aggregate_created",
         "inventory_outbox",
         ["aggregate_type", "aggregate_id", "created_at"],
         unique=False,
     )
-    op.create_index(
-        "ix_inv_outbox_status_due", "inventory_outbox", ["status", "next_attempt_at"], unique=False
-    )
+    op.create_index("ix_inv_outbox_status_due", "inventory_outbox", ["status", "next_attempt_at"], unique=False)
     op.create_table(
         "kaspi_store_tokens",
         sa.Column("id", sa.UUID(), server_default=sa.text("gen_random_uuid()"), nullable=False),
@@ -515,12 +449,8 @@ def upgrade() -> None:
         sa.Column("created_at", sa.DateTime(), nullable=False),
         sa.Column("updated_at", sa.DateTime(), nullable=False),
         sa.Column("deleted_at", sa.DateTime(), nullable=True),
-        sa.CheckConstraint(
-            "grace_period_days >= 0", name=op.f("ck__subscriptions__ck_subscription_grace_nonneg")
-        ),
-        sa.CheckConstraint(
-            "price >= 0", name=op.f("ck__subscriptions__ck_subscription_price_nonneg")
-        ),
+        sa.CheckConstraint("grace_period_days >= 0", name=op.f("ck__subscriptions__ck_subscription_grace_nonneg")),
+        sa.CheckConstraint("price >= 0", name=op.f("ck__subscriptions__ck_subscription_price_nonneg")),
         sa.ForeignKeyConstraint(
             ["company_id"],
             ["companies.id"],
@@ -534,18 +464,10 @@ def upgrade() -> None:
         ),
         sa.PrimaryKeyConstraint("id", name=op.f("pk__subscriptions")),
     )
-    op.create_index(
-        op.f("ix__subscriptions__company_id"), "subscriptions", ["company_id"], unique=False
-    )
-    op.create_index(
-        op.f("ix__subscriptions__created_at"), "subscriptions", ["created_at"], unique=False
-    )
-    op.create_index(
-        op.f("ix__subscriptions__deleted_at"), "subscriptions", ["deleted_at"], unique=False
-    )
-    op.create_index(
-        op.f("ix__subscriptions__expires_at"), "subscriptions", ["expires_at"], unique=False
-    )
+    op.create_index(op.f("ix__subscriptions__company_id"), "subscriptions", ["company_id"], unique=False)
+    op.create_index(op.f("ix__subscriptions__created_at"), "subscriptions", ["created_at"], unique=False)
+    op.create_index(op.f("ix__subscriptions__deleted_at"), "subscriptions", ["deleted_at"], unique=False)
+    op.create_index(op.f("ix__subscriptions__expires_at"), "subscriptions", ["expires_at"], unique=False)
     op.create_index(op.f("ix__subscriptions__id"), "subscriptions", ["id"], unique=False)
     op.create_index(
         op.f("ix__subscriptions__next_billing_date"),
@@ -555,12 +477,8 @@ def upgrade() -> None:
     )
     op.create_index(op.f("ix__subscriptions__plan"), "subscriptions", ["plan"], unique=False)
     op.create_index(op.f("ix__subscriptions__status"), "subscriptions", ["status"], unique=False)
-    op.create_index(
-        op.f("ix__subscriptions__updated_at"), "subscriptions", ["updated_at"], unique=False
-    )
-    op.create_index(
-        "ix_subscription_company_status", "subscriptions", ["company_id", "status"], unique=False
-    )
+    op.create_index(op.f("ix__subscriptions__updated_at"), "subscriptions", ["updated_at"], unique=False)
+    op.create_index("ix_subscription_company_status", "subscriptions", ["company_id", "status"], unique=False)
     op.create_foreign_key(
         op.f("fk__billing_payments__subscription_id__subscriptions"),
         "billing_payments",
@@ -591,9 +509,7 @@ def upgrade() -> None:
         sa.Column("deleted_at", sa.DateTime(timezone=True), nullable=True),
         sa.Column("deleted_by", sa.Integer(), nullable=True),
         sa.Column("delete_reason", sa.Text(), nullable=True),
-        sa.CheckConstraint(
-            "length(title) > 0", name=op.f("ck__campaigns__ck_campaign_title_non_empty")
-        ),
+        sa.CheckConstraint("length(title) > 0", name=op.f("ck__campaigns__ck_campaign_title_non_empty")),
         sa.ForeignKeyConstraint(
             ["company_id"],
             ["companies.id"],
@@ -601,22 +517,14 @@ def upgrade() -> None:
             ondelete="CASCADE",
         ),
         sa.PrimaryKeyConstraint("id", name=op.f("pk__campaigns")),
-        sa.UniqueConstraint(
-            "company_id", "title", "scheduled_at", name="uq_campaign_company_title_scheduled"
-        ),
+        sa.UniqueConstraint("company_id", "title", "scheduled_at", name="uq_campaign_company_title_scheduled"),
     )
     op.create_index(op.f("ix__campaigns__company_id"), "campaigns", ["company_id"], unique=False)
     op.create_index(op.f("ix__campaigns__deleted_at"), "campaigns", ["deleted_at"], unique=False)
     op.create_index(op.f("ix__campaigns__deleted_by"), "campaigns", ["deleted_by"], unique=False)
-    op.create_index(
-        op.f("ix__campaigns__scheduled_at"), "campaigns", ["scheduled_at"], unique=False
-    )
-    op.create_index(
-        "ix_campaign_company_status", "campaigns", ["company_id", "status"], unique=False
-    )
-    op.create_index(
-        "ix_campaign_scheduled_at_status", "campaigns", ["scheduled_at", "status"], unique=False
-    )
+    op.create_index(op.f("ix__campaigns__scheduled_at"), "campaigns", ["scheduled_at"], unique=False)
+    op.create_index("ix_campaign_company_status", "campaigns", ["company_id", "status"], unique=False)
+    op.create_index("ix_campaign_scheduled_at_status", "campaigns", ["scheduled_at", "status"], unique=False)
     op.create_table(
         "orders",
         sa.Column("id", sa.Integer(), nullable=False),
@@ -666,9 +574,7 @@ def upgrade() -> None:
             "subtotal >= 0 AND tax_amount >= 0 AND shipping_amount >= 0 AND discount_amount >= 0",
             name=op.f("ck__orders__ck_order_parts_non_negative"),
         ),
-        sa.CheckConstraint(
-            "total_amount >= 0", name=op.f("ck__orders__ck_order_total_non_negative")
-        ),
+        sa.CheckConstraint("total_amount >= 0", name=op.f("ck__orders__ck_order_total_non_negative")),
         sa.ForeignKeyConstraint(
             ["company_id"],
             ["companies.id"],
@@ -724,12 +630,8 @@ def upgrade() -> None:
         sa.Column("block_reason", sa.String(length=64), nullable=True),
         sa.Column("fraud_score", sa.Integer(), nullable=False),
         sa.Column("fraud_flags", sa.String(length=255), nullable=True),
-        sa.CheckConstraint(
-            "attempts_left >= 0", name=op.f("ck__otp_attempts__ck_otp_attempts_left_non_negative")
-        ),
-        sa.CheckConstraint(
-            "fraud_score >= 0", name=op.f("ck__otp_attempts__ck_otp_fraud_score_non_negative")
-        ),
+        sa.CheckConstraint("attempts_left >= 0", name=op.f("ck__otp_attempts__ck_otp_attempts_left_non_negative")),
+        sa.CheckConstraint("fraud_score >= 0", name=op.f("ck__otp_attempts__ck_otp_fraud_score_non_negative")),
         sa.CheckConstraint(
             "sent_count_hour >= 0 AND sent_count_day >= 0",
             name=op.f("ck__otp_attempts__ck_otp_sent_counts_non_negative"),
@@ -764,9 +666,7 @@ def upgrade() -> None:
         sa.Column("created_at", sa.DateTime(), nullable=False),
         sa.Column("verified_at", sa.DateTime(), nullable=True),
         sa.Column("updated_at", sa.DateTime(), nullable=False),
-        sa.CheckConstraint(
-            "attempts >= 0", name=op.f("ck__otp_codes__ck_otpcode_attempts_non_negative")
-        ),
+        sa.CheckConstraint("attempts >= 0", name=op.f("ck__otp_codes__ck_otpcode_attempts_non_negative")),
         sa.ForeignKeyConstraint(
             ["user_id"],
             ["users.id"],
@@ -808,22 +708,14 @@ def upgrade() -> None:
         sa.Column("max_stock_level", sa.Integer(), nullable=True),
         sa.Column("is_active", sa.Boolean(), server_default=sa.text("true"), nullable=False),
         sa.Column("is_featured", sa.Boolean(), server_default=sa.text("false"), nullable=False),
-        sa.Column(
-            "is_preorder_enabled", sa.Boolean(), server_default=sa.text("false"), nullable=False
-        ),
+        sa.Column("is_preorder_enabled", sa.Boolean(), server_default=sa.text("false"), nullable=False),
         sa.Column("preorder_until", sa.Integer(), nullable=True),
         sa.Column("preorder_deposit", sa.Numeric(precision=14, scale=2), nullable=True),
         sa.Column("preorder_note", sa.String(length=500), nullable=True),
         sa.Column("preorder_lead_days", sa.Integer(), nullable=True),
-        sa.Column(
-            "preorder_show_zero_stock", sa.Boolean(), server_default=sa.text("true"), nullable=False
-        ),
-        sa.Column(
-            "enable_price_dumping", sa.Boolean(), server_default=sa.text("false"), nullable=False
-        ),
-        sa.Column(
-            "exclude_friendly_stores", sa.Boolean(), server_default=sa.text("true"), nullable=False
-        ),
+        sa.Column("preorder_show_zero_stock", sa.Boolean(), server_default=sa.text("true"), nullable=False),
+        sa.Column("enable_price_dumping", sa.Boolean(), server_default=sa.text("false"), nullable=False),
+        sa.Column("exclude_friendly_stores", sa.Boolean(), server_default=sa.text("true"), nullable=False),
         sa.Column("repriced_at", sa.DateTime(), nullable=True),
         sa.Column("price_updated_at", sa.DateTime(), nullable=True),
         sa.Column("category_id", sa.Integer(), nullable=True),
@@ -876,9 +768,7 @@ def upgrade() -> None:
             "(preorder_lead_days IS NULL OR preorder_lead_days >= 0)",
             name=op.f("ck__products__ck_prod_preorder_lead_days_nonneg"),
         ),
-        sa.CheckConstraint(
-            "(price IS NULL OR price >= 0)", name=op.f("ck__products__ck_prod_price_nonneg")
-        ),
+        sa.CheckConstraint("(price IS NULL OR price >= 0)", name=op.f("ck__products__ck_prod_price_nonneg")),
         sa.CheckConstraint(
             "(sale_price IS NULL OR min_price IS NULL OR sale_price >= min_price)",
             name=op.f("ck__products__ck_prod_sale_ge_min"),
@@ -891,16 +781,12 @@ def upgrade() -> None:
             "(sale_price IS NULL OR sale_price >= 0)",
             name=op.f("ck__products__ck_prod_sale_price_nonneg"),
         ),
-        sa.CheckConstraint(
-            "min_stock_level >= 0", name=op.f("ck__products__ck_prod_min_stock_nonneg")
-        ),
+        sa.CheckConstraint("min_stock_level >= 0", name=op.f("ck__products__ck_prod_min_stock_nonneg")),
         sa.CheckConstraint(
             "reserved_quantity <= stock_quantity",
             name=op.f("ck__products__ck_prod_reserved_le_stock"),
         ),
-        sa.CheckConstraint(
-            "reserved_quantity >= 0", name=op.f("ck__products__ck_prod_reserved_nonneg")
-        ),
+        sa.CheckConstraint("reserved_quantity >= 0", name=op.f("ck__products__ck_prod_reserved_nonneg")),
         sa.CheckConstraint("stock_quantity >= 0", name=op.f("ck__products__ck_prod_stock_nonneg")),
         sa.ForeignKeyConstraint(
             ["category_id"],
@@ -924,40 +810,26 @@ def upgrade() -> None:
     op.create_index(op.f("ix__products__id"), "products", ["id"], unique=False)
     op.create_index(op.f("ix__products__is_active"), "products", ["is_active"], unique=False)
     op.create_index(op.f("ix__products__is_featured"), "products", ["is_featured"], unique=False)
-    op.create_index(
-        op.f("ix__products__kaspi_product_id"), "products", ["kaspi_product_id"], unique=False
-    )
+    op.create_index(op.f("ix__products__kaspi_product_id"), "products", ["kaspi_product_id"], unique=False)
     op.create_index(op.f("ix__products__kaspi_status"), "products", ["kaspi_status"], unique=False)
     op.create_index(op.f("ix__products__name"), "products", ["name"], unique=False)
     op.create_index(op.f("ix__products__price"), "products", ["price"], unique=False)
-    op.create_index(
-        op.f("ix__products__price_updated_at"), "products", ["price_updated_at"], unique=False
-    )
+    op.create_index(op.f("ix__products__price_updated_at"), "products", ["price_updated_at"], unique=False)
     op.create_index(op.f("ix__products__repriced_at"), "products", ["repriced_at"], unique=False)
     op.create_index(op.f("ix__products__sku"), "products", ["sku"], unique=False)
     op.create_index(op.f("ix__products__slug"), "products", ["slug"], unique=False)
-    op.create_index(
-        "ix_kaspi_company_status", "products", ["company_id", "kaspi_status"], unique=False
-    )
-    op.create_index(
-        "ix_product_company_active", "products", ["company_id", "is_active"], unique=False
-    )
+    op.create_index("ix_kaspi_company_status", "products", ["company_id", "kaspi_status"], unique=False)
+    op.create_index("ix_product_company_active", "products", ["company_id", "is_active"], unique=False)
     op.create_index(
         "ix_product_company_category_active_del",
         "products",
         ["company_id", "category_id", "is_active", "deleted_at"],
         unique=False,
     )
-    op.create_index(
-        "ix_product_company_featured", "products", ["company_id", "is_featured"], unique=False
-    )
-    op.create_index(
-        "ix_product_price_active", "products", ["company_id", "price", "is_active"], unique=False
-    )
+    op.create_index("ix_product_company_featured", "products", ["company_id", "is_featured"], unique=False)
+    op.create_index("ix_product_price_active", "products", ["company_id", "price", "is_active"], unique=False)
     op.create_index("ix_product_search_name", "products", ["company_id", "name"], unique=False)
-    op.create_index(
-        "ix_product_search_name_sku", "products", ["company_id", "name", "sku"], unique=False
-    )
+    op.create_index("ix_product_search_name_sku", "products", ["company_id", "name", "sku"], unique=False)
     op.create_table(
         "user_sessions",
         sa.Column("id", sa.Integer(), nullable=False),
@@ -980,20 +852,12 @@ def upgrade() -> None:
         sa.PrimaryKeyConstraint("id", name=op.f("pk__user_sessions")),
         sa.UniqueConstraint("refresh_token", name=op.f("uq__user_sessions__refresh_token")),
     )
-    op.create_index(
-        op.f("ix__user_sessions__deleted_at"), "user_sessions", ["deleted_at"], unique=False
-    )
+    op.create_index(op.f("ix__user_sessions__deleted_at"), "user_sessions", ["deleted_at"], unique=False)
     op.create_index(op.f("ix__user_sessions__id"), "user_sessions", ["id"], unique=False)
-    op.create_index(
-        op.f("ix__user_sessions__updated_at"), "user_sessions", ["updated_at"], unique=False
-    )
+    op.create_index(op.f("ix__user_sessions__updated_at"), "user_sessions", ["updated_at"], unique=False)
     op.create_index(op.f("ix__user_sessions__user_id"), "user_sessions", ["user_id"], unique=False)
-    op.create_index(
-        "ix_user_sessions_active_user", "user_sessions", ["is_active", "user_id"], unique=False
-    )
-    op.create_index(
-        "ix_user_sessions_user_expires", "user_sessions", ["user_id", "expires_at"], unique=False
-    )
+    op.create_index("ix_user_sessions_active_user", "user_sessions", ["is_active", "user_id"], unique=False)
+    op.create_index("ix_user_sessions_user_expires", "user_sessions", ["user_id", "expires_at"], unique=False)
     op.create_table(
         "wallet_balances",
         sa.Column("id", sa.Integer(), nullable=False),
@@ -1020,9 +884,7 @@ def upgrade() -> None:
             "(credit_limit IS NULL OR credit_limit >= 0)",
             name=op.f("ck__wallet_balances__ck_wallet_credit_nonneg"),
         ),
-        sa.CheckConstraint(
-            "balance >= 0", name=op.f("ck__wallet_balances__ck_wallet_balance_nonneg")
-        ),
+        sa.CheckConstraint("balance >= 0", name=op.f("ck__wallet_balances__ck_wallet_balance_nonneg")),
         sa.ForeignKeyConstraint(
             ["company_id"],
             ["companies.id"],
@@ -1031,19 +893,11 @@ def upgrade() -> None:
         ),
         sa.PrimaryKeyConstraint("id", name=op.f("pk__wallet_balances")),
     )
-    op.create_index(
-        op.f("ix__wallet_balances__company_id"), "wallet_balances", ["company_id"], unique=True
-    )
-    op.create_index(
-        op.f("ix__wallet_balances__created_at"), "wallet_balances", ["created_at"], unique=False
-    )
-    op.create_index(
-        op.f("ix__wallet_balances__deleted_at"), "wallet_balances", ["deleted_at"], unique=False
-    )
+    op.create_index(op.f("ix__wallet_balances__company_id"), "wallet_balances", ["company_id"], unique=True)
+    op.create_index(op.f("ix__wallet_balances__created_at"), "wallet_balances", ["created_at"], unique=False)
+    op.create_index(op.f("ix__wallet_balances__deleted_at"), "wallet_balances", ["deleted_at"], unique=False)
     op.create_index(op.f("ix__wallet_balances__id"), "wallet_balances", ["id"], unique=False)
-    op.create_index(
-        op.f("ix__wallet_balances__updated_at"), "wallet_balances", ["updated_at"], unique=False
-    )
+    op.create_index(op.f("ix__wallet_balances__updated_at"), "wallet_balances", ["updated_at"], unique=False)
     op.create_table(
         "warehouses",
         sa.Column("id", sa.Integer(), nullable=False),
@@ -1078,13 +932,9 @@ def upgrade() -> None:
     op.create_index(op.f("ix__warehouses__created_at"), "warehouses", ["created_at"], unique=False)
     op.create_index(op.f("ix__warehouses__id"), "warehouses", ["id"], unique=False)
     op.create_index(op.f("ix__warehouses__is_active"), "warehouses", ["is_active"], unique=False)
-    op.create_index(
-        op.f("ix__warehouses__is_archived"), "warehouses", ["is_archived"], unique=False
-    )
+    op.create_index(op.f("ix__warehouses__is_archived"), "warehouses", ["is_archived"], unique=False)
     op.create_index(op.f("ix__warehouses__updated_at"), "warehouses", ["updated_at"], unique=False)
-    op.create_index(
-        "ix_warehouses_company_active", "warehouses", ["company_id", "is_active"], unique=False
-    )
+    op.create_index("ix_warehouses_company_active", "warehouses", ["company_id", "is_active"], unique=False)
     op.create_table(
         "audit_logs",
         sa.Column("action", sa.String(length=100), nullable=False),
@@ -1132,18 +982,12 @@ def upgrade() -> None:
     )
     op.create_index(op.f("ix__audit_logs__action"), "audit_logs", ["action"], unique=False)
     op.create_index(op.f("ix__audit_logs__company_id"), "audit_logs", ["company_id"], unique=False)
-    op.create_index(
-        op.f("ix__audit_logs__correlation_id"), "audit_logs", ["correlation_id"], unique=False
-    )
+    op.create_index(op.f("ix__audit_logs__correlation_id"), "audit_logs", ["correlation_id"], unique=False)
     op.create_index(op.f("ix__audit_logs__created_at"), "audit_logs", ["created_at"], unique=False)
     op.create_index(op.f("ix__audit_logs__entity_id"), "audit_logs", ["entity_id"], unique=False)
-    op.create_index(
-        op.f("ix__audit_logs__entity_type"), "audit_logs", ["entity_type"], unique=False
-    )
+    op.create_index(op.f("ix__audit_logs__entity_type"), "audit_logs", ["entity_type"], unique=False)
     op.create_index(op.f("ix__audit_logs__id"), "audit_logs", ["id"], unique=False)
-    op.create_index(
-        op.f("ix__audit_logs__last_modified_by"), "audit_logs", ["last_modified_by"], unique=False
-    )
+    op.create_index(op.f("ix__audit_logs__last_modified_by"), "audit_logs", ["last_modified_by"], unique=False)
     op.create_index(op.f("ix__audit_logs__order_id"), "audit_logs", ["order_id"], unique=False)
     op.create_index(op.f("ix__audit_logs__payment_id"), "audit_logs", ["payment_id"], unique=False)
     op.create_index(op.f("ix__audit_logs__product_id"), "audit_logs", ["product_id"], unique=False)
@@ -1152,17 +996,11 @@ def upgrade() -> None:
     op.create_index(op.f("ix__audit_logs__tenant_id"), "audit_logs", ["tenant_id"], unique=False)
     op.create_index(op.f("ix__audit_logs__updated_at"), "audit_logs", ["updated_at"], unique=False)
     op.create_index(op.f("ix__audit_logs__user_id"), "audit_logs", ["user_id"], unique=False)
-    op.create_index(
-        op.f("ix__audit_logs__warehouse_id"), "audit_logs", ["warehouse_id"], unique=False
-    )
+    op.create_index(op.f("ix__audit_logs__warehouse_id"), "audit_logs", ["warehouse_id"], unique=False)
     op.create_index("ix_audit_action_user", "audit_logs", ["action", "user_id"], unique=False)
     op.create_index("ix_audit_created_at", "audit_logs", ["created_at"], unique=False)
-    op.create_index(
-        "ix_audit_entity_type_id", "audit_logs", ["entity_type", "entity_id"], unique=False
-    )
-    op.create_index(
-        "ix_audit_wh_created", "audit_logs", ["warehouse_id", "created_at"], unique=False
-    )
+    op.create_index("ix_audit_entity_type_id", "audit_logs", ["entity_type", "entity_id"], unique=False)
+    op.create_index("ix_audit_wh_created", "audit_logs", ["warehouse_id", "created_at"], unique=False)
     op.create_table(
         "billing_invoices",
         sa.Column("id", sa.Integer(), nullable=False),
@@ -1185,16 +1023,12 @@ def upgrade() -> None:
         sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
         sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False),
         sa.Column("deleted_at", sa.DateTime(), nullable=True),
-        sa.CheckConstraint(
-            "paid_amount >= 0", name=op.f("ck__billing_invoices__ck_bi_paid_amount_nonneg")
-        ),
+        sa.CheckConstraint("paid_amount >= 0", name=op.f("ck__billing_invoices__ck_bi_paid_amount_nonneg")),
         sa.CheckConstraint(
             "subtotal >= 0 AND tax_amount >= 0 AND discount_amount >= 0 AND total_amount >= 0",
             name=op.f("ck__billing_invoices__ck_bi_non_negative"),
         ),
-        sa.CheckConstraint(
-            "total_due >= 0", name=op.f("ck__billing_invoices__ck_bi_total_due_nonneg")
-        ),
+        sa.CheckConstraint("total_due >= 0", name=op.f("ck__billing_invoices__ck_bi_total_due_nonneg")),
         sa.ForeignKeyConstraint(
             ["company_id"],
             ["companies.id"],
@@ -1209,46 +1043,24 @@ def upgrade() -> None:
         ),
         sa.PrimaryKeyConstraint("id", name=op.f("pk__billing_invoices")),
     )
-    op.create_index(
-        op.f("ix__billing_invoices__company_id"), "billing_invoices", ["company_id"], unique=False
-    )
-    op.create_index(
-        op.f("ix__billing_invoices__created_at"), "billing_invoices", ["created_at"], unique=False
-    )
-    op.create_index(
-        op.f("ix__billing_invoices__deleted_at"), "billing_invoices", ["deleted_at"], unique=False
-    )
-    op.create_index(
-        op.f("ix__billing_invoices__due_at"), "billing_invoices", ["due_at"], unique=False
-    )
+    op.create_index(op.f("ix__billing_invoices__company_id"), "billing_invoices", ["company_id"], unique=False)
+    op.create_index(op.f("ix__billing_invoices__created_at"), "billing_invoices", ["created_at"], unique=False)
+    op.create_index(op.f("ix__billing_invoices__deleted_at"), "billing_invoices", ["deleted_at"], unique=False)
+    op.create_index(op.f("ix__billing_invoices__due_at"), "billing_invoices", ["due_at"], unique=False)
     op.create_index(op.f("ix__billing_invoices__id"), "billing_invoices", ["id"], unique=False)
-    op.create_index(
-        op.f("ix__billing_invoices__issued_at"), "billing_invoices", ["issued_at"], unique=False
-    )
-    op.create_index(
-        op.f("ix__billing_invoices__number"), "billing_invoices", ["number"], unique=True
-    )
-    op.create_index(
-        op.f("ix__billing_invoices__order_id"), "billing_invoices", ["order_id"], unique=True
-    )
-    op.create_index(
-        op.f("ix__billing_invoices__paid_at"), "billing_invoices", ["paid_at"], unique=False
-    )
-    op.create_index(
-        op.f("ix__billing_invoices__status"), "billing_invoices", ["status"], unique=False
-    )
-    op.create_index(
-        op.f("ix__billing_invoices__updated_at"), "billing_invoices", ["updated_at"], unique=False
-    )
+    op.create_index(op.f("ix__billing_invoices__issued_at"), "billing_invoices", ["issued_at"], unique=False)
+    op.create_index(op.f("ix__billing_invoices__number"), "billing_invoices", ["number"], unique=True)
+    op.create_index(op.f("ix__billing_invoices__order_id"), "billing_invoices", ["order_id"], unique=True)
+    op.create_index(op.f("ix__billing_invoices__paid_at"), "billing_invoices", ["paid_at"], unique=False)
+    op.create_index(op.f("ix__billing_invoices__status"), "billing_invoices", ["status"], unique=False)
+    op.create_index(op.f("ix__billing_invoices__updated_at"), "billing_invoices", ["updated_at"], unique=False)
     op.create_index(
         "ix_billing_invoices_company_status",
         "billing_invoices",
         ["company_id", "status"],
         unique=False,
     )
-    op.create_index(
-        "ix_billing_invoices_status_due", "billing_invoices", ["status", "due_at"], unique=False
-    )
+    op.create_index("ix_billing_invoices_status_due", "billing_invoices", ["status", "due_at"], unique=False)
     op.create_table(
         "invoices",
         sa.Column("id", sa.Integer(), nullable=False),
@@ -1302,16 +1114,12 @@ def upgrade() -> None:
     op.create_index(op.f("ix__invoices__created_at"), "invoices", ["created_at"], unique=False)
     op.create_index(op.f("ix__invoices__deleted_at"), "invoices", ["deleted_at"], unique=False)
     op.create_index(op.f("ix__invoices__id"), "invoices", ["id"], unique=False)
-    op.create_index(
-        op.f("ix__invoices__invoice_number"), "invoices", ["invoice_number"], unique=True
-    )
+    op.create_index(op.f("ix__invoices__invoice_number"), "invoices", ["invoice_number"], unique=True)
     op.create_index(op.f("ix__invoices__invoice_type"), "invoices", ["invoice_type"], unique=False)
     op.create_index(op.f("ix__invoices__order_id"), "invoices", ["order_id"], unique=False)
     op.create_index(op.f("ix__invoices__status"), "invoices", ["status"], unique=False)
     op.create_index(op.f("ix__invoices__updated_at"), "invoices", ["updated_at"], unique=False)
-    op.create_index(
-        "ix_invoice_company_created", "invoices", ["company_id", "issue_date"], unique=False
-    )
+    op.create_index("ix_invoice_company_created", "invoices", ["company_id", "issue_date"], unique=False)
     op.create_index("ix_invoice_company_status", "invoices", ["company_id", "status"], unique=False)
     op.create_table(
         "messages",
@@ -1326,9 +1134,7 @@ def upgrade() -> None:
         ),
         sa.Column(
             "channel",
-            sa.Enum(
-                "EMAIL", "WHATSAPP", "TELEGRAM", "SMS", "PUSH", "VIBER", name="message_channel"
-            ),
+            sa.Enum("EMAIL", "WHATSAPP", "TELEGRAM", "SMS", "PUSH", "VIBER", name="message_channel"),
             nullable=False,
         ),
         sa.Column("provider_message_id", sa.String(length=255), nullable=True),
@@ -1339,15 +1145,9 @@ def upgrade() -> None:
         sa.Column("deleted_at", sa.DateTime(timezone=True), nullable=True),
         sa.Column("deleted_by", sa.Integer(), nullable=True),
         sa.Column("delete_reason", sa.Text(), nullable=True),
-        sa.CheckConstraint(
-            "length(content) <= 2000", name=op.f("ck__messages__ck_message_content_maxlen")
-        ),
-        sa.CheckConstraint(
-            "length(content) > 0", name=op.f("ck__messages__ck_message_content_non_empty")
-        ),
-        sa.CheckConstraint(
-            "length(recipient) > 0", name=op.f("ck__messages__ck_message_recipient_non_empty")
-        ),
+        sa.CheckConstraint("length(content) <= 2000", name=op.f("ck__messages__ck_message_content_maxlen")),
+        sa.CheckConstraint("length(content) > 0", name=op.f("ck__messages__ck_message_content_non_empty")),
+        sa.CheckConstraint("length(recipient) > 0", name=op.f("ck__messages__ck_message_recipient_non_empty")),
         sa.ForeignKeyConstraint(
             ["campaign_id"],
             ["campaigns.id"],
@@ -1361,9 +1161,7 @@ def upgrade() -> None:
     op.create_index(op.f("ix__messages__deleted_at"), "messages", ["deleted_at"], unique=False)
     op.create_index(op.f("ix__messages__deleted_by"), "messages", ["deleted_by"], unique=False)
     op.create_index(op.f("ix__messages__error_code"), "messages", ["error_code"], unique=False)
-    op.create_index(
-        op.f("ix__messages__provider_message_id"), "messages", ["provider_message_id"], unique=False
-    )
+    op.create_index(op.f("ix__messages__provider_message_id"), "messages", ["provider_message_id"], unique=False)
     op.create_index(op.f("ix__messages__recipient"), "messages", ["recipient"], unique=False)
     op.create_index(op.f("ix__messages__status"), "messages", ["status"], unique=False)
     op.create_index(
@@ -1386,9 +1184,7 @@ def upgrade() -> None:
         sa.Column("cost_price", sa.Numeric(precision=14, scale=2), nullable=False),
         sa.Column("product_image_url", sa.String(length=1024), nullable=True),
         sa.Column("notes", sa.Text(), nullable=True),
-        sa.CheckConstraint(
-            "quantity > 0", name=op.f("ck__order_items__ck_order_item_quantity_positive")
-        ),
+        sa.CheckConstraint("quantity > 0", name=op.f("ck__order_items__ck_order_item_quantity_positive")),
         sa.CheckConstraint(
             "unit_price >= 0 AND total_price >= 0 AND cost_price >= 0",
             name=op.f("ck__order_items__ck_order_item_price_non_negative"),
@@ -1408,9 +1204,7 @@ def upgrade() -> None:
         sa.PrimaryKeyConstraint("id", name=op.f("pk__order_items")),
     )
     op.create_index(op.f("ix__order_items__order_id"), "order_items", ["order_id"], unique=False)
-    op.create_index(
-        op.f("ix__order_items__product_id"), "order_items", ["product_id"], unique=False
-    )
+    op.create_index(op.f("ix__order_items__product_id"), "order_items", ["product_id"], unique=False)
     op.create_index(op.f("ix__order_items__sku"), "order_items", ["sku"], unique=False)
     op.create_index("ix_order_items_order_sku", "order_items", ["order_id", "sku"], unique=False)
     op.create_table(
@@ -1534,15 +1328,9 @@ def upgrade() -> None:
         sa.Column("is_test", sa.Boolean(), nullable=False),
         sa.CheckConstraint("amount >= 0", name=op.f("ck__payments__ck_payments_amount_nonneg")),
         sa.CheckConstraint("fee_amount >= 0", name=op.f("ck__payments__ck_payments_fee_nonneg")),
-        sa.CheckConstraint(
-            "length(currency) >= 3", name=op.f("ck__payments__ck_payments_currency_len")
-        ),
-        sa.CheckConstraint(
-            "refunded_amount <= amount", name=op.f("ck__payments__ck_payments_refunded_le_amount")
-        ),
-        sa.CheckConstraint(
-            "refunded_amount >= 0", name=op.f("ck__payments__ck_payments_refunded_nonneg")
-        ),
+        sa.CheckConstraint("length(currency) >= 3", name=op.f("ck__payments__ck_payments_currency_len")),
+        sa.CheckConstraint("refunded_amount <= amount", name=op.f("ck__payments__ck_payments_refunded_le_amount")),
+        sa.CheckConstraint("refunded_amount >= 0", name=op.f("ck__payments__ck_payments_refunded_nonneg")),
         sa.CheckConstraint("version >= 1", name=op.f("ck__payments__ck_payments_version_pos")),
         sa.ForeignKeyConstraint(
             ["customer_id"],
@@ -1564,12 +1352,8 @@ def upgrade() -> None:
     op.create_index(op.f("ix__payments__external_id"), "payments", ["external_id"], unique=False)
     op.create_index(op.f("ix__payments__id"), "payments", ["id"], unique=False)
     op.create_index(op.f("ix__payments__order_id"), "payments", ["order_id"], unique=False)
-    op.create_index(
-        op.f("ix__payments__payment_number"), "payments", ["payment_number"], unique=True
-    )
-    op.create_index(
-        op.f("ix__payments__provider_invoice_id"), "payments", ["provider_invoice_id"], unique=True
-    )
+    op.create_index(op.f("ix__payments__payment_number"), "payments", ["payment_number"], unique=True)
+    op.create_index(op.f("ix__payments__provider_invoice_id"), "payments", ["provider_invoice_id"], unique=True)
     op.create_index(op.f("ix__payments__status"), "payments", ["status"], unique=False)
     op.create_index(op.f("ix__payments__updated_at"), "payments", ["updated_at"], unique=False)
     op.create_index(op.f("ix__payments__uuid"), "payments", ["uuid"], unique=True)
@@ -1613,19 +1397,13 @@ def upgrade() -> None:
             "(max_quantity IS NULL) OR (min_quantity <= max_quantity)",
             name=op.f("ck__product_stocks__ck_stock_min_le_max"),
         ),
-        sa.CheckConstraint(
-            "min_quantity >= 0", name=op.f("ck__product_stocks__ck_stock_min_nonneg")
-        ),
-        sa.CheckConstraint(
-            "quantity >= 0", name=op.f("ck__product_stocks__ck_stock_quantity_nonneg")
-        ),
+        sa.CheckConstraint("min_quantity >= 0", name=op.f("ck__product_stocks__ck_stock_min_nonneg")),
+        sa.CheckConstraint("quantity >= 0", name=op.f("ck__product_stocks__ck_stock_quantity_nonneg")),
         sa.CheckConstraint(
             "reserved_quantity <= quantity",
             name=op.f("ck__product_stocks__ck_stock_reserved_le_quantity"),
         ),
-        sa.CheckConstraint(
-            "reserved_quantity >= 0", name=op.f("ck__product_stocks__ck_stock_reserved_nonneg")
-        ),
+        sa.CheckConstraint("reserved_quantity >= 0", name=op.f("ck__product_stocks__ck_stock_reserved_nonneg")),
         sa.ForeignKeyConstraint(
             ["product_id"],
             ["products.id"],
@@ -1641,25 +1419,13 @@ def upgrade() -> None:
         sa.PrimaryKeyConstraint("id", name=op.f("pk__product_stocks")),
         sa.UniqueConstraint("product_id", "warehouse_id", name="uq_product_warehouse"),
     )
-    op.create_index(
-        op.f("ix__product_stocks__created_at"), "product_stocks", ["created_at"], unique=False
-    )
+    op.create_index(op.f("ix__product_stocks__created_at"), "product_stocks", ["created_at"], unique=False)
     op.create_index(op.f("ix__product_stocks__id"), "product_stocks", ["id"], unique=False)
-    op.create_index(
-        op.f("ix__product_stocks__is_archived"), "product_stocks", ["is_archived"], unique=False
-    )
-    op.create_index(
-        op.f("ix__product_stocks__product_id"), "product_stocks", ["product_id"], unique=False
-    )
-    op.create_index(
-        op.f("ix__product_stocks__updated_at"), "product_stocks", ["updated_at"], unique=False
-    )
-    op.create_index(
-        op.f("ix__product_stocks__warehouse_id"), "product_stocks", ["warehouse_id"], unique=False
-    )
-    op.create_index(
-        "ix_stock_low", "product_stocks", ["warehouse_id", "min_quantity"], unique=False
-    )
+    op.create_index(op.f("ix__product_stocks__is_archived"), "product_stocks", ["is_archived"], unique=False)
+    op.create_index(op.f("ix__product_stocks__product_id"), "product_stocks", ["product_id"], unique=False)
+    op.create_index(op.f("ix__product_stocks__updated_at"), "product_stocks", ["updated_at"], unique=False)
+    op.create_index(op.f("ix__product_stocks__warehouse_id"), "product_stocks", ["warehouse_id"], unique=False)
+    op.create_index("ix_stock_low", "product_stocks", ["warehouse_id", "min_quantity"], unique=False)
     op.create_index(
         "ix_stock_product_warehouse_qty",
         "product_stocks",
@@ -1695,9 +1461,7 @@ def upgrade() -> None:
             "(sale_price IS NULL OR sale_price >= 0)",
             name=op.f("ck__product_variants__ck_variant_sale_price_nonneg"),
         ),
-        sa.CheckConstraint(
-            "stock_quantity >= 0", name=op.f("ck__product_variants__ck_variant_stock_nonneg")
-        ),
+        sa.CheckConstraint("stock_quantity >= 0", name=op.f("ck__product_variants__ck_variant_stock_nonneg")),
         sa.ForeignKeyConstraint(
             ["product_id"],
             ["products.id"],
@@ -1707,21 +1471,13 @@ def upgrade() -> None:
         sa.PrimaryKeyConstraint("id", name=op.f("pk__product_variants")),
         sa.UniqueConstraint("product_id", "sku", name="uq_variant_product_sku"),
     )
-    op.create_index(
-        op.f("ix__product_variants__deleted_at"), "product_variants", ["deleted_at"], unique=False
-    )
+    op.create_index(op.f("ix__product_variants__deleted_at"), "product_variants", ["deleted_at"], unique=False)
     op.create_index(op.f("ix__product_variants__id"), "product_variants", ["id"], unique=False)
-    op.create_index(
-        op.f("ix__product_variants__is_active"), "product_variants", ["is_active"], unique=False
-    )
+    op.create_index(op.f("ix__product_variants__is_active"), "product_variants", ["is_active"], unique=False)
     op.create_index(op.f("ix__product_variants__name"), "product_variants", ["name"], unique=False)
-    op.create_index(
-        op.f("ix__product_variants__product_id"), "product_variants", ["product_id"], unique=False
-    )
+    op.create_index(op.f("ix__product_variants__product_id"), "product_variants", ["product_id"], unique=False)
     op.create_index(op.f("ix__product_variants__sku"), "product_variants", ["sku"], unique=False)
-    op.create_index(
-        "ix_variant_product_active", "product_variants", ["product_id", "is_active"], unique=False
-    )
+    op.create_index("ix_variant_product_active", "product_variants", ["product_id", "is_active"], unique=False)
     op.create_table(
         "wallet_transactions",
         sa.Column("id", sa.Integer(), nullable=False),
@@ -1737,15 +1493,9 @@ def upgrade() -> None:
         sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
         sa.Column("updated_at", sa.DateTime(), nullable=False),
         sa.Column("deleted_at", sa.DateTime(), nullable=True),
-        sa.CheckConstraint(
-            "amount >= 0", name=op.f("ck__wallet_transactions__ck_wallet_trx_amount_nonneg")
-        ),
-        sa.CheckConstraint(
-            "balance_after >= 0", name=op.f("ck__wallet_transactions__ck_wallet_trx_after_nonneg")
-        ),
-        sa.CheckConstraint(
-            "balance_before >= 0", name=op.f("ck__wallet_transactions__ck_wallet_trx_before_nonneg")
-        ),
+        sa.CheckConstraint("amount >= 0", name=op.f("ck__wallet_transactions__ck_wallet_trx_amount_nonneg")),
+        sa.CheckConstraint("balance_after >= 0", name=op.f("ck__wallet_transactions__ck_wallet_trx_after_nonneg")),
+        sa.CheckConstraint("balance_before >= 0", name=op.f("ck__wallet_transactions__ck_wallet_trx_before_nonneg")),
         sa.ForeignKeyConstraint(
             ["wallet_id"],
             ["wallet_balances.id"],
@@ -1766,9 +1516,7 @@ def upgrade() -> None:
         ["deleted_at"],
         unique=False,
     )
-    op.create_index(
-        op.f("ix__wallet_transactions__id"), "wallet_transactions", ["id"], unique=False
-    )
+    op.create_index(op.f("ix__wallet_transactions__id"), "wallet_transactions", ["id"], unique=False)
     op.create_index(
         op.f("ix__wallet_transactions__reference_id"),
         "wallet_transactions",
@@ -1831,16 +1579,12 @@ def upgrade() -> None:
         sa.Column("reason", sa.String(length=255), nullable=True),
         sa.Column("notes", sa.Text(), nullable=True),
         sa.Column("provider_data", postgresql.JSONB(astext_type=sa.Text()), nullable=True),
-        sa.CheckConstraint(
-            "amount > 0", name=op.f("ck__payment_refunds__ck_payment_refunds_amount_pos")
-        ),
+        sa.CheckConstraint("amount > 0", name=op.f("ck__payment_refunds__ck_payment_refunds_amount_pos")),
         sa.CheckConstraint(
             "length(currency) >= 3",
             name=op.f("ck__payment_refunds__ck_payment_refunds_currency_len"),
         ),
-        sa.CheckConstraint(
-            "version >= 1", name=op.f("ck__payment_refunds__ck_payment_refunds_version_pos")
-        ),
+        sa.CheckConstraint("version >= 1", name=op.f("ck__payment_refunds__ck_payment_refunds_version_pos")),
         sa.ForeignKeyConstraint(
             ["payment_id"],
             ["payments.id"],
@@ -1849,28 +1593,18 @@ def upgrade() -> None:
         ),
         sa.PrimaryKeyConstraint("id", name=op.f("pk__payment_refunds")),
     )
-    op.create_index(
-        op.f("ix__payment_refunds__created_at"), "payment_refunds", ["created_at"], unique=False
-    )
-    op.create_index(
-        op.f("ix__payment_refunds__external_id"), "payment_refunds", ["external_id"], unique=False
-    )
+    op.create_index(op.f("ix__payment_refunds__created_at"), "payment_refunds", ["created_at"], unique=False)
+    op.create_index(op.f("ix__payment_refunds__external_id"), "payment_refunds", ["external_id"], unique=False)
     op.create_index(op.f("ix__payment_refunds__id"), "payment_refunds", ["id"], unique=False)
-    op.create_index(
-        op.f("ix__payment_refunds__payment_id"), "payment_refunds", ["payment_id"], unique=False
-    )
+    op.create_index(op.f("ix__payment_refunds__payment_id"), "payment_refunds", ["payment_id"], unique=False)
     op.create_index(
         op.f("ix__payment_refunds__refund_number"),
         "payment_refunds",
         ["refund_number"],
         unique=True,
     )
-    op.create_index(
-        op.f("ix__payment_refunds__status"), "payment_refunds", ["status"], unique=False
-    )
-    op.create_index(
-        op.f("ix__payment_refunds__updated_at"), "payment_refunds", ["updated_at"], unique=False
-    )
+    op.create_index(op.f("ix__payment_refunds__status"), "payment_refunds", ["status"], unique=False)
+    op.create_index(op.f("ix__payment_refunds__updated_at"), "payment_refunds", ["updated_at"], unique=False)
     op.create_index(op.f("ix__payment_refunds__uuid"), "payment_refunds", ["uuid"], unique=True)
     op.create_index(
         "ix_payment_refunds_payment_status",
@@ -1905,9 +1639,7 @@ def upgrade() -> None:
             nullable=False,
         ),
         sa.Column("details", postgresql.JSONB(astext_type=sa.Text()), nullable=True),
-        sa.CheckConstraint(
-            "length(currency) >= 3", name=op.f("ck__provider_reconciliation__ck_recon_currency_len")
-        ),
+        sa.CheckConstraint("length(currency) >= 3", name=op.f("ck__provider_reconciliation__ck_recon_currency_len")),
         sa.ForeignKeyConstraint(
             ["matched_payment_id"],
             ["payments.id"],
@@ -1928,9 +1660,7 @@ def upgrade() -> None:
         ["external_id"],
         unique=False,
     )
-    op.create_index(
-        op.f("ix__provider_reconciliation__id"), "provider_reconciliation", ["id"], unique=False
-    )
+    op.create_index(op.f("ix__provider_reconciliation__id"), "provider_reconciliation", ["id"], unique=False)
     op.create_index(
         op.f("ix__provider_reconciliation__matched_payment_id"),
         "provider_reconciliation",
@@ -1984,9 +1714,7 @@ def upgrade() -> None:
             "(stock_id IS NOT NULL) OR (product_id IS NOT NULL)",
             name=op.f("ck__stock_movements__ck_stock_movement_ref_nonnull"),
         ),
-        sa.CheckConstraint(
-            "new_quantity >= 0", name=op.f("ck__stock_movements__ck_movement_newqty_nonneg")
-        ),
+        sa.CheckConstraint("new_quantity >= 0", name=op.f("ck__stock_movements__ck_movement_newqty_nonneg")),
         sa.ForeignKeyConstraint(
             ["order_id"],
             ["orders.id"],
@@ -2014,30 +1742,18 @@ def upgrade() -> None:
         sa.PrimaryKeyConstraint("id", name=op.f("pk__stock_movements")),
     )
     op.create_index(op.f("ix__stock_movements__id"), "stock_movements", ["id"], unique=False)
-    op.create_index(
-        op.f("ix__stock_movements__is_archived"), "stock_movements", ["is_archived"], unique=False
-    )
+    op.create_index(op.f("ix__stock_movements__is_archived"), "stock_movements", ["is_archived"], unique=False)
     op.create_index(
         op.f("ix__stock_movements__movement_type"),
         "stock_movements",
         ["movement_type"],
         unique=False,
     )
-    op.create_index(
-        op.f("ix__stock_movements__order_id"), "stock_movements", ["order_id"], unique=False
-    )
-    op.create_index(
-        op.f("ix__stock_movements__product_id"), "stock_movements", ["product_id"], unique=False
-    )
-    op.create_index(
-        op.f("ix__stock_movements__reference_id"), "stock_movements", ["reference_id"], unique=False
-    )
-    op.create_index(
-        op.f("ix__stock_movements__stock_id"), "stock_movements", ["stock_id"], unique=False
-    )
-    op.create_index(
-        op.f("ix__stock_movements__user_id"), "stock_movements", ["user_id"], unique=False
-    )
+    op.create_index(op.f("ix__stock_movements__order_id"), "stock_movements", ["order_id"], unique=False)
+    op.create_index(op.f("ix__stock_movements__product_id"), "stock_movements", ["product_id"], unique=False)
+    op.create_index(op.f("ix__stock_movements__reference_id"), "stock_movements", ["reference_id"], unique=False)
+    op.create_index(op.f("ix__stock_movements__stock_id"), "stock_movements", ["stock_id"], unique=False)
+    op.create_index(op.f("ix__stock_movements__user_id"), "stock_movements", ["user_id"], unique=False)
     op.create_index("ix_movements_order", "stock_movements", ["order_id"], unique=False)
     op.create_index(
         "ix_movements_product_type",
@@ -2045,9 +1761,7 @@ def upgrade() -> None:
         ["product_id", "movement_type"],
         unique=False,
     )
-    op.create_index(
-        "ix_movements_stock_created", "stock_movements", ["stock_id", "created_at"], unique=False
-    )
+    op.create_index("ix_movements_stock_created", "stock_movements", ["stock_id", "created_at"], unique=False)
     # ### end Alembic commands ###
 
 
@@ -2068,27 +1782,17 @@ def downgrade() -> None:
     op.drop_table("stock_movements")
     op.drop_index("ix_recon_provider_external", table_name="provider_reconciliation")
     op.drop_index(op.f("ix__provider_reconciliation__status"), table_name="provider_reconciliation")
-    op.drop_index(
-        op.f("ix__provider_reconciliation__statement_at"), table_name="provider_reconciliation"
-    )
-    op.drop_index(
-        op.f("ix__provider_reconciliation__provider"), table_name="provider_reconciliation"
-    )
+    op.drop_index(op.f("ix__provider_reconciliation__statement_at"), table_name="provider_reconciliation")
+    op.drop_index(op.f("ix__provider_reconciliation__provider"), table_name="provider_reconciliation")
     op.drop_index(
         op.f("ix__provider_reconciliation__matched_payment_id"),
         table_name="provider_reconciliation",
     )
     op.drop_index(op.f("ix__provider_reconciliation__id"), table_name="provider_reconciliation")
-    op.drop_index(
-        op.f("ix__provider_reconciliation__external_id"), table_name="provider_reconciliation"
-    )
-    op.drop_index(
-        op.f("ix__provider_reconciliation__created_at"), table_name="provider_reconciliation"
-    )
+    op.drop_index(op.f("ix__provider_reconciliation__external_id"), table_name="provider_reconciliation")
+    op.drop_index(op.f("ix__provider_reconciliation__created_at"), table_name="provider_reconciliation")
     op.drop_table("provider_reconciliation")
-    op.drop_index(
-        "ix_payment_refunds_provider_data_gin", table_name="payment_refunds", postgresql_using="gin"
-    )
+    op.drop_index("ix_payment_refunds_provider_data_gin", table_name="payment_refunds", postgresql_using="gin")
     op.drop_index("ix_payment_refunds_payment_status", table_name="payment_refunds")
     op.drop_index(op.f("ix__payment_refunds__uuid"), table_name="payment_refunds")
     op.drop_index(op.f("ix__payment_refunds__updated_at"), table_name="payment_refunds")
@@ -2102,9 +1806,7 @@ def downgrade() -> None:
     op.drop_index("ix_wallet_transaction_wallet_type", table_name="wallet_transactions")
     op.drop_index(op.f("ix__wallet_transactions__wallet_id"), table_name="wallet_transactions")
     op.drop_index(op.f("ix__wallet_transactions__updated_at"), table_name="wallet_transactions")
-    op.drop_index(
-        op.f("ix__wallet_transactions__transaction_type"), table_name="wallet_transactions"
-    )
+    op.drop_index(op.f("ix__wallet_transactions__transaction_type"), table_name="wallet_transactions")
     op.drop_index(op.f("ix__wallet_transactions__reference_id"), table_name="wallet_transactions")
     op.drop_index(op.f("ix__wallet_transactions__id"), table_name="wallet_transactions")
     op.drop_index(op.f("ix__wallet_transactions__deleted_at"), table_name="wallet_transactions")
@@ -2391,5 +2093,3 @@ def downgrade() -> None:
     op.drop_index(op.f("ix__billing_payments__authorized_at"), table_name="billing_payments")
     op.drop_table("billing_payments")
     # ### end Alembic commands ###
-
-

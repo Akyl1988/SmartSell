@@ -33,5 +33,3 @@ def upgrade() -> None:
 
 def downgrade() -> None:
     op.drop_index("uq_subscription_company_active_states", table_name="subscriptions")
-
-

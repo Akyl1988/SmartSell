@@ -4,7 +4,9 @@ import os
 
 import psycopg2
 
-ADMIN_URL = os.getenv("ADMIN_DATABASE_URL") or os.getenv("DATABASE_URL") or "postgresql://postgres@localhost:5432/postgres"
+ADMIN_URL = (
+    os.getenv("ADMIN_DATABASE_URL") or os.getenv("DATABASE_URL") or "postgresql://postgres@localhost:5432/postgres"
+)
 
 conn = psycopg2.connect(ADMIN_URL)
 conn.autocommit = True
