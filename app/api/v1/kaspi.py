@@ -71,7 +71,7 @@ async def _auth_user(current_user: User = Depends(get_current_user)) -> User:
 
 
 def _resolve_company_id(current_user: User, company_id: int | None) -> int:
-    return resolve_tenant_company_id(current_user, company_id, not_found_detail="Forbidden: cross-tenant access")
+    return resolve_tenant_company_id(current_user, not_found_detail="Forbidden: cross-tenant access")
 
 
 # ------------------------------- Локальные схемы -----------------------------

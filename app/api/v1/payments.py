@@ -285,13 +285,12 @@ async def get_payment(
 @router.get("/", response_model=PaymentList)
 async def list_payments(
     user_id: int | None = Query(None, ge=1),
-    company_id: int | None = Query(None, ge=1),
     page: int = Query(1, ge=1),
     size: int = Query(20, ge=1, le=200),
     current_user: User = Depends(_auth_user),
     db: AsyncSession = Depends(get_async_db),
 ):
-    resolved_company_id = resolve_tenant_company_id(current_user, company_id)
+    resolved_company_id = resolve_tenant_company_id(current_user)
     allowed_ids: list[int] | None = None
     if user_id is not None:
         await _ensure_user_in_company(user_id, current_user, db, not_found_detail="payment not found")

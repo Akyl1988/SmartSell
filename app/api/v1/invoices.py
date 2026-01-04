@@ -121,7 +121,6 @@ async def create_invoice(
 
 @router.get("", response_model=list[InvoiceOut])
 async def list_invoices(
-    company_id: int | None = Query(None, ge=1),
     db: AsyncSession = Depends(get_async_db),
     user: User = Depends(_auth_user),
 ):
@@ -148,7 +147,6 @@ async def list_invoices(
 @router.get("/{invoice_id}", response_model=InvoiceOut)
 async def get_invoice(
     invoice_id: int,
-    company_id: int | None = Query(None, ge=1),
     db: AsyncSession = Depends(get_async_db),
     user: User = Depends(_auth_user),
 ):

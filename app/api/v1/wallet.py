@@ -360,14 +360,13 @@ async def create_account(
 async def list_accounts(
     user_id: int | None = Query(None, ge=1),
     currency: str | None = Query(None, min_length=3, max_length=10),
-    company_id: int | None = Query(None, ge=1),
     page: int = Query(1, ge=1),
     size: int = Query(50, ge=1, le=200),
     current_user: User = Depends(_auth_user),
     db: AsyncSession = Depends(get_async_db),
 ) -> WalletAccountsPage:
     try:
-        resolved_company_id = resolve_tenant_company_id(current_user, company_id)
+        resolved_company_id = resolve_tenant_company_id(current_user)
         ccy = _norm_ccy(currency) if currency else None
         if user_id is not None:
             await _ensure_user_in_company(user_id, current_user, db)
