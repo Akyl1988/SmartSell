@@ -869,18 +869,14 @@ if _HAS_FASTAPI:
 
     def resolve_tenant_company_id(
         current_user: User,
-        requested_company_id: int | None = None,
         *,
-        allow_platform_override: bool = False,
-        not_found_detail: str = "forbidden",
+        not_found_detail: str = "Company not set",
     ) -> int:
-        """Resolve company scope from token claims and enforce tenant isolation.
+        """Resolve tenant company strictly from token/user; no platform overrides.
 
-        - For tenant users, a provided company_id must match the token/user company_id;
-          otherwise a 403 is raised.
-        - If allow_platform_override is True and the caller is platform_admin, we honor
-          the requested company_id for cross-tenant operations.
-        - Falls back to the token claim first, then the user record.
+        If neither token claims nor user record contains company_id (or it is falsy),
+        a 403 is raised. This enforces that platform_admin/superadmin without an
+        explicit tenant context cannot call tenant-scoped v1 endpoints.
         """
 
         token_claims = getattr(current_user, "_token_claims", {}) or {}
@@ -888,27 +884,13 @@ if _HAS_FASTAPI:
         user_company = getattr(current_user, "company_id", None)
         resolved = token_company if token_company is not None else user_company
 
-        if requested_company_id is not None:
-            if (
-                resolved is not None
-                and requested_company_id != resolved
-                and not (allow_platform_override and is_platform_admin(current_user))
-            ):
-                raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="forbidden")
-            if allow_platform_override and is_platform_admin(current_user):
-                resolved = requested_company_id
-            elif resolved is None:
-                resolved = requested_company_id
-
-        if resolved is None:
+        if not resolved:
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=not_found_detail)
 
         return int(resolved)
 
     def _enforce_roles(user: User, allowed: set[str]) -> User:
         role = _user_role(user)
-        if role == "platform_admin":
-            return user
         if role not in allowed:
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="forbidden")
         return user

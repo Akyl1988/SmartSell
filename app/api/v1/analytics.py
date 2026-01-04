@@ -13,11 +13,11 @@ from sqlalchemy import and_, desc, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.db import get_async_db
-from app.core.deps import api_rate_limit_dep, ensure_idempotency
-from app.core.errors import bad_request, server_error
+from app.core.dependencies import api_rate_limit_dep, ensure_idempotency
+from app.core.exceptions import bad_request, server_error
 from app.core.security import get_current_user, resolve_tenant_company_id
 from app.models import Order, OrderItem, Product, User
-from app.schemas import (
+from app.schemas.analytics import (
     AnalyticsFilter,
     CustomerAnalytics,
     DashboardStats,
@@ -46,7 +46,7 @@ async def require_analyst(user: User = Depends(_auth_user)) -> User:
 
 
 def _resolve_company_id(current_user: User) -> int:
-    return resolve_tenant_company_id(current_user)
+    return resolve_tenant_company_id(current_user, not_found_detail="Company not set")
 
 
 def _parse_dt_or_default(value: str | None, default: datetime) -> datetime:
@@ -94,11 +94,7 @@ async def get_dashboard_stats(
 
     # total orders
     total_orders = (
-        await db.execute(
-            select(func.count(Order.id)).where(
-                and_(Order.company_id == resolved_company_id, Order.is_deleted.is_(False))
-            )
-        )
+        await db.execute(select(func.count(Order.id)).where(Order.company_id == resolved_company_id))
     ).scalar() or 0
 
     # total revenue (completed/paid)
@@ -108,7 +104,6 @@ async def get_dashboard_stats(
                 and_(
                     Order.company_id == resolved_company_id,
                     Order.status.in_(["completed", "paid"]),
-                    Order.is_deleted.is_(False),
                 )
             )
         )
@@ -117,11 +112,7 @@ async def get_dashboard_stats(
 
     # total products
     total_products = (
-        await db.execute(
-            select(func.count(Product.id)).where(
-                and_(Product.company_id == resolved_company_id, Product.is_deleted.is_(False))
-            )
-        )
+        await db.execute(select(func.count(Product.id)).where(Product.company_id == resolved_company_id))
     ).scalar() or 0
 
     # unique customers
@@ -131,7 +122,6 @@ async def get_dashboard_stats(
                 and_(
                     Order.company_id == resolved_company_id,
                     Order.customer_phone.isnot(None),
-                    Order.is_deleted.is_(False),
                 )
             )
         )
@@ -144,7 +134,6 @@ async def get_dashboard_stats(
                 and_(
                     Order.company_id == resolved_company_id,
                     Order.status == "pending",
-                    Order.is_deleted.is_(False),
                 )
             )
         )
@@ -152,10 +141,7 @@ async def get_dashboard_stats(
 
     # recent orders
     recent_orders_res = await db.execute(
-        select(Order)
-        .where(and_(Order.company_id == resolved_company_id, Order.is_deleted.is_(False)))
-        .order_by(desc(Order.created_at))
-        .limit(5)
+        select(Order).where(Order.company_id == resolved_company_id).order_by(desc(Order.created_at)).limit(5)
     )
     recent_orders_rows = recent_orders_res.scalars().all()
     recent_orders = [
@@ -194,7 +180,6 @@ async def get_dashboard_stats(
             and_(
                 Order.company_id == resolved_company_id,
                 Order.status.in_(["completed", "paid"]),
-                Order.is_deleted.is_(False),
             )
         )
         .group_by(Product.id, Product.name)
@@ -284,7 +269,6 @@ async def get_customer_analytics(
                     Order.customer_phone.isnot(None),
                     Order.created_at >= start_date,
                     Order.created_at <= end_date,
-                    Order.is_deleted.is_(False),
                 )
             )
         )
@@ -299,7 +283,6 @@ async def get_customer_analytics(
                 Order.customer_phone.isnot(None),
                 Order.created_at >= start_date,
                 Order.created_at <= end_date,
-                Order.is_deleted.is_(False),
             )
         )
         .group_by(Order.customer_phone)
@@ -328,7 +311,6 @@ async def get_customer_analytics(
                 Order.status.in_(["completed", "paid"]),
                 Order.created_at >= start_date,
                 Order.created_at <= end_date,
-                Order.is_deleted.is_(False),
             )
         )
         .group_by(Order.customer_phone, Order.customer_name)
@@ -392,7 +374,6 @@ async def get_product_analytics(
                 Order.status.in_(["completed", "paid"]),
                 Order.created_at >= start_date,
                 Order.created_at <= end_date,
-                Order.is_deleted.is_(False),
             )
         )
         .group_by(Product.id, Product.name, Product.sku)
@@ -426,7 +407,6 @@ async def get_product_analytics(
                 Order.created_at >= start_date,
                 Order.created_at <= end_date,
                 Product.category.isnot(None),
-                Order.is_deleted.is_(False),
             )
         )
         .group_by(Product.category)
@@ -513,7 +493,7 @@ async def get_sales_data(
     else:  # month
         date_trunc = func.date_trunc("month", Order.created_at)
 
-    resolved_company_id = resolve_tenant_company_id(current_user)
+    resolved_company_id = resolve_tenant_company_id(current_user, not_found_detail="Company not set")
 
     res = await db.execute(
         select(
@@ -526,7 +506,6 @@ async def get_sales_data(
                 Order.status.in_(["completed", "paid"]),
                 Order.created_at >= start_date,
                 Order.created_at <= end_date,
-                Order.is_deleted.is_(False),
             )
         )
         .group_by("period")

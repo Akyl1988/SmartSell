@@ -71,7 +71,7 @@ async def _auth_user(current_user: User = Depends(get_current_user)) -> User:
 
 
 def _resolve_company_id(current_user: User) -> int:
-    return resolve_tenant_company_id(current_user, not_found_detail="Forbidden: cross-tenant access")
+    return resolve_tenant_company_id(current_user, not_found_detail="Company not set")
 
 
 # ------------------------------- Локальные схемы -----------------------------
@@ -376,10 +376,12 @@ async def kaspi_generate_feed(
         svc = KaspiService()
         xml_body = await svc.generate_product_feed(company_id=resolved_company_id, db=session)
         return Response(content=xml_body, media_type="application/xml")
+    except HTTPException:
+        raise
     except RuntimeError as e:
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e))
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(e))
     except Exception as e:
-        logger.error("Kaspi generate feed unexpected error: company_id=%s err=%s", resolved_company_id, e)
+        logger.exception("Kaspi generate feed unexpected error: company_id=%s", resolved_company_id)
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e))
 
 

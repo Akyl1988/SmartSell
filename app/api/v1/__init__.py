@@ -67,6 +67,7 @@ DEFAULT_ROUTER_MODULES: Final[list[str]] = [
     "app.api.v1.wallet",
     "app.api.v1.payments",
     "app.api.v1.subscriptions",
+    "app.api.v1.analytics",
     # Kaspi API (обязательно включаем, чтобы появился /api/v1/kaspi/*)
     "app.api.v1.kaspi",
 ]

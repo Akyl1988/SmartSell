@@ -12,13 +12,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.db import get_async_db
-from app.core.security import (
-    get_current_user,
-    is_platform_admin,
-    require_company_admin,
-    require_manager,
-    resolve_tenant_company_id,
-)
+from app.core.security import get_current_user, require_company_admin, require_manager, resolve_tenant_company_id
 from app.models.user import User
 from app.storage.wallet_sql import WalletStorageSQL
 
@@ -84,12 +78,11 @@ async def _ensure_user_in_company(
     *,
     not_found_detail: str = "account not found",
 ) -> User:
+    resolved_company_id = resolve_tenant_company_id(current_user, not_found_detail="Company not set")
     user = await db.get(User, target_user_id)
     if not user:
         raise HTTPException(status_code=404, detail=not_found_detail)
-    if is_platform_admin(current_user):
-        return user
-    if getattr(user, "company_id", None) != getattr(current_user, "company_id", None):
+    if getattr(user, "company_id", None) != resolved_company_id:
         raise HTTPException(status_code=404, detail=not_found_detail)
     return user
 
@@ -107,8 +100,9 @@ async def _ensure_account_access(
     current_user: User,
     db: AsyncSession,
 ) -> dict[str, Any]:
+    resolved_company_id = resolve_tenant_company_id(current_user, not_found_detail="Company not set")
     storage = await _get_storage(db)
-    acc = await storage.get_account(account_id, company_id=getattr(current_user, "company_id", None))
+    acc = await storage.get_account(account_id, company_id=resolved_company_id)
     if not acc:
         logger.warning(
             "wallet access denied: account missing; account_id=%s user_id=%s company_id=%s",
@@ -124,18 +118,14 @@ async def _ensure_account_access(
 async def _filter_accounts_for_user(
     items: list[dict[str, Any]], current_user: User, db: AsyncSession
 ) -> list[dict[str, Any]]:
-    if is_platform_admin(current_user):
-        return items
-    current_company = getattr(current_user, "company_id", None)
-    if current_company is None:
-        return []
+    resolved_company_id = resolve_tenant_company_id(current_user, not_found_detail="Company not set")
     filtered: list[dict[str, Any]] = []
     for i in items:
         uid = i.get("user_id")
         if uid is None:
             continue
         user = await db.get(User, int(uid))
-        if user and getattr(user, "company_id", None) == current_company:
+        if user and getattr(user, "company_id", None) == resolved_company_id:
             filtered.append(i)
     return filtered
 
@@ -366,20 +356,19 @@ async def list_accounts(
     db: AsyncSession = Depends(get_async_db),
 ) -> WalletAccountsPage:
     try:
-        resolved_company_id = resolve_tenant_company_id(current_user)
+        resolved_company_id = resolve_tenant_company_id(current_user, not_found_detail="Company not set")
         ccy = _norm_ccy(currency) if currency else None
         if user_id is not None:
             await _ensure_user_in_company(user_id, current_user, db)
 
         allowed_ids: list[int] | None = None
-        if not is_platform_admin(current_user):
-            stmt = select(User.id).where(User.company_id == resolved_company_id)
-            rows = (await db.execute(stmt)).all()
-            allowed_ids = [int(r[0]) for r in rows]
-            if user_id is not None:
-                allowed_ids = [uid for uid in allowed_ids if uid == user_id]
-            if allowed_ids is not None and not allowed_ids:
-                allowed_ids = [-1]
+        stmt = select(User.id).where(User.company_id == resolved_company_id)
+        rows = (await db.execute(stmt)).all()
+        allowed_ids = [int(r[0]) for r in rows]
+        if user_id is not None:
+            allowed_ids = [uid for uid in allowed_ids if uid == user_id]
+        if allowed_ids is not None and not allowed_ids:
+            allowed_ids = [-1]
 
         storage = await _get_storage(db)
         caps = _storage_caps(storage)
@@ -502,9 +491,10 @@ async def get_balance(
     db: AsyncSession = Depends(get_async_db),
 ) -> BalanceOut:
     try:
+        resolved_company_id = resolve_tenant_company_id(current_user, not_found_detail="Company not set")
         await _ensure_account_access(account_id, current_user, db)
         storage = await _get_storage(db)
-        bal = await storage.get_balance(account_id, company_id=getattr(current_user, "company_id", None))
+        bal = await storage.get_balance(account_id, company_id=resolved_company_id)
         if isinstance(bal, dict):
             return BalanceOut(
                 account_id=int(bal.get("account_id", account_id)),
@@ -536,13 +526,14 @@ async def deposit(
     db: AsyncSession = Depends(get_async_db),
 ) -> WalletTransactionOut:
     try:
+        resolved_company_id = resolve_tenant_company_id(current_user, not_found_detail="Company not set")
         await _ensure_account_access(account_id, current_user, db)
         storage = await _get_storage(db)
         out = await storage.deposit(
             account_id,
             req.amount,
             getattr(req, "reference", None),
-            company_id=getattr(current_user, "company_id", None),
+            company_id=resolved_company_id,
         )
         await db.commit()
         return WalletTransactionOut(
@@ -571,13 +562,14 @@ async def withdraw(
     db: AsyncSession = Depends(get_async_db),
 ) -> WalletTransactionOut:
     try:
+        resolved_company_id = resolve_tenant_company_id(current_user, not_found_detail="Company not set")
         await _ensure_account_access(account_id, current_user, db)
         storage = await _get_storage(db)
         out = await storage.withdraw(
             account_id,
             req.amount,
             getattr(req, "reference", None),
-            company_id=getattr(current_user, "company_id", None),
+            company_id=resolved_company_id,
         )
         await db.commit()
         return WalletTransactionOut(
@@ -607,17 +599,17 @@ async def transfer(
     if req.source_account_id == req.destination_account_id:
         raise HTTPException(status_code=400, detail="source and destination must differ")
     try:
+        resolved_company_id = resolve_tenant_company_id(current_user, not_found_detail="Company not set")
         src_acc = await _ensure_account_access(req.source_account_id, current_user, db)
         dst_acc = await _ensure_account_access(req.destination_account_id, current_user, db)
-        if not is_platform_admin(current_user):
-            src_company = getattr(
-                await _ensure_user_in_company(int(src_acc.get("user_id", 0)), current_user, db), "company_id", None
-            )
-            dst_company = getattr(
-                await _ensure_user_in_company(int(dst_acc.get("user_id", 0)), current_user, db), "company_id", None
-            )
-            if src_company != dst_company:
-                raise HTTPException(status_code=404, detail="account not found")
+        src_company = getattr(
+            await _ensure_user_in_company(int(src_acc.get("user_id", 0)), current_user, db), "company_id", None
+        )
+        dst_company = getattr(
+            await _ensure_user_in_company(int(dst_acc.get("user_id", 0)), current_user, db), "company_id", None
+        )
+        if src_company != dst_company or src_company != resolved_company_id:
+            raise HTTPException(status_code=404, detail="account not found")
 
         storage = await _get_storage(db)
         out = await storage.transfer(
@@ -625,7 +617,7 @@ async def transfer(
             req.destination_account_id,
             req.amount,
             getattr(req, "reference", None),
-            company_id=getattr(current_user, "company_id", None),
+            company_id=resolved_company_id,
         )
         await db.commit()
         src = out.get("source", {}) if isinstance(out, dict) else {}
@@ -671,13 +663,14 @@ async def ledger(
     db: AsyncSession = Depends(get_async_db),
 ) -> LedgerPage:
     try:
+        resolved_company_id = resolve_tenant_company_id(current_user, not_found_detail="Company not set")
         await _ensure_account_access(account_id, current_user, db)
         storage = await _get_storage(db)
         page_obj = await storage.list_ledger(
             account_id,
             page,
             size,
-            company_id=getattr(current_user, "company_id", None),
+            company_id=resolved_company_id,
         )
         items = page_obj.get("items", []) if isinstance(page_obj, dict) else []
         meta = (
@@ -732,12 +725,13 @@ async def adjust_balance(
             detail="adjust_balance not supported by storage",
         )
     try:
+        resolved_company_id = resolve_tenant_company_id(current_user, not_found_detail="Company not set")
         await _ensure_account_access(account_id, current_user, db)
         out = await storage.adjust_balance(
             account_id,
             payload.new_balance,
             payload.reference,
-            company_id=getattr(current_user, "company_id", None),
+            company_id=resolved_company_id,
         )
         await db.commit()
         return WalletTransactionOut(
