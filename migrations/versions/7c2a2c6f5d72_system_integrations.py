@@ -43,9 +43,7 @@ def upgrade() -> None:
             nullable=False,
         ),
         sa.PrimaryKeyConstraint("id", name=op.f("pk__system_integrations")),
-        sa.UniqueConstraint(
-            "domain", "provider", name=op.f("uq__system_integrations__domain_provider")
-        ),
+        sa.UniqueConstraint("domain", "provider", name=op.f("uq__system_integrations__domain_provider")),
         sa.CheckConstraint("version > 0", name=op.f("ck__system_integrations__version_pos")),
     )
     op.create_index(
@@ -75,5 +73,3 @@ def downgrade() -> None:
     op.drop_table("system_active_providers")
     op.drop_index(op.f("ix__system_integrations__domain"), table_name="system_integrations")
     op.drop_table("system_integrations")
-
-

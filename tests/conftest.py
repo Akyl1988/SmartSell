@@ -1122,7 +1122,7 @@ async def auth_headers(async_client: AsyncClient):
             user.is_verified = True
         s.commit()
         s.refresh(user)
-        token = create_access_token(subject=user.id)
+        token = create_access_token(subject=user.id, extra={"company_id": user.company_id, "role": user.role})
 
     return {"Authorization": f"Bearer {token}"}
 
@@ -1159,7 +1159,7 @@ def _make_company_headers(*, company_id: int, role: str, phone: str) -> dict[str
             user.is_verified = True
         s.commit()
         s.refresh(user)
-        token = create_access_token(subject=user.id)
+        token = create_access_token(subject=user.id, extra={"company_id": user.company_id, "role": user.role})
 
     return {"Authorization": f"Bearer {token}"}
 

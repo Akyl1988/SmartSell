@@ -190,14 +190,15 @@ def _collect_bases() -> list[tuple[MetaData, str]]:
     # Кандидаты для поиска декларативной базы
     # ПРИОРИТЕТ: app.models.base.Base — единственный источник истины
     base_candidates = [
-        "app.models.base:Base",   # ОСНОВНОЙ источник (единственный DeclarativeBase)
-        "app.models:Base",        # реэкспорт из __init__
-        "app.core.db:Base",       # fallback импорт (должен быть тот же Base)
+        "app.models.base:Base",  # ОСНОВНОЙ источник (единственный DeclarativeBase)
+        "app.models:Base",  # реэкспорт из __init__
+        "app.core.db:Base",  # fallback импорт (должен быть тот же Base)
     ]
 
     # Явно вызываем ensure_models_loaded() для загрузки всех моделей
     try:
         from app.models import ensure_models_loaded
+
         ensure_models_loaded()
         _debug("Модели загружены через ensure_models_loaded()")
     except Exception as e:
@@ -281,9 +282,7 @@ def get_url_from_env_or_cfg() -> str:
     3) fallback: alembic.ini sqlalchemy.url
     """
     ini_url = config.get_main_option("sqlalchemy.url")
-    env_url = (
-        os.getenv("DATABASE_URL") or os.getenv("DB_URL") or os.getenv("SQLALCHEMY_DATABASE_URI")
-    )
+    env_url = os.getenv("DATABASE_URL") or os.getenv("DB_URL") or os.getenv("SQLALCHEMY_DATABASE_URI")
 
     source = "env-or-ini"
     url = None
@@ -321,6 +320,7 @@ _found_metas = _collect_bases()
 # Явно используем единую MetaData из app.models.base.Base
 try:
     from app.models.base import Base as _ModelsBase  # единый DeclarativeBase
+
     target_metadata = _ModelsBase.metadata
     _meta_sources = ["app.models.base:Base"]
     _debug("Target metadata set to app.models.base.Base.metadata")
@@ -329,17 +329,14 @@ except Exception:
     target_metadata, _meta_sources = _combine_metadata(_found_metas)
 
 if target_metadata is None:
-    _debug(
-        "ВНИМАНИЕ: ни одна MetaData не найдена. "
-        "Autogenerate не сможет сравнить модели со схемой БД."
-    )
+    _debug("ВНИМАНИЕ: ни одна MetaData не найдена. " "Autogenerate не сможет сравнить модели со схемой БД.")
 
 # ======================================================================
 # 4) Политика включения/исключения объектов
 # ======================================================================
 
 SYSTEM_TABLE_PREFIXES = (
-    "pg_",          # PostgreSQL системные
+    "pg_",  # PostgreSQL системные
     "sqlalchemy_",  # служебные таблицы SQLAlchemy
 )
 
@@ -347,13 +344,9 @@ SYSTEM_TABLE_PREFIXES = (
 ALEMBIC_VERSION_TABLE = os.getenv("ALEMBIC_VERSION_TABLE", "alembic_version")
 ALEMBIC_VERSION_TABLE_SCHEMA = os.getenv("ALEMBIC_VERSION_TABLE_SCHEMA") or None
 
-EXCLUDE_TABLES = set(
-    t.strip() for t in os.getenv("ALEMBIC_EXCLUDE_TABLES", "").split(",") if t.strip()
-)
+EXCLUDE_TABLES = set(t.strip() for t in os.getenv("ALEMBIC_EXCLUDE_TABLES", "").split(",") if t.strip())
 
-EXCLUDE_SCHEMAS = set(
-    s.strip() for s in os.getenv("ALEMBIC_EXCLUDE_SCHEMAS", "").split(",") if s.strip()
-)
+EXCLUDE_SCHEMAS = set(s.strip() for s in os.getenv("ALEMBIC_EXCLUDE_SCHEMAS", "").split(",") if s.strip())
 INCLUDE_SCHEMAS_OPT = os.getenv("ALEMBIC_INCLUDE_SCHEMAS")  # явный whitelist
 
 DEFAULT_SCHEMA = os.getenv("DEFAULT_SCHEMA", "public").strip() or "public"
@@ -370,9 +363,7 @@ def include_object(object_, name: str, type_: str, reflected: bool, compare_to):
     if type_ == "table" and name == ALEMBIC_VERSION_TABLE:
         return False
 
-    schema_name = getattr(getattr(object_, "schema", None), "name", None) or getattr(
-        object_, "schema", None
-    )
+    schema_name = getattr(getattr(object_, "schema", None), "name", None) or getattr(object_, "schema", None)
     if schema_name and schema_name in EXCLUDE_SCHEMAS:
         return False
 
@@ -408,10 +399,10 @@ def include_name(name: str | None, type_: str | None, parent_names) -> bool:
 
 
 def _ensure_version_table_size(connection: Connection, schema: str | None) -> None:
-        """Ensure alembic_version.version_num can store long revision ids (256 chars) if table already exists."""
-        vt_schema = schema or DEFAULT_SCHEMA or "public"
-        try:
-                sql = f"""
+    """Ensure alembic_version.version_num can store long revision ids (256 chars) if table already exists."""
+    vt_schema = schema or DEFAULT_SCHEMA or "public"
+    try:
+        sql = f"""
                 DO $$
                 BEGIN
                     IF EXISTS (
@@ -425,9 +416,9 @@ def _ensure_version_table_size(connection: Connection, schema: str | None) -> No
                     END IF;
                 END$$;
                 """
-                connection.execute(text(sql))
-        except Exception as e:  # pragma: no cover - diagnostic only
-                _debug(f"Version table size check skipped: {e!r}")
+        connection.execute(text(sql))
+    except Exception as e:  # pragma: no cover - diagnostic only
+        _debug(f"Version table size check skipped: {e!r}")
 
 
 # ======================================================================
@@ -649,9 +640,7 @@ def run_migrations_online() -> None:
                         text("select current_database(), current_user, current_schema()")
                     ).fetchone()
                     sp = connection.execute(text("show search_path")).scalar_one()
-                    print(
-                        f"[alembic] DB={info[0]} USER={info[1]} SCHEMA={info[2]} SEARCH_PATH={sp}"
-                    )
+                    print(f"[alembic] DB={info[0]} USER={info[1]} SCHEMA={info[2]} SEARCH_PATH={sp}")
                 elif _is_sqlite_url(url):
                     dbfile = url.replace("sqlite:///", "")
                     print(f"[alembic] SQLite DB file: {dbfile}")
@@ -673,12 +662,11 @@ def run_migrations_online() -> None:
                 # Дополнительно: убеждаемся, что таблица версий действительно в 'public'
                 try:
                     if _is_postgres_url(url):
-                        connection.execute(text(
-                            f'CREATE SCHEMA IF NOT EXISTS "{DEFAULT_SCHEMA}";'
-                        ))
+                        connection.execute(text(f'CREATE SCHEMA IF NOT EXISTS "{DEFAULT_SCHEMA}";'))
                         # Принудительно привязываем таблицу версий к нужной схеме, если её вдруг создали не там
-                        connection.execute(text(
-                            f"""
+                        connection.execute(
+                            text(
+                                f"""
                             DO $$
                             BEGIN
                               IF NOT EXISTS (
@@ -693,7 +681,8 @@ def run_migrations_online() -> None:
                               END IF;
                             END$$;
                             """
-                        ))
+                            )
+                        )
                 except Exception as e:
                     _debug(f"Проверка/создание схемы или version table пропущены: {e!r}")
 

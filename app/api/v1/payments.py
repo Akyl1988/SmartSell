@@ -11,7 +11,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.db import get_async_db
-from app.core.security import get_current_user as get_current_user_security
+from app.core.security import get_current_user, require_manager
 from app.models.user import User
 from app.storage.payments_sql import PaymentsStorageSQL
 from app.storage.wallet_sql import WalletStorageSQL
@@ -19,20 +19,8 @@ from app.storage.wallet_sql import WalletStorageSQL
 logger = logging.getLogger(__name__)
 
 
-async def _auth_user(
-    token_data: dict = Depends(get_current_user_security),
-    db: AsyncSession = Depends(get_async_db),
-) -> User:
-    sub = token_data.get("sub")
-    try:
-        user_id = int(sub)
-    except Exception:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Not authenticated")
-
-    user = await db.get(User, user_id)
-    if not user:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Not authenticated")
-    return user
+async def _auth_user(current_user: User = Depends(get_current_user)) -> User:
+    return current_user
 
 
 async def _get_payment_storage(db: AsyncSession) -> PaymentsStorageSQL:
@@ -53,15 +41,6 @@ async def _get_wallet_storage(db: AsyncSession) -> WalletStorageSQL:
     except Exception as e:
         logger.exception("wallet storage init failed: %s", e)
         raise HTTPException(status_code=_pick_http_status(e), detail=str(e))
-
-
-def require_role(*roles: str):
-    async def dep(user: User = Depends(_auth_user)):
-        if getattr(user, "role", None) not in roles:
-            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="forbidden")
-        return user
-
-    return dep
 
 
 def _pick_http_status(exc: Exception) -> int:
@@ -194,7 +173,7 @@ async def health():
 )
 async def create_and_capture(
     req: CreatePaymentRequest,
-    current_user: User = Depends(require_role("admin", "manager")),
+    current_user: User = Depends(require_manager),
     db: AsyncSession = Depends(get_async_db),
 ):
     try:
@@ -227,7 +206,7 @@ async def create_and_capture(
 async def refund(
     payment_id: int = Path(..., ge=1),
     req: RefundRequest = Body(...),
-    current_user: User = Depends(require_role("admin", "manager")),
+    current_user: User = Depends(require_manager),
     db: AsyncSession = Depends(get_async_db),
 ):
     try:
@@ -260,7 +239,7 @@ async def refund(
 async def cancel(
     payment_id: int = Path(..., ge=1),
     req: CancelRequest = Body(None),
-    current_user: User = Depends(require_role("admin", "manager")),
+    current_user: User = Depends(require_manager),
     db: AsyncSession = Depends(get_async_db),
 ):
     try:

@@ -10,9 +10,7 @@ TARGET_DB = "SmartSellTest"
 
 engine = create_engine(ADMIN_URL, isolation_level="AUTOCOMMIT")
 with engine.connect() as conn:
-    exists = conn.execute(
-        text("SELECT 1 FROM pg_database WHERE datname = :d"), {"d": TARGET_DB}
-    ).scalar()
+    exists = conn.execute(text("SELECT 1 FROM pg_database WHERE datname = :d"), {"d": TARGET_DB}).scalar()
     if exists:
         print(f"[OK] Database '{TARGET_DB}' already exists")
     else:

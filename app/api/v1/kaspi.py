@@ -36,7 +36,7 @@ from sqlalchemy import bindparam, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.db import get_async_db  # noqa — для совместимости импорт-алиас
-from app.core.security import get_current_user as get_current_user_security
+from app.core.security import get_current_user
 
 # Доменные зависимости/схемы:
 from app.integrations.kaspi_adapter import KaspiAdapter, KaspiAdapterError
@@ -66,20 +66,8 @@ def normalize_name(name: str) -> str:
     return name.strip().lower()
 
 
-async def _auth_user(
-    token_data: dict = Depends(get_current_user_security),
-    db: AsyncSession = Depends(get_async_db),
-) -> User:
-    sub = token_data.get("sub")
-    try:
-        user_id = int(sub)
-    except Exception:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Not authenticated")
-
-    user = await db.get(User, user_id)
-    if not user:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Not authenticated")
-    return user
+async def _auth_user(current_user: User = Depends(get_current_user)) -> User:
+    return current_user
 
 
 def _resolve_company_id(current_user: User, company_id: int | None) -> int:
