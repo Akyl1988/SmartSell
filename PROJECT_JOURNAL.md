@@ -340,3 +340,10 @@ Commits (per git show):
 - `tests/conftest.py`
 - `migrations/versions/20251228_subs_deleted_at.py`
 - `migrations/versions/20260102_wallet_and_payments.py`
+## [2026-01-04] Tests / RBAC
+
+### fixed
+- Устранён флейки-тест RBAC `tests/app/api/test_rbac_v2.py`: убрана зависимость от DB lookup по “магическому” телефону; проверка недостаточной роли теперь делается через вызов wallet endpoint и ожидание 403.
+
+### notes
+- Локальные проверки: `ruff check` и `pytest -q` — зелёные (167 passed, 5 skipped).
