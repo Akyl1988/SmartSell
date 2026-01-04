@@ -8,7 +8,6 @@ async def test_create_subscription_trial_ok(client, company_a_admin_headers):
     r = await client.post(
         BASE,
         json={
-            "company_id": 1001,
             "plan": "Pro",
             "billing_cycle": "monthly",
             "price": "24900.00",
@@ -31,7 +30,6 @@ async def test_forbid_second_active_subscription(client, company_a_admin_headers
     r1 = await client.post(
         BASE,
         json={
-            "company_id": 1001,
             "plan": "Start",
             "billing_cycle": "monthly",
             "price": "1000.00",
@@ -45,7 +43,6 @@ async def test_forbid_second_active_subscription(client, company_a_admin_headers
     r2 = await client.post(
         BASE,
         json={
-            "company_id": 1001,
             "plan": "Pro",
             "billing_cycle": "monthly",
             "price": "2000.00",
@@ -62,7 +59,6 @@ async def test_update_cancel_resume_renew_flow(client, company_a_admin_headers):
     r = await client.post(
         BASE,
         json={
-            "company_id": 1001,
             "plan": "Start",
             "billing_cycle": "yearly",
             "price": "12000.00",
@@ -97,7 +93,6 @@ async def test_current_and_filters(client, company_a_admin_headers):
     await client.post(
         BASE,
         json={
-            "company_id": 1001,
             "plan": "Pro",
             "billing_cycle": "monthly",
             "price": "5000.00",
@@ -107,8 +102,8 @@ async def test_current_and_filters(client, company_a_admin_headers):
         headers=company_a_admin_headers,
     )
 
-    cur = await client.get(f"{BASE}/current", params={"company_id": 1001}, headers=company_a_admin_headers)
+    cur = await client.get(f"{BASE}/current", headers=company_a_admin_headers)
     assert cur.status_code == 200 and cur.json() is not None
 
-    lst = await client.get(BASE, params={"company_id": 1001, "plan": "Pro"}, headers=company_a_admin_headers)
+    lst = await client.get(BASE, params={"plan": "Pro"}, headers=company_a_admin_headers)
     assert lst.status_code == 200 and isinstance(lst.json(), list)

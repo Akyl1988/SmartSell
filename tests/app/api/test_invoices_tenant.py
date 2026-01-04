@@ -19,7 +19,7 @@ async def test_invoices_list_same_company_allowed(client, db_session, company_a_
     )
     assert created.status_code == 201, created.text
 
-    listed = await client.get(f"/api/v1/invoices?company_id={company_a_id}", headers=company_a_admin_headers)
+    listed = await client.get("/api/v1/invoices", headers=company_a_admin_headers)
     assert listed.status_code == 200, listed.text
     items = listed.json()
     assert any(inv.get("company_id") == company_a_id for inv in items)
@@ -39,8 +39,10 @@ async def test_invoices_list_other_company_forbidden(
     )
     assert created.status_code == 201, created.text
 
-    forbidden = await client.get(f"/api/v1/invoices?company_id={company_a_id}", headers=company_b_admin_headers)
-    assert forbidden.status_code == 403
+    foreign = await client.get("/api/v1/invoices", headers=company_b_admin_headers)
+    assert foreign.status_code == 200, foreign.text
+    items = foreign.json()
+    assert all(inv.get("company_id") != company_a_id for inv in items)
 
 
 @pytest.mark.anyio
@@ -55,5 +57,7 @@ async def test_invoices_list_platform_admin_forbidden(client, db_session, compan
     )
     assert created.status_code == 201, created.text
 
-    forbidden = await client.get(f"/api/v1/invoices?company_id={company_a_id}", headers=auth_headers)
-    assert forbidden.status_code == 403
+    platform = await client.get("/api/v1/invoices", headers=auth_headers)
+    assert platform.status_code == 200, platform.text
+    items = platform.json()
+    assert all(inv.get("company_id") != company_a_id for inv in items)

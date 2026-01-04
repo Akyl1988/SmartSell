@@ -8,7 +8,6 @@ async def test_subscriptions_list_isolated_between_companies(
     async_client, company_a_admin_headers, company_b_admin_headers
 ):
     payload = {
-        "company_id": 1001,
         "plan": "basic",
         "billing_cycle": "monthly",
         "price": "10.00",
@@ -18,7 +17,8 @@ async def test_subscriptions_list_isolated_between_companies(
     assert created.status_code == 201, created.text
 
     forbidden = await async_client.get(BASE, params={"company_id": 1001}, headers=company_b_admin_headers)
-    assert forbidden.status_code in (403, 404), forbidden.text
+    assert forbidden.status_code == 200, forbidden.text
+    assert forbidden.json() == []
 
 
 @pytest.mark.anyio

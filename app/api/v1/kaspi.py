@@ -14,7 +14,7 @@ app/api/v1/kaspi.py — Полный, боевой роутер интеграц
 - POST   /api/v1/kaspi/import                 — запустить импорт офферов (фид) в Kaspi.
 - POST   /api/v1/kaspi/import/status          — проверить статус импорта офферов.
 - POST   /api/v1/kaspi/orders/sync            — синхронизировать свежие заказы Kaspi в локальную БД.
-- GET    /api/v1/kaspi/feed/{company_id}      — сгенерировать XML-фид активных товаров компании.
+- GET    /api/v1/kaspi/feed      — сгенерировать XML-фид активных товаров компании.
 - POST   /api/v1/kaspi/availability/sync      — синхронизировать доступность одного товара.
 - POST   /api/v1/kaspi/availability/bulk      — массовая синхронизация доступности по компании.
 - GET    /api/v1/kaspi/_debug/ping            — диагностический ping.
@@ -70,7 +70,7 @@ async def _auth_user(current_user: User = Depends(get_current_user)) -> User:
     return current_user
 
 
-def _resolve_company_id(current_user: User, company_id: int | None) -> int:
+def _resolve_company_id(current_user: User) -> int:
     return resolve_tenant_company_id(current_user, not_found_detail="Forbidden: cross-tenant access")
 
 
@@ -102,7 +102,7 @@ class ConnectStoreOut(BaseModel):
 
 
 class OrdersSyncIn(BaseModel):
-    company_id: int = Field(..., ge=1, description="ID компании, для которой синхронизируем заказы")
+    pass
 
 
 class AvailabilitySyncIn(BaseModel):
@@ -110,7 +110,6 @@ class AvailabilitySyncIn(BaseModel):
 
 
 class AvailabilityBulkIn(BaseModel):
-    company_id: int = Field(..., ge=1)
     limit: int = Field(500, ge=1, le=5000, description="Максимум товаров за одну операцию")
 
 
@@ -356,7 +355,7 @@ async def kaspi_orders_sync(
 ):
     try:
         svc = KaspiService()
-        resolved_company_id = _resolve_company_id(current_user, payload.company_id)
+        resolved_company_id = _resolve_company_id(current_user)
         result = await svc.sync_orders(company_id=resolved_company_id, db=session)
         return result
     except RuntimeError as e:
@@ -367,24 +366,23 @@ async def kaspi_orders_sync(
 
 
 @router.get(
-    "/feed/{company_id}",
+    "/feed",
     summary="Сгенерировать XML-фид активных товаров компании",
     response_class=Response,
 )
 async def kaspi_generate_feed(
-    company_id: int,
     current_user: User = Depends(_auth_user),
     session: AsyncSession = Depends(get_async_db),
 ):
     try:
-        resolved_company_id = _resolve_company_id(current_user, company_id)
+        resolved_company_id = _resolve_company_id(current_user)
         svc = KaspiService()
         xml_body = await svc.generate_product_feed(company_id=resolved_company_id, db=session)
         return Response(content=xml_body, media_type="application/xml")
     except RuntimeError as e:
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e))
     except Exception as e:
-        logger.error("Kaspi generate feed unexpected error: company_id=%s err=%s", company_id, e)
+        logger.error("Kaspi generate feed unexpected error: company_id=%s err=%s", resolved_company_id, e)
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e))
 
 
@@ -398,7 +396,7 @@ async def kaspi_availability_sync_one(
     session: AsyncSession = Depends(get_async_db),
 ):
     try:
-        resolved_company_id = _resolve_company_id(current_user, None)
+        resolved_company_id = _resolve_company_id(current_user)
         res = await session.execute(
             sa.select(Product).where(Product.id == payload.product_id, Product.company_id == resolved_company_id)
         )
@@ -426,7 +424,7 @@ async def kaspi_availability_bulk(
     session: AsyncSession = Depends(get_async_db),
 ):
     try:
-        resolved_company_id = _resolve_company_id(current_user, payload.company_id)
+        resolved_company_id = _resolve_company_id(current_user)
         svc = KaspiService()
         stats = await svc.bulk_sync_availability(company_id=resolved_company_id, db=session, limit=payload.limit)
         return stats
