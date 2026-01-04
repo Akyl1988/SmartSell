@@ -1,3 +1,16 @@
+## [2026-01-04] Tenant scoping: remove platform override for company_id
+
+### Added
+- Regression tests to block platform_admin from scoping wallet accounts and payments lists via foreign company_id while keeping tenant admins allowed.
+
+### Changed
+- Subscriptions list/current/create endpoints now ignore platform overrides and enforce company_id consistency with token scope.
+
+### Verified
+- python -m ruff format app tests tools
+- python -m ruff check app tests tools
+- pytest -q
+
 ## [2026-01-04] Tenant company scoping helper + query guardrails
 
 ### Added
@@ -8,7 +21,8 @@
 - Wallet, payments, subscriptions, invoices, kaspi, and analytics endpoints now resolve company scope via the helper and reject mismatched query/body company_id values instead of trusting request parameters.
 
 ### Verified
-- uff check app/core/security.py app/api/v1/payments.py app/api/v1/wallet.py app/api/v1/subscriptions.py app/api/v1/invoices.py app/api/v1/kaspi.py app/api/v1/analytics.py tests/app/api/test_wallet_payments_tenant.py
+- 
+uff check app/core/security.py app/api/v1/payments.py app/api/v1/wallet.py app/api/v1/subscriptions.py app/api/v1/invoices.py app/api/v1/kaspi.py app/api/v1/analytics.py tests/app/api/test_wallet_payments_tenant.py
 - pytest tests/app/api/test_wallet_payments_tenant.py -q
 - pytest -q
 ## [2026-01-03] Tenant isolation: billing + wallet/payments; storage alignment
