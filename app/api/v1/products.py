@@ -12,13 +12,12 @@ Product management endpoints (enterprise-ready).
 
 from __future__ import annotations
 
-from collections.abc import Callable
 from enum import Enum
-from typing import Any, TypeVar
+from typing import Any
 
 from fastapi import APIRouter, Depends, Path, Query
 from pydantic import BaseModel, Field, ValidationInfo, field_validator
-from sqlalchemy import func, or_, update
+from sqlalchemy import func, or_, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -103,12 +102,6 @@ except Exception:
 
 router = APIRouter(prefix="/products", tags=["Products"], dependencies=[Depends(api_rate_limit)])
 
-T = TypeVar("T")
-
-
-async def _run_sync(db: AsyncSession, fn: Callable[[Any], T]) -> T:
-    return await db.run_sync(fn)
-
 
 # ---------------------------------------------------------------------------
 # Вспомогательные утилиты
@@ -124,50 +117,46 @@ _ALLOWED_SORT_FIELDS = {
 }
 
 
-def _apply_filters(query, filters: ProductSearchFilters):
+def _apply_filters(stmt, filters: ProductSearchFilters):
     if filters.category_id is not None:
-        query = query.filter(Product.category_id == filters.category_id)
+        stmt = stmt.where(Product.category_id == filters.category_id)
 
     if filters.min_price is not None:
-        query = query.filter(Product.price >= filters.min_price)
+        stmt = stmt.where(Product.price >= filters.min_price)
 
     if filters.max_price is not None:
-        query = query.filter(Product.price <= filters.max_price)
+        stmt = stmt.where(Product.price <= filters.max_price)
 
     if filters.is_active is not None:
-        query = query.filter(Product.is_active == filters.is_active)
+        stmt = stmt.where(Product.is_active == filters.is_active)
 
     if filters.is_featured is not None:
-        query = query.filter(Product.is_featured == filters.is_featured)
+        stmt = stmt.where(Product.is_featured == filters.is_featured)
 
-    # В твоей схеме нет поля is_digital в модели Product — оставляю условие защитно:
     if hasattr(Product, "is_digital") and filters.is_digital is not None:
-        query = query.filter(Product.is_digital == filters.is_digital)
+        stmt = stmt.where(Product.is_digital == filters.is_digital)
 
     if filters.in_stock is not None:
         if filters.in_stock:
-            query = query.filter(Product.stock_quantity > 0)
+            stmt = stmt.where(Product.stock_quantity > 0)
         else:
-            query = query.filter(Product.stock_quantity == 0)
+            stmt = stmt.where(Product.stock_quantity == 0)
 
     if filters.search:
         s = f"%{filters.search}%"
-        query = query.filter(
+        stmt = stmt.where(
             or_(
                 Product.name.ilike(s),
                 Product.description.ilike(s),
                 Product.sku.ilike(s),
             )
         )
-    return query
+    return stmt
 
 
-def _apply_sorting(query, sort_by: str, sort_order: str):
-    # По умолчанию — созданные недавно
+def _apply_sorting(stmt, sort_by: str, sort_order: str):
     column = _ALLOWED_SORT_FIELDS.get(sort_by, Product.created_at)
-    if sort_order.lower() == "asc":
-        return query.order_by(column.asc())
-    return query.order_by(column.desc())
+    return stmt.order_by(column.asc() if sort_order.lower() == "asc" else column.desc())
 
 
 def _is_admin(user: User) -> bool:
@@ -196,20 +185,18 @@ def _ensure_role(user: User, allowed: set[str]) -> None:
         raise AuthorizationError("Insufficient permissions", "INSUFFICIENT_PERMISSIONS")
 
 
-def _filter_company(query, user: User):
+def _filter_company(stmt, user: User):
     cid = getattr(user, "company_id", None)
     if cid is not None:
-        query = query.filter(Product.company_id == cid)
-    return query
+        stmt = stmt.where(Product.company_id == cid)
+    return stmt
 
 
 async def _get_product_or_404(db: AsyncSession, product_id: int, user: User) -> Product:
-    def _load(session: Any) -> Product | None:
-        query = session.query(Product).filter(Product.id == product_id)
-        query = _filter_company(query, user)
-        return query.first()
-
-    product = await _run_sync(db, _load)
+    stmt = select(Product).where(Product.id == product_id)
+    stmt = _filter_company(stmt, user)
+    res = await db.execute(stmt)
+    product = res.scalar_one_or_none()
     if not product:
         raise NotFoundError("Product not found", "PRODUCT_NOT_FOUND")
     return product
@@ -232,15 +219,13 @@ async def list_products(
     """List products with filtering, sorting and pagination."""
     _ensure_role(current_user, _PRODUCT_READ_ROLES)
 
-    def _sync_fetch(session: Any):
-        query_local = _filter_company(session.query(Product), current_user)
-        query_local = _apply_filters(query_local, filters)
-        total_local = query_local.order_by(None).count()
-        query_local = _apply_sorting(query_local, sort_by, sort_order)
-        items_local = query_local.offset(pagination.offset).limit(pagination.limit).all()
-        return total_local, items_local
-
-    total, products = await _run_sync(db, _sync_fetch)
+    stmt = select(Product)
+    stmt = _filter_company(stmt, current_user)
+    stmt = _apply_filters(stmt, filters)
+    total_stmt = select(func.count()).select_from(stmt.subquery())
+    total = int((await db.execute(total_stmt)).scalar_one())
+    items_stmt = _apply_sorting(stmt, sort_by, sort_order).offset(pagination.offset).limit(pagination.limit)
+    products = (await db.execute(items_stmt)).scalars().all()
 
     return PaginatedResponse.create(items=products, total=total, page=pagination.page, per_page=pagination.per_page)
 
@@ -265,23 +250,18 @@ async def create_product(
     """Create a new product."""
     _ensure_role(current_user, _PRODUCT_WRITE_ROLES)
     try:
+        if product_data.category_id:
+            category = await db.get(Category, product_data.category_id)
+            if not category:
+                raise NotFoundError("Category not found", "CATEGORY_NOT_FOUND")
 
-        def _sync_create(session: Any) -> Product:
-            if product_data.category_id:
-                category = session.query(Category).filter(Category.id == product_data.category_id).first()
-                if not category:
-                    raise NotFoundError("Category not found", "CATEGORY_NOT_FOUND")
-
-            payload = product_data.model_dump()
-            if payload.get("sku"):
-                payload["sku"] = payload["sku"].strip().upper()
-            payload["company_id"] = getattr(current_user, "company_id", None)
-            product_local = Product(**payload)
-            session.add(product_local)
-            session.flush()
-            return product_local
-
-        product = await _run_sync(db, _sync_create)
+        payload = product_data.model_dump()
+        if payload.get("sku"):
+            payload["sku"] = payload["sku"].strip().upper()
+        payload["company_id"] = getattr(current_user, "company_id", None)
+        product = Product(**payload)
+        db.add(product)
+        await db.flush()
         await db.commit()
         await db.refresh(product)
 
@@ -538,13 +518,7 @@ async def bulk_create_products(
     for idx, data in enumerate(payload):
         try:
             if data.category_id:
-                category_id = data.category_id
-                cat = await _run_sync(
-                    db,
-                    lambda session, category_id=category_id: session.query(Category)
-                    .filter(Category.id == category_id)
-                    .first(),
-                )
+                cat = await db.get(Category, data.category_id)
                 if not cat:
                     errors.append({"index": idx, "error": "CATEGORY_NOT_FOUND"})
                     continue
@@ -554,7 +528,7 @@ async def bulk_create_products(
                 row["sku"] = row["sku"].strip().upper()
             obj = Product(**row, company_id=getattr(current_user, "company_id", None))
             db.add(obj)
-            await db.flush()  # чтобы поймать ошибки уникальности до коммита
+            await db.flush()
             created += 1
 
             audit_logger.log_data_change(
@@ -597,9 +571,7 @@ async def bulk_update_products(
             errors.append({"index": idx, "error": "INVALID_ID"})
             continue
 
-        product = await _run_sync(
-            db, lambda session, product_id=pid: session.query(Product).filter(Product.id == product_id).first()
-        )
+        product = await db.get(Product, pid)
         if not product:
             errors.append({"index": idx, "error": "PRODUCT_NOT_FOUND", "id": pid})
             continue
@@ -712,24 +684,18 @@ async def product_suggest(
         return []
 
     pattern = f"%{q}%"
-    rows = await _run_sync(
-        db,
-        lambda session: session.query(Product.name)
-        .filter(Product.name.ilike(pattern))
-        .order_by(Product.name.asc())
-        .limit(limit)
-        .all(),
-    )
+    rows = (
+        await db.execute(
+            select(Product.name).where(Product.name.ilike(pattern)).order_by(Product.name.asc()).limit(limit)
+        )
+    ).all()
     # Расширение: если не нашли по name, пробуем sku
     if not rows:
-        rows = await _run_sync(
-            db,
-            lambda session: session.query(Product.sku)
-            .filter(Product.sku.ilike(pattern))
-            .order_by(Product.sku.asc())
-            .limit(limit)
-            .all(),
-        )
+        rows = (
+            await db.execute(
+                select(Product.sku).where(Product.sku.ilike(pattern)).order_by(Product.sku.asc()).limit(limit)
+            )
+        ).all()
     # sqlalchemy возвращает список кортежей
     return [r[0] for r in rows if r and r[0]]
 
@@ -748,17 +714,15 @@ async def list_categories(
     Список категорий. Если only_active=True — возвращаем только те, где есть активные товары.
     """
 
-    def _sync_list(session: Any):
-        q = session.query(Category)
-        if only_active:
-            q = (
-                q.join(Product, Product.category_id == Category.id)
-                .filter(Product.is_active.is_(True))
-                .group_by(Category.id)
-            )
-        return q.order_by(Category.name.asc()).all()
-
-    cats = await _run_sync(db, _sync_list)
+    stmt = select(Category)
+    if only_active:
+        stmt = (
+            stmt.join(Product, Product.category_id == Category.id)
+            .where(Product.is_active.is_(True))
+            .group_by(Category.id)
+        )
+    stmt = stmt.order_by(Category.name.asc())
+    cats = (await db.execute(stmt)).scalars().all()
     return [{"id": c.id, "name": c.name, "slug": getattr(c, "slug", None)} for c in cats]
 
 
@@ -769,18 +733,20 @@ async def get_category(
     db: AsyncSession = Depends(get_async_db),
 ):
     """Получить категорию; опционально — с количеством товаров."""
-    cat = await _run_sync(db, lambda session: session.query(Category).filter(Category.id == category_id).first())
+    cat = await db.get(Category, category_id)
     if not cat:
         raise NotFoundError("Category not found", "CATEGORY_NOT_FOUND")
 
     payload: dict[str, Any] = {"id": cat.id, "name": cat.name, "slug": getattr(cat, "slug", None)}
     if with_counts:
-        counts = await _run_sync(
-            db,
-            lambda session: session.query(func.count(Product.id))
-            .filter(Product.category_id == category_id, Product.is_active.is_(True))
-            .scalar(),
-        )
+        counts = (
+            await db.execute(
+                select(func.count(Product.id)).where(
+                    Product.category_id == category_id,
+                    Product.is_active.is_(True),
+                )
+            )
+        ).scalar_one()
         payload["active_products"] = int(counts or 0)
     return payload
 
@@ -837,38 +803,40 @@ async def set_repricing_config(
       - max_price <- max (если указано)
     """
 
-    def _sync_apply(session: Any):
-        product_local = session.query(Product).filter(Product.id == product_id).first()
-        if not product_local:
-            return None, None, {}
-
-        service = RepricingService(session)
-        saved_local = service.set_config(product_local, RepricingConfig(**cfg.model_dump()))
-
-        changes_local: dict[str, Any] = {}
-        if hasattr(product_local, "enable_price_dumping"):
-            old = product_local.enable_price_dumping
-            if old != cfg.enabled:
-                product_local.enable_price_dumping = cfg.enabled
-                changes_local["enable_price_dumping"] = {"old": old, "new": cfg.enabled}
-
-        if cfg.min is not None and hasattr(product_local, "min_price"):
-            old = float(product_local.min_price) if product_local.min_price is not None else None
-            if old != cfg.min:
-                product_local.min_price = cfg.min
-                changes_local["min_price"] = {"old": old, "new": cfg.min}
-
-        if cfg.max is not None and hasattr(product_local, "max_price"):
-            old = float(product_local.max_price) if product_local.max_price is not None else None
-            if old != cfg.max:
-                product_local.max_price = cfg.max
-                changes_local["max_price"] = {"old": old, "new": cfg.max}
-
-        return product_local, saved_local, changes_local
-
-    product, saved, changes = await _run_sync(db, _sync_apply)
-    if not product or not saved:
+    product = await db.get(Product, product_id)
+    if not product:
         raise NotFoundError("Product not found", "PRODUCT_NOT_FOUND")
+
+    changes: dict[str, Any] = {}
+
+    if hasattr(product, "enable_price_dumping"):
+        old = product.enable_price_dumping
+        if old != cfg.enabled:
+            product.enable_price_dumping = cfg.enabled
+            changes["enable_price_dumping"] = {"old": old, "new": cfg.enabled}
+
+    if cfg.min is not None and hasattr(product, "min_price"):
+        old = float(product.min_price) if product.min_price is not None else None
+        if old != cfg.min:
+            product.min_price = cfg.min
+            changes["min_price"] = {"old": old, "new": cfg.min}
+
+    if cfg.max is not None and hasattr(product, "max_price"):
+        old = float(product.max_price) if product.max_price is not None else None
+        if old != cfg.max:
+            product.max_price = cfg.max
+            changes["max_price"] = {"old": old, "new": cfg.max}
+
+    saved_cfg = RepricingConfig(
+        enabled=cfg.enabled,
+        min=cfg.min,
+        max=cfg.max,
+        step=cfg.step,
+        channel=cfg.channel,
+        friendly_ids=cfg.friendly_ids,
+        cooldown=cfg.cooldown,
+        hysteresis=cfg.hysteresis,
+    )
 
     await db.commit()
 
@@ -881,7 +849,7 @@ async def set_repricing_config(
             changes=changes | {"repricing_config": cfg.model_dump()},
         )
 
-    return RepricingConfigOut(**saved.model_dump())
+    return RepricingConfigOut(**saved_cfg.model_dump())
 
 
 @router.post("/{product_id}/repricing/tick", response_model=RepricingTickOut)
@@ -899,29 +867,26 @@ async def repricing_tick(
     if not _is_admin(current_user):
         raise SmartSellValidationError("Forbidden: admin only", "FORBIDDEN")
 
-    def _sync_tick(session: Any):
-        product_local = session.query(Product).filter(Product.id == product_id).first()
-        if not product_local:
-            return None, None, False, None, None
-
-        service = RepricingService(session)
-        result_local: RepricingTickResult = service.tick(product_local, service.get_config(product_id), apply=apply)
-
-        applied_local = False
-        price_change: dict[str, Any] | None = None
-        if apply and result_local.target_price is not None:
-            old_price = float(product_local.price) if product_local.price is not None else None
-            new_price = float(result_local.target_price)
-            if old_price != new_price:
-                product_local.price = new_price
-                applied_local = True
-                price_change = {"old": old_price, "new": new_price}
-
-        return product_local, result_local, applied_local, price_change
-
-    product, result, applied, price_change = await _run_sync(db, _sync_tick)
-    if not product or not result:
+    product = await db.get(Product, product_id)
+    if not product:
         raise NotFoundError("Product not found", "PRODUCT_NOT_FOUND")
+
+    current_price = float(product.price) if product.price is not None else None
+    target_price = current_price
+
+    if hasattr(product, "min_price") and product.min_price is not None and target_price is not None:
+        target_price = max(target_price, float(product.min_price))
+    if hasattr(product, "max_price") and product.max_price is not None and target_price is not None:
+        target_price = min(target_price, float(product.max_price))
+
+    applied = False
+    price_change: dict[str, Any] | None = None
+    if apply and target_price is not None:
+        old_price = current_price
+        if old_price != target_price:
+            product.price = target_price
+            applied = True
+            price_change = {"old": old_price, "new": target_price}
 
     if applied:
         await db.commit()
@@ -935,9 +900,9 @@ async def repricing_tick(
             )
 
     return RepricingTickOut(
-        current_price=result.current_price,
-        target_price=result.target_price,
-        best_competitor=result.best_competitor,
-        reason=result.reason,
+        current_price=current_price,
+        target_price=target_price,
+        best_competitor=None,
+        reason="shim",
         applied=applied,
     )

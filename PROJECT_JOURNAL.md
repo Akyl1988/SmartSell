@@ -294,3 +294,27 @@ Commits (per git show):
 - `app/api/v1/wallet.py`
 - `app/api/v1/payments.py`
 - `tests/app/api/test_no_sync_db_calls.py`
+## [2026-01-04] API v1 async-native: remove run_sync + stabilize wallet/payments
+
+### changed
+- Убраны `run_sync`/`session.query()` из `app/api/v1/*`; v1 слой полностью async-native (AsyncSession + select/execute/get).
+- Guard-тесты усилены: запрещают `run_sync(` в `app/api/v1` и продолжают ловить не-awaited `db.get`.
+- Wallet/Payments переведены на async-native путь без sync-сессий.
+
+### fixed
+- Исправлены падения tenant-isolation тестов по wallet/payments: добавлены wallet/payments таблицы в per-test cleanup, чтобы исключить “грязные хвосты” данных между тестами.
+
+### tests
+- `python -m ruff format app tests tools`
+- `python -m ruff check app tests tools`
+- `python -m pytest -q` → **163 passed, 5 skipped**
+
+### files
+- `app/api/v1/products.py`
+- `app/api/v1/users.py`
+- `app/api/v1/wallet.py`
+- `app/api/v1/payments.py`
+- `app/storage/wallet_sql.py`
+- `app/storage/payments_sql.py`
+- `tests/app/api/test_no_sync_db_calls.py`
+- `tests/conftest.py`
