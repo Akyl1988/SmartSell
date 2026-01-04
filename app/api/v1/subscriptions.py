@@ -42,7 +42,6 @@ FINAL_STATES = {"canceled", "expired", "ended"}
 
 # ====== Схемы ======
 class SubscriptionCreate(BaseModel):
-    company_id: int = Field(..., ge=1)
     plan: PlanName
     billing_cycle: Cycle = "monthly"
     price: condecimal(max_digits=14, decimal_places=2) = Decimal("0.00")
@@ -130,10 +129,26 @@ async def _get_subscription_scoped(
     *,
     allow_deleted: bool = False,
 ) -> Subscription:
-    stmt = select(Subscription).where(Subscription.id == subscription_id)
-    if not is_platform_admin(user):
-        stmt = stmt.where(Subscription.company_id == getattr(user, "company_id", None))
-    sub = (await db.execute(stmt)).scalar_one_or_none()
+    resolved_company_id = resolve_tenant_company_id(
+        user,
+        allow_platform_override=is_platform_admin(user),
+        not_found_detail="Company not found",
+    )
+
+    # Platform admins may not have a company on the token; fall back to the subscription's company.
+    sub: Subscription | None = None
+    if resolved_company_id is None and is_platform_admin(user):
+        sub = await db.get(Subscription, subscription_id)
+        if not sub:
+            raise HTTPException(status_code=404, detail="Subscription not found")
+        resolved_company_id = sub.company_id
+
+    stmt = select(Subscription).where(
+        Subscription.id == subscription_id,
+        Subscription.company_id == resolved_company_id,
+    )
+    if sub is None:
+        sub = (await db.execute(stmt)).scalar_one_or_none()
     if not sub:
         raise HTTPException(status_code=404, detail="Subscription not found")
     if sub.deleted_at and not allow_deleted:
@@ -215,13 +230,7 @@ async def list_subscriptions(
     db: AsyncSession = Depends(get_async_db),
     user: User = Depends(_auth_user),
 ):
-    resolved_company_id = resolve_tenant_company_id(
-        user,
-        company_id,
-        not_found_detail="Company not found",
-    )
-    if company_id is not None and company_id != resolved_company_id:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="forbidden")
+    resolved_company_id = resolve_tenant_company_id(user, not_found_detail="Company not found")
     _company = await ensure_company(db, resolved_company_id)
     ensure_company_access(user, _company)
 
@@ -257,13 +266,7 @@ async def get_current_subscription(
     db: AsyncSession = Depends(get_async_db),
     user: User = Depends(_auth_user),
 ):
-    resolved_company_id = resolve_tenant_company_id(
-        user,
-        company_id,
-        not_found_detail="Company not found",
-    )
-    if company_id is not None and company_id != resolved_company_id:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="forbidden")
+    resolved_company_id = resolve_tenant_company_id(user, not_found_detail="Company not found")
     _company = await ensure_company(db, resolved_company_id)
     ensure_company_access(user, _company)
 
@@ -299,13 +302,7 @@ async def create_subscription(
     db: AsyncSession = Depends(get_async_db),
     user: User = Depends(_auth_user),
 ):
-    resolved_company_id = resolve_tenant_company_id(
-        user,
-        payload.company_id,
-        not_found_detail="Company not found",
-    )
-    if payload.company_id != resolved_company_id:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="forbidden")
+    resolved_company_id = resolve_tenant_company_id(user, not_found_detail="Company not found")
     _company = await ensure_company(db, resolved_company_id)
     ensure_company_access(user, _company)
 

@@ -150,7 +150,6 @@ async def test_final_statuses_visible(async_db_session):
 
     user = User.factory(company_id=company.id, role="platform_admin")
     rows = await subs_api.list_subscriptions(
-        company_id=company.id,
         status_filter=None,
         plan=None,
         from_date=None,
@@ -182,13 +181,12 @@ async def test_archive_and_restore_flow(async_db_session):
     await async_db_session.commit()
     await async_db_session.refresh(sub)
 
-    admin = User.factory(role="platform_admin")
+    admin = User.factory(role="platform_admin", company_id=company.id)
 
     archived = await subs_api.archive_subscription(sub.id, db=async_db_session, user=admin)
     assert archived.deleted_at is not None
 
     rows_visible = await subs_api.list_subscriptions(
-        company_id=company.id,
         status_filter=None,
         plan=None,
         from_date=None,
@@ -200,7 +198,6 @@ async def test_archive_and_restore_flow(async_db_session):
     assert sub.id not in {s.id for s in rows_visible}
 
     rows_all = await subs_api.list_subscriptions(
-        company_id=company.id,
         status_filter=None,
         plan=None,
         from_date=None,
@@ -211,14 +208,13 @@ async def test_archive_and_restore_flow(async_db_session):
     )
     assert sub.id in {s.id for s in rows_all}
 
-    current = await subs_api.get_current_subscription(company_id=company.id, db=async_db_session, user=admin)
+    current = await subs_api.get_current_subscription(db=async_db_session, user=admin)
     assert current is None
 
     restored = await subs_api.restore_subscription(sub.id, db=async_db_session, user=admin)
     assert restored.deleted_at is None
 
     rows_after_restore = await subs_api.list_subscriptions(
-        company_id=company.id,
         status_filter=None,
         plan=None,
         from_date=None,
@@ -249,7 +245,7 @@ async def test_active_uniqueness_ignores_archived(async_db_session):
     await async_db_session.commit()
     await async_db_session.refresh(first)
 
-    admin = User.factory(role="platform_admin")
+    admin = User.factory(role="platform_admin", company_id=company.id)
     await subs_api.archive_subscription(first.id, db=async_db_session, user=admin)
 
     second = Subscription(

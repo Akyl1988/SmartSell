@@ -15,7 +15,6 @@ async def test_wallet_isolation_between_companies(
     company_b_admin_headers,
 ):
     user_b = _get_user_by_phone(db_session, "+70000020001")
-
     created = await client.post(
         "/api/v1/wallet/accounts",
         json={"user_id": user_b.id, "currency": "KZT"},
@@ -53,7 +52,6 @@ async def test_payments_isolation_between_companies(
     company_b_admin_headers,
 ):
     user_b = _get_user_by_phone(db_session, "+70000020001")
-
     acc = await client.post(
         "/api/v1/wallet/accounts",
         json={"user_id": user_b.id, "currency": "KZT"},
@@ -91,12 +89,9 @@ async def test_subscriptions_isolation_between_companies(
     company_a_admin_headers,
     company_b_admin_headers,
 ):
-    user_b = _get_user_by_phone(db_session, "+70000020001")
-
     created = await client.post(
         "/api/v1/subscriptions",
         json={
-            "company_id": user_b.company_id,
             "plan": "Beta",
             "billing_cycle": "monthly",
             "price": "100.00",
@@ -107,19 +102,16 @@ async def test_subscriptions_isolation_between_companies(
     )
     assert created.status_code == 201, created.text
 
-    foreign_list = await client.get(
-        "/api/v1/subscriptions",
-        params={"company_id": user_b.company_id},
-        headers=company_a_admin_headers,
-    )
-    assert foreign_list.status_code == 403
+    foreign_list = await client.get("/api/v1/subscriptions", headers=company_a_admin_headers)
+    assert foreign_list.status_code == 200
+    assert foreign_list.json() == []
 
     foreign_current = await client.get(
         "/api/v1/subscriptions/current",
-        params={"company_id": user_b.company_id},
         headers=company_a_admin_headers,
     )
-    assert foreign_current.status_code == 403
+    assert foreign_current.status_code == 200
+    assert foreign_current.json() is None
 
 
 @pytest.mark.anyio
@@ -129,12 +121,9 @@ async def test_subscriptions_get_by_id_cross_company_forbidden(
     company_a_admin_headers,
     company_b_admin_headers,
 ):
-    user_b = _get_user_by_phone(db_session, "+70000020001")
-
     created = await client.post(
         "/api/v1/subscriptions",
         json={
-            "company_id": user_b.company_id,
             "plan": "Beta",
             "billing_cycle": "monthly",
             "price": "100.00",
@@ -161,12 +150,9 @@ async def test_subscriptions_payments_cross_company_forbidden(
     company_a_admin_headers,
     company_b_admin_headers,
 ):
-    user_b = _get_user_by_phone(db_session, "+70000020001")
-
     created = await client.post(
         "/api/v1/subscriptions",
         json={
-            "company_id": user_b.company_id,
             "plan": "Gamma",
             "billing_cycle": "monthly",
             "price": "50.00",
@@ -193,13 +179,14 @@ async def test_subscriptions_company_param_bypass_forbidden(
     company_b_admin_headers,
 ):
     user_a = _get_user_by_phone(db_session, "+70000010001")
-    # company B tries to pass company_id of A
+    # company B passing company_id should not bypass scoping; list remains scoped to token company
     resp = await client.get(
         "/api/v1/subscriptions",
         params={"company_id": user_a.company_id},
         headers=company_b_admin_headers,
     )
-    assert resp.status_code == 403
+    assert resp.status_code == 200
+    assert resp.json() == []
 
 
 @pytest.mark.anyio
@@ -215,7 +202,8 @@ async def test_invoices_company_param_bypass_forbidden(
         params={"company_id": user_a.company_id},
         headers=company_b_admin_headers,
     )
-    assert resp.status_code == 403
+    assert resp.status_code == 200
+    assert resp.json() == []
 
 
 @pytest.mark.anyio

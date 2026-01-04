@@ -1,3 +1,17 @@
+## [2026-01-04] Strip company_id inputs from v1
+
+### Added
+- Guard coverage retained to detect any company_id Query/Path/Body/Field usage across v1 routes.
+
+### Changed
+- Removed all external company_id inputs from v1 APIs; subscriptions, invoices, wallet, payments, analytics, products, and Kaspi now scope strictly via resolve_tenant_company_id(current_user).
+
+### Verified
+- python -m ruff format app tests tools
+- python -m ruff check app tests tools
+- pytest -q tests/test_no_company_id_params_in_api_v1.py
+- pytest -q
+
 ## [2026-01-04] Enforce tenant scoping across v1
 
 ### Added

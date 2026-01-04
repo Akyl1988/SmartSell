@@ -5,7 +5,7 @@ import logging
 from datetime import UTC, datetime
 from decimal import Decimal
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel, ConfigDict, Field, condecimal, constr
 from sqlalchemy import select
@@ -82,9 +82,7 @@ async def create_invoice(
     db: AsyncSession = Depends(get_async_db),
     user: User = Depends(_auth_user),
 ):
-    company_id = resolve_tenant_company_id(
-        user, getattr(payload, "company_id", None), not_found_detail="Company not set"
-    )
+    company_id = resolve_tenant_company_id(user, not_found_detail="Company not set")
 
     await _ensure_company(db, company_id)
 
@@ -124,7 +122,7 @@ async def list_invoices(
     db: AsyncSession = Depends(get_async_db),
     user: User = Depends(_auth_user),
 ):
-    resolved_company = resolve_tenant_company_id(user, company_id, not_found_detail="Company not set")
+    resolved_company = resolve_tenant_company_id(user, not_found_detail="Company not set")
 
     stmt = select(Invoice).where(Invoice.company_id == resolved_company)
     stmt = stmt.where(Invoice.deleted_at.is_(None)) if hasattr(Invoice, "deleted_at") else stmt
@@ -150,7 +148,7 @@ async def get_invoice(
     db: AsyncSession = Depends(get_async_db),
     user: User = Depends(_auth_user),
 ):
-    resolved_company = resolve_tenant_company_id(user, company_id, not_found_detail="Company not set")
+    resolved_company = resolve_tenant_company_id(user, not_found_detail="Company not set")
 
     stmt = select(Invoice).where(Invoice.id == invoice_id, Invoice.company_id == resolved_company)
     stmt = stmt.where(Invoice.deleted_at.is_(None)) if hasattr(Invoice, "deleted_at") else stmt

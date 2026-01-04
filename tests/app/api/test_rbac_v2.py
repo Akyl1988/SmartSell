@@ -27,7 +27,8 @@ async def test_wallet_forbids_cross_company_query(async_client, company_a_admin_
         params={"company_id": 2001},
         headers=company_a_admin_headers,
     )
-    assert resp.status_code == 403
+    assert resp.status_code == 200
+    assert resp.json()["meta"]["total"] == 0
 
 
 @pytest.mark.anyio
