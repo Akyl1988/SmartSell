@@ -207,7 +207,6 @@ async def _auth_user(
 # ====== Эндпоинты ======
 @router.get("", response_model=list[SubscriptionOut])
 async def list_subscriptions(
-    company_id: int | None = Query(None, ge=1),
     status_filter: AllowedStatus | None = Query(None),
     plan: str | None = Query(None, max_length=32),
     from_date: datetime | None = Query(None, description="Фильтр по next_billing_date (>=)"),
@@ -255,7 +254,6 @@ async def list_subscriptions(
 
 @router.get("/current", response_model=SubscriptionOut | None)
 async def get_current_subscription(
-    company_id: int | None = Query(None, ge=1),
     db: AsyncSession = Depends(get_async_db),
     user: User = Depends(_auth_user),
 ):
