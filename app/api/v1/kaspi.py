@@ -70,7 +70,7 @@ async def _auth_user(current_user: User = Depends(get_current_user)) -> User:
     return current_user
 
 
-def _resolve_company_id(current_user: User, company_id: int | None) -> int:
+def _resolve_company_id(current_user: User) -> int:
     return resolve_tenant_company_id(current_user, not_found_detail="Forbidden: cross-tenant access")
 
 
@@ -99,10 +99,6 @@ class ConnectStoreOut(BaseModel):
     saved: bool
     message: str | None = None
     adapter_health: Any | None = None
-
-
-class OrdersSyncIn(BaseModel):
-    pass
 
 
 class AvailabilitySyncIn(BaseModel):
@@ -349,10 +345,10 @@ async def kaspi_import_status(req: ImportStatusQuery):
     summary="Синхронизировать последние заказы Kaspi в локальную БД",
 )
 async def kaspi_orders_sync(
-    payload: OrdersSyncIn,
     current_user: User = Depends(_auth_user),
     session: AsyncSession = Depends(get_async_db),
 ):
+    resolved_company_id: int | None = None
     try:
         svc = KaspiService()
         resolved_company_id = _resolve_company_id(current_user)
@@ -361,7 +357,7 @@ async def kaspi_orders_sync(
     except RuntimeError as e:
         raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(e))
     except Exception as e:
-        logger.error("Kaspi orders sync failed: payload=%s err=%s", payload.model_dump(), e)
+        logger.error("Kaspi orders sync failed: company_id=%s err=%s", resolved_company_id, e)
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e))
 
 
@@ -374,6 +370,7 @@ async def kaspi_generate_feed(
     current_user: User = Depends(_auth_user),
     session: AsyncSession = Depends(get_async_db),
 ):
+    resolved_company_id: int | None = None
     try:
         resolved_company_id = _resolve_company_id(current_user)
         svc = KaspiService()
