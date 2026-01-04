@@ -7,7 +7,6 @@ Create Date: 2026-01-02 13:25:00.000000
 
 import sqlalchemy as sa
 from alembic import op
-from sqlalchemy import inspect
 
 try:
     from migrations.utils.pghelpers import safe_inspect
@@ -49,7 +48,9 @@ def upgrade():
         op.create_table(
             "wallet_ledger",
             sa.Column("id", sa.Integer(), primary_key=True),
-            sa.Column("account_id", sa.Integer(), sa.ForeignKey("wallet_accounts.id", ondelete="CASCADE"), nullable=False),
+            sa.Column(
+                "account_id", sa.Integer(), sa.ForeignKey("wallet_accounts.id", ondelete="CASCADE"), nullable=False
+            ),
             sa.Column("entry_type", sa.String(length=20), nullable=False),
             sa.Column("amount", sa.Numeric(18, _DECIMAL_PLACES), nullable=False),
             sa.Column("currency", sa.String(length=10), nullable=False),
@@ -116,4 +117,3 @@ def downgrade():
             except Exception:
                 pass
         op.drop_table("wallet_accounts")
-
