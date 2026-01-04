@@ -15,7 +15,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 # --- проектные зависимости (пути проверьте по вашему проекту) ---
 from app.core.db import get_async_db
-from app.core.security import decode_and_validate, is_token_revoked
+from app.core.security import (
+    decode_and_validate,
+    is_platform_admin,
+    is_token_revoked,
+    resolve_tenant_company_id,
+)
 from app.models.billing import BillingPayment, Subscription
 from app.models.company import Company
 from app.models.user import User
@@ -118,24 +123,6 @@ def ensure_company_access(user, company: Company) -> None:
     raise HTTPException(status_code=404, detail="Company not found")
 
 
-def _is_platform_admin(user: User | None) -> bool:
-    try:
-        return getattr(user, "role", None) in {"platform_admin", "superadmin"}
-    except Exception:
-        return False
-
-
-def _resolve_company_id(user: User, company_id: int | None, *, not_found_detail: str = "Company not found") -> int:
-    current_company = getattr(user, "company_id", None)
-    if company_id is not None and not _is_platform_admin(user):
-        if current_company != company_id:
-            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="forbidden")
-    resolved = company_id or current_company
-    if resolved is None:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=not_found_detail)
-    return resolved
-
-
 async def _get_subscription_scoped(
     db: AsyncSession,
     user: User,
@@ -144,7 +131,7 @@ async def _get_subscription_scoped(
     allow_deleted: bool = False,
 ) -> Subscription:
     stmt = select(Subscription).where(Subscription.id == subscription_id)
-    if not _is_platform_admin(user):
+    if not is_platform_admin(user):
         stmt = stmt.where(Subscription.company_id == getattr(user, "company_id", None))
     sub = (await db.execute(stmt)).scalar_one_or_none()
     if not sub:
@@ -229,7 +216,12 @@ async def list_subscriptions(
     db: AsyncSession = Depends(get_async_db),
     user: User = Depends(_auth_user),
 ):
-    resolved_company_id = _resolve_company_id(user, company_id)
+    resolved_company_id = resolve_tenant_company_id(
+        user,
+        company_id,
+        allow_platform_override=True,
+        not_found_detail="Company not found",
+    )
     _company = await ensure_company(db, resolved_company_id)
     ensure_company_access(user, _company)
 
@@ -266,7 +258,12 @@ async def get_current_subscription(
     db: AsyncSession = Depends(get_async_db),
     user: User = Depends(_auth_user),
 ):
-    resolved_company_id = _resolve_company_id(user, company_id)
+    resolved_company_id = resolve_tenant_company_id(
+        user,
+        company_id,
+        allow_platform_override=True,
+        not_found_detail="Company not found",
+    )
     _company = await ensure_company(db, resolved_company_id)
     ensure_company_access(user, _company)
 
@@ -302,7 +299,12 @@ async def create_subscription(
     db: AsyncSession = Depends(get_async_db),
     user: User = Depends(_auth_user),
 ):
-    resolved_company_id = _resolve_company_id(user, payload.company_id)
+    resolved_company_id = resolve_tenant_company_id(
+        user,
+        payload.company_id,
+        allow_platform_override=True,
+        not_found_detail="Company not found",
+    )
     _company = await ensure_company(db, resolved_company_id)
     ensure_company_access(user, _company)
 
@@ -465,7 +467,7 @@ async def archive_subscription(
     db: AsyncSession = Depends(get_async_db),
     user: User = Depends(_auth_user),
 ):
-    if not _is_platform_admin(user):
+    if not is_platform_admin(user):
         raise HTTPException(status_code=403, detail="Admin only")
 
     sub = await _get_subscription_scoped(db, user, subscription_id, allow_deleted=True)
@@ -486,7 +488,7 @@ async def restore_subscription(
     db: AsyncSession = Depends(get_async_db),
     user: User = Depends(_auth_user),
 ):
-    if not _is_platform_admin(user):
+    if not is_platform_admin(user):
         raise HTTPException(status_code=403, detail="Admin only")
 
     sub = await _get_subscription_scoped(db, user, subscription_id, allow_deleted=True)

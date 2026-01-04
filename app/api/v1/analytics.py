@@ -15,7 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.db import get_async_db
 from app.core.deps import api_rate_limit_dep, ensure_idempotency
 from app.core.errors import bad_request, server_error
-from app.core.security import get_current_user
+from app.core.security import get_current_user, resolve_tenant_company_id
 from app.models import Order, OrderItem, Product, User
 from app.schemas import (
     AnalyticsFilter,
@@ -46,10 +46,7 @@ async def require_analyst(user: User = Depends(_auth_user)) -> User:
 
 
 def _resolve_company_id(current_user: User) -> int:
-    company_id = getattr(current_user, "company_id", None)
-    if company_id is None:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="forbidden")
-    return int(company_id)
+    return resolve_tenant_company_id(current_user)
 
 
 def _parse_dt_or_default(value: str | None, default: datetime) -> datetime:

@@ -861,6 +861,50 @@ if _HAS_FASTAPI:
         except Exception:
             return ""
 
+    def is_platform_admin(user: User | None) -> bool:
+        try:
+            return str(getattr(user, "role", "") or "").lower() == "platform_admin"
+        except Exception:
+            return False
+
+    def resolve_tenant_company_id(
+        current_user: User,
+        requested_company_id: int | None = None,
+        *,
+        allow_platform_override: bool = False,
+        not_found_detail: str = "forbidden",
+    ) -> int:
+        """Resolve company scope from token claims and enforce tenant isolation.
+
+        - For tenant users, a provided company_id must match the token/user company_id;
+          otherwise a 403 is raised.
+        - If allow_platform_override is True and the caller is platform_admin, we honor
+          the requested company_id for cross-tenant operations.
+        - Falls back to the token claim first, then the user record.
+        """
+
+        token_claims = getattr(current_user, "_token_claims", {}) or {}
+        token_company = token_claims.get("company_id")
+        user_company = getattr(current_user, "company_id", None)
+        resolved = token_company if token_company is not None else user_company
+
+        if requested_company_id is not None:
+            if (
+                resolved is not None
+                and requested_company_id != resolved
+                and not (allow_platform_override and is_platform_admin(current_user))
+            ):
+                raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="forbidden")
+            if allow_platform_override and is_platform_admin(current_user):
+                resolved = requested_company_id
+            elif resolved is None:
+                resolved = requested_company_id
+
+        if resolved is None:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=not_found_detail)
+
+        return int(resolved)
+
     def _enforce_roles(user: User, allowed: set[str]) -> User:
         role = _user_role(user)
         if role == "platform_admin":

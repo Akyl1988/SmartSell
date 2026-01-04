@@ -12,7 +12,13 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.db import get_async_db
-from app.core.security import get_current_user, require_company_admin, require_manager
+from app.core.security import (
+    get_current_user,
+    is_platform_admin,
+    require_company_admin,
+    require_manager,
+    resolve_tenant_company_id,
+)
 from app.models.user import User
 from app.storage.wallet_sql import WalletStorageSQL
 
@@ -71,13 +77,6 @@ def _safe_bool(v: Any, default: bool = False) -> bool:
         return default
 
 
-def _is_platform_admin(user: User | None) -> bool:
-    try:
-        return str(getattr(user, "role", "")).lower() == "platform_admin"
-    except Exception:
-        return False
-
-
 async def _ensure_user_in_company(
     target_user_id: int,
     current_user: User,
@@ -88,7 +87,7 @@ async def _ensure_user_in_company(
     user = await db.get(User, target_user_id)
     if not user:
         raise HTTPException(status_code=404, detail=not_found_detail)
-    if _is_platform_admin(current_user):
+    if is_platform_admin(current_user):
         return user
     if getattr(user, "company_id", None) != getattr(current_user, "company_id", None):
         raise HTTPException(status_code=404, detail=not_found_detail)
@@ -125,7 +124,7 @@ async def _ensure_account_access(
 async def _filter_accounts_for_user(
     items: list[dict[str, Any]], current_user: User, db: AsyncSession
 ) -> list[dict[str, Any]]:
-    if _is_platform_admin(current_user):
+    if is_platform_admin(current_user):
         return items
     current_company = getattr(current_user, "company_id", None)
     if current_company is None:
@@ -368,15 +367,14 @@ async def list_accounts(
     db: AsyncSession = Depends(get_async_db),
 ) -> WalletAccountsPage:
     try:
-        if company_id is not None and company_id != getattr(current_user, "company_id", None):
-            raise HTTPException(status_code=403, detail="forbidden")
+        resolved_company_id = resolve_tenant_company_id(current_user, company_id)
         ccy = _norm_ccy(currency) if currency else None
         if user_id is not None:
             await _ensure_user_in_company(user_id, current_user, db)
 
         allowed_ids: list[int] | None = None
-        if not _is_platform_admin(current_user):
-            stmt = select(User.id).where(User.company_id == getattr(current_user, "company_id", None))
+        if not is_platform_admin(current_user):
+            stmt = select(User.id).where(User.company_id == resolved_company_id)
             rows = (await db.execute(stmt)).all()
             allowed_ids = [int(r[0]) for r in rows]
             if user_id is not None:
@@ -394,13 +392,13 @@ async def list_accounts(
                 page=page,
                 size=size,
                 user_ids=allowed_ids,
-                company_id=getattr(current_user, "company_id", None),
+                company_id=resolved_company_id,
             )
         else:
             rows = await storage.list_accounts(
                 user_id=user_id,
                 user_ids=allowed_ids,
-                company_id=getattr(current_user, "company_id", None),
+                company_id=resolved_company_id,
             )
             items = rows["items"] if isinstance(rows, dict) and "items" in rows else rows
             if not isinstance(items, list):
@@ -612,7 +610,7 @@ async def transfer(
     try:
         src_acc = await _ensure_account_access(req.source_account_id, current_user, db)
         dst_acc = await _ensure_account_access(req.destination_account_id, current_user, db)
-        if not _is_platform_admin(current_user):
+        if not is_platform_admin(current_user):
             src_company = getattr(
                 await _ensure_user_in_company(int(src_acc.get("user_id", 0)), current_user, db), "company_id", None
             )
