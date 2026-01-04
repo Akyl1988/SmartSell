@@ -889,8 +889,10 @@ if _HAS_FASTAPI:
         resolved = token_company if token_company is not None else user_company
 
         if requested_company_id is not None:
-            if resolved is not None and requested_company_id != resolved and not (
-                allow_platform_override and is_platform_admin(current_user)
+            if (
+                resolved is not None
+                and requested_company_id != resolved
+                and not (allow_platform_override and is_platform_admin(current_user))
             ):
                 raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="forbidden")
             if allow_platform_override and is_platform_admin(current_user):

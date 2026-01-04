@@ -82,7 +82,9 @@ async def create_invoice(
     db: AsyncSession = Depends(get_async_db),
     user: User = Depends(_auth_user),
 ):
-    company_id = resolve_tenant_company_id(user, getattr(payload, "company_id", None), not_found_detail="Company not set")
+    company_id = resolve_tenant_company_id(
+        user, getattr(payload, "company_id", None), not_found_detail="Company not set"
+    )
 
     await _ensure_company(db, company_id)
 

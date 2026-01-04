@@ -303,9 +303,7 @@ async def test_wallet_list_company_param_same_company_ok(client, db_session, com
     assert created.status_code == 201, created.text
     account_id = created.json()["id"]
 
-    resp = await client.get(
-        f"/api/v1/wallet/accounts?company_id={company_a_id}", headers=company_a_admin_headers
-    )
+    resp = await client.get(f"/api/v1/wallet/accounts?company_id={company_a_id}", headers=company_a_admin_headers)
     assert resp.status_code == 200, resp.text
     items = resp.json().get("items") or resp.json().get("data") or []
     assert any(it.get("id") == account_id for it in items)
