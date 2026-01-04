@@ -6,8 +6,8 @@ Create Date: 2025-12-28
 """
 from __future__ import annotations
 
+import sqlalchemy as sa  # noqa: F401 — kept for alembic context / consistency
 from alembic import op
-import sqlalchemy as sa  # kept for alembic context / consistency
 
 # revision identifiers, used by Alembic.
 revision = "20251228_subs_deleted_at"
@@ -18,7 +18,9 @@ depends_on = None
 
 def upgrade() -> None:
     # Offline-safe: no inspect; additive DDL with IF NOT EXISTS
-    op.execute('ALTER TABLE IF EXISTS "subscriptions" ADD COLUMN IF NOT EXISTS "deleted_at" TIMESTAMP WITHOUT TIME ZONE')
+    op.execute(
+        'ALTER TABLE IF EXISTS "subscriptions" ADD COLUMN IF NOT EXISTS "deleted_at" TIMESTAMP WITHOUT TIME ZONE'
+    )
     op.execute('ALTER TABLE IF EXISTS "subscriptions" ADD COLUMN IF NOT EXISTS "ended_at" TIMESTAMP WITH TIME ZONE')
     op.execute('CREATE INDEX IF NOT EXISTS "ix_subscriptions_deleted_at" ON "subscriptions" ("deleted_at")')
 

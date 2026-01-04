@@ -23,6 +23,7 @@ Pytest configuration and fixtures for async database testing.
 from __future__ import annotations
 
 import asyncio
+import logging
 import os
 from collections.abc import AsyncIterator, Awaitable, Callable, Iterator
 from typing import Any
@@ -368,6 +369,43 @@ TEST_DATABASE_URL, SYNC_TEST_DATABASE_URL = _ensure_test_urls()
 test_engine: AsyncEngine | None = None
 TestingSessionLocal: async_sessionmaker[AsyncSession] | None = None
 sync_engine: Engine | None = None
+logger = logging.getLogger(__name__)
+_TEST_RUN_INTERRUPTED = False
+
+
+def pytest_keyboard_interrupt(excinfo):
+    """Mark test session as interrupted to skip heavy teardown on Ctrl+C."""
+    global _TEST_RUN_INTERRUPTED
+    _TEST_RUN_INTERRUPTED = True
+
+
+def _dispose_test_engines() -> None:
+    """Best-effort disposal of async/sync engines; never raises."""
+    global test_engine, sync_engine, TestingSessionLocal
+
+    try:
+        if test_engine is not None:
+            try:
+                await_future = test_engine.dispose()
+                if hasattr(await_future, "__await__"):
+                    asyncio.run(await_future)
+            except Exception as e:  # noqa: PERF203 — log for diagnosis
+                logger.warning("Failed to dispose async test engine: %s", e)
+            test_engine = None
+    except Exception as e:  # noqa: PERF203 — log for diagnosis
+        logger.warning("Async engine cleanup error: %s", e)
+
+    try:
+        if sync_engine is not None:
+            try:
+                sync_engine.dispose()
+            except Exception as e:  # noqa: PERF203 — log for diagnosis
+                logger.warning("Failed to dispose sync test engine: %s", e)
+            sync_engine = None
+    except Exception as e:  # noqa: PERF203 — log for diagnosis
+        logger.warning("Sync engine cleanup error: %s", e)
+
+    TestingSessionLocal = None
 
 
 # ======================================================================================
@@ -582,18 +620,7 @@ def test_db() -> Iterator[None]:
         raise RuntimeError(f"Refusing to use non-test async database URL: {async_url}")
 
     # Dispose all existing engines before schema reset (if any were created)
-    if test_engine is not None:
-        try:
-            await_future = test_engine.dispose()
-            if hasattr(await_future, "__await__"):
-                asyncio.run(await_future)
-        except Exception:
-            pass
-    if sync_engine is not None:
-        try:
-            sync_engine.dispose()
-        except Exception:
-            pass
+    _dispose_test_engines()
 
     # Reset public schema to avoid duplicates across runs
     eng = sa.create_engine(sync_url, future=True)
@@ -706,11 +733,30 @@ def test_db() -> Iterator[None]:
     try:
         yield
     finally:
-        try:
-            command.downgrade(cfg, "base")
-        except Exception:
-            # Если даунгрейд не удался, не роняем всю сессию тестов
-            pass
+        # Always release engines/sessions first; teardown must be idempotent
+        _dispose_test_engines()
+
+        keep_db = any(
+            str(os.getenv(key, "")).strip().lower() in {"1", "true", "yes", "on"}
+            for key in ("PYTEST_KEEP_DB", "KEEP_DB")
+        )
+
+        skip_downgrade = False
+        reason = None
+        if keep_db:
+            skip_downgrade = True
+            reason = "KEEP_DB flag is set"
+        elif _TEST_RUN_INTERRUPTED:
+            skip_downgrade = True
+            reason = "test run was interrupted"
+
+        if skip_downgrade:
+            logger.warning("Skipping alembic downgrade: %s", reason)
+        else:
+            try:
+                command.downgrade(cfg, "base")
+            except Exception as e:  # noqa: PERF203 — best-effort cleanup
+                logger.warning("Alebic downgrade failed: %s", e)
 
 
 # ======================================================================================

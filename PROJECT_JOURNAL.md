@@ -318,3 +318,25 @@ Commits (per git show):
 - `app/storage/payments_sql.py`
 - `tests/app/api/test_no_sync_db_calls.py`
 - `tests/conftest.py`
+## [2026-01-04] Tests teardown: interrupt-safe + engine dispose first
+
+### changed
+- Усилен teardown тестов: добавлен session-level guard на KeyboardInterrupt и общий disposer, чтобы sync/async engines закрывались первыми.
+- При `PYTEST_KEEP_DB`/`KEEP_DB` и при прерывании тестов teardown пропускает alembic downgrade/drop и не роняет сессию; обычный прогон — best-effort cleanup.
+
+### fixed
+- Убраны нестабильные падения в конце прогона при `Ctrl+C`/долгом downgrade на Windows event loop.
+
+### lint
+- Приведён в порядок импорт-блок в миграциях:
+  - `migrations/versions/20251228_subs_deleted_at.py`
+  - `migrations/versions/20260102_wallet_and_payments.py`
+
+### tests
+- `python -m ruff check .`
+- `python -m pytest -q` → **163 passed, 5 skipped**
+
+### files
+- `tests/conftest.py`
+- `migrations/versions/20251228_subs_deleted_at.py`
+- `migrations/versions/20260102_wallet_and_payments.py`
