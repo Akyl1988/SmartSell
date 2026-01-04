@@ -1,3 +1,16 @@
+## [2026-01-04] Enforce tenant scoping across v1
+
+### Added
+- Regression coverage for invoice listing to ensure tenant admins are allowed only for their company and platform admins cannot override company_id.
+
+### Changed
+- Applied resolve_tenant_company_id scoping in analytics and products endpoints to remove implicit platform overrides.
+
+### Verified
+- python -m ruff format app tests tools
+- python -m ruff check app tests tools
+- pytest -q
+
 ## [2026-01-04] Tenant scoping: remove platform override for company_id
 
 ### Added
