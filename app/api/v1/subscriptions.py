@@ -219,9 +219,10 @@ async def list_subscriptions(
     resolved_company_id = resolve_tenant_company_id(
         user,
         company_id,
-        allow_platform_override=True,
         not_found_detail="Company not found",
     )
+    if company_id is not None and company_id != resolved_company_id:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="forbidden")
     _company = await ensure_company(db, resolved_company_id)
     ensure_company_access(user, _company)
 
@@ -261,9 +262,10 @@ async def get_current_subscription(
     resolved_company_id = resolve_tenant_company_id(
         user,
         company_id,
-        allow_platform_override=True,
         not_found_detail="Company not found",
     )
+    if company_id is not None and company_id != resolved_company_id:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="forbidden")
     _company = await ensure_company(db, resolved_company_id)
     ensure_company_access(user, _company)
 
@@ -302,9 +304,10 @@ async def create_subscription(
     resolved_company_id = resolve_tenant_company_id(
         user,
         payload.company_id,
-        allow_platform_override=True,
         not_found_detail="Company not found",
     )
+    if payload.company_id != resolved_company_id:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="forbidden")
     _company = await ensure_company(db, resolved_company_id)
     ensure_company_access(user, _company)
 

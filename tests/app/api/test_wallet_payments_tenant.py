@@ -280,6 +280,44 @@ async def test_payments_list_company_param_same_company_ok(client, db_session, c
 
 
 @pytest.mark.anyio
+async def test_payments_list_company_param_platform_admin_forbidden(
+    client, db_session, company_a_admin_headers, auth_headers
+):
+    user_a = _get_user_by_phone(db_session, "+70000010001")
+    company_a_id = user_a.company_id
+
+    acc = await client.post(
+        "/api/v1/wallet/accounts",
+        json={"user_id": user_a.id, "currency": "KZT"},
+        headers=company_a_admin_headers,
+    )
+    assert acc.status_code == 201, acc.text
+    account_id = acc.json()["id"]
+
+    pay = await client.post(
+        "/api/v1/payments/",
+        json={
+            "user_id": user_a.id,
+            "wallet_account_id": account_id,
+            "amount": "5.00",
+            "currency": "KZT",
+            "reference": "platform-forbidden",
+        },
+        headers=company_a_admin_headers,
+    )
+    assert pay.status_code == 201, pay.text
+    payment_id = pay.json()["id"]
+
+    allowed = await client.get(f"/api/v1/payments/?company_id={company_a_id}", headers=company_a_admin_headers)
+    assert allowed.status_code == 200, allowed.text
+    allowed_items = allowed.json().get("items") or allowed.json().get("data") or []
+    assert any(it.get("id") == payment_id for it in allowed_items)
+
+    forbidden = await client.get(f"/api/v1/payments/?company_id={company_a_id}", headers=auth_headers)
+    assert forbidden.status_code == 403
+
+
+@pytest.mark.anyio
 async def test_wallet_list_company_param_forbidden(
     client, db_session, company_a_admin_headers, company_b_admin_headers
 ):
@@ -307,3 +345,27 @@ async def test_wallet_list_company_param_same_company_ok(client, db_session, com
     assert resp.status_code == 200, resp.text
     items = resp.json().get("items") or resp.json().get("data") or []
     assert any(it.get("id") == account_id for it in items)
+
+
+@pytest.mark.anyio
+async def test_wallet_list_company_param_platform_admin_forbidden(
+    client, db_session, company_a_admin_headers, auth_headers
+):
+    user_a = _get_user_by_phone(db_session, "+70000010001")
+    company_a_id = user_a.company_id
+
+    created = await client.post(
+        "/api/v1/wallet/accounts",
+        json={"user_id": user_a.id, "currency": "KZT"},
+        headers=company_a_admin_headers,
+    )
+    assert created.status_code == 201, created.text
+    account_id = created.json()["id"]
+
+    allowed = await client.get(f"/api/v1/wallet/accounts?company_id={company_a_id}", headers=company_a_admin_headers)
+    assert allowed.status_code == 200, allowed.text
+    allowed_items = allowed.json().get("items") or allowed.json().get("data") or []
+    assert any(it.get("id") == account_id for it in allowed_items)
+
+    forbidden = await client.get(f"/api/v1/wallet/accounts?company_id={company_a_id}", headers=auth_headers)
+    assert forbidden.status_code == 403
