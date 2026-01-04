@@ -17,7 +17,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.db import get_async_db
 from app.core.security import (
     decode_and_validate,
-    is_platform_admin,
     is_token_revoked,
     resolve_tenant_company_id,
 )
@@ -115,9 +114,14 @@ def ensure_company_access(user, company: Company) -> None:
     except Exception:
         role, user_company_id = None, None
 
-    if role in {"platform_admin", "superadmin"}:
-        return
-    if user_company_id == company.id and role in {"owner", "company_admin", "manager", "admin"}:
+    if user_company_id == company.id and role in {
+        "owner",
+        "company_admin",
+        "manager",
+        "admin",
+        "platform_admin",
+        "superadmin",
+    }:
         return
     raise HTTPException(status_code=404, detail="Company not found")
 
@@ -129,26 +133,13 @@ async def _get_subscription_scoped(
     *,
     allow_deleted: bool = False,
 ) -> Subscription:
-    resolved_company_id = resolve_tenant_company_id(
-        user,
-        allow_platform_override=is_platform_admin(user),
-        not_found_detail="Company not found",
-    )
-
-    # Platform admins may not have a company on the token; fall back to the subscription's company.
-    sub: Subscription | None = None
-    if resolved_company_id is None and is_platform_admin(user):
-        sub = await db.get(Subscription, subscription_id)
-        if not sub:
-            raise HTTPException(status_code=404, detail="Subscription not found")
-        resolved_company_id = sub.company_id
+    resolved_company_id = resolve_tenant_company_id(user, not_found_detail="Company not set")
 
     stmt = select(Subscription).where(
         Subscription.id == subscription_id,
         Subscription.company_id == resolved_company_id,
     )
-    if sub is None:
-        sub = (await db.execute(stmt)).scalar_one_or_none()
+    sub = (await db.execute(stmt)).scalar_one_or_none()
     if not sub:
         raise HTTPException(status_code=404, detail="Subscription not found")
     if sub.deleted_at and not allow_deleted:
@@ -230,7 +221,7 @@ async def list_subscriptions(
     db: AsyncSession = Depends(get_async_db),
     user: User = Depends(_auth_user),
 ):
-    resolved_company_id = resolve_tenant_company_id(user, not_found_detail="Company not found")
+    resolved_company_id = resolve_tenant_company_id(user, not_found_detail="Company not set")
     _company = await ensure_company(db, resolved_company_id)
     ensure_company_access(user, _company)
 
@@ -266,7 +257,7 @@ async def get_current_subscription(
     db: AsyncSession = Depends(get_async_db),
     user: User = Depends(_auth_user),
 ):
-    resolved_company_id = resolve_tenant_company_id(user, not_found_detail="Company not found")
+    resolved_company_id = resolve_tenant_company_id(user, not_found_detail="Company not set")
     _company = await ensure_company(db, resolved_company_id)
     ensure_company_access(user, _company)
 
@@ -302,7 +293,7 @@ async def create_subscription(
     db: AsyncSession = Depends(get_async_db),
     user: User = Depends(_auth_user),
 ):
-    resolved_company_id = resolve_tenant_company_id(user, not_found_detail="Company not found")
+    resolved_company_id = resolve_tenant_company_id(user, not_found_detail="Company not set")
     _company = await ensure_company(db, resolved_company_id)
     ensure_company_access(user, _company)
 
@@ -465,7 +456,8 @@ async def archive_subscription(
     db: AsyncSession = Depends(get_async_db),
     user: User = Depends(_auth_user),
 ):
-    if not is_platform_admin(user):
+    role = (getattr(user, "role", "") or "").lower()
+    if role not in {"platform_admin", "superadmin"}:
         raise HTTPException(status_code=403, detail="Admin only")
 
     sub = await _get_subscription_scoped(db, user, subscription_id, allow_deleted=True)
@@ -486,7 +478,8 @@ async def restore_subscription(
     db: AsyncSession = Depends(get_async_db),
     user: User = Depends(_auth_user),
 ):
-    if not is_platform_admin(user):
+    role = (getattr(user, "role", "") or "").lower()
+    if role not in {"platform_admin", "superadmin"}:
         raise HTTPException(status_code=403, detail="Admin only")
 
     sub = await _get_subscription_scoped(db, user, subscription_id, allow_deleted=True)

@@ -418,3 +418,25 @@ Commits (per git show):
 - python -m ruff format --check app tests tools
 - python -m ruff check app tests tools
 - pytest -q
+## [2026-01-04] Platform admin tenant access policy (v1)
+
+### Changed
+- Tenant-scoped v1 endpoints now consistently require tenant context from token; platform_admin/superadmin without company claim are denied (403) instead of any implicit fallback behavior.
+
+### Added
+- `tests/test_platform_admin_tenant_access_policy.py` to lock policy:
+  - platform_admin without company_id claim gets 403 across tenant-scoped v1 endpoints (wallet/payments/invoices/subscriptions/products/analytics/kaspi).
+  - tenant admin continues to receive 200.
+
+### Verified
+- python -m ruff format --check app tests tools
+- python -m ruff check app tests tools
+- pytest -q tests/test_platform_admin_tenant_access_policy.py
+- pytest -q
+## [2026-01-04] Kaspi v1 feed: remove silent fallback
+
+### Fixed
+- Removed `<feed/>` fallback on unexpected errors in `/api/v1/kaspi/feed`; endpoint now fails loudly (500) with safe exception logging to prevent masking integration failures.
+
+### Added
+- Regression test: feed returns 500 when service raises unexpected exception.

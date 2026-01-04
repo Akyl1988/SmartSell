@@ -50,3 +50,17 @@ async def test_kaspi_feed_ignores_company_param(monkeypatch, async_client, compa
     assert resp.status_code == 200, resp.text
     assert resp.text == "<feed/>"
     assert captured["company_id"] == 1001
+
+
+@pytest.mark.anyio
+async def test_kaspi_feed_propagates_errors(monkeypatch, async_client, company_a_admin_headers):
+    class _FailingKaspiService:
+        async def generate_product_feed(self, company_id: int, db):  # noqa: ANN001
+            raise Exception("boom")
+
+    monkeypatch.setattr(kaspi_module, "KaspiService", _FailingKaspiService)
+
+    resp = await async_client.get("/api/v1/kaspi/feed", headers=company_a_admin_headers)
+
+    assert resp.status_code == 500
+    assert "boom" in resp.text

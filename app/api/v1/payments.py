@@ -11,12 +11,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.db import get_async_db
-from app.core.security import (
-    get_current_user,
-    is_platform_admin,
-    require_manager,
-    resolve_tenant_company_id,
-)
+from app.core.security import get_current_user, require_manager, resolve_tenant_company_id
 from app.models.user import User
 from app.storage.payments_sql import PaymentsStorageSQL
 from app.storage.wallet_sql import WalletStorageSQL
@@ -70,12 +65,11 @@ async def _ensure_user_in_company(
     *,
     not_found_detail: str = "payment not found",
 ) -> User:
+    resolved_company_id = resolve_tenant_company_id(current_user, not_found_detail="Company not set")
     user = await db.get(User, target_user_id)
     if not user:
         raise HTTPException(status_code=404, detail=not_found_detail)
-    if is_platform_admin(current_user):
-        return user
-    if getattr(user, "company_id", None) != getattr(current_user, "company_id", None):
+    if getattr(user, "company_id", None) != resolved_company_id:
         raise HTTPException(status_code=404, detail=not_found_detail)
     return user
 
@@ -175,7 +169,7 @@ async def create_and_capture(
     db: AsyncSession = Depends(get_async_db),
 ):
     try:
-        resolved_company_id = resolve_tenant_company_id(current_user)
+        resolved_company_id = resolve_tenant_company_id(current_user, not_found_detail="Company not set")
         await _ensure_user_in_company(req.user_id, current_user, db, not_found_detail="user not found")
         acc = await _ensure_account_access(req.wallet_account_id, current_user, db)
         if int(acc.get("user_id", 0)) != req.user_id:
@@ -209,7 +203,7 @@ async def refund(
     db: AsyncSession = Depends(get_async_db),
 ):
     try:
-        resolved_company_id = resolve_tenant_company_id(current_user)
+        resolved_company_id = resolve_tenant_company_id(current_user, not_found_detail="Company not set")
         storage = await _get_payment_storage(db)
         payment = await _ensure_payment_visible(
             await storage.get(payment_id, company_id=resolved_company_id),
@@ -243,7 +237,7 @@ async def cancel(
     db: AsyncSession = Depends(get_async_db),
 ):
     try:
-        resolved_company_id = resolve_tenant_company_id(current_user)
+        resolved_company_id = resolve_tenant_company_id(current_user, not_found_detail="Company not set")
         storage = await _get_payment_storage(db)
         payment = await _ensure_payment_visible(
             await storage.get(payment_id, company_id=resolved_company_id),
@@ -272,7 +266,7 @@ async def get_payment(
     db: AsyncSession = Depends(get_async_db),
 ):
     storage = await _get_payment_storage(db)
-    resolved_company_id = resolve_tenant_company_id(current_user)
+    resolved_company_id = resolve_tenant_company_id(current_user, not_found_detail="Company not set")
     p = await _ensure_payment_visible(
         await storage.get(payment_id, company_id=resolved_company_id),
         current_user,
@@ -290,18 +284,17 @@ async def list_payments(
     current_user: User = Depends(_auth_user),
     db: AsyncSession = Depends(get_async_db),
 ):
-    resolved_company_id = resolve_tenant_company_id(current_user)
+    resolved_company_id = resolve_tenant_company_id(current_user, not_found_detail="Company not set")
     allowed_ids: list[int] | None = None
     if user_id is not None:
         await _ensure_user_in_company(user_id, current_user, db, not_found_detail="payment not found")
-    if not is_platform_admin(current_user):
-        stmt = select(User.id).where(User.company_id == resolved_company_id)
-        result = (await db.execute(stmt)).all()
-        allowed_ids = [int(r[0]) for r in result]
-        if user_id is not None:
-            allowed_ids = [uid for uid in allowed_ids if uid == user_id]
-        if allowed_ids is not None and not allowed_ids:
-            allowed_ids = [-1]
+    stmt = select(User.id).where(User.company_id == resolved_company_id)
+    result = (await db.execute(stmt)).all()
+    allowed_ids = [int(r[0]) for r in result]
+    if user_id is not None:
+        allowed_ids = [uid for uid in allowed_ids if uid == user_id]
+    if allowed_ids is not None and not allowed_ids:
+        allowed_ids = [-1]
     storage = await _get_payment_storage(db)
     out = await storage.list(
         user_id,
@@ -311,16 +304,5 @@ async def list_payments(
         company_id=resolved_company_id,
     )
     items = [Payment(**i) for i in out["items"]]
-    if not is_platform_admin(current_user):
-        current_company = resolved_company_id
-        filtered: list[Payment] = []
-        if current_company is not None:
-            for p in items:
-                user = await db.get(User, int(p.user_id))
-                if user and getattr(user, "company_id", None) == current_company:
-                    filtered.append(p)
-        items = filtered
-        meta = PageMeta(page=page, size=size, total=len(items))
-    else:
-        meta = PageMeta(**out["meta"])
+    meta = PageMeta(page=page, size=size, total=len(items))
     return PaymentList(items=items, meta=meta)

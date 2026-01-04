@@ -173,21 +173,19 @@ def _is_admin(user: User) -> bool:
     return False
 
 
-_PRODUCT_READ_ROLES = {"admin", "manager", "analyst", "storekeeper"}
-_PRODUCT_WRITE_ROLES = {"admin", "manager"}
-_STOCK_WRITE_ROLES = {"admin", "manager", "storekeeper"}
+_PRODUCT_READ_ROLES = {"admin", "manager", "analyst", "storekeeper", "platform_admin"}
+_PRODUCT_WRITE_ROLES = {"admin", "manager", "platform_admin"}
+_STOCK_WRITE_ROLES = {"admin", "manager", "storekeeper", "platform_admin"}
 
 
 def _ensure_role(user: User, allowed: set[str]) -> None:
     role = (getattr(user, "role", "") or "").lower()
-    if role == "platform_admin":
-        return
     if role not in allowed:
         raise AuthorizationError("Insufficient permissions", "INSUFFICIENT_PERMISSIONS")
 
 
 def _filter_company(stmt, user: User):
-    cid = resolve_tenant_company_id(user)
+    cid = resolve_tenant_company_id(user, not_found_detail="Company not set")
     stmt = stmt.where(Product.company_id == cid)
     return stmt
 
@@ -255,7 +253,7 @@ async def create_product(
             if not category:
                 raise NotFoundError("Category not found", "CATEGORY_NOT_FOUND")
 
-        resolved_company_id = resolve_tenant_company_id(current_user)
+        resolved_company_id = resolve_tenant_company_id(current_user, not_found_detail="Company not set")
         payload = product_data.model_dump()
         if payload.get("sku"):
             payload["sku"] = payload["sku"].strip().upper()

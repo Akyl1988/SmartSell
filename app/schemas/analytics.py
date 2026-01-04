@@ -15,7 +15,7 @@ class AnalyticsFilter(BaseCreateSchema):
 
     date_from: str | None = None
     date_to: str | None = None
-    interval: str = Field(default="day", regex="^(day|week|month)$")
+    interval: str = Field(default="day", pattern="^(day|week|month)$")
     warehouse_id: int | None = None
     category: str | None = None
     product_id: int | None = None
@@ -98,8 +98,8 @@ class DashboardStats(BaseCreateSchema):
 class ExportRequest(BaseCreateSchema):
     """Schema for export request"""
 
-    export_type: str = Field(..., regex="^(sales|orders|products|customers|inventory)$")
-    format: str = Field(default="xlsx", regex="^(xlsx|pdf|csv)$")
+    export_type: str = Field(..., pattern="^(sales|orders|products|customers|inventory)$")
+    format: str = Field(default="xlsx", pattern="^(xlsx|pdf|csv)$")
     date_from: str | None = None
     date_to: str | None = None
     filters: dict[str, Any] | None = None
