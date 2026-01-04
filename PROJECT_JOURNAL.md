@@ -402,3 +402,19 @@ Commits (per git show):
 ### notes
 - Локальные проверки: `ruff check` и `pytest -q` — зелёные (167 passed, 5 skipped).
 
+## [2026-01-04] Kaspi v1: orders sync without body + safe logging
+
+### Changed
+- `POST /api/v1/kaspi/orders/sync` no longer requires a request body (endpoint works with token-scoped tenant only).
+- Removed the empty `OrdersSyncIn` model.
+- Hardened error logging to avoid referencing undefined locals and to avoid logging request body; logs now use resolved company id.
+
+### Added
+- `tests/app/api/test_kaspi_endpoints.py`:
+  - `/api/v1/kaspi/orders/sync` accepts empty requests and stays token-scoped.
+  - `/api/v1/kaspi/feed` is token-scoped and ignores any company_id hints.
+
+### Verified
+- python -m ruff format --check app tests tools
+- python -m ruff check app tests tools
+- pytest -q
