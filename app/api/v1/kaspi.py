@@ -36,7 +36,7 @@ from sqlalchemy import bindparam, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.db import get_async_db  # noqa — для совместимости импорт-алиас
-from app.core.security import get_current_user
+from app.core.security import get_current_user, resolve_tenant_company_id
 
 # Доменные зависимости/схемы:
 from app.integrations.kaspi_adapter import KaspiAdapter, KaspiAdapterError
@@ -71,12 +71,7 @@ async def _auth_user(current_user: User = Depends(get_current_user)) -> User:
 
 
 def _resolve_company_id(current_user: User, company_id: int | None) -> int:
-    resolved = getattr(current_user, "company_id", None)
-    if company_id is not None and company_id != resolved:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Forbidden: cross-tenant access")
-    if resolved is None:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Forbidden: cross-tenant access")
-    return resolved
+    return resolve_tenant_company_id(current_user, company_id, not_found_detail="Forbidden: cross-tenant access")
 
 
 # ------------------------------- Локальные схемы -----------------------------

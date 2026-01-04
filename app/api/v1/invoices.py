@@ -12,7 +12,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.db import get_async_db
-from app.core.security import decode_and_validate, is_token_revoked
+from app.core.security import decode_and_validate, is_token_revoked, resolve_tenant_company_id
 from app.models.billing import Invoice
 from app.models.company import Company
 from app.models.user import User
@@ -82,9 +82,9 @@ async def create_invoice(
     db: AsyncSession = Depends(get_async_db),
     user: User = Depends(_auth_user),
 ):
-    company_id = getattr(user, "company_id", None)
-    if not company_id:
-        raise HTTPException(status_code=403, detail="Company not set")
+    company_id = resolve_tenant_company_id(
+        user, getattr(payload, "company_id", None), not_found_detail="Company not set"
+    )
 
     await _ensure_company(db, company_id)
 
@@ -125,12 +125,7 @@ async def list_invoices(
     db: AsyncSession = Depends(get_async_db),
     user: User = Depends(_auth_user),
 ):
-    current_company = getattr(user, "company_id", None)
-    if company_id is not None and company_id != current_company:
-        raise HTTPException(status_code=403, detail="forbidden")
-    resolved_company = company_id or current_company
-    if not resolved_company:
-        raise HTTPException(status_code=403, detail="Company not set")
+    resolved_company = resolve_tenant_company_id(user, company_id, not_found_detail="Company not set")
 
     stmt = select(Invoice).where(Invoice.company_id == resolved_company)
     stmt = stmt.where(Invoice.deleted_at.is_(None)) if hasattr(Invoice, "deleted_at") else stmt
@@ -157,12 +152,7 @@ async def get_invoice(
     db: AsyncSession = Depends(get_async_db),
     user: User = Depends(_auth_user),
 ):
-    current_company = getattr(user, "company_id", None)
-    if company_id is not None and company_id != current_company:
-        raise HTTPException(status_code=403, detail="forbidden")
-    resolved_company = company_id or current_company
-    if not resolved_company:
-        raise HTTPException(status_code=403, detail="Company not set")
+    resolved_company = resolve_tenant_company_id(user, company_id, not_found_detail="Company not set")
 
     stmt = select(Invoice).where(Invoice.id == invoice_id, Invoice.company_id == resolved_company)
     stmt = stmt.where(Invoice.deleted_at.is_(None)) if hasattr(Invoice, "deleted_at") else stmt

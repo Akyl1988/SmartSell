@@ -1,3 +1,16 @@
+## [2026-01-04] Tenant company scoping helper + query guardrails
+
+### Added
+- Shared tenant company resolver in pp/core/security.py to enforce company_id from auth claims and centralize platform-admin override rules.
+- Regression tests covering company_id query behavior for wallet/payments (same-tenant allowed, cross-tenant forbidden) in 	ests/app/api/test_wallet_payments_tenant.py.
+
+### Changed
+- Wallet, payments, subscriptions, invoices, kaspi, and analytics endpoints now resolve company scope via the helper and reject mismatched query/body company_id values instead of trusting request parameters.
+
+### Verified
+- uff check app/core/security.py app/api/v1/payments.py app/api/v1/wallet.py app/api/v1/subscriptions.py app/api/v1/invoices.py app/api/v1/kaspi.py app/api/v1/analytics.py tests/app/api/test_wallet_payments_tenant.py
+- pytest tests/app/api/test_wallet_payments_tenant.py -q
+- pytest -q
 ## [2026-01-03] Tenant isolation: billing + wallet/payments; storage alignment
 
 ### Added
@@ -347,3 +360,4 @@ Commits (per git show):
 
 ### notes
 - Локальные проверки: `ruff check` и `pytest -q` — зелёные (167 passed, 5 skipped).
+
