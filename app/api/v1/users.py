@@ -4,13 +4,14 @@ User management endpoints (enterprise-ready).
 
 from __future__ import annotations
 
-from typing import Any
+from collections.abc import Callable
+from typing import Any, TypeVar
 
 from fastapi import APIRouter, Depends, Path, Query
-from sqlalchemy import or_
-from sqlalchemy.orm import Session
+from sqlalchemy import or_, select, update
+from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.db import get_db
+from app.core.db import get_async_db
 from app.core.dependencies import (
     Pagination,
     api_rate_limit,
@@ -26,6 +27,12 @@ from app.schemas.base import PaginatedResponse, SuccessResponse
 from app.schemas.user import UserResponse, UserUpdate
 
 router = APIRouter(prefix="/users", tags=["Users"], dependencies=[Depends(api_rate_limit)])
+
+T = TypeVar("T")
+
+
+async def _run_sync(db: AsyncSession, fn: Callable[[Any], T]) -> T:
+    return await db.run_sync(fn)
 
 
 # ---------------------------------------------------------------------------
@@ -85,57 +92,66 @@ async def get_current_user_info(current_user: User = Depends(get_current_user)):
 async def update_current_user(
     user_update: UserUpdate,
     current_user: User = Depends(get_current_verified_user),
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_async_db),
 ):
     """Update current user information."""
+    db_user = await db.get(User, current_user.id)
+    if not db_user:
+        raise AuthenticationError("User not found", "USER_NOT_FOUND")
+
     changes: dict[str, dict[str, Any]] = {}
 
     for field, value in user_update.model_dump(exclude_unset=True).items():
-        if hasattr(current_user, field):
-            old = getattr(current_user, field)
+        if hasattr(db_user, field):
+            old = getattr(db_user, field)
             if old != value:
-                setattr(current_user, field, value)
+                setattr(db_user, field, value)
                 changes[field] = {"old": old, "new": value}
 
     if changes:
-        db.commit()
-        db.refresh(current_user)
+        await db.commit()
+        await db.refresh(db_user)
 
         audit_logger.log_data_change(
-            user_id=current_user.id,
+            user_id=db_user.id,
             action="update",
             resource_type="user",
-            resource_id=str(current_user.id),
+            resource_id=str(db_user.id),
             changes=changes,
         )
 
-    return current_user
+    return db_user
 
 
 @router.delete("/me", response_model=SuccessResponse)
 async def deactivate_current_user(
     current_user: User = Depends(get_current_verified_user),
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_async_db),
 ):
     """Deactivate current user account (soft)."""
-    if not current_user.is_active:
+    db_user = await db.get(User, current_user.id)
+    if not db_user:
+        raise AuthenticationError("User not found", "USER_NOT_FOUND")
+
+    if not db_user.is_active:
         return SuccessResponse(message="Account already inactive")
 
-    old = current_user.is_active
-    current_user.is_active = False
+    old = db_user.is_active
+    db_user.is_active = False
 
-    # Отзываем активные сессии
-    db.query(UserSession).filter(UserSession.user_id == current_user.id, UserSession.is_active.is_(True)).update(
-        {"is_active": False}
+    await db.execute(
+        update(UserSession)
+        .where(UserSession.user_id == current_user.id, UserSession.is_active.is_(True))
+        .values(is_active=False)
     )
 
-    db.commit()
+    await db.commit()
 
     audit_logger.log_data_change(
-        user_id=current_user.id,
+        user_id=db_user.id,
         action="deactivate",
         resource_type="user",
-        resource_id=str(current_user.id),
+        resource_id=str(db_user.id),
         changes={"is_active": {"old": old, "new": False}},
     )
 
@@ -145,21 +161,25 @@ async def deactivate_current_user(
 @router.post("/me/reactivate", response_model=SuccessResponse)
 async def reactivate_current_user(
     current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_async_db),
 ):
     """Reactivate current user account."""
-    if current_user.is_active:
+    db_user = await db.get(User, current_user.id)
+    if not db_user:
+        raise AuthenticationError("User not found", "USER_NOT_FOUND")
+
+    if db_user.is_active:
         return SuccessResponse(message="Account already active")
 
-    old = current_user.is_active
-    current_user.is_active = True
-    db.commit()
+    old = db_user.is_active
+    db_user.is_active = True
+    await db.commit()
 
     audit_logger.log_data_change(
-        user_id=current_user.id,
+        user_id=db_user.id,
         action="reactivate",
         resource_type="user",
-        resource_id=str(current_user.id),
+        resource_id=str(db_user.id),
         changes={"is_active": {"old": old, "new": True}},
     )
     return SuccessResponse(message="Account reactivated")
@@ -181,29 +201,34 @@ class ChangePasswordRequest(BaseModel):
 async def change_password(
     req: ChangePasswordRequest,
     current_user: User = Depends(get_current_verified_user),
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_async_db),
 ):
     """Change password and invalidate all active sessions."""
-    if not verify_password(req.old_password, current_user.hashed_password):
+    db_user = await db.get(User, current_user.id)
+    if not db_user:
+        raise AuthenticationError("User not found", "USER_NOT_FOUND")
+
+    if not verify_password(req.old_password, db_user.hashed_password):
         raise AuthenticationError("Old password is incorrect", "INVALID_OLD_PASSWORD")
 
     if req.old_password == req.new_password:
         raise SmartSellValidationError("New password must be different", "PASSWORD_SAME")
 
-    current_user.hashed_password = get_password_hash(req.new_password)
+    db_user.hashed_password = get_password_hash(req.new_password)
 
-    # Отзываем все активные сессии пользователя
-    db.query(UserSession).filter(UserSession.user_id == current_user.id, UserSession.is_active.is_(True)).update(
-        {"is_active": False}
+    await db.execute(
+        update(UserSession)
+        .where(UserSession.user_id == db_user.id, UserSession.is_active.is_(True))
+        .values(is_active=False)
     )
 
-    db.commit()
+    await db.commit()
 
     audit_logger.log_data_change(
-        user_id=current_user.id,
+        user_id=db_user.id,
         action="change_password",
         resource_type="user",
-        resource_id=str(current_user.id),
+        resource_id=str(db_user.id),
         changes={"password": {"old": "***", "new": "***"}},
     )
 
@@ -213,15 +238,13 @@ async def change_password(
 @router.get("/me/sessions", response_model=list[dict])
 async def list_my_sessions(
     current_user: User = Depends(get_current_verified_user),
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_async_db),
 ):
     """List active and expired sessions for current user."""
-    sessions = (
-        db.query(UserSession)
-        .filter(UserSession.user_id == current_user.id)
-        .order_by(UserSession.created_at.desc())
-        .all()
+    res = await db.execute(
+        select(UserSession).where(UserSession.user_id == current_user.id).order_by(UserSession.created_at.desc())
     )
+    sessions = res.scalars().all()
     result = []
     for s in sessions:
         result.append(
@@ -241,22 +264,23 @@ async def list_my_sessions(
 async def revoke_my_sessions(
     session_ids: list[int],
     current_user: User = Depends(get_current_verified_user),
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_async_db),
 ):
     """Revoke selected sessions of the current user."""
     if not session_ids:
         raise SmartSellValidationError("No session ids provided", "NO_IDS")
 
-    affected = (
-        db.query(UserSession)
-        .filter(
+    result = await db.execute(
+        update(UserSession)
+        .where(
             UserSession.user_id == current_user.id,
             UserSession.id.in_(session_ids),
             UserSession.is_active.is_(True),
         )
-        .update({"is_active": False}, synchronize_session=False)
+        .values(is_active=False)
     )
-    db.commit()
+    affected = int(result.rowcount or 0)
+    await db.commit()
 
     if affected:
         audit_logger.log_data_change(
@@ -273,15 +297,16 @@ async def revoke_my_sessions(
 @router.post("/me/sessions/revoke_all", response_model=SuccessResponse)
 async def revoke_all_my_sessions(
     current_user: User = Depends(get_current_verified_user),
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_async_db),
 ):
     """Revoke all active sessions of the current user."""
-    affected = (
-        db.query(UserSession)
-        .filter(UserSession.user_id == current_user.id, UserSession.is_active.is_(True))
-        .update({"is_active": False}, synchronize_session=False)
+    result = await db.execute(
+        update(UserSession)
+        .where(UserSession.user_id == current_user.id, UserSession.is_active.is_(True))
+        .values(is_active=False)
     )
-    db.commit()
+    affected = int(result.rowcount or 0)
+    await db.commit()
 
     if affected:
         audit_logger.log_data_change(
@@ -302,13 +327,14 @@ async def revoke_all_my_sessions(
 @router.get("/{user_id}", response_model=UserResponse)
 async def get_user_public_profile(
     user_id: int = Path(..., ge=1),
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_async_db),
 ):
     """
     Public profile by id (без приватных полей).
     Если в модели есть чувствительные поля, предполагается что Pydantic-схема UserResponse скрывает их.
     """
-    user = db.query(User).filter(User.id == user_id).first()
+    res = await db.execute(select(User).where(User.id == user_id))
+    user = res.scalar_one_or_none()
     if not user:
         raise NotFoundError("User not found", "USER_NOT_FOUND")
     return user
@@ -322,7 +348,7 @@ async def list_users(
     search: str | None = Query(None),
     is_active: bool | None = Query(None),
     current_user: User = Depends(get_current_verified_user),
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_async_db),
 ):
     """
     List users with filters (admin-only if флаг админа присутствует).
@@ -337,12 +363,15 @@ async def list_users(
                 items=items, total=total, page=pagination.page, per_page=pagination.per_page
             )
 
-    q = db.query(User)
-    q = _apply_user_filters(q, search, is_active)
+    def _sync_fetch(session: Any):
+        q = session.query(User)
+        q = _apply_user_filters(q, search, is_active)
+        total_local = q.order_by(None).count()
+        q = _apply_sorting(q, sort_by, sort_order)
+        items = q.offset(pagination.offset).limit(pagination.limit).all()
+        return total_local, items
 
-    total = q.order_by(None).count()
-    q = _apply_sorting(q, sort_by, sort_order)
-    users = q.offset(pagination.offset).limit(pagination.limit).all()
+    total, users = await _run_sync(db, _sync_fetch)
 
     return PaginatedResponse.create(items=users, total=total, page=pagination.page, per_page=pagination.per_page)
 
@@ -360,24 +389,28 @@ class VerificationToggle(BaseModel):
 async def toggle_email_verified(
     body: VerificationToggle,
     current_user: User = Depends(get_current_verified_user),
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_async_db),
 ):
     """
     Сервисный переключатель флага подтверждения email (для MVP/админ-панели).
     В проде подтверждение идёт через код/ссылку — здесь только флаг с аудитом.
     """
-    if not getattr(current_user, "email", None):
+    db_user = await db.get(User, current_user.id)
+    if not db_user:
+        raise AuthenticationError("User not found", "USER_NOT_FOUND")
+
+    if not getattr(db_user, "email", None):
         raise SmartSellValidationError("No email attached to account", "EMAIL_MISSING")
 
-    old = getattr(current_user, "is_email_verified", False)
-    setattr(current_user, "is_email_verified", bool(body.value))
-    db.commit()
+    old = getattr(db_user, "is_email_verified", False)
+    setattr(db_user, "is_email_verified", bool(body.value))
+    await db.commit()
 
     audit_logger.log_data_change(
-        user_id=current_user.id,
+        user_id=db_user.id,
         action="verify_email_toggle",
         resource_type="user",
-        resource_id=str(current_user.id),
+        resource_id=str(db_user.id),
         changes={"is_email_verified": {"old": old, "new": bool(body.value)}},
     )
     return SuccessResponse(message="Email verification flag updated", data={"is_email_verified": bool(body.value)})
@@ -387,21 +420,25 @@ async def toggle_email_verified(
 async def toggle_phone_verified(
     body: VerificationToggle,
     current_user: User = Depends(get_current_verified_user),
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_async_db),
 ):
     """Переключатель флага подтверждения телефона (служебно)."""
-    if not getattr(current_user, "phone", None):
+    db_user = await db.get(User, current_user.id)
+    if not db_user:
+        raise AuthenticationError("User not found", "USER_NOT_FOUND")
+
+    if not getattr(db_user, "phone", None):
         raise SmartSellValidationError("No phone attached to account", "PHONE_MISSING")
 
-    old = getattr(current_user, "is_verified", False)
-    setattr(current_user, "is_verified", bool(body.value))
-    db.commit()
+    old = getattr(db_user, "is_verified", False)
+    setattr(db_user, "is_verified", bool(body.value))
+    await db.commit()
 
     audit_logger.log_data_change(
-        user_id=current_user.id,
+        user_id=db_user.id,
         action="verify_phone_toggle",
         resource_type="user",
-        resource_id=str(current_user.id),
+        resource_id=str(db_user.id),
         changes={"is_verified": {"old": old, "new": bool(body.value)}},
     )
     return SuccessResponse(message="Phone verification flag updated", data={"is_verified": bool(body.value)})
@@ -411,20 +448,24 @@ async def toggle_phone_verified(
 async def toggle_2fa(
     body: VerificationToggle,
     current_user: User = Depends(get_current_verified_user),
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_async_db),
 ):
     """
     Переключатель 2FA-флага на аккаунте (без генерации секретов/QR — это в отдельном модуле).
     """
-    old = getattr(current_user, "is_two_factor_enabled", False)
-    setattr(current_user, "is_two_factor_enabled", bool(body.value))
-    db.commit()
+    db_user = await db.get(User, current_user.id)
+    if not db_user:
+        raise AuthenticationError("User not found", "USER_NOT_FOUND")
+
+    old = getattr(db_user, "is_two_factor_enabled", False)
+    setattr(db_user, "is_two_factor_enabled", bool(body.value))
+    await db.commit()
 
     audit_logger.log_data_change(
-        user_id=current_user.id,
+        user_id=db_user.id,
         action="2fa_toggle",
         resource_type="user",
-        resource_id=str(current_user.id),
+        resource_id=str(db_user.id),
         changes={"is_two_factor_enabled": {"old": old, "new": bool(body.value)}},
     )
     return SuccessResponse(message="2FA setting updated", data={"is_two_factor_enabled": bool(body.value)})

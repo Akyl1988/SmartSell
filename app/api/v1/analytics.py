@@ -12,7 +12,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import and_, desc, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.db import get_db
+from app.core.db import get_async_db
 from app.core.deps import api_rate_limit_dep, ensure_idempotency
 from app.core.errors import bad_request, server_error
 from app.core.security import get_current_user as get_current_user_security
@@ -36,7 +36,7 @@ router = APIRouter(prefix="/analytics", tags=["analytics"])
 
 async def _auth_user(
     token_data: dict = Depends(get_current_user_security),
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_async_db),
 ) -> User:
     sub = token_data.get("sub")
     try:
@@ -102,7 +102,7 @@ def _normalize_interval(interval: str | None) -> str:
 )
 async def get_dashboard_stats(
     current_user: User = Depends(require_analyst),
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_async_db),
 ):
     """Get dashboard statistics for current company."""
     resolved_company_id = _resolve_company_id(current_user)
@@ -247,7 +247,7 @@ async def get_dashboard_stats(
 async def get_sales_analytics(
     filter_params: AnalyticsFilter = Depends(),
     current_user: User = Depends(require_analyst),
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_async_db),
 ):
     """Get sales analytics data in a given interval."""
     interval = _normalize_interval(filter_params.interval)
@@ -278,7 +278,7 @@ async def get_sales_analytics(
 async def get_customer_analytics(
     filter_params: AnalyticsFilter = Depends(),
     current_user: User = Depends(require_analyst),
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_async_db),
 ):
     """Get customer analytics data."""
     resolved_company_id = _resolve_company_id(current_user)
@@ -378,7 +378,7 @@ async def get_customer_analytics(
 async def get_product_analytics(
     filter_params: AnalyticsFilter = Depends(),
     current_user: User = Depends(require_analyst),
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_async_db),
 ):
     """Get product analytics data."""
     resolved_company_id = _resolve_company_id(current_user)
@@ -472,7 +472,7 @@ async def get_product_analytics(
 async def export_analytics(
     export_request: ExportRequest,
     current_user: User = Depends(require_analyst),
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_async_db),
 ):
     """
     Export analytics data to Excel or PDF.

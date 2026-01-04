@@ -269,3 +269,28 @@ Commits (per git show):
 - `python -m pytest -q tests/app/api/test_no_sync_db_calls.py` → OK
 ### Also changed
 - `app/api/v1/wallet.py`, `app/api/v1/payments.py`: removed sync `db.get()` usage; all `db.get(` calls are awaited (AsyncSession-only API).
+## [2026-01-04] API v1: async-only DB deps
+
+### changed
+- Принудительно переведены все роутеры `app/api/v1/*` на `AsyncSession` и зависимость `get_async_db` (запрещён sync `get_db` в v1).
+- Убраны остатки `sqlalchemy.orm.Session` (импорты/аннотации) из v1; для `run_sync` колбэков использован `Any`, чтобы не тащить `Session` в v1 слой.
+- Приведены к async-стилю места с `commit/rollback/flush/refresh`, где это требовалось.
+
+### fixed
+- Почищены замечания ruff (в т.ч. `UP035`, `F401`, `B023`) после перехода на async-only.
+- Усилен регрессионный тест: запрещает реальный `get_db`-dependency в `app/api/v1` и продолжает ловить не-awaited `db.get`.
+
+### tests
+- `python -m ruff format --check app tests tools`
+- `python -m ruff check app tests tools`
+- `python -m pytest -q` → **162 passed, 5 skipped**
+
+### files
+- `app/api/v1/auth.py`
+- `app/api/v1/analytics.py`
+- `app/api/v1/kaspi.py`
+- `app/api/v1/products.py`
+- `app/api/v1/users.py`
+- `app/api/v1/wallet.py`
+- `app/api/v1/payments.py`
+- `tests/app/api/test_no_sync_db_calls.py`

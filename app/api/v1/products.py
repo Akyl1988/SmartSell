@@ -12,16 +12,17 @@ Product management endpoints (enterprise-ready).
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from enum import Enum
-from typing import Any
+from typing import Any, TypeVar
 
 from fastapi import APIRouter, Depends, Path, Query
 from pydantic import BaseModel, Field, ValidationInfo, field_validator
-from sqlalchemy import func, or_
+from sqlalchemy import func, or_, update
 from sqlalchemy.exc import IntegrityError
-from sqlalchemy.orm import Session
+from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.db import get_db
+from app.core.db import get_async_db
 from app.core.dependencies import (
     Pagination,
     api_rate_limit,
@@ -75,7 +76,7 @@ except Exception:
         cfg: dict[int, RepricingConfig] = {}
 
     class RepricingService:
-        def __init__(self, db: Session):
+        def __init__(self, db: Any):
             self.db = db
 
         def get_config(self, product_id: int) -> RepricingConfig:
@@ -101,6 +102,13 @@ except Exception:
 
 
 router = APIRouter(prefix="/products", tags=["Products"], dependencies=[Depends(api_rate_limit)])
+
+T = TypeVar("T")
+
+
+async def _run_sync(db: AsyncSession, fn: Callable[[Any], T]) -> T:
+    return await db.run_sync(fn)
+
 
 # ---------------------------------------------------------------------------
 # Вспомогательные утилиты
@@ -195,10 +203,13 @@ def _filter_company(query, user: User):
     return query
 
 
-def _get_product_or_404(db: Session, product_id: int, user: User) -> Product:
-    query = db.query(Product).filter(Product.id == product_id)
-    query = _filter_company(query, user)
-    product = query.first()
+async def _get_product_or_404(db: AsyncSession, product_id: int, user: User) -> Product:
+    def _load(session: Any) -> Product | None:
+        query = session.query(Product).filter(Product.id == product_id)
+        query = _filter_company(query, user)
+        return query.first()
+
+    product = await _run_sync(db, _load)
     if not product:
         raise NotFoundError("Product not found", "PRODUCT_NOT_FOUND")
     return product
@@ -216,19 +227,20 @@ async def list_products(
     sort_by: str = Query("created_at", description=f"One of: {', '.join(_ALLOWED_SORT_FIELDS.keys())}"),
     sort_order: str = Query("desc", pattern="^(?i)(asc|desc)$"),
     current_user: User = Depends(get_current_verified_user),
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_async_db),
 ):
     """List products with filtering, sorting and pagination."""
     _ensure_role(current_user, _PRODUCT_READ_ROLES)
 
-    query = _filter_company(db.query(Product), current_user)
-    query = _apply_filters(query, filters)
+    def _sync_fetch(session: Any):
+        query_local = _filter_company(session.query(Product), current_user)
+        query_local = _apply_filters(query_local, filters)
+        total_local = query_local.order_by(None).count()
+        query_local = _apply_sorting(query_local, sort_by, sort_order)
+        items_local = query_local.offset(pagination.offset).limit(pagination.limit).all()
+        return total_local, items_local
 
-    # Всегда обнуляем order_by перед count (на всякий случай)
-    total = query.order_by(None).count()
-
-    query = _apply_sorting(query, sort_by, sort_order)
-    products = query.offset(pagination.offset).limit(pagination.limit).all()
+    total, products = await _run_sync(db, _sync_fetch)
 
     return PaginatedResponse.create(items=products, total=total, page=pagination.page, per_page=pagination.per_page)
 
@@ -237,36 +249,41 @@ async def list_products(
 async def get_product(
     product_id: int = Path(..., ge=1),
     current_user: User = Depends(get_current_verified_user),
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_async_db),
 ):
     """Get product by ID."""
     _ensure_role(current_user, _PRODUCT_READ_ROLES)
-    return _get_product_or_404(db, product_id, current_user)
+    return await _get_product_or_404(db, product_id, current_user)
 
 
 @router.post("", response_model=ProductResponse)
 async def create_product(
     product_data: ProductCreate,
     current_user: User = Depends(get_current_verified_user),
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_async_db),
 ):
     """Create a new product."""
     _ensure_role(current_user, _PRODUCT_WRITE_ROLES)
     try:
-        # Validate category exists if provided
-        if product_data.category_id:
-            category = db.query(Category).filter(Category.id == product_data.category_id).first()
-            if not category:
-                raise NotFoundError("Category not found", "CATEGORY_NOT_FOUND")
 
-        payload = product_data.model_dump()
-        if payload.get("sku"):
-            payload["sku"] = payload["sku"].strip().upper()
-        payload["company_id"] = getattr(current_user, "company_id", None)
-        product = Product(**payload)
-        db.add(product)
-        db.commit()
-        db.refresh(product)
+        def _sync_create(session: Any) -> Product:
+            if product_data.category_id:
+                category = session.query(Category).filter(Category.id == product_data.category_id).first()
+                if not category:
+                    raise NotFoundError("Category not found", "CATEGORY_NOT_FOUND")
+
+            payload = product_data.model_dump()
+            if payload.get("sku"):
+                payload["sku"] = payload["sku"].strip().upper()
+            payload["company_id"] = getattr(current_user, "company_id", None)
+            product_local = Product(**payload)
+            session.add(product_local)
+            session.flush()
+            return product_local
+
+        product = await _run_sync(db, _sync_create)
+        await db.commit()
+        await db.refresh(product)
 
         audit_logger.log_data_change(
             user_id=current_user.id,
@@ -279,7 +296,7 @@ async def create_product(
         return product
 
     except IntegrityError as e:
-        db.rollback()
+        await db.rollback()
         msg = str(getattr(e, "orig", e))
         if "sku" in msg:
             raise ConflictError("Product with this SKU already exists", "DUPLICATE_SKU")
@@ -293,11 +310,11 @@ async def update_product(
     product_id: int,
     product_update: ProductUpdate,
     current_user: User = Depends(get_current_verified_user),
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_async_db),
 ):
     """Update product by ID."""
     _ensure_role(current_user, _PRODUCT_WRITE_ROLES)
-    product = _get_product_or_404(db, product_id, current_user)
+    product = await _get_product_or_404(db, product_id, current_user)
 
     try:
         changes: dict[str, Any] = {}
@@ -312,8 +329,8 @@ async def update_product(
                     changes[field] = {"old": old, "new": value}
 
         if changes:
-            db.commit()
-            db.refresh(product)
+            await db.commit()
+            await db.refresh(product)
             audit_logger.log_data_change(
                 user_id=current_user.id,
                 action="update",
@@ -325,7 +342,7 @@ async def update_product(
         return product
 
     except IntegrityError as e:
-        db.rollback()
+        await db.rollback()
         msg = str(getattr(e, "orig", e))
         if "sku" in msg:
             raise ConflictError("Product with this SKU already exists", "DUPLICATE_SKU")
@@ -338,18 +355,18 @@ async def update_product(
 async def delete_product(
     product_id: int,
     current_user: User = Depends(get_current_verified_user),
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_async_db),
 ):
     """Soft delete product by setting is_active=False."""
     _ensure_role(current_user, _PRODUCT_WRITE_ROLES)
-    product = _get_product_or_404(db, product_id, current_user)
+    product = await _get_product_or_404(db, product_id, current_user)
 
     if not product.is_active:
         return SuccessResponse(message="Product already inactive")
 
     old_state = product.is_active
     product.is_active = False
-    db.commit()
+    await db.commit()
 
     audit_logger.log_data_change(
         user_id=current_user.id,
@@ -371,11 +388,11 @@ async def delete_product(
 async def get_product_stock(
     product_id: int,
     current_user: User = Depends(get_current_verified_user),
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_async_db),
 ):
     """Get product stock information."""
     _ensure_role(current_user, _PRODUCT_READ_ROLES)
-    product = _get_product_or_404(db, product_id, current_user)
+    product = await _get_product_or_404(db, product_id, current_user)
 
     return {
         "product_id": product.id,
@@ -396,15 +413,15 @@ async def update_product_stock(
     product_id: int,
     stock_quantity: int = Query(..., ge=0, description="New stock quantity"),
     current_user: User = Depends(get_current_verified_user),
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_async_db),
 ):
     """Update product stock quantity."""
     _ensure_role(current_user, _STOCK_WRITE_ROLES)
-    product = _get_product_or_404(db, product_id, current_user)
+    product = await _get_product_or_404(db, product_id, current_user)
 
     old_quantity = product.stock_quantity
     product.stock_quantity = stock_quantity
-    db.commit()
+    await db.commit()
 
     audit_logger.log_data_change(
         user_id=current_user.id,
@@ -427,18 +444,18 @@ async def set_featured(
     product_id: int,
     featured: bool = Query(..., description="Set featured flag"),
     current_user: User = Depends(get_current_verified_user),
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_async_db),
 ):
     """Set or unset product's featured flag."""
     _ensure_role(current_user, _PRODUCT_WRITE_ROLES)
-    product = _get_product_or_404(db, product_id, current_user)
+    product = await _get_product_or_404(db, product_id, current_user)
 
     old = product.is_featured
     if old == featured:
         return SuccessResponse(message="No changes", data={"featured": featured})
 
     product.is_featured = featured
-    db.commit()
+    await db.commit()
 
     audit_logger.log_data_change(
         user_id=current_user.id,
@@ -454,17 +471,17 @@ async def set_featured(
 async def activate_product(
     product_id: int,
     current_user: User = Depends(get_current_verified_user),
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_async_db),
 ):
     """Activate a product (is_active=True)."""
     _ensure_role(current_user, _PRODUCT_WRITE_ROLES)
-    product = _get_product_or_404(db, product_id, current_user)
+    product = await _get_product_or_404(db, product_id, current_user)
     if product.is_active:
         return SuccessResponse(message="Product already active")
 
     old = product.is_active
     product.is_active = True
-    db.commit()
+    await db.commit()
 
     audit_logger.log_data_change(
         user_id=current_user.id,
@@ -480,17 +497,17 @@ async def activate_product(
 async def deactivate_product(
     product_id: int,
     current_user: User = Depends(get_current_verified_user),
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_async_db),
 ):
     """Deactivate a product (is_active=False)."""
     _ensure_role(current_user, _PRODUCT_WRITE_ROLES)
-    product = _get_product_or_404(db, product_id, current_user)
+    product = await _get_product_or_404(db, product_id, current_user)
     if not product.is_active:
         return SuccessResponse(message="Product already inactive")
 
     old = product.is_active
     product.is_active = False
-    db.commit()
+    await db.commit()
 
     audit_logger.log_data_change(
         user_id=current_user.id,
@@ -511,7 +528,7 @@ async def deactivate_product(
 async def bulk_create_products(
     payload: list[ProductCreate],
     current_user: User = Depends(get_current_verified_user),
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_async_db),
 ):
     """Bulk create products. Возвращает счётчики и ошибки по индексам."""
     _ensure_role(current_user, _PRODUCT_WRITE_ROLES)
@@ -521,7 +538,13 @@ async def bulk_create_products(
     for idx, data in enumerate(payload):
         try:
             if data.category_id:
-                cat = db.query(Category).filter(Category.id == data.category_id).first()
+                category_id = data.category_id
+                cat = await _run_sync(
+                    db,
+                    lambda session, category_id=category_id: session.query(Category)
+                    .filter(Category.id == category_id)
+                    .first(),
+                )
                 if not cat:
                     errors.append({"index": idx, "error": "CATEGORY_NOT_FOUND"})
                     continue
@@ -531,7 +554,7 @@ async def bulk_create_products(
                 row["sku"] = row["sku"].strip().upper()
             obj = Product(**row, company_id=getattr(current_user, "company_id", None))
             db.add(obj)
-            db.flush()  # чтобы поймать ошибки уникальности до коммита
+            await db.flush()  # чтобы поймать ошибки уникальности до коммита
             created += 1
 
             audit_logger.log_data_change(
@@ -542,7 +565,7 @@ async def bulk_create_products(
                 changes=data.model_dump(),
             )
         except IntegrityError as e:
-            db.rollback()
+            await db.rollback()
             msg = str(getattr(e, "orig", e))
             code = "DUPLICATE"
             if "sku" in msg:
@@ -551,7 +574,7 @@ async def bulk_create_products(
                 code = "DUPLICATE_SLUG"
             errors.append({"index": idx, "error": code})
 
-    db.commit()
+    await db.commit()
     return SuccessResponse(message="Bulk create finished", data={"created": created, "errors": errors})
 
 
@@ -559,7 +582,7 @@ async def bulk_create_products(
 async def bulk_update_products(
     payload: list[dict[str, Any]],
     current_user: User = Depends(get_current_verified_user),
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_async_db),
 ):
     """
     Bulk update products.
@@ -574,7 +597,9 @@ async def bulk_update_products(
             errors.append({"index": idx, "error": "INVALID_ID"})
             continue
 
-        product = db.query(Product).filter(Product.id == pid).first()
+        product = await _run_sync(
+            db, lambda session, product_id=pid: session.query(Product).filter(Product.id == product_id).first()
+        )
         if not product:
             errors.append({"index": idx, "error": "PRODUCT_NOT_FOUND", "id": pid})
             continue
@@ -591,7 +616,7 @@ async def bulk_update_products(
                     setattr(product, k, v)
 
             if changes:
-                db.flush()
+                await db.flush()
                 updated += 1
                 audit_logger.log_data_change(
                     user_id=current_user.id,
@@ -601,7 +626,7 @@ async def bulk_update_products(
                     changes=changes,
                 )
         except IntegrityError as e:
-            db.rollback()
+            await db.rollback()
             msg = str(getattr(e, "orig", e))
             code = "UPDATE_FAILED"
             if "sku" in msg:
@@ -610,7 +635,7 @@ async def bulk_update_products(
                 code = "DUPLICATE_SLUG"
             errors.append({"index": idx, "error": code, "id": pid})
 
-    db.commit()
+    await db.commit()
     return SuccessResponse(message="Bulk update finished", data={"updated": updated, "errors": errors})
 
 
@@ -618,18 +643,17 @@ async def bulk_update_products(
 async def bulk_activate_products(
     ids: list[int],
     current_user: User = Depends(get_current_verified_user),
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_async_db),
 ):
     """Bulk activate products."""
     if not ids:
         raise SmartSellValidationError("No ids provided", "NO_IDS")
 
-    affected = (
-        db.query(Product)
-        .filter(Product.id.in_(ids), Product.is_active.is_(False))
-        .update({Product.is_active: True}, synchronize_session=False)
+    result = await db.execute(
+        update(Product).where(Product.id.in_(ids), Product.is_active.is_(False)).values(is_active=True)
     )
-    db.commit()
+    affected = int(result.rowcount or 0)
+    await db.commit()
 
     if affected:
         audit_logger.log_data_change(
@@ -646,18 +670,17 @@ async def bulk_activate_products(
 async def bulk_deactivate_products(
     ids: list[int],
     current_user: User = Depends(get_current_verified_user),
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_async_db),
 ):
     """Bulk deactivate products."""
     if not ids:
         raise SmartSellValidationError("No ids provided", "NO_IDS")
 
-    affected = (
-        db.query(Product)
-        .filter(Product.id.in_(ids), Product.is_active.is_(True))
-        .update({Product.is_active: False}, synchronize_session=False)
+    result = await db.execute(
+        update(Product).where(Product.id.in_(ids), Product.is_active.is_(True)).values(is_active=False)
     )
-    db.commit()
+    affected = int(result.rowcount or 0)
+    await db.commit()
 
     if affected:
         audit_logger.log_data_change(
@@ -679,7 +702,7 @@ async def bulk_deactivate_products(
 async def product_suggest(
     q: str = Query("", min_length=0),
     limit: int = Query(10, ge=1, le=50),
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_async_db),
 ):
     """
     Suggest product names/sku by prefix/substring (case-insensitive).
@@ -689,10 +712,24 @@ async def product_suggest(
         return []
 
     pattern = f"%{q}%"
-    rows = db.query(Product.name).filter(Product.name.ilike(pattern)).order_by(Product.name.asc()).limit(limit).all()
+    rows = await _run_sync(
+        db,
+        lambda session: session.query(Product.name)
+        .filter(Product.name.ilike(pattern))
+        .order_by(Product.name.asc())
+        .limit(limit)
+        .all(),
+    )
     # Расширение: если не нашли по name, пробуем sku
     if not rows:
-        rows = db.query(Product.sku).filter(Product.sku.ilike(pattern)).order_by(Product.sku.asc()).limit(limit).all()
+        rows = await _run_sync(
+            db,
+            lambda session: session.query(Product.sku)
+            .filter(Product.sku.ilike(pattern))
+            .order_by(Product.sku.asc())
+            .limit(limit)
+            .all(),
+        )
     # sqlalchemy возвращает список кортежей
     return [r[0] for r in rows if r and r[0]]
 
@@ -704,20 +741,24 @@ async def product_suggest(
 
 @router.get("/categories", response_model=list[dict[str, Any]])
 async def list_categories(
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_async_db),
     only_active: bool = Query(False, description="Return only categories that have active products"),
 ):
     """
     Список категорий. Если only_active=True — возвращаем только те, где есть активные товары.
     """
-    q = db.query(Category)
-    if only_active:
-        q = (
-            q.join(Product, Product.category_id == Category.id)
-            .filter(Product.is_active.is_(True))
-            .group_by(Category.id)
-        )
-    cats = q.order_by(Category.name.asc()).all()
+
+    def _sync_list(session: Any):
+        q = session.query(Category)
+        if only_active:
+            q = (
+                q.join(Product, Product.category_id == Category.id)
+                .filter(Product.is_active.is_(True))
+                .group_by(Category.id)
+            )
+        return q.order_by(Category.name.asc()).all()
+
+    cats = await _run_sync(db, _sync_list)
     return [{"id": c.id, "name": c.name, "slug": getattr(c, "slug", None)} for c in cats]
 
 
@@ -725,19 +766,20 @@ async def list_categories(
 async def get_category(
     category_id: int = Path(..., ge=1),
     with_counts: bool = Query(True),
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_async_db),
 ):
     """Получить категорию; опционально — с количеством товаров."""
-    cat = db.query(Category).filter(Category.id == category_id).first()
+    cat = await _run_sync(db, lambda session: session.query(Category).filter(Category.id == category_id).first())
     if not cat:
         raise NotFoundError("Category not found", "CATEGORY_NOT_FOUND")
 
     payload: dict[str, Any] = {"id": cat.id, "name": cat.name, "slug": getattr(cat, "slug", None)}
     if with_counts:
-        counts = (
-            db.query(func.count(Product.id))
+        counts = await _run_sync(
+            db,
+            lambda session: session.query(func.count(Product.id))
             .filter(Product.category_id == category_id, Product.is_active.is_(True))
-            .scalar()
+            .scalar(),
         )
         payload["active_products"] = int(counts or 0)
     return payload
@@ -784,7 +826,7 @@ async def set_repricing_config(
     product_id: int,
     cfg: RepricingConfigIn,
     current_user: User = Depends(get_current_verified_user),
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_async_db),
 ):
     """
     Установить конфиг репрайсинга товара:
@@ -794,37 +836,43 @@ async def set_repricing_config(
       - min_price <- min (если указано)
       - max_price <- max (если указано)
     """
-    product = db.query(Product).filter(Product.id == product_id).first()
-    if not product:
+
+    def _sync_apply(session: Any):
+        product_local = session.query(Product).filter(Product.id == product_id).first()
+        if not product_local:
+            return None, None, {}
+
+        service = RepricingService(session)
+        saved_local = service.set_config(product_local, RepricingConfig(**cfg.model_dump()))
+
+        changes_local: dict[str, Any] = {}
+        if hasattr(product_local, "enable_price_dumping"):
+            old = product_local.enable_price_dumping
+            if old != cfg.enabled:
+                product_local.enable_price_dumping = cfg.enabled
+                changes_local["enable_price_dumping"] = {"old": old, "new": cfg.enabled}
+
+        if cfg.min is not None and hasattr(product_local, "min_price"):
+            old = float(product_local.min_price) if product_local.min_price is not None else None
+            if old != cfg.min:
+                product_local.min_price = cfg.min
+                changes_local["min_price"] = {"old": old, "new": cfg.min}
+
+        if cfg.max is not None and hasattr(product_local, "max_price"):
+            old = float(product_local.max_price) if product_local.max_price is not None else None
+            if old != cfg.max:
+                product_local.max_price = cfg.max
+                changes_local["max_price"] = {"old": old, "new": cfg.max}
+
+        return product_local, saved_local, changes_local
+
+    product, saved, changes = await _run_sync(db, _sync_apply)
+    if not product or not saved:
         raise NotFoundError("Product not found", "PRODUCT_NOT_FOUND")
 
-    service = RepricingService(db)
-
-    # Сохраняем конфиг через сервис
-    saved = service.set_config(product, RepricingConfig(**cfg.model_dump()))
-
-    # Синхронизируем с моделью Product, где это возможно
-    changes: dict[str, Any] = {}
-    if hasattr(product, "enable_price_dumping"):
-        old = product.enable_price_dumping
-        if old != cfg.enabled:
-            product.enable_price_dumping = cfg.enabled
-            changes["enable_price_dumping"] = {"old": old, "new": cfg.enabled}
-
-    if cfg.min is not None and hasattr(product, "min_price"):
-        old = float(product.min_price) if product.min_price is not None else None
-        if old != cfg.min:
-            product.min_price = cfg.min
-            changes["min_price"] = {"old": old, "new": cfg.min}
-
-    if cfg.max is not None and hasattr(product, "max_price"):
-        old = float(product.max_price) if product.max_price is not None else None
-        if old != cfg.max:
-            product.max_price = cfg.max
-            changes["max_price"] = {"old": old, "new": cfg.max}
+    await db.commit()
 
     if changes:
-        db.commit()
         audit_logger.log_data_change(
             user_id=current_user.id,
             action="repricing_config",
@@ -841,7 +889,7 @@ async def repricing_tick(
     product_id: int,
     apply: bool = Query(False, description="Применить рассчитанную цену сразу к товару"),
     current_user: User = Depends(get_current_verified_user),
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_async_db),
 ):
     """
     Ручной тик репрайсера (для отладки). Только для админов.
@@ -851,30 +899,39 @@ async def repricing_tick(
     if not _is_admin(current_user):
         raise SmartSellValidationError("Forbidden: admin only", "FORBIDDEN")
 
-    product = db.query(Product).filter(Product.id == product_id).first()
-    if not product:
+    def _sync_tick(session: Any):
+        product_local = session.query(Product).filter(Product.id == product_id).first()
+        if not product_local:
+            return None, None, False, None, None
+
+        service = RepricingService(session)
+        result_local: RepricingTickResult = service.tick(product_local, service.get_config(product_id), apply=apply)
+
+        applied_local = False
+        price_change: dict[str, Any] | None = None
+        if apply and result_local.target_price is not None:
+            old_price = float(product_local.price) if product_local.price is not None else None
+            new_price = float(result_local.target_price)
+            if old_price != new_price:
+                product_local.price = new_price
+                applied_local = True
+                price_change = {"old": old_price, "new": new_price}
+
+        return product_local, result_local, applied_local, price_change
+
+    product, result, applied, price_change = await _run_sync(db, _sync_tick)
+    if not product or not result:
         raise NotFoundError("Product not found", "PRODUCT_NOT_FOUND")
 
-    service = RepricingService(db)
-    cfg = service.get_config(product_id)
-
-    result: RepricingTickResult = service.tick(product, cfg, apply=apply)
-
-    applied = False
-    if apply and result.target_price is not None:
-        # Применяем цену, если нужно, с учётом гистерезиса/границ уже учтённых сервисом
-        old_price = float(product.price) if product.price is not None else None
-        new_price = float(result.target_price)
-        if old_price != new_price:
-            product.price = new_price
-            db.commit()
-            applied = True
+    if applied:
+        await db.commit()
+        if price_change:
             audit_logger.log_data_change(
                 user_id=current_user.id,
                 action="repricing_apply",
                 resource_type="product",
                 resource_id=str(product.id),
-                changes={"price": {"old": old_price, "new": new_price}},
+                changes={"price": price_change},
             )
 
     return RepricingTickOut(

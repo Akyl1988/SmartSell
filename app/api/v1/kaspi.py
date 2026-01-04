@@ -36,9 +36,6 @@ from sqlalchemy import bindparam, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.db import get_async_db  # noqa — для совместимости импорт-алиас
-
-# БД (единый вход, обратная совместимость):
-from app.core.db import get_async_db as get_db
 from app.core.security import get_current_user as get_current_user_security
 
 # Доменные зависимости/схемы:
@@ -71,7 +68,7 @@ def normalize_name(name: str) -> str:
 
 async def _auth_user(
     token_data: dict = Depends(get_current_user_security),
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_async_db),
 ) -> User:
     sub = token_data.get("sub")
     try:
@@ -155,7 +152,7 @@ class KaspiTokenMaskedOut(BaseModel):
 )
 async def connect_store(
     body: ConnectStoreInput,
-    session: AsyncSession = Depends(get_db),
+    session: AsyncSession = Depends(get_async_db),
 ):
     """
     1) (опц.) Проверяем токен/магазин (через адаптер, health).
@@ -211,7 +208,7 @@ async def connect_store(
 )
 async def upsert_token(
     payload: KaspiTokenIn,
-    session: AsyncSession = Depends(get_db),
+    session: AsyncSession = Depends(get_async_db),
 ):
     try:
         await KaspiStoreToken.upsert_token(session, payload.store_name, payload.token)
@@ -226,7 +223,7 @@ async def upsert_token(
     response_model=list[KaspiTokenOut],
     summary="Список подключённых магазинов",
 )
-async def list_tokens(session: AsyncSession = Depends(get_db)):
+async def list_tokens(session: AsyncSession = Depends(get_async_db)):
     try:
         stores = await KaspiStoreToken.list_stores(session)
     except Exception as e:
@@ -242,7 +239,7 @@ async def list_tokens(session: AsyncSession = Depends(get_db)):
 )
 async def get_token_by_store_name(
     store_name: str,
-    session: AsyncSession = Depends(get_db),
+    session: AsyncSession = Depends(get_async_db),
 ):
     """
     Возвращает запись токена по имени магазина.
@@ -290,7 +287,7 @@ async def get_token_by_store_name(
     status_code=status.HTTP_204_NO_CONTENT,
     summary="Удалить токен магазина",
 )
-async def delete_token(store_name: str, session: AsyncSession = Depends(get_db)):
+async def delete_token(store_name: str, session: AsyncSession = Depends(get_async_db)):
     try:
         deleted = await KaspiStoreToken.delete_by_store(session, store_name)
         if not deleted:
@@ -372,7 +369,7 @@ async def kaspi_import_status(req: ImportStatusQuery):
 async def kaspi_orders_sync(
     payload: OrdersSyncIn,
     current_user: User = Depends(_auth_user),
-    session: AsyncSession = Depends(get_db),
+    session: AsyncSession = Depends(get_async_db),
 ):
     try:
         svc = KaspiService()
@@ -394,7 +391,7 @@ async def kaspi_orders_sync(
 async def kaspi_generate_feed(
     company_id: int,
     current_user: User = Depends(_auth_user),
-    session: AsyncSession = Depends(get_db),
+    session: AsyncSession = Depends(get_async_db),
 ):
     try:
         resolved_company_id = _resolve_company_id(current_user, company_id)
@@ -415,7 +412,7 @@ async def kaspi_generate_feed(
 async def kaspi_availability_sync_one(
     payload: AvailabilitySyncIn,
     current_user: User = Depends(_auth_user),
-    session: AsyncSession = Depends(get_db),
+    session: AsyncSession = Depends(get_async_db),
 ):
     try:
         resolved_company_id = _resolve_company_id(current_user, None)
@@ -443,7 +440,7 @@ async def kaspi_availability_sync_one(
 async def kaspi_availability_bulk(
     payload: AvailabilityBulkIn,
     current_user: User = Depends(_auth_user),
-    session: AsyncSession = Depends(get_db),
+    session: AsyncSession = Depends(get_async_db),
 ):
     try:
         resolved_company_id = _resolve_company_id(current_user, payload.company_id)
