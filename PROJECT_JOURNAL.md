@@ -440,3 +440,15 @@ Commits (per git show):
 
 ### Added
 - Regression test: feed returns 500 when service raises unexpected exception.
+## [2026-01-05] Kaspi Orders Sync MVP: sync state model skeleton
+
+### Added
+- `app/models/kaspi_order_sync_state.py`: persistent sync watermark/state for Kaspi orders sync.
+- Export entry in `app/models/__init__.py`.
+
+### Changed
+- Minimal prep in `app/models/order.py` (Kaspi-related metadata marker).
+- `kaspi_service.get_orders` now preserves provided date_from/date_to + status filters (no behavioral changes beyond request param handling).
+
+### Verified
+- ruff format/check (app/tests/tools)

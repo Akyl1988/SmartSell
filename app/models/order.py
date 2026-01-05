@@ -200,6 +200,7 @@ class Order(Base):
             name="ck_order_parts_non_negative",
         ),
         UniqueConstraint("order_number", name="uq_orders_order_number"),
+        UniqueConstraint("company_id", "external_id", name="uq_orders_company_external_id"),
         Index("ix_orders_company_status", "company_id", "status"),
         Index("ix_orders_source_created", "source", "created_at"),
     )
