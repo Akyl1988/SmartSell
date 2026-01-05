@@ -183,6 +183,7 @@ _LAZY_MODELS: dict[str, tuple[str, str]] = {
         "app.models.integration_provider_config",
         "IntegrationProviderConfig",
     ),
+    "KaspiOrderSyncState": ("app.models.kaspi_order_sync_state", "KaspiOrderSyncState"),
 }
 
 # Поддерживаемые модули доменов для «массового» импорта (ручной whitelisting).
@@ -198,6 +199,7 @@ _DOMAIN_MODULES: tuple[str, ...] = (
     "app.models.otp",  # добавлено: явный модуль OTP
     "app.models.warehouse",
     "app.models.inventory_outbox",
+    "app.models.kaspi_order_sync_state",
     "app.models.system_integrations",
     "app.models.integration_provider",
     "app.models.integration_provider_config",
