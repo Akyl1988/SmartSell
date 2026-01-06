@@ -469,3 +469,7 @@ Commits (per git show):
 ## [2026-01-06] Git: restore dev branch after accidental deletion
 - fixed: restored remote/local dev branch from main after gh pr merge --delete-branch removed dev
 - notes: protect dev/main branches (disable deletions) to prevent recurrence
+## [2026-01-06] Kaspi: idempotent order items
+- added: unique constraint order_items(order_id, sku) + migration 2d43c3d56e28_kaspi_unique_order_items_order_id_sku
+- changed: Kaspi orders sync now upserts OrderItem by (order_id, sku) to prevent duplicates; item fields update on conflict
+- tests: extended kaspi orders sync tests to cover item idempotency
