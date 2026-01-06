@@ -137,7 +137,7 @@ def test_e2e_models_happy_path(db_session, company, admin_user, product, warehou
 
 
 # ---------- HTTP SMOKE (если есть FastAPI-приложение) ----------
-@pytest.mark.anyio
+@pytest.mark.asyncio
 async def test_http_smoke_if_app_exists(async_client):
     try:
         from app.main import create_app

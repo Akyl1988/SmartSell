@@ -7,7 +7,7 @@ def _get_user_by_phone(db_session, phone: str) -> User:
     return db_session.query(User).filter(User.phone == phone).one()
 
 
-@pytest.mark.anyio
+@pytest.mark.asyncio
 async def test_invoices_list_same_company_allowed(client, db_session, company_a_admin_headers):
     user_a = _get_user_by_phone(db_session, "+70000010001")
     company_a_id = user_a.company_id
@@ -25,7 +25,7 @@ async def test_invoices_list_same_company_allowed(client, db_session, company_a_
     assert any(inv.get("company_id") == company_a_id for inv in items)
 
 
-@pytest.mark.anyio
+@pytest.mark.asyncio
 async def test_invoices_list_other_company_forbidden(
     client, db_session, company_a_admin_headers, company_b_admin_headers
 ):
@@ -45,7 +45,7 @@ async def test_invoices_list_other_company_forbidden(
     assert all(inv.get("company_id") != company_a_id for inv in items)
 
 
-@pytest.mark.anyio
+@pytest.mark.asyncio
 async def test_invoices_list_platform_admin_forbidden(client, db_session, company_a_admin_headers, auth_headers):
     user_a = _get_user_by_phone(db_session, "+70000010001")
     company_a_id = user_a.company_id
