@@ -464,3 +464,5 @@ Commits (per git show):
 - added: per-company concurrency guard via pg_try_advisory_xact_lock
 - api: /api/v1/kaspi/orders/sync returns 409 when sync is already running
 - tests: standardized async test marks to pytest.mark.asyncio; conftest cleanup and fixture compatibility
+## [2026-01-06] CI: ruff UP017 fix
+- fixed: ruff UP017 (use datetime.UTC alias) in kaspi orders sync tests; formatting aligned with CI
