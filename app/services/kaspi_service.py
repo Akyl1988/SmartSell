@@ -14,6 +14,7 @@ Kaspi.kz integration: product feed generation, orders sync, and availability syn
 """
 
 import asyncio
+import random
 from collections.abc import AsyncIterator, Mapping
 from contextlib import nullcontext
 from datetime import UTC, datetime, timedelta
@@ -295,6 +296,7 @@ class KaspiService:
                         date_to=effective_to,
                         status=status,
                         page_size=100,
+                        company_id=company_id,
                     ):
                         fetched += len(batch)
                         for payload in batch:
@@ -560,6 +562,7 @@ class KaspiService:
         date_to: datetime,
         status: str | None,
         page_size: int,
+        company_id: int,
     ) -> AsyncIterator[list[dict[str, Any]]]:
         page = 1
 
@@ -570,6 +573,7 @@ class KaspiService:
                 status=status,
                 page=page,
                 page_size=page_size,
+                company_id=company_id,
             )
 
             items, meta = self._normalize_orders_response(batch, page, page_size)
@@ -591,6 +595,7 @@ class KaspiService:
         status: str | None,
         page: int,
         page_size: int,
+        company_id: int,
     ) -> dict[str, Any] | list[dict[str, Any]]:
         attempts = 3
         delays = [0.2, 0.5, 1.0]
@@ -613,8 +618,35 @@ class KaspiService:
                 if not transient or is_last:
                     logger.error("Kaspi get_orders failed after retries: %s", e)
                     raise
+                retry_after_header = None
+                resp_obj = getattr(e, "response", None)
+                if isinstance(e, httpx.HTTPStatusError) and code == 429 and resp_obj is not None:
+                    try:
+                        retry_after_header = resp_obj.headers.get("Retry-After")
+                    except Exception:
+                        retry_after_header = None
                 delay = delays[attempt]
-                logger.warning("Kaspi get_orders transient %s, retrying in %ss", code or type(e).__name__, delay)
+                try:
+                    if retry_after_header is not None:
+                        delay = max(delay, float(retry_after_header))
+                except Exception:
+                    delay = delay
+                delay = delay + random.uniform(0, 0.2)
+                correlation_id = None
+                if resp_obj is not None:
+                    try:
+                        correlation_id = resp_obj.headers.get("X-Correlation-ID")
+                    except Exception:
+                        correlation_id = None
+                logger.warning(
+                    "Kaspi get_orders transient code=%s attempt=%s delay=%.2fs page=%s company_id=%s corr=%s",
+                    code or type(e).__name__,
+                    attempt + 1,
+                    delay,
+                    page,
+                    company_id,
+                    correlation_id,
+                )
                 await asyncio.sleep(delay)
 
         # Not reachable
