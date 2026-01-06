@@ -430,6 +430,97 @@ async def test_status_history_is_idempotent(monkeypatch, async_client, async_db_
 
 
 @pytest.mark.asyncio
+async def test_double_sync_idempotent_no_duplicates(
+    monkeypatch, async_client, async_db_session, company_a_admin_headers
+):
+    payload = _orders_payload_with_items(status="NEW")
+
+    async def fake_get_orders(self, *, date_from=None, date_to=None, status=None, page=1, page_size=100):  # noqa: ARG001
+        return payload if page == 1 else []
+
+    monkeypatch.setattr(KaspiService, "get_orders", fake_get_orders)
+
+    first = await async_client.post("/api/v1/kaspi/orders/sync", headers=company_a_admin_headers)
+    assert first.status_code == 200, first.text
+
+    res_before = await async_db_session.execute(sa.select(sa.func.count()).select_from(Order))
+    items_before = await async_db_session.execute(sa.select(sa.func.count()).select_from(OrderItem))
+    hist_before = await async_db_session.execute(sa.select(sa.func.count()).select_from(OrderStatusHistory))
+
+    second = await async_client.post("/api/v1/kaspi/orders/sync", headers=company_a_admin_headers)
+    assert second.status_code == 200, second.text
+
+    res_after = await async_db_session.execute(sa.select(sa.func.count()).select_from(Order))
+    items_after = await async_db_session.execute(sa.select(sa.func.count()).select_from(OrderItem))
+    hist_after = await async_db_session.execute(sa.select(sa.func.count()).select_from(OrderStatusHistory))
+
+    assert res_before.scalar_one() == res_after.scalar_one()
+    assert items_before.scalar_one() == items_after.scalar_one()
+    assert hist_before.scalar_one() == hist_after.scalar_one()
+
+
+@pytest.mark.asyncio
+async def test_watermark_moves_forward(monkeypatch, async_client, async_db_session, company_a_admin_headers):
+    ts1 = datetime(2025, 1, 1, 10, 0, tzinfo=UTC)
+    ts2 = datetime(2025, 1, 1, 12, 0, tzinfo=UTC)
+
+    async def fake_get_orders_first(self, *, date_from=None, date_to=None, status=None, page=1, page_size=100):  # noqa: ARG001
+        return _orders_payload_with_status_timestamp(status="NEW", ts=ts1) if page == 1 else []
+
+    monkeypatch.setattr(KaspiService, "get_orders", fake_get_orders_first)
+    first = await async_client.post("/api/v1/kaspi/orders/sync", headers=company_a_admin_headers)
+    assert first.status_code == 200, first.text
+
+    state_res = await async_db_session.execute(
+        sa.select(KaspiOrderSyncState).where(KaspiOrderSyncState.company_id == 1001)
+    )
+    state_first = state_res.scalar_one()
+
+    async def fake_get_orders_second(self, *, date_from=None, date_to=None, status=None, page=1, page_size=100):  # noqa: ARG001
+        return _orders_payload_with_status_timestamp(status="SHIPPED", ts=ts2) if page == 1 else []
+
+    monkeypatch.setattr(KaspiService, "get_orders", fake_get_orders_second)
+    second = await async_client.post("/api/v1/kaspi/orders/sync", headers=company_a_admin_headers)
+    assert second.status_code == 200, second.text
+
+    state_res_second = await async_db_session.execute(
+        sa.select(KaspiOrderSyncState).where(KaspiOrderSyncState.company_id == 1001)
+    )
+    state_second = state_res_second.scalar_one()
+
+    assert state_second.last_synced_at is not None
+    assert state_first.last_synced_at is not None
+    assert state_second.last_synced_at >= state_first.last_synced_at
+
+
+@pytest.mark.asyncio
+async def test_retry_uses_retry_after_header(monkeypatch, async_client, async_db_session, company_a_admin_headers):
+    calls = {"n": 0, "sleep": []}
+
+    async def fake_sleep(delay):
+        calls["sleep"].append(delay)
+        return None
+
+    monkeypatch.setattr(asyncio, "sleep", fake_sleep)
+
+    async def fake_get_orders(self, *, date_from=None, date_to=None, status=None, page=1, page_size=100):  # noqa: ARG001
+        calls["n"] += 1
+        if calls["n"] == 1:
+            req = httpx.Request("GET", "http://kaspi.test/orders")
+            resp = httpx.Response(429, headers={"Retry-After": "1"}, request=req)
+            raise httpx.HTTPStatusError("rate limited", request=req, response=resp)
+        return _orders_payload(status="NEW") if page == 1 else []
+
+    monkeypatch.setattr(KaspiService, "get_orders", fake_get_orders)
+
+    resp = await async_client.post("/api/v1/kaspi/orders/sync", headers=company_a_admin_headers)
+    assert resp.status_code == 200, resp.text
+
+    assert calls["n"] == 2
+    assert calls["sleep"] and calls["sleep"][0] >= 1
+
+
+@pytest.mark.asyncio
 async def test_concurrent_sync_returns_409(monkeypatch, async_client, company_a_admin_headers):
     async def fake_get_orders(self, *, date_from=None, date_to=None, status=None, page=1, page_size=100):  # noqa: ARG001
         return _orders_payload() if page == 1 else []
