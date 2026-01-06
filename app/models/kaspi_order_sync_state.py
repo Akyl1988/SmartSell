@@ -15,6 +15,9 @@ class KaspiOrderSyncState(Base):
     company_id = Column(ForeignKey("companies.id", ondelete="CASCADE"), nullable=False)
     last_synced_at = Column(DateTime, nullable=True)
     last_external_order_id = Column(String(128), nullable=True)
+    last_error_at = Column(DateTime, nullable=True)
+    last_error_code = Column(String(64), nullable=True)
+    last_error_message = Column(String(500), nullable=True)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
 
     company = relationship("Company", backref="kaspi_sync_state")
