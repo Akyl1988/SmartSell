@@ -1,6 +1,7 @@
 import asyncio
 from datetime import UTC, datetime, timedelta
 
+import httpx
 import pytest
 import sqlalchemy as sa
 
@@ -268,6 +269,126 @@ async def test_order_items_update_values(monkeypatch, async_client, async_db_ses
 
     assert int(item_map["SKU-2"].quantity) == 1
     assert str(item_map["SKU-2"].unit_price) in {"200", "200.00"}
+
+
+@pytest.mark.asyncio
+async def test_pagination_fetches_all_pages(monkeypatch, async_client, async_db_session, company_a_admin_headers):
+    calls = {"n": 0}
+
+    async def fake_get_orders(self, *, date_from=None, date_to=None, status=None, page=1, page_size=100):  # noqa: ARG001
+        calls["n"] += 1
+        if page == 1:
+            return {
+                "items": [
+                    {
+                        "id": "ext-10",
+                        "status": "NEW",
+                        "totalPrice": 100,
+                        "customer": {"phone": "+7700", "name": "John"},
+                    }
+                ],
+                "page": 1,
+                "totalPages": 2,
+            }
+        if page == 2:
+            return {
+                "items": [
+                    {
+                        "id": "ext-11",
+                        "status": "NEW",
+                        "totalPrice": 120,
+                        "customer": {"phone": "+7701", "name": "Jane"},
+                    }
+                ],
+                "page": 2,
+                "totalPages": 2,
+            }
+        return {"items": []}
+
+    monkeypatch.setattr(KaspiService, "get_orders", fake_get_orders)
+
+    resp = await async_client.post("/api/v1/kaspi/orders/sync", headers=company_a_admin_headers)
+    assert resp.status_code == 200, resp.text
+    data = resp.json()
+    assert data["inserted"] == 2
+    assert data["updated"] == 0
+    assert calls["n"] == 2
+
+    res = await async_db_session.execute(sa.select(Order).where(Order.company_id == 1001))
+    orders = res.scalars().all()
+    assert {o.external_id for o in orders} == {"ext-10", "ext-11"}
+
+
+@pytest.mark.asyncio
+async def test_pagination_stops_on_empty_page(monkeypatch, async_client, async_db_session, company_a_admin_headers):
+    calls = {"n": 0}
+
+    async def fake_get_orders(self, *, date_from=None, date_to=None, status=None, page=1, page_size=100):  # noqa: ARG001
+        calls["n"] += 1
+        if page == 1:
+            return {
+                "items": [
+                    {
+                        "id": "ext-20",
+                        "status": "NEW",
+                        "totalPrice": 200,
+                        "customer": {"phone": "+7700", "name": "John"},
+                    }
+                ],
+                "page": 1,
+                "hasNext": True,
+            }
+        return {"items": []}
+
+    monkeypatch.setattr(KaspiService, "get_orders", fake_get_orders)
+
+    resp = await async_client.post("/api/v1/kaspi/orders/sync", headers=company_a_admin_headers)
+    assert resp.status_code == 200, resp.text
+    data = resp.json()
+    assert data["inserted"] == 1
+    assert data["updated"] >= 0
+    assert calls["n"] == 2
+
+    res = await async_db_session.execute(sa.select(Order).where(Order.company_id == 1001))
+    orders = res.scalars().all()
+    assert {o.external_id for o in orders} == {"ext-20"}
+
+
+@pytest.mark.asyncio
+async def test_retry_on_transient_error(monkeypatch, async_client, async_db_session, company_a_admin_headers):
+    calls = {"n": 0}
+
+    async def fast_sleep(_delay):
+        return None
+
+    monkeypatch.setattr(asyncio, "sleep", fast_sleep)
+
+    async def fake_get_orders(self, *, date_from=None, date_to=None, status=None, page=1, page_size=100):  # noqa: ARG001
+        calls["n"] += 1
+        if calls["n"] == 1:
+            req = httpx.Request("GET", "http://kaspi.test/orders")
+            resp = httpx.Response(429, request=req)
+            raise httpx.HTTPStatusError("rate limited", request=req, response=resp)
+        return [
+            {
+                "id": "ext-30",
+                "status": "NEW",
+                "totalPrice": 300,
+                "customer": {"phone": "+7700", "name": "John"},
+            }
+        ]
+
+    monkeypatch.setattr(KaspiService, "get_orders", fake_get_orders)
+
+    resp = await async_client.post("/api/v1/kaspi/orders/sync", headers=company_a_admin_headers)
+    assert resp.status_code == 200, resp.text
+    data = resp.json()
+    assert data["inserted"] == 1
+    assert calls["n"] == 2
+
+    res = await async_db_session.execute(sa.select(Order).where(Order.company_id == 1001))
+    orders = res.scalars().all()
+    assert {o.external_id for o in orders} == {"ext-30"}
 
 
 @pytest.mark.asyncio
