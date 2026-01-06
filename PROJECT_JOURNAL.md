@@ -452,3 +452,9 @@ Commits (per git show):
 
 ### Verified
 - ruff format/check (app/tests/tools)
+## [2026-01-06] DB: deterministic async DB URL resolution (fix InvalidPasswordError in runtime)
+- fixed: async engine could select a different URL than migrations/psql and lose password, causing InvalidPasswordError
+- added: resolve_async_database_url() with strict priority (TEST_ASYNC_DATABASE_URL > TEST_DATABASE_URL > fallback) + scheme normalization to postgresql+asyncpg
+- added: password injection when missing (DB_PASSWORD -> PGPASSWORD -> borrow from DATABASE_URL/DB_URL), without logging secrets
+- updated: async engine init now uses async resolver and logs safe debug-only diagnostics
+- tests: test_db_async_url_resolution.py + kept pgpass/password fallback coverage
