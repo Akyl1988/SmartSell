@@ -466,3 +466,6 @@ Commits (per git show):
 - tests: standardized async test marks to pytest.mark.asyncio; conftest cleanup and fixture compatibility
 ## [2026-01-06] CI: ruff UP017 fix
 - fixed: ruff UP017 (use datetime.UTC alias) in kaspi orders sync tests; formatting aligned with CI
+## [2026-01-06] Git: restore dev branch after accidental deletion
+- fixed: restored remote/local dev branch from main after gh pr merge --delete-branch removed dev
+- notes: protect dev/main branches (disable deletions) to prevent recurrence
