@@ -14,11 +14,13 @@ Kaspi.kz integration: product feed generation, orders sync, and availability syn
 """
 
 import asyncio
+import hashlib
 import random
 from collections.abc import AsyncIterator, Mapping
-from contextlib import nullcontext
+from contextlib import asynccontextmanager, nullcontext
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
+from time import perf_counter
 from typing import Any, Optional
 
 import httpx
@@ -260,6 +262,7 @@ class KaspiService:
         date_from: datetime | None = None,
         date_to: datetime | None = None,
         statuses: list[str] | None = None,
+        request_id: str | None = None,
     ) -> dict[str, Any]:
         """Инкрементальная и идемпотентная синхронизация заказов Kaspi."""
         now = _utcnow()
@@ -268,6 +271,9 @@ class KaspiService:
         fetched = 0
         inserted = 0
         updated = 0
+        started_at = perf_counter()
+
+        logger.info("Kaspi orders sync start: company_id=%s request_id=%s", company_id, request_id)
 
         try:
             tx_ctx = nullcontext() if db.in_transaction() else db.begin()
@@ -275,9 +281,9 @@ class KaspiService:
                 await db.execute(text("SET LOCAL lock_timeout = '2s'"))
                 await db.execute(text("SET LOCAL statement_timeout = '10s'"))
 
-                await self._acquire_company_lock(db, company_id)
+                async with self._company_lock(db, company_id):
 
-                state = await self._load_or_create_state(db, company_id)
+                    state = await self._load_or_create_state(db, company_id)
 
                 prev_last_synced = state.last_synced_at
                 prev_last_ext = state.last_external_order_id
@@ -390,20 +396,31 @@ class KaspiService:
 
                         # page handling happens inside _iter_orders_pages
 
-                if made_progress or is_new_state:
-                    final_wm = watermark if prev_last_synced is None else max(prev_last_synced, watermark)
-                    state.last_synced_at = final_wm
-                    state.last_external_order_id = last_ext
-                else:
-                    final_wm = prev_last_synced or watermark
-                    state.last_synced_at = prev_last_synced
-                    state.last_external_order_id = prev_last_ext
+                    if made_progress or is_new_state:
+                        final_wm = watermark if prev_last_synced is None else max(prev_last_synced, watermark)
+                        state.last_synced_at = final_wm
+                        state.last_external_order_id = last_ext
+                    else:
+                        final_wm = prev_last_synced or watermark
+                        state.last_synced_at = prev_last_synced
+                        state.last_external_order_id = prev_last_ext
 
-                state.updated_at = now
+                    state.updated_at = now
         except KaspiSyncAlreadyRunning:
+            logger.warning(
+                "Kaspi orders sync locked: company_id=%s request_id=%s duration_ms=%s",
+                company_id,
+                request_id,
+                int((perf_counter() - started_at) * 1000),
+            )
             raise
         except Exception:
-            logger.exception("Kaspi orders sync internal error: company_id=%s", company_id)
+            logger.exception(
+                "Kaspi orders sync internal error: company_id=%s request_id=%s duration_ms=%s",
+                company_id,
+                request_id,
+                int((perf_counter() - started_at) * 1000),
+            )
             raise
 
         summary = {
@@ -417,8 +434,10 @@ class KaspiService:
         }
 
         logger.info(
-            "Kaspi orders sync: company_id=%s fetched=%s inserted=%s updated=%s",
+            "Kaspi orders sync done: company_id=%s request_id=%s duration_ms=%s fetched=%s inserted=%s updated=%s",
             company_id,
+            request_id,
+            int((perf_counter() - started_at) * 1000),
             fetched,
             inserted,
             updated,
@@ -793,9 +812,30 @@ class KaspiService:
         }
         return mapping.get(kaspi_status.upper(), "pending")
 
+    def _company_lock_key(self, company_id: int) -> int:
+        raw = f"kaspi-sync-{company_id}".encode()
+        h = int.from_bytes(hashlib.sha1(raw).digest()[:8], "big", signed=False)
+        return h % (2**63 - 1)
+
+    @asynccontextmanager
+    async def _company_lock(self, db: AsyncSession, company_id: int):
+        lock_key = self._company_lock_key(company_id)
+        res = await db.execute(text("SELECT pg_try_advisory_lock(:lock_key)").bindparams(lock_key=lock_key))
+        ok = res.scalar_one_or_none()
+        if not ok:
+            raise KaspiSyncAlreadyRunning("kaspi sync already running")
+        try:
+            yield
+        finally:
+            try:
+                await db.execute(text("SELECT pg_advisory_unlock(:lock_key)").bindparams(lock_key=lock_key))
+            except Exception:
+                pass
+
     async def _acquire_company_lock(self, db: AsyncSession, company_id: int) -> None:
-        lock_key = company_id * 97311
-        res = await db.execute(text("SELECT pg_try_advisory_xact_lock(:lock_key)").bindparams(lock_key=lock_key))
+        # Legacy helper preserved for compatibility; delegates to session-level advisory lock
+        lock_key = self._company_lock_key(company_id)
+        res = await db.execute(text("SELECT pg_try_advisory_lock(:lock_key)").bindparams(lock_key=lock_key))
         ok = res.scalar_one_or_none()
         if not ok:
             raise KaspiSyncAlreadyRunning("kaspi sync already running")

@@ -1,3 +1,15 @@
+## [2026-01-06] Kaspi sync hardening: advisory lock + state endpoint
+
+### Added
+- Per-company Postgres advisory lock in Kaspi orders sync with fast-fail HTTP 423 to avoid concurrent runs.
+- Request-scoped logging with request_id passthrough and duration metrics around sync.
+- Read-only `/api/v1/kaspi/orders/sync/state` endpoint returning current watermark and error placeholders.
+- Tests covering lock contention response and state endpoint defaults/watermark.
+
+### Verified
+- python -m ruff check app/api/v1/kaspi.py tests/app/api/test_kaspi_orders_sync.py
+- python -m pytest -q tests/app/api/test_kaspi_orders_sync.py
+
 ## [2026-01-06] Fix Kaspi orders sync session usage
 
 ### Fixed

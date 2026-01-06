@@ -30,7 +30,7 @@ import logging
 from typing import Any
 
 import sqlalchemy as sa
-from fastapi import APIRouter, Depends, HTTPException, Response, status
+from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import bindparam, text
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -41,6 +41,7 @@ from app.core.security import get_current_user, resolve_tenant_company_id
 # Доменные зависимости/схемы:
 from app.integrations.kaspi_adapter import KaspiAdapter, KaspiAdapterError
 from app.models import Product
+from app.models.kaspi_order_sync_state import KaspiOrderSyncState
 from app.models.marketplace import KaspiStoreToken
 from app.models.user import User
 from app.schemas.kaspi import (
@@ -345,6 +346,7 @@ async def kaspi_import_status(req: ImportStatusQuery):
     summary="Синхронизировать последние заказы Kaspi в локальную БД",
 )
 async def kaspi_orders_sync(
+    request: Request,
     current_user: User = Depends(_auth_user),
     session: AsyncSession = Depends(get_async_db),
 ):
@@ -352,13 +354,14 @@ async def kaspi_orders_sync(
     try:
         resolved_company_id = _resolve_company_id(current_user)
         svc = KaspiService()
+        request_id = getattr(getattr(request, "state", None), "request_id", None) if request else None
         tx_ctx = session.begin_nested() if session.in_transaction() else session.begin()
         async with tx_ctx:
-            result = await svc.sync_orders(db=session, company_id=resolved_company_id)
+            result = await svc.sync_orders(db=session, company_id=resolved_company_id, request_id=request_id)
         await session.commit()
         return result
     except KaspiSyncAlreadyRunning:
-        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="kaspi sync already running")
+        raise HTTPException(status_code=status.HTTP_423_LOCKED, detail="kaspi sync already running")
     except RuntimeError as e:
         raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(e))
     except Exception as e:
@@ -435,6 +438,37 @@ async def kaspi_availability_bulk(
     except Exception as e:
         logger.error("Kaspi availability bulk failed: payload=%s err=%s", payload.model_dump(), e)
         raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(e))
+
+
+class KaspiSyncStateOut(BaseModel):
+    watermark: Any | None = None
+    last_success_at: Any | None = None
+    last_error_at: Any | None = None
+    last_error_code: str | None = None
+    last_error_message: str | None = None
+
+
+@router.get(
+    "/orders/sync/state",
+    summary="Текущее состояние синхронизации заказов Kaspi",
+    response_model=KaspiSyncStateOut,
+)
+async def kaspi_orders_sync_state(
+    current_user: User = Depends(_auth_user),
+    session: AsyncSession = Depends(get_async_db),
+):
+    company_id = _resolve_company_id(current_user)
+    res = await session.execute(sa.select(KaspiOrderSyncState).where(KaspiOrderSyncState.company_id == company_id))
+    state = res.scalar_one_or_none()
+    watermark = getattr(state, "last_synced_at", None) if state else None
+    last_success_at = getattr(state, "last_synced_at", None) if state else None
+    return KaspiSyncStateOut(
+        watermark=watermark,
+        last_success_at=last_success_at,
+        last_error_at=None,
+        last_error_code=None,
+        last_error_message=None,
+    )
 
 
 # ================================= DEBUG =====================================
