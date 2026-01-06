@@ -274,11 +274,16 @@ class KaspiService:
 
                 state = await self._load_or_create_state(db, company_id)
 
-                base_from = date_from or state.last_synced_at or (effective_to - timedelta(days=1))
+                prev_last_synced = state.last_synced_at
+                prev_last_ext = state.last_external_order_id
+                is_new_state = prev_last_synced is None and prev_last_ext is None
+
+                base_from = date_from or prev_last_synced or (effective_to - timedelta(days=1))
                 effective_from = base_from - overlap
 
-                watermark = effective_from
-                last_ext = state.last_external_order_id
+                watermark = prev_last_synced or base_from
+                last_ext = prev_last_ext
+                made_progress = False
 
                 for status in statuses or [None]:
                     page = 1
@@ -362,13 +367,21 @@ class KaspiService:
                             ):
                                 watermark = updated_ts
                                 last_ext = ext_id
+                            made_progress = True
 
                         if len(batch) < 100:
                             break
                         page += 1
 
-                state.last_synced_at = watermark
-                state.last_external_order_id = last_ext
+                if made_progress or is_new_state:
+                    final_wm = watermark if prev_last_synced is None else max(prev_last_synced, watermark)
+                    state.last_synced_at = final_wm
+                    state.last_external_order_id = last_ext
+                else:
+                    final_wm = prev_last_synced or watermark
+                    state.last_synced_at = prev_last_synced
+                    state.last_external_order_id = prev_last_ext
+
                 state.updated_at = now
         except KaspiSyncAlreadyRunning:
             raise
@@ -383,7 +396,7 @@ class KaspiService:
             "updated": updated,
             "from": effective_from.isoformat(),
             "to": effective_to.isoformat(),
-            "watermark": watermark.isoformat(),
+            "watermark": (state.last_synced_at or final_wm).isoformat() if (state.last_synced_at or final_wm) else None,
         }
 
         logger.info(
