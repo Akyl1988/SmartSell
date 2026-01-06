@@ -1,11 +1,12 @@
 import asyncio
-from datetime import UTC, datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 import pytest
 import sqlalchemy as sa
 
 from app.models import Order, OrderItem
 from app.models.kaspi_order_sync_state import KaspiOrderSyncState
+from app.models.order import OrderStatusHistory
 from app.services.kaspi_service import KaspiService, KaspiSyncAlreadyRunning
 
 
@@ -48,6 +49,27 @@ def _orders_payload_with_items(total: int = 1100, status: str = "NEW") -> list[d
                     "basePrice": 150,
                     "totalPrice": 300,
                 },
+            ],
+        }
+    ]
+
+
+def _orders_payload_with_status_timestamp(status: str, ts: datetime) -> list[dict]:
+    return [
+        {
+            "id": "ext-1",
+            "status": status,
+            "updatedAt": ts.isoformat().replace("+00:00", "Z"),
+            "totalPrice": 100,
+            "customer": {"phone": "+7700", "name": "John"},
+            "items": [
+                {
+                    "productSku": "SKU-1",
+                    "productName": "Item One",
+                    "quantity": 1,
+                    "basePrice": 100,
+                    "totalPrice": 100,
+                }
             ],
         }
     ]
@@ -246,6 +268,44 @@ async def test_order_items_update_values(monkeypatch, async_client, async_db_ses
 
     assert int(item_map["SKU-2"].quantity) == 1
     assert str(item_map["SKU-2"].unit_price) in {"200", "200.00"}
+
+
+@pytest.mark.asyncio
+async def test_status_history_is_idempotent(monkeypatch, async_client, async_db_session, company_a_admin_headers):
+    ts1 = datetime(2025, 1, 1, 10, 0, tzinfo=UTC)
+    ts2 = datetime(2025, 1, 1, 12, 0, tzinfo=UTC)
+
+    async def fake_get_orders_initial(self, *, date_from=None, date_to=None, status=None, page=1, page_size=100):  # noqa: ARG001
+        return _orders_payload_with_status_timestamp(status="NEW", ts=ts1) if page == 1 else []
+
+    monkeypatch.setattr(KaspiService, "get_orders", fake_get_orders_initial)
+    first = await async_client.post("/api/v1/kaspi/orders/sync", headers=company_a_admin_headers)
+    assert first.status_code == 200, first.text
+
+    async def fake_get_orders_second(self, *, date_from=None, date_to=None, status=None, page=1, page_size=100):  # noqa: ARG001
+        return _orders_payload_with_status_timestamp(status="SHIPPED", ts=ts2) if page == 1 else []
+
+    monkeypatch.setattr(KaspiService, "get_orders", fake_get_orders_second)
+    second = await async_client.post("/api/v1/kaspi/orders/sync", headers=company_a_admin_headers)
+    assert second.status_code == 200, second.text
+
+    third = await async_client.post("/api/v1/kaspi/orders/sync", headers=company_a_admin_headers)
+    assert third.status_code == 200, third.text
+
+    res = await async_db_session.execute(sa.select(Order).where(Order.company_id == 1001, Order.external_id == "ext-1"))
+    order = res.scalar_one()
+    status_value = order.status.value if hasattr(order.status, "value") else order.status
+    assert status_value == "shipped"
+
+    hist_res = await async_db_session.execute(
+        sa.select(OrderStatusHistory)
+        .where(OrderStatusHistory.order_id == order.id)
+        .order_by(OrderStatusHistory.changed_at)
+    )
+    history = hist_res.scalars().all()
+    assert len(history) == 2
+    statuses = [h.new_status.value if hasattr(h.new_status, "value") else h.new_status for h in history]
+    assert statuses == ["pending", "shipped"]
 
 
 @pytest.mark.asyncio
