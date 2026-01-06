@@ -473,3 +473,7 @@ Commits (per git show):
 - added: unique constraint order_items(order_id, sku) + migration 2d43c3d56e28_kaspi_unique_order_items_order_id_sku
 - changed: Kaspi orders sync now upserts OrderItem by (order_id, sku) to prevent duplicates; item fields update on conflict
 - tests: extended kaspi orders sync tests to cover item idempotency
+## [2026-01-06] Kaspi: order status refresh + idempotent status history
+- added: unique constraint for OrderStatusHistory to prevent duplicates by (order_id, status, changed_at) + migration 29a2929fc59b_kaspi_order_status_history_unique
+- changed: Kaspi orders sync refreshes Order status/updated_at from payload timestamps and records status history idempotently (ON CONFLICT DO NOTHING)
+- tests: extended kaspi orders sync tests to cover status updates + non-duplicating status history
