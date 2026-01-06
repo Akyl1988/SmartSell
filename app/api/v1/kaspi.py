@@ -51,7 +51,7 @@ from app.schemas.kaspi import (
     KaspiTokenOut,
     OrdersQuery,
 )
-from app.services.kaspi_service import KaspiService, KaspiSyncAlreadyRunning
+from app.services.kaspi_service import KaspiService, KaspiSyncAlreadyRunning, _safe_error_message, _utcnow
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/v1/kaspi", tags=["kaspi"])
@@ -351,6 +351,7 @@ async def kaspi_orders_sync(
     session: AsyncSession = Depends(get_async_db),
 ):
     resolved_company_id: int | None = None
+    svc: KaspiService | None = None
     try:
         resolved_company_id = _resolve_company_id(current_user)
         svc = KaspiService()
@@ -362,11 +363,28 @@ async def kaspi_orders_sync(
         return result
     except KaspiSyncAlreadyRunning:
         raise HTTPException(status_code=status.HTTP_423_LOCKED, detail="kaspi sync already running")
-    except RuntimeError as e:
-        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(e))
     except Exception as e:
+        try:
+            await session.rollback()
+        except Exception:
+            pass
+        if resolved_company_id is not None:
+            try:
+                svc = svc or KaspiService()
+                await svc.record_sync_error(
+                    session,
+                    company_id=resolved_company_id,
+                    code=svc.classify_sync_error(e),
+                    message=_safe_error_message(e),
+                    occurred_at=_utcnow(),
+                )
+                await session.commit()
+            except Exception:
+                logger.exception(
+                    "Kaspi orders sync: failed to persist error state for company_id=%s", resolved_company_id
+                )
         logger.error("Kaspi orders sync failed: company_id=%s err=%s", resolved_company_id, e)
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e))
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(e))
 
 
 @router.get(
@@ -462,12 +480,15 @@ async def kaspi_orders_sync_state(
     state = res.scalar_one_or_none()
     watermark = getattr(state, "last_synced_at", None) if state else None
     last_success_at = getattr(state, "last_synced_at", None) if state else None
+    last_error_at = getattr(state, "last_error_at", None) if state else None
+    last_error_code = getattr(state, "last_error_code", None) if state else None
+    last_error_message = getattr(state, "last_error_message", None) if state else None
     return KaspiSyncStateOut(
         watermark=watermark,
         last_success_at=last_success_at,
-        last_error_at=None,
-        last_error_code=None,
-        last_error_message=None,
+        last_error_at=last_error_at,
+        last_error_code=last_error_code,
+        last_error_message=last_error_message,
     )
 
 

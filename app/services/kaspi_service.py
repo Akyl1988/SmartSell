@@ -31,6 +31,7 @@ from sqlalchemy.orm import selectinload
 
 from app.core.config import settings
 from app.core.logging import get_logger
+from app.integrations.kaspi_adapter import KaspiAdapterError
 from app.models import Order, OrderItem, Product
 from app.models.kaspi_order_sync_state import KaspiOrderSyncState
 from app.models.order import OrderSource, OrderStatus, OrderStatusHistory
@@ -52,6 +53,11 @@ def _utcnow() -> datetime:
 
 def _as_str(v: Any) -> str:
     return "" if v is None else str(v)
+
+
+def _safe_error_message(exc: Exception, limit: int = 500) -> str:
+    msg = str(exc) or exc.__class__.__name__
+    return msg[:limit]
 
 
 def _first_present(data: Mapping[str, Any], *keys: str) -> Any | None:
@@ -405,6 +411,9 @@ class KaspiService:
                         state.last_external_order_id = prev_last_ext
 
                     state.updated_at = now
+                    state.last_error_at = None
+                    state.last_error_code = None
+                    state.last_error_message = None
         except KaspiSyncAlreadyRunning:
             logger.warning(
                 "Kaspi orders sync locked: company_id=%s request_id=%s duration_ms=%s",
@@ -830,6 +839,57 @@ class KaspiService:
                 await db.execute(text("SELECT pg_advisory_unlock(:lock_key)").bindparams(lock_key=lock_key))
             except Exception:
                 pass
+
+    def _classify_sync_error(self, exc: Exception) -> str:
+        if isinstance(exc, httpx.TimeoutException):
+            return "kaspi_timeout"
+        if isinstance(exc, httpx.HTTPStatusError):
+            try:
+                status = exc.response.status_code
+                return f"kaspi_http_{status}"
+            except Exception:
+                return "kaspi_http_error"
+        if isinstance(exc, httpx.HTTPError):
+            return "kaspi_http_error"
+        if isinstance(exc, KaspiAdapterError):
+            return "kaspi_adapter_error"
+        return "internal_error"
+
+    def classify_sync_error(self, exc: Exception) -> str:
+        return self._classify_sync_error(exc)
+
+    async def _record_sync_error(
+        self,
+        db: AsyncSession,
+        *,
+        company_id: int,
+        code: str,
+        message: str,
+        occurred_at: datetime,
+    ) -> None:
+        if db.in_transaction():
+            try:
+                await db.rollback()
+            except Exception:
+                pass
+        tx_ctx = nullcontext() if db.in_transaction() else db.begin()
+        async with tx_ctx:
+            state = await self._load_or_create_state(db, company_id)
+            state.last_error_at = occurred_at
+            state.last_error_code = code
+            state.last_error_message = message[:500] if message else None
+            state.updated_at = occurred_at
+
+    async def record_sync_error(
+        self,
+        db: AsyncSession,
+        *,
+        company_id: int,
+        code: str,
+        message: str,
+        occurred_at: datetime,
+    ) -> None:
+        await self._record_sync_error(db, company_id=company_id, code=code, message=message, occurred_at=occurred_at)
 
     async def _acquire_company_lock(self, db: AsyncSession, company_id: int) -> None:
         # Legacy helper preserved for compatibility; delegates to session-level advisory lock

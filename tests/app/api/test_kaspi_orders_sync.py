@@ -565,3 +565,47 @@ async def test_sync_state_endpoint_reflects_watermark(monkeypatch, async_client,
     assert data["last_error_at"] is None
     assert data["last_error_code"] is None
     assert data["last_error_message"] is None
+
+
+@pytest.mark.asyncio
+async def test_sync_state_records_last_error(monkeypatch, async_client, company_a_admin_headers):
+    async def fake_get_orders(self, *, date_from=None, date_to=None, status=None, page=1, page_size=100):  # noqa: ARG001
+        raise RuntimeError("kaspi boom")
+
+    monkeypatch.setattr(KaspiService, "get_orders", fake_get_orders)
+
+    resp = await async_client.post("/api/v1/kaspi/orders/sync", headers=company_a_admin_headers)
+    assert resp.status_code in {500, 502}
+
+    state_resp = await async_client.get("/api/v1/kaspi/orders/sync/state", headers=company_a_admin_headers)
+    assert state_resp.status_code == 200
+    data = state_resp.json()
+    assert data["last_error_code"] == "internal_error"
+    assert data["last_error_at"] is not None
+    assert data["last_error_message"] and "kaspi" in data["last_error_message"].lower()
+
+
+@pytest.mark.asyncio
+async def test_sync_state_clears_last_error_after_success(monkeypatch, async_client, company_a_admin_headers):
+    calls = {"fail": True}
+
+    async def fake_get_orders(self, *, date_from=None, date_to=None, status=None, page=1, page_size=100):  # noqa: ARG001
+        if calls["fail"]:
+            calls["fail"] = False
+            raise RuntimeError("kaspi temporary")
+        return _orders_payload(status="NEW") if page == 1 else []
+
+    monkeypatch.setattr(KaspiService, "get_orders", fake_get_orders)
+
+    first = await async_client.post("/api/v1/kaspi/orders/sync", headers=company_a_admin_headers)
+    assert first.status_code in {500, 502}
+
+    second = await async_client.post("/api/v1/kaspi/orders/sync", headers=company_a_admin_headers)
+    assert second.status_code == 200, second.text
+
+    state_resp = await async_client.get("/api/v1/kaspi/orders/sync/state", headers=company_a_admin_headers)
+    assert state_resp.status_code == 200
+    data = state_resp.json()
+    assert data["last_error_code"] is None
+    assert data["last_error_message"] is None
+    assert data["last_error_at"] is None

@@ -1,3 +1,13 @@
+## [2026-01-06] Kaspi sync state last_error fields
+
+### Added
+- Persisted last_error_at/code/message on Kaspi sync failures with safe truncation and stable codes.
+- Cleared last_error_* on success; state endpoint now returns persisted error metadata.
+- Coverage for error persistence and clearing.
+
+### Verified
+- python -m pytest -q tests/app/api/test_kaspi_orders_sync.py
+
 ## [2026-01-06] Kaspi sync hardening: advisory lock + state endpoint
 
 ### Added
