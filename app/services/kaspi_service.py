@@ -282,7 +282,6 @@ class KaspiService:
                 await db.execute(text("SET LOCAL statement_timeout = '10s'"))
 
                 async with self._company_lock(db, company_id):
-
                     state = await self._load_or_create_state(db, company_id)
 
                 prev_last_synced = state.last_synced_at
