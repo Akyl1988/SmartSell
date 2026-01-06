@@ -22,12 +22,13 @@ import httpx
 from sqlalchemy import and_, literal_column, select, text
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
 from app.core.config import settings
 from app.core.logging import get_logger
 from app.models import Order, OrderItem, Product
 from app.models.kaspi_order_sync_state import KaspiOrderSyncState
-from app.models.order import OrderSource
+from app.models.order import OrderSource, OrderStatus, OrderStatusHistory
 
 logger = get_logger(__name__)
 
@@ -288,7 +289,9 @@ class KaspiService:
                             total_amount = self._decimal_or_zero(
                                 payload.get("totalPrice") or payload.get("total_amount") or payload.get("total") or 0
                             )
-                            updated_ts = self._extract_order_timestamp(payload) or effective_to
+                            status_changed_at = self._extract_order_timestamp(payload)
+                            updated_ts = status_changed_at or effective_to
+                            effective_updated = updated_ts or now
 
                             stmt = (
                                 insert(Order)
@@ -306,7 +309,7 @@ class KaspiService:
                                     delivery_method=payload.get("deliveryMode") or payload.get("delivery_mode") or None,
                                     total_amount=total_amount,
                                     currency=currency,
-                                    updated_at=now,
+                                    updated_at=effective_updated,
                                 )
                                 .on_conflict_do_update(
                                     index_elements=[Order.company_id, Order.external_id],
@@ -324,7 +327,7 @@ class KaspiService:
                                         or None,
                                         "total_amount": total_amount,
                                         "currency": currency,
-                                        "updated_at": now,
+                                        "updated_at": effective_updated,
                                     },
                                 )
                                 .returning(Order.id, literal_column("xmax = 0").label("inserted"))
@@ -349,8 +352,18 @@ class KaspiService:
                                 last_ext = ext_id
                             made_progress = True
 
-                            await self._upsert_order_items(
+                            items_updated = await self._upsert_order_items(
                                 db, order_id=order_pk, company_id=company_id, payload=payload
+                            )
+
+                            if items_updated:
+                                await self._recalculate_order_totals(db, order_id=order_pk)
+
+                            await self._upsert_status_history(
+                                db,
+                                order_id=order_pk,
+                                new_status=mapped_status,
+                                changed_at=status_changed_at,
                             )
 
                         if len(batch) < 100:
@@ -399,12 +412,13 @@ class KaspiService:
         order_id: int,
         company_id: int,
         payload: dict[str, Any],
-    ) -> None:
+    ) -> bool:
         items = payload.get("items") or payload.get("orderItems") or []
         if not items:
-            return
+            return False
 
         now = _utcnow()
+        processed = False
 
         for item in items:
             sku = _as_str(item.get("productSku") or item.get("sku")).strip()
@@ -472,6 +486,54 @@ class KaspiService:
             )
 
             await db.execute(stmt)
+            processed = True
+
+        return processed
+
+    async def _recalculate_order_totals(self, db: AsyncSession, *, order_id: int) -> None:
+        res = await db.execute(select(Order).options(selectinload(Order.items)).where(Order.id == order_id))
+        order = res.scalar_one_or_none()
+        if not order:
+            return
+
+        try:
+            order.calculate_totals()
+        except Exception:
+            logger.exception("Kaspi: failed to recalc totals for order_id=%s", order_id)
+
+    async def _upsert_status_history(
+        self,
+        db: AsyncSession,
+        *,
+        order_id: int,
+        new_status: str | OrderStatus,
+        changed_at: datetime | None,
+    ) -> None:
+        if not changed_at:
+            return
+
+        status_enum: OrderStatus
+        if isinstance(new_status, OrderStatus):
+            status_enum = new_status
+        else:
+            try:
+                status_enum = OrderStatus(new_status)
+            except Exception:
+                status_enum = OrderStatus.PENDING
+
+        stmt = (
+            insert(OrderStatusHistory)
+            .values(order_id=order_id, old_status=status_enum, new_status=status_enum, changed_at=changed_at)
+            .on_conflict_do_nothing(
+                index_elements=[
+                    OrderStatusHistory.order_id,
+                    OrderStatusHistory.new_status,
+                    OrderStatusHistory.changed_at,
+                ]
+            )
+        )
+
+        await db.execute(stmt)
 
     async def _create_order_from_kaspi(
         self, kaspi_order: dict[str, Any], company_id: int, db: AsyncSession

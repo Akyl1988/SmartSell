@@ -959,6 +959,10 @@ class OrderStatusHistory(Base):
 
     order = relationship("Order", back_populates="status_history")
 
+    __table_args__ = (
+        UniqueConstraint("order_id", "new_status", "changed_at", name="uq__order_status_history__order_status_changed"),
+    )
+
     # -------- Снимки истории --------
     @staticmethod
     async def snapshot_for_order_async(session, order_id: int) -> list[dict[str, Any]]:
