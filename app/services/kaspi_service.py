@@ -55,11 +55,6 @@ def _as_str(v: Any) -> str:
     return "" if v is None else str(v)
 
 
-def _safe_error_message(exc: Exception, limit: int = 500) -> str:
-    msg = str(exc) or exc.__class__.__name__
-    return msg[:limit]
-
-
 def _first_present(data: Mapping[str, Any], *keys: str) -> Any | None:
     for key in keys:
         if key in data:
@@ -857,6 +852,17 @@ class KaspiService:
 
     def classify_sync_error(self, exc: Exception) -> str:
         return self._classify_sync_error(exc)
+
+    def get_retry_after_seconds(self, exc: Exception) -> int | None:
+        if isinstance(exc, httpx.HTTPStatusError):
+            try:
+                value = exc.response.headers.get("Retry-After")
+                if value is None:
+                    return None
+                return int(value)
+            except Exception:
+                return None
+        return None
 
     async def _record_sync_error(
         self,
