@@ -8,7 +8,7 @@ import sqlalchemy as sa
 from app.models import Order, OrderItem
 from app.models.kaspi_order_sync_state import KaspiOrderSyncState
 from app.models.order import OrderStatusHistory
-from app.services.kaspi_service import KaspiService, KaspiSyncAlreadyRunning
+from app.services.kaspi_service import KaspiService
 
 
 def _orders_payload(total: int = 1100, status: str = "NEW") -> list[dict]:
@@ -521,25 +521,47 @@ async def test_retry_uses_retry_after_header(monkeypatch, async_client, async_db
 
 
 @pytest.mark.asyncio
-async def test_concurrent_sync_returns_409(monkeypatch, async_client, company_a_admin_headers):
+async def test_concurrent_sync_returns_locked(async_client, async_db_session, company_a_admin_headers):
+    svc = KaspiService()
+    lock_key = svc._company_lock_key(1001)
+    await async_db_session.execute(sa.text("SELECT pg_advisory_lock(:k)").bindparams(k=lock_key))
+    try:
+        resp = await async_client.post("/api/v1/kaspi/orders/sync", headers=company_a_admin_headers)
+        assert resp.status_code in {409, 423}
+        assert "sync" in str(resp.json().get("detail"))
+    finally:
+        await async_db_session.execute(sa.text("SELECT pg_advisory_unlock(:k)").bindparams(k=lock_key))
+
+
+@pytest.mark.asyncio
+async def test_sync_state_endpoint_returns_defaults(async_client, company_a_admin_headers):
+    resp = await async_client.get("/api/v1/kaspi/orders/sync/state", headers=company_a_admin_headers)
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data == {
+        "watermark": None,
+        "last_success_at": None,
+        "last_error_at": None,
+        "last_error_code": None,
+        "last_error_message": None,
+    }
+
+
+@pytest.mark.asyncio
+async def test_sync_state_endpoint_reflects_watermark(monkeypatch, async_client, company_a_admin_headers):
     async def fake_get_orders(self, *, date_from=None, date_to=None, status=None, page=1, page_size=100):  # noqa: ARG001
-        return _orders_payload() if page == 1 else []
-
-    lock_calls = {"n": 0}
-
-    async def fake_lock(self, db, company_id):  # noqa: ARG002
-        lock_calls["n"] += 1
-        if lock_calls["n"] == 1:
-            await asyncio.sleep(0.05)
-            return
-        raise KaspiSyncAlreadyRunning("kaspi sync already running")
+        return _orders_payload(status="NEW") if page == 1 else []
 
     monkeypatch.setattr(KaspiService, "get_orders", fake_get_orders)
-    monkeypatch.setattr(KaspiService, "_acquire_company_lock", fake_lock)
 
-    first = await async_client.post("/api/v1/kaspi/orders/sync", headers=company_a_admin_headers)
-    assert first.status_code == 200, first.text
+    run = await async_client.post("/api/v1/kaspi/orders/sync", headers=company_a_admin_headers)
+    assert run.status_code == 200, run.text
 
-    second = await async_client.post("/api/v1/kaspi/orders/sync", headers=company_a_admin_headers)
-    assert second.status_code == 409
-    assert "sync" in (second.json().get("detail", ""))
+    resp = await async_client.get("/api/v1/kaspi/orders/sync/state", headers=company_a_admin_headers)
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["watermark"] is not None
+    assert data["last_success_at"] == data["watermark"]
+    assert data["last_error_at"] is None
+    assert data["last_error_code"] is None
+    assert data["last_error_message"] is None

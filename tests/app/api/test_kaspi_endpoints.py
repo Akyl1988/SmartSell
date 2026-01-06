@@ -8,7 +8,7 @@ async def test_kaspi_orders_sync_allows_empty_body(monkeypatch, async_client, co
     called = {"count": 0, "company_id": None}
 
     class _FakeKaspiService:
-        async def sync_orders(self, company_id: int, db):  # noqa: ANN001
+        async def sync_orders(self, company_id: int, db, request_id=None):  # noqa: ANN001
             called["count"] += 1
             called["company_id"] = company_id
             return {"synced_for": company_id}
