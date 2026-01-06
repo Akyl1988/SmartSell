@@ -31,8 +31,6 @@ from urllib.parse import quote
 
 import pytest
 import pytest_asyncio
-
-# SQLAlchemy
 import sqlalchemy as sa
 from alembic import command
 from alembic.config import Config
@@ -42,22 +40,10 @@ from sqlalchemy import MetaData, Table, text
 from sqlalchemy import exc as sa_exc  # РѕР±СЂР°Р±РѕС‚РєР° OperationalError/В«already existsВ»
 from sqlalchemy.engine import Connection, Engine
 from sqlalchemy.engine.url import make_url
-from sqlalchemy.ext.asyncio import (
-    AsyncEngine,
-    AsyncSession,
-    async_sessionmaker,
-    create_async_engine,
-)
+from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import NullPool
 from sqlalchemy.sql.type_api import TypeEngine  # С‚РёРїС‹ РґР»СЏ С„РёР»СЊС‚СЂР° unsupported
-
-
-@pytest.fixture
-def anyio_backend():
-    """Force asyncio backend; asyncpg does not run under trio without extra shims."""
-    return "asyncio"
-
 
 # Compatibility shim: newer trio may not expose MultiError; avoid touching deprecated attribute when present.
 try:
@@ -366,7 +352,7 @@ TEST_DATABASE_URL, SYNC_TEST_DATABASE_URL = _ensure_test_urls()
 
 # Module-level engine/sessionmaker variables initialized to None
 # Created AFTER alembic upgrade in test_db fixture
-test_engine: AsyncEngine | None = None
+_async_test_engine: AsyncEngine | None = None
 TestingSessionLocal: async_sessionmaker[AsyncSession] | None = None
 sync_engine: Engine | None = None
 logger = logging.getLogger(__name__)
@@ -381,17 +367,17 @@ def pytest_keyboard_interrupt(excinfo):
 
 def _dispose_test_engines() -> None:
     """Best-effort disposal of async/sync engines; never raises."""
-    global test_engine, sync_engine, TestingSessionLocal
+    global _async_test_engine, sync_engine, TestingSessionLocal
 
     try:
-        if test_engine is not None:
+        if _async_test_engine is not None:
             try:
-                await_future = test_engine.dispose()
+                await_future = _async_test_engine.dispose()
                 if hasattr(await_future, "__await__"):
                     asyncio.run(await_future)
             except Exception as e:  # noqa: PERF203 — log for diagnosis
                 logger.warning("Failed to dispose async test engine: %s", e)
-            test_engine = None
+            _async_test_engine = None
     except Exception as e:  # noqa: PERF203 — log for diagnosis
         logger.warning("Async engine cleanup error: %s", e)
 
@@ -607,7 +593,7 @@ def _ensure_patch_create_all_for_postgres() -> None:
 @pytest.fixture(scope="session")
 def test_db() -> Iterator[None]:
     """Разворачиваем схему через Alembic upgrade head и откатываемся после тестов."""
-    global test_engine, sync_engine, TestingSessionLocal
+    global _async_test_engine, sync_engine, TestingSessionLocal
 
     sync_url = SYNC_TEST_DATABASE_URL
     async_url = TEST_DATABASE_URL
@@ -699,7 +685,7 @@ def test_db() -> Iterator[None]:
         temp_engine.dispose()
 
     # Re-create engines post-upgrade
-    test_engine = create_async_engine(
+    _async_test_engine = create_async_engine(
         async_url,
         echo=False,
         pool_pre_ping=True,
@@ -707,7 +693,7 @@ def test_db() -> Iterator[None]:
         future=True,
     )
     TestingSessionLocal = async_sessionmaker(
-        bind=test_engine,
+        bind=_async_test_engine,
         class_=AsyncSession,
         expire_on_commit=False,
     )
@@ -760,21 +746,7 @@ def test_db() -> Iterator[None]:
 
 
 # ======================================================================================
-# 5) Event loop РґР»СЏ pytest-asyncio (strict mode СЃРѕРІРјРµСЃС‚РёРј)
-# ======================================================================================
-
-
-@pytest.fixture(scope="session")
-def event_loop() -> Iterator[asyncio.AbstractEventLoop]:
-    loop = asyncio.new_event_loop()
-    try:
-        yield loop
-    finally:
-        loop.close()
-
-
-# ======================================================================================
-# 6) FastAPI РєР»РёРµРЅС‚С‹ (async/sync) СЃ Р»РµРЅРёРІС‹РјРё РёРјРїРѕСЂС‚Р°РјРё app Рё get_db
+# 5) FastAPI РєР»РёРµРЅС‚С‹ (async/sync) СЃ Р»РµРЅРёРІС‹РјРё РёРјРїРѕСЂС‚Р°РјРё app Рё get_db
 # ======================================================================================
 
 
@@ -837,6 +809,15 @@ async def async_db_session(test_db: None) -> AsyncIterator[AsyncSession]:
         yield session
     finally:
         await session.close()
+
+
+@pytest.fixture
+def test_engine() -> AsyncEngine:
+    """Compatibility alias for tests expecting `test_engine` fixture name."""
+    global _async_test_engine
+    if _async_test_engine is None:
+        raise RuntimeError("test_engine not initialized; test_db fixture must run first")
+    return _async_test_engine
 
 
 # Backward-compat alias used by some tests
@@ -1082,8 +1063,8 @@ def db_session(test_db: None):
         connection.close()
 
 
-@pytest_asyncio.fixture
-async def auth_headers(async_client: AsyncClient):
+@pytest.fixture
+def auth_headers(test_db: None):
     """Seed a platform admin user and return its bearer token."""
     from app.core.security import create_access_token, get_password_hash  # type: ignore
     from app.models.company import Company  # type: ignore

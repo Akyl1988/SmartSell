@@ -7,7 +7,7 @@ def _get_user_by_phone(db_session, phone: str) -> User:
     return db_session.query(User).filter(User.phone == phone).one()
 
 
-@pytest.mark.anyio
+@pytest.mark.asyncio
 async def test_wallet_isolation_between_companies(
     client,
     db_session,
@@ -44,7 +44,7 @@ async def test_wallet_isolation_between_companies(
     assert listed.json()["meta"]["total"] == 0
 
 
-@pytest.mark.anyio
+@pytest.mark.asyncio
 async def test_payments_isolation_between_companies(
     client,
     db_session,
@@ -82,7 +82,7 @@ async def test_payments_isolation_between_companies(
     assert listed.json()["meta"]["total"] == 0
 
 
-@pytest.mark.anyio
+@pytest.mark.asyncio
 async def test_subscriptions_isolation_between_companies(
     client,
     db_session,
@@ -114,7 +114,7 @@ async def test_subscriptions_isolation_between_companies(
     assert foreign_current.json() is None
 
 
-@pytest.mark.anyio
+@pytest.mark.asyncio
 async def test_subscriptions_get_by_id_cross_company_forbidden(
     client,
     db_session,
@@ -143,7 +143,7 @@ async def test_subscriptions_get_by_id_cross_company_forbidden(
     assert foreign_get.status_code == 404
 
 
-@pytest.mark.anyio
+@pytest.mark.asyncio
 async def test_subscriptions_payments_cross_company_forbidden(
     client,
     db_session,
@@ -171,7 +171,7 @@ async def test_subscriptions_payments_cross_company_forbidden(
     assert payments.status_code == 404
 
 
-@pytest.mark.anyio
+@pytest.mark.asyncio
 async def test_subscriptions_company_param_bypass_forbidden(
     client,
     db_session,
@@ -189,7 +189,7 @@ async def test_subscriptions_company_param_bypass_forbidden(
     assert resp.json() == []
 
 
-@pytest.mark.anyio
+@pytest.mark.asyncio
 async def test_invoices_company_param_bypass_forbidden(
     client,
     db_session,
@@ -206,7 +206,7 @@ async def test_invoices_company_param_bypass_forbidden(
     assert resp.json() == []
 
 
-@pytest.mark.anyio
+@pytest.mark.asyncio
 async def test_invoices_cross_tenant_get_by_id_forbidden(
     client,
     db_session,
@@ -231,7 +231,7 @@ async def test_invoices_cross_tenant_get_by_id_forbidden(
     assert resp.status_code == 403 or resp.status_code == 404
 
 
-@pytest.mark.anyio
+@pytest.mark.asyncio
 async def test_rbac_roles_restricted_actions(
     client,
     db_session,

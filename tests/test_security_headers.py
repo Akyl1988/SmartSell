@@ -1,7 +1,7 @@
 import pytest
 
 
-@pytest.mark.anyio
+@pytest.mark.asyncio
 async def test_security_headers_present(client):
     r = await client.get("/ping")
     h = r.headers

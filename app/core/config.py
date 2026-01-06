@@ -98,6 +98,72 @@ def _is_local_env(env_value: str, debug: bool) -> bool:
     return debug or env_norm in {"local", "development", "dev"}
 
 
+def _mask_db_fp(url: str) -> str:
+    return db_connection_fingerprint(url, include_password=False)
+
+
+def _inject_password_if_missing(url: str) -> str:
+    """Inject password for local/dev/pytest Postgres URLs when missing.
+
+    Priority: DB_PASSWORD -> PGPASSWORD -> password from DATABASE_URL/DB_URL.
+    No-ops for non-Postgres URLs, URLs with password, or non-local/non-pytest envs.
+    """
+
+    try:
+        if not url:
+            return url
+
+        env = os.environ
+        env_name = env.get("ENVIRONMENT", "")
+        debug_flag = env.get("DEBUG", "0").lower() in {"1", "true", "yes", "on"}
+        if not (_is_local_env(env_name, debug_flag) or _under_pytest()):
+            return url
+
+        parsed = urlparse(url)
+        if not parsed.scheme.startswith("postgres"):
+            return url
+        if parsed.password or not parsed.username:
+            return url
+
+        password = env.get("DB_PASSWORD") or env.get("PGPASSWORD")
+        if not password:
+            base_env_url = env.get("DATABASE_URL") or env.get("DB_URL")
+            try:
+                if base_env_url and base_env_url != url:
+                    base_parsed = urlparse(base_env_url)
+                    if base_parsed.password and (base_parsed.scheme or "").startswith("postgres"):
+                        password = base_parsed.password
+            except Exception:
+                password = None
+
+        if not password:
+            return url
+
+        host = parsed.hostname or ""
+        port = f":{parsed.port}" if parsed.port else ""
+        netloc = f"{quote(parsed.username)}:{quote(password)}@{host}{port}"
+        return urlunparse((parsed.scheme, netloc, parsed.path, parsed.params, parsed.query, parsed.fragment))
+    except Exception:
+        return url
+
+
+def _to_asyncpg_url(url: str) -> str:
+    try:
+        if url.startswith("postgresql+asyncpg://"):
+            return url
+        if url.startswith("postgresql+psycopg2://"):
+            return url.replace("postgresql+psycopg2://", "postgresql+asyncpg://", 1)
+        if url.startswith("postgresql+psycopg://"):
+            return url.replace("postgresql+psycopg://", "postgresql+asyncpg://", 1)
+        if url.startswith("postgresql://"):
+            return url.replace("postgresql://", "postgresql+asyncpg://", 1)
+        if url.startswith("postgres://"):
+            return url.replace("postgres://", "postgresql+asyncpg://", 1)
+    except Exception:
+        return url
+    return url
+
+
 def resolve_database_url(settings: Settings | None = None) -> tuple[str, str, str]:
     """
     Single source of truth for DB URL resolution.
@@ -145,8 +211,36 @@ def resolve_database_url(settings: Settings | None = None) -> tuple[str, str, st
         else:
             raise ValueError("DATABASE_URL/TEST_DATABASE_URL is required in non-local environments")
 
+    # Local/dev/pytest: if URL lacks password but PGPASSWORD is set, inject it for async connections
+    resolved_url = _inject_password_if_missing(resolved_url)
+
     fingerprint = db_url_fingerprint(resolved_url)
     return resolved_url, source, fingerprint
+
+
+def resolve_async_database_url(settings: Settings) -> tuple[str, str, str]:
+    env = os.environ
+
+    url: str | None = None
+    source = ""
+
+    if env.get("TEST_ASYNC_DATABASE_URL"):
+        url = env.get("TEST_ASYNC_DATABASE_URL")
+        source = "TEST_ASYNC_DATABASE_URL"
+    elif env.get("TEST_DATABASE_URL"):
+        url = env.get("TEST_DATABASE_URL")
+        source = "TEST_DATABASE_URL"
+    else:
+        url_base, src_base, _ = resolve_database_url(settings)
+        url = url_base
+        source = src_base
+
+    url = url or ""
+    url = _to_asyncpg_url(url)
+    url = _inject_password_if_missing(url)
+
+    fp = _mask_db_fp(url)
+    return url, f"{source}->async", fp
 
 
 def _parse_list_like(v: Any) -> Any:

@@ -11,7 +11,7 @@ from app.models import Company, OtpAttempt, User
 from app.utils.otp import hash_otp_code
 
 
-@pytest.mark.anyio
+@pytest.mark.asyncio
 class TestAuth:
     """Test authentication endpoints"""
 

@@ -452,3 +452,17 @@ Commits (per git show):
 
 ### Verified
 - ruff format/check (app/tests/tools)
+## [2026-01-06] DB: deterministic async DB URL resolution (fix InvalidPasswordError in runtime)
+- fixed: async engine could select a different URL than migrations/psql and lose password, causing InvalidPasswordError
+- added: resolve_async_database_url() with strict priority (TEST_ASYNC_DATABASE_URL > TEST_DATABASE_URL > fallback) + scheme normalization to postgresql+asyncpg
+- added: password injection when missing (DB_PASSWORD -> PGPASSWORD -> borrow from DATABASE_URL/DB_URL), without logging secrets
+- updated: async engine init now uses async resolver and logs safe debug-only diagnostics
+- tests: test_db_async_url_resolution.py + kept pgpass/password fallback coverage
+## [2026-01-06] Kaspi: orders sync MVP (incremental + idempotent)
+- added: incremental sync using kaspi_order_sync_state watermark with 2-minute overlap for safety
+- added: idempotent upsert for orders via unique (company_id, external_id)
+- added: per-company concurrency guard via pg_try_advisory_xact_lock
+- api: /api/v1/kaspi/orders/sync returns 409 when sync is already running
+- tests: standardized async test marks to pytest.mark.asyncio; conftest cleanup and fixture compatibility
+## [2026-01-06] CI: ruff UP017 fix
+- fixed: ruff UP017 (use datetime.UTC alias) in kaspi orders sync tests; formatting aligned with CI

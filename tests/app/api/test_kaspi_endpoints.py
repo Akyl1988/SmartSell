@@ -3,7 +3,7 @@ import pytest
 from app.api.v1 import kaspi as kaspi_module
 
 
-@pytest.mark.anyio
+@pytest.mark.asyncio
 async def test_kaspi_orders_sync_allows_empty_body(monkeypatch, async_client, company_a_admin_headers):
     called = {"count": 0, "company_id": None}
 
@@ -31,7 +31,7 @@ async def test_kaspi_orders_sync_allows_empty_body(monkeypatch, async_client, co
     assert called["company_id"] == 1001
 
 
-@pytest.mark.anyio
+@pytest.mark.asyncio
 async def test_kaspi_feed_ignores_company_param(monkeypatch, async_client, company_a_admin_headers):
     captured = {"company_id": None}
 
@@ -52,7 +52,7 @@ async def test_kaspi_feed_ignores_company_param(monkeypatch, async_client, compa
     assert captured["company_id"] == 1001
 
 
-@pytest.mark.anyio
+@pytest.mark.asyncio
 async def test_kaspi_feed_propagates_errors(monkeypatch, async_client, company_a_admin_headers):
     class _FailingKaspiService:
         async def generate_product_feed(self, company_id: int, db):  # noqa: ANN001

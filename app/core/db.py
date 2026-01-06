@@ -53,6 +53,7 @@ try:
         _under_pytest,
         db_url_fingerprint,
         get_settings,
+        resolve_async_database_url,
         resolve_database_url,
     )
 
@@ -384,7 +385,26 @@ def _get_async_engine() -> AsyncEngine:
     if _ASYNC_ENGINE is not None:
         return _ASYNC_ENGINE
 
-    url = _resolve_async_url()
+    url, source, fp = resolve_async_database_url(settings)
+
+    if logger.isEnabledFor(logging.DEBUG) or os.getenv("PYTEST_DEBUG_ERRORS"):
+        try:
+            parsed = make_url(url)
+            logger.debug(
+                "db_url_async_resolved",
+                extra={
+                    "source": source,
+                    "fp_no_pw": fp,
+                    "user": parsed.username or "",
+                    "host": parsed.host or "",
+                    "port": parsed.port or "",
+                    "db": parsed.database or "",
+                    "has_password": bool(parsed.password),
+                },
+            )
+        except Exception:
+            pass
+
     _log_effective_url(url, mode="async")
     _ASYNC_ENGINE = create_async_engine(url, **_engine_options(async_engine=True))
     _ASYNC_SESSION_MAKER = async_sessionmaker(

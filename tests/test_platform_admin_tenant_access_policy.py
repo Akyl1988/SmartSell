@@ -62,7 +62,7 @@ async def _call_endpoint(async_client, path: str, method: str, headers: dict[str
     return await requester(path, headers=headers)
 
 
-@pytest.mark.anyio
+@pytest.mark.asyncio
 @pytest.mark.parametrize("path,method", TENANT_ENDPOINTS)
 async def test_platform_admin_without_company_forbidden(
     async_client, platform_admin_no_company_headers, monkeypatch, path, method
@@ -71,7 +71,7 @@ async def test_platform_admin_without_company_forbidden(
     assert resp.status_code == 403
 
 
-@pytest.mark.anyio
+@pytest.mark.asyncio
 @pytest.mark.parametrize("path,method", TENANT_ENDPOINTS)
 async def test_tenant_admin_allowed(async_client, company_a_admin_headers, monkeypatch, path, method):
     resp = await _call_endpoint(async_client, path, method, company_a_admin_headers, monkeypatch)
