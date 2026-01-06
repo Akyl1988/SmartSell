@@ -10,6 +10,17 @@
 
 ## [2026-01-04] Strip company_id inputs from v1
 
+## [2026-01-06] Kaspi retry-after + idempotency
+
+### Added
+- Retry-After support with jitter for Kaspi order fetch retries to reduce thundering herd.
+- Idempotency tests for Kaspi orders sync (duplicate runs, watermark progression, Retry-After handling).
+
+### Verified
+- python -m ruff check app/services/kaspi_service.py tests/app/api/test_kaspi_orders_sync.py
+- python -m pytest -q tests/app/api/test_kaspi_orders_sync.py
+
+
 ### Added
 - Guard coverage retained to detect any company_id Query/Path/Body/Field usage across v1 routes.
 
