@@ -1,4 +1,5 @@
 import asyncio
+from datetime import UTC, datetime, timedelta, timezone
 
 import pytest
 import sqlalchemy as sa
@@ -41,6 +42,53 @@ async def test_first_sync_creates_orders(monkeypatch, async_client, async_db_ses
     res = await async_db_session.execute(sa.select(Order).where(Order.company_id == 1001))
     orders = res.scalars().all()
     assert len(orders) == 2
+
+
+@pytest.mark.asyncio
+async def test_watermark_not_moved_backwards_on_empty_batch(
+    monkeypatch, async_client, async_db_session, company_a_admin_headers
+):
+    async def fake_get_orders(self, *, date_from=None, date_to=None, status=None, page=1, page_size=100):  # noqa: ARG001
+        return []
+
+    monkeypatch.setattr(KaspiService, "get_orders", fake_get_orders)
+
+    existing_ts = datetime(2025, 1, 1, 12, 0, tzinfo=UTC).replace(tzinfo=None)
+    state = KaspiOrderSyncState(company_id=1001, last_synced_at=existing_ts, last_external_order_id="prev")
+    async_db_session.add(state)
+    await async_db_session.commit()
+
+    resp = await async_client.post("/api/v1/kaspi/orders/sync", headers=company_a_admin_headers)
+    assert resp.status_code == 200, resp.text
+    data = resp.json()
+
+    await async_db_session.refresh(state)
+    assert state.last_synced_at == existing_ts
+    assert state.last_external_order_id == "prev"
+    assert data["watermark"].startswith(existing_ts.isoformat())
+
+
+@pytest.mark.asyncio
+async def test_first_run_no_orders_sets_reasonable_watermark(
+    monkeypatch, async_client, async_db_session, company_a_admin_headers
+):
+    async def fake_get_orders(self, *, date_from=None, date_to=None, status=None, page=1, page_size=100):  # noqa: ARG001
+        return []
+
+    monkeypatch.setattr(KaspiService, "get_orders", fake_get_orders)
+
+    resp = await async_client.post("/api/v1/kaspi/orders/sync", headers=company_a_admin_headers)
+    assert resp.status_code == 200, resp.text
+    data = resp.json()
+
+    res = await async_db_session.execute(sa.select(KaspiOrderSyncState).where(KaspiOrderSyncState.company_id == 1001))
+    state = res.scalar_one()
+
+    now = datetime.utcnow()
+    assert state.last_synced_at is not None
+    assert state.last_synced_at <= now
+    assert state.last_synced_at >= now - timedelta(days=2)
+    assert data["watermark"].startswith(state.last_synced_at.isoformat())
 
     state_res = await async_db_session.execute(
         sa.select(KaspiOrderSyncState).where(KaspiOrderSyncState.company_id == 1001)
