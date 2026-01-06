@@ -458,3 +458,9 @@ Commits (per git show):
 - added: password injection when missing (DB_PASSWORD -> PGPASSWORD -> borrow from DATABASE_URL/DB_URL), without logging secrets
 - updated: async engine init now uses async resolver and logs safe debug-only diagnostics
 - tests: test_db_async_url_resolution.py + kept pgpass/password fallback coverage
+## [2026-01-06] Kaspi: orders sync MVP (incremental + idempotent)
+- added: incremental sync using kaspi_order_sync_state watermark with 2-minute overlap for safety
+- added: idempotent upsert for orders via unique (company_id, external_id)
+- added: per-company concurrency guard via pg_try_advisory_xact_lock
+- api: /api/v1/kaspi/orders/sync returns 409 when sync is already running
+- tests: standardized async test marks to pytest.mark.asyncio; conftest cleanup and fixture compatibility
