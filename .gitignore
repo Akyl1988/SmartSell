@@ -317,3 +317,5 @@ __pycache__/
 *.py[cod]
 *.class
 
+
+_branch_protection_*.json
