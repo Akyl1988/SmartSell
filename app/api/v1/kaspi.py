@@ -50,7 +50,7 @@ from app.schemas.kaspi import (
     KaspiTokenOut,
     OrdersQuery,
 )
-from app.services.kaspi_service import KaspiService
+from app.services.kaspi_service import KaspiService, KaspiSyncAlreadyRunning
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/v1/kaspi", tags=["kaspi"])
@@ -352,8 +352,10 @@ async def kaspi_orders_sync(
     try:
         svc = KaspiService()
         resolved_company_id = _resolve_company_id(current_user)
-        result = await svc.sync_orders(company_id=resolved_company_id, db=session)
+        result = await svc.sync_orders(db=session, company_id=resolved_company_id)
         return result
+    except KaspiSyncAlreadyRunning:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="kaspi sync already running")
     except RuntimeError as e:
         raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(e))
     except Exception as e:
