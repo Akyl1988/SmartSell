@@ -863,6 +863,7 @@ class OrderItem(Base):
             "unit_price >= 0 AND total_price >= 0 AND cost_price >= 0",
             name="ck_order_item_price_non_negative",
         ),
+        UniqueConstraint("order_id", "sku", name="uq__order_items__order_id_sku"),
         Index("ix_order_items_order_sku", "order_id", "sku"),
     )
 

@@ -171,11 +171,11 @@ class KaspiService:
         if not date_to:
             date_to = _utcnow()
 
-        params: dict[str, Any] = {
-            "dateFrom": date_from.strftime("%Y-%m-%dT%H:%M:%S"),
-            "dateTo": date_to.strftime("%Y-%m-%dT%H:%M:%S"),
+        params = {
             "page": page,
             "pageSize": page_size,
+            "dateFrom": date_from.isoformat(),
+            "dateTo": date_to.isoformat(),
         }
         if status:
             params["status"] = status
@@ -185,33 +185,10 @@ class KaspiService:
                 resp = await client.get(self._url("/orders"), headers=self.headers, params=params)
                 resp.raise_for_status()
                 data = resp.json() or {}
-                # API может называть список по-разному
-                return data.get("orders") or data.get("items") or []
+                return data.get("orders") or data.get("items") or data.get("data") or []
             except httpx.HTTPError as e:
                 logger.error("Kaspi get_orders error: %s", e)
                 raise RuntimeError(f"Failed to fetch orders from Kaspi: {e}") from e
-
-    async def get_order_details(self, order_id: str) -> dict[str, Any] | None:
-        async with self._client() as client:
-            try:
-                resp = await client.get(self._url(f"/orders/{order_id}"), headers=self.headers)
-                resp.raise_for_status()
-                return resp.json()
-            except httpx.HTTPError as e:
-                logger.error("Kaspi get_order_details(%s) error: %s", order_id, e)
-                return None
-
-    async def update_order_status(self, order_id: str, status: str) -> bool:
-        payload = {"status": status}
-        async with self._client() as client:
-            try:
-                resp = await client.patch(self._url(f"/orders/{order_id}/status"), headers=self.headers, json=payload)
-                resp.raise_for_status()
-                logger.info("Kaspi: статус заказа %s обновлён на '%s'.", order_id, status)
-                return True
-            except httpx.HTTPError as e:
-                logger.error("Kaspi update_order_status(%s) error: %s", order_id, e)
-                return False
 
     # ---------------------- Products API ---------------------- #
 
@@ -350,17 +327,20 @@ class KaspiService:
                                         "updated_at": now,
                                     },
                                 )
-                                .returning(literal_column("xmax = 0").label("inserted"))
+                                .returning(Order.id, literal_column("xmax = 0").label("inserted"))
                             )
 
                             async with db.begin_nested():
                                 res = await db.execute(stmt)
 
-                            inserted_flag: bool = bool(res.scalar_one())
+                            row = res.one()
+                            inserted_flag: bool = bool(row.inserted)
                             if inserted_flag:
                                 inserted += 1
                             else:
                                 updated += 1
+
+                            order_pk = row.id
 
                             if updated_ts > watermark or (
                                 updated_ts == watermark and ext_id and ext_id > (last_ext or "")
@@ -368,6 +348,10 @@ class KaspiService:
                                 watermark = updated_ts
                                 last_ext = ext_id
                             made_progress = True
+
+                            await self._upsert_order_items(
+                                db, order_id=order_pk, company_id=company_id, payload=payload
+                            )
 
                         if len(batch) < 100:
                             break
@@ -407,6 +391,87 @@ class KaspiService:
             updated,
         )
         return summary
+
+    async def _upsert_order_items(
+        self,
+        db: AsyncSession,
+        *,
+        order_id: int,
+        company_id: int,
+        payload: dict[str, Any],
+    ) -> None:
+        items = payload.get("items") or payload.get("orderItems") or []
+        if not items:
+            return
+
+        now = _utcnow()
+
+        for item in items:
+            sku = _as_str(item.get("productSku") or item.get("sku")).strip()
+            if not sku:
+                continue
+
+            name = _as_str(item.get("productName") or item.get("title") or item.get("name") or sku).strip() or sku
+
+            qty_raw = item.get("quantity") or item.get("qty") or 1
+            try:
+                qty = max(1, int(qty_raw))
+            except Exception:
+                qty = 1
+
+            unit_price = self._decimal_or_zero(
+                item.get("basePrice") or item.get("unitPrice") or item.get("unit_price") or item.get("price") or 0
+            )
+
+            total_price_raw = item.get("totalPrice") or item.get("total_price")
+            if total_price_raw is None:
+                total_price_raw = unit_price * qty
+            total_price = self._decimal_or_zero(total_price_raw)
+
+            cost_price = self._decimal_or_zero(item.get("costPrice") or item.get("cost_price") or 0)
+
+            product_id = None
+            product_ext_id = _as_str(item.get("productId") or item.get("product_id") or "").strip()
+            if product_ext_id:
+                try:
+                    res = await db.execute(
+                        select(Product.id).where(
+                            and_(Product.company_id == company_id, Product.kaspi_product_id == product_ext_id)
+                        )
+                    )
+                    product_id = res.scalar_one_or_none()
+                except Exception:
+                    product_id = None
+
+            insert_values = {
+                "order_id": order_id,
+                "product_id": product_id,
+                "sku": sku,
+                "name": name,
+                "unit_price": unit_price,
+                "quantity": qty,
+                "total_price": total_price,
+                "cost_price": cost_price,
+            }
+
+            update_values = {
+                "product_id": product_id,
+                "name": name,
+                "unit_price": unit_price,
+                "quantity": qty,
+                "total_price": total_price,
+                "cost_price": cost_price,
+            }
+            if hasattr(OrderItem, "updated_at"):
+                update_values["updated_at"] = now
+
+            stmt = (
+                insert(OrderItem)
+                .values(**insert_values)
+                .on_conflict_do_update(index_elements=[OrderItem.order_id, OrderItem.sku], set_=update_values)
+            )
+
+            await db.execute(stmt)
 
     async def _create_order_from_kaspi(
         self, kaspi_order: dict[str, Any], company_id: int, db: AsyncSession
