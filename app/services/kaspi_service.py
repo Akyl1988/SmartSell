@@ -14,6 +14,8 @@ Kaspi.kz integration: product feed generation, orders sync, and availability syn
 """
 
 import asyncio
+from collections.abc import AsyncIterator, Mapping
+from contextlib import nullcontext
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from typing import Any, Optional
@@ -47,6 +49,13 @@ def _utcnow() -> datetime:
 
 def _as_str(v: Any) -> str:
     return "" if v is None else str(v)
+
+
+def _first_present(data: Mapping[str, Any], *keys: str) -> Any | None:
+    for key in keys:
+        if key in data:
+            return data[key]
+    return None
 
 
 def _xml_escape(s: str) -> str:
@@ -162,10 +171,11 @@ class KaspiService:
         status: Optional[str] = None,
         page: int = 1,
         page_size: int = 100,
-    ) -> list[dict[str, Any]]:
+    ) -> dict[str, Any] | list[dict[str, Any]]:
         """
         Получение заказов из Kaspi.
         Если даты не заданы — последние 24 часа.
+        Возвращает словарь (items + пагинация) или голый список для обратной совместимости.
         """
         if not date_from:
             date_from = _utcnow() - timedelta(days=1)
@@ -186,7 +196,23 @@ class KaspiService:
                 resp = await client.get(self._url("/orders"), headers=self.headers, params=params)
                 resp.raise_for_status()
                 data = resp.json() or {}
-                return data.get("orders") or data.get("items") or data.get("data") or []
+                items = data.get("orders") or data.get("items") or data.get("data")
+                if items is None:
+                    return []
+                has_next = _first_present(data, "hasNext", "has_next")
+                next_page = _first_present(data, "nextPage", "next_page")
+                total_pages = _first_present(data, "totalPages", "pageCount", "total_pages")
+                return {
+                    "items": items,
+                    "page": data.get("page") or data.get("pageNumber") or page,
+                    "total_pages": total_pages,
+                    "has_next": has_next,
+                    "next_page": next_page,
+                    "links": data.get("links") or {},
+                }
+            except (httpx.TimeoutException, httpx.NetworkError, httpx.HTTPStatusError) as e:
+                logger.warning("Kaspi get_orders transient error: %s", e)
+                raise
             except httpx.HTTPError as e:
                 logger.error("Kaspi get_orders error: %s", e)
                 raise RuntimeError(f"Failed to fetch orders from Kaspi: {e}") from e
@@ -243,8 +269,8 @@ class KaspiService:
         updated = 0
 
         try:
-            await db.rollback()
-            async with db.begin():
+            tx_ctx = nullcontext() if db.in_transaction() else db.begin()
+            async with tx_ctx:
                 await db.execute(text("SET LOCAL lock_timeout = '2s'"))
                 await db.execute(text("SET LOCAL statement_timeout = '10s'"))
 
@@ -264,18 +290,12 @@ class KaspiService:
                 made_progress = False
 
                 for status in statuses or [None]:
-                    page = 1
-                    while True:
-                        batch = await self.get_orders(
-                            date_from=effective_from,
-                            date_to=effective_to,
-                            status=status,
-                            page=page,
-                            page_size=100,
-                        )
-                        if not batch:
-                            break
-
+                    async for batch in self._iter_orders_pages(
+                        date_from=effective_from,
+                        date_to=effective_to,
+                        status=status,
+                        page_size=100,
+                    ):
                         fetched += len(batch)
                         for payload in batch:
                             ext_id = _as_str(payload.get("id")).strip()
@@ -366,9 +386,7 @@ class KaspiService:
                                 changed_at=status_changed_at,
                             )
 
-                        if len(batch) < 100:
-                            break
-                        page += 1
+                        # page handling happens inside _iter_orders_pages
 
                 if made_progress or is_new_state:
                     final_wm = watermark if prev_last_synced is None else max(prev_last_synced, watermark)
@@ -534,6 +552,131 @@ class KaspiService:
         )
 
         await db.execute(stmt)
+
+    async def _iter_orders_pages(
+        self,
+        *,
+        date_from: datetime,
+        date_to: datetime,
+        status: str | None,
+        page_size: int,
+    ) -> AsyncIterator[list[dict[str, Any]]]:
+        page = 1
+
+        while True:
+            batch = await self._fetch_orders_page(
+                date_from=date_from,
+                date_to=date_to,
+                status=status,
+                page=page,
+                page_size=page_size,
+            )
+
+            items, meta = self._normalize_orders_response(batch, page, page_size)
+            if not items:
+                break
+
+            yield items
+
+            next_page = self._next_page(meta=meta, current_page=page, page_size=page_size, items_count=len(items))
+            if not next_page:
+                break
+            page = next_page
+
+    async def _fetch_orders_page(
+        self,
+        *,
+        date_from: datetime,
+        date_to: datetime,
+        status: str | None,
+        page: int,
+        page_size: int,
+    ) -> dict[str, Any] | list[dict[str, Any]]:
+        attempts = 3
+        delays = [0.2, 0.5, 1.0]
+
+        for attempt in range(attempts):
+            try:
+                return await self.get_orders(
+                    date_from=date_from,
+                    date_to=date_to,
+                    status=status,
+                    page=page,
+                    page_size=page_size,
+                )
+            except (httpx.TimeoutException, httpx.NetworkError, httpx.HTTPStatusError, RuntimeError) as e:
+                is_last = attempt == attempts - 1
+                code = getattr(getattr(e, "response", None), "status_code", None)
+                transient = code in {429, 500, 502, 503, 504} or isinstance(
+                    e, httpx.TimeoutException | httpx.NetworkError
+                )
+                if not transient or is_last:
+                    logger.error("Kaspi get_orders failed after retries: %s", e)
+                    raise
+                delay = delays[attempt]
+                logger.warning("Kaspi get_orders transient %s, retrying in %ss", code or type(e).__name__, delay)
+                await asyncio.sleep(delay)
+
+        # Not reachable
+        return []
+
+    @staticmethod
+    def _normalize_orders_response(
+        resp: dict[str, Any] | list[dict[str, Any]] | None, page: int, page_size: int
+    ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+        if resp is None:
+            return [], {}
+
+        if isinstance(resp, list):
+            return resp, {"page": page, "page_size": page_size}
+
+        items = resp.get("items") or resp.get("orders") or resp.get("data") or []
+        meta = {
+            "page": resp.get("page") or resp.get("pageNumber") or resp.get("page_number") or page,
+            "total_pages": _first_present(resp, "total_pages", "totalPages", "pageCount"),
+            "has_next": _first_present(resp, "has_next", "hasNext"),
+            "next_page": _first_present(resp, "next_page", "nextPage"),
+            "links": resp.get("links") or {},
+            "page_size": page_size,
+        }
+        return items, meta
+
+    @staticmethod
+    def _next_page(*, meta: dict[str, Any], current_page: int, page_size: int, items_count: int) -> int | None:
+        if items_count == 0:
+            return None
+
+        raw_next = meta.get("next_page") if "next_page" in meta else None
+        if raw_next not in (None, 0, ""):
+            try:
+                next_page = int(raw_next)
+            except (TypeError, ValueError):
+                next_page = None
+            if next_page is not None and next_page > current_page:
+                return next_page
+            return None
+
+        if "has_next" in meta:
+            has_next = meta.get("has_next")
+            if has_next is True:
+                return current_page + 1
+            if has_next is False:
+                return None
+
+        if "total_pages" in meta:
+            total_pages = meta.get("total_pages")
+            try:
+                total_pages_int = int(total_pages) if total_pages is not None else None
+            except (TypeError, ValueError):
+                total_pages_int = None
+            if total_pages_int is not None:
+                return current_page + 1 if current_page < total_pages_int else None
+
+        links = meta.get("links") or {}
+        if links.get("next"):
+            return current_page + 1
+
+        return current_page + 1 if items_count >= page_size else None
 
     async def _create_order_from_kaspi(
         self, kaspi_order: dict[str, Any], company_id: int, db: AsyncSession
