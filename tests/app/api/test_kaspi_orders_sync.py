@@ -609,3 +609,43 @@ async def test_sync_state_clears_last_error_after_success(monkeypatch, async_cli
     assert data["last_error_code"] is None
     assert data["last_error_message"] is None
     assert data["last_error_at"] is None
+
+
+@pytest.mark.asyncio
+async def test_sync_returns_429_with_retry_after(monkeypatch, async_client, company_a_admin_headers):
+    async def fake_get_orders(self, *, date_from=None, date_to=None, status=None, page=1, page_size=100):  # noqa: ARG001
+        req = httpx.Request("GET", "http://kaspi.test/orders")
+        resp = httpx.Response(429, headers={"Retry-After": "7"}, request=req)
+        raise httpx.HTTPStatusError("rate limited", request=req, response=resp)
+
+    monkeypatch.setattr(KaspiService, "get_orders", fake_get_orders)
+
+    resp = await async_client.post("/api/v1/kaspi/orders/sync", headers=company_a_admin_headers)
+    assert resp.status_code == 429
+    assert resp.headers.get("Retry-After") == "7"
+    assert "rate" in resp.json().get("detail", "").lower()
+
+
+@pytest.mark.asyncio
+async def test_sync_timeout_maps_to_504(monkeypatch, async_client, company_a_admin_headers):
+    async def fake_get_orders(self, *, date_from=None, date_to=None, status=None, page=1, page_size=100):  # noqa: ARG001
+        raise httpx.TimeoutException("kaspi timeout")
+
+    monkeypatch.setattr(KaspiService, "get_orders", fake_get_orders)
+
+    resp = await async_client.post("/api/v1/kaspi/orders/sync", headers=company_a_admin_headers)
+    assert resp.status_code == 504
+    assert "timeout" in resp.json().get("detail", "").lower()
+
+
+@pytest.mark.asyncio
+async def test_sync_internal_error_is_generic(monkeypatch, async_client, company_a_admin_headers):
+    async def fake_get_orders(self, *, date_from=None, date_to=None, status=None, page=1, page_size=100):  # noqa: ARG001
+        raise RuntimeError("secret boom")
+
+    monkeypatch.setattr(KaspiService, "get_orders", fake_get_orders)
+
+    resp = await async_client.post("/api/v1/kaspi/orders/sync", headers=company_a_admin_headers)
+    assert resp.status_code == 500
+    body = resp.json()
+    assert "boom" not in str(body.get("detail", "")).lower()

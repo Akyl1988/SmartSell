@@ -27,6 +27,7 @@ app/api/v1/kaspi.py — Полный, боевой роутер интеграц
 """
 
 import logging
+from datetime import datetime
 from typing import Any
 
 import sqlalchemy as sa
@@ -36,6 +37,7 @@ from sqlalchemy import bindparam, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.db import get_async_db  # noqa — для совместимости импорт-алиас
+from app.core.errors import safe_error_message
 from app.core.security import get_current_user, resolve_tenant_company_id
 
 # Доменные зависимости/схемы:
@@ -51,7 +53,7 @@ from app.schemas.kaspi import (
     KaspiTokenOut,
     OrdersQuery,
 )
-from app.services.kaspi_service import KaspiService, KaspiSyncAlreadyRunning, _safe_error_message, _utcnow
+from app.services.kaspi_service import KaspiService, KaspiSyncAlreadyRunning
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/v1/kaspi", tags=["kaspi"])
@@ -371,20 +373,37 @@ async def kaspi_orders_sync(
         if resolved_company_id is not None:
             try:
                 svc = svc or KaspiService()
+                error_code = svc.classify_sync_error(e)
                 await svc.record_sync_error(
                     session,
                     company_id=resolved_company_id,
-                    code=svc.classify_sync_error(e),
-                    message=_safe_error_message(e),
-                    occurred_at=_utcnow(),
+                    code=error_code,
+                    message=safe_error_message(e),
+                    occurred_at=datetime.utcnow(),
                 )
                 await session.commit()
             except Exception:
                 logger.exception(
                     "Kaspi orders sync: failed to persist error state for company_id=%s", resolved_company_id
                 )
-        logger.error("Kaspi orders sync failed: company_id=%s err=%s", resolved_company_id, e)
-        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(e))
+        svc = svc or KaspiService()
+        error_code = svc.classify_sync_error(e)
+        retry_after = svc.get_retry_after_seconds(e)
+        logger.error("Kaspi orders sync failed: company_id=%s code=%s err=%s", resolved_company_id, error_code, e)
+
+        if error_code == "kaspi_http_429":
+            headers = {"Retry-After": str(retry_after)} if retry_after is not None else None
+            raise HTTPException(
+                status_code=status.HTTP_429_TOO_MANY_REQUESTS, detail="kaspi rate limited", headers=headers
+            )
+
+        if error_code == "kaspi_timeout":
+            raise HTTPException(status_code=status.HTTP_504_GATEWAY_TIMEOUT, detail="kaspi timeout")
+
+        if error_code.startswith("kaspi_http_") or error_code == "kaspi_adapter_error":
+            raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail="kaspi upstream error")
+
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="kaspi sync failed")
 
 
 @router.get(
