@@ -350,9 +350,12 @@ async def kaspi_orders_sync(
 ):
     resolved_company_id: int | None = None
     try:
-        svc = KaspiService()
         resolved_company_id = _resolve_company_id(current_user)
-        result = await svc.sync_orders(db=session, company_id=resolved_company_id)
+        svc = KaspiService()
+        tx_ctx = session.begin_nested() if session.in_transaction() else session.begin()
+        async with tx_ctx:
+            result = await svc.sync_orders(db=session, company_id=resolved_company_id)
+        await session.commit()
         return result
     except KaspiSyncAlreadyRunning:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="kaspi sync already running")

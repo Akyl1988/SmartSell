@@ -1,3 +1,13 @@
+## [2026-01-06] Fix Kaspi orders sync session usage
+
+### Fixed
+- Repaired `/api/v1/kaspi/orders/sync` to use the provided AsyncSession instead of undefined `db`, adding a safe transaction boundary (nested when pre-opened) and commit so inserts persist.
+- Adjusted Kaspi service transaction handling to tolerate caller-managed sessions without double-opening transactions.
+
+### Verified
+- python -m ruff check app/api/v1/kaspi.py app/services/kaspi_service.py
+- python -m pytest -q tests/app/api/test_kaspi_orders_sync.py
+
 ## [2026-01-04] Strip company_id inputs from v1
 
 ### Added
