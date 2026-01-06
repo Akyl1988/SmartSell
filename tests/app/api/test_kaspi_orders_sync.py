@@ -430,7 +430,9 @@ async def test_status_history_is_idempotent(monkeypatch, async_client, async_db_
 
 
 @pytest.mark.asyncio
-async def test_double_sync_idempotent_no_duplicates(monkeypatch, async_client, async_db_session, company_a_admin_headers):
+async def test_double_sync_idempotent_no_duplicates(
+    monkeypatch, async_client, async_db_session, company_a_admin_headers
+):
     payload = _orders_payload_with_items(status="NEW")
 
     async def fake_get_orders(self, *, date_from=None, date_to=None, status=None, page=1, page_size=100):  # noqa: ARG001
