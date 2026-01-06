@@ -265,6 +265,10 @@ async def test_order_items_update_values(monkeypatch, async_client, async_db_ses
     item_map = {it.sku: it for it in items}
     assert int(item_map["SKU-1"].quantity) == 3
     assert str(item_map["SKU-1"].unit_price) in {"120", "120.00"}
+    assert (item_map["SKU-1"].name or "").startswith("Item One Updated")
+
+    assert int(item_map["SKU-2"].quantity) == 1
+    assert str(item_map["SKU-2"].unit_price) in {"200", "200.00"}
 
 
 @pytest.mark.asyncio
