@@ -3,7 +3,7 @@ import pytest
 BASE = "/api/v1/subscriptions"
 
 
-@pytest.mark.anyio
+@pytest.mark.asyncio
 async def test_subscriptions_list_isolated_between_companies(
     async_client, company_a_admin_headers, company_b_admin_headers
 ):
@@ -21,7 +21,7 @@ async def test_subscriptions_list_isolated_between_companies(
     assert forbidden.json() == []
 
 
-@pytest.mark.anyio
+@pytest.mark.asyncio
 async def test_subscription_payments_hidden_from_other_company(
     async_client, company_a_admin_headers, company_b_admin_headers
 ):

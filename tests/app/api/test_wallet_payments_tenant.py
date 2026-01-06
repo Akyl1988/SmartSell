@@ -7,7 +7,7 @@ def _get_user_by_phone(db_session, phone: str) -> User:
     return db_session.query(User).filter(User.phone == phone).one()
 
 
-@pytest.mark.anyio
+@pytest.mark.asyncio
 async def test_wallet_accounts_hidden_across_companies(
     client,
     db_session,
@@ -34,7 +34,7 @@ async def test_wallet_accounts_hidden_across_companies(
     assert all(it.get("id") != account_id for it in items)
 
 
-@pytest.mark.anyio
+@pytest.mark.asyncio
 async def test_payments_hidden_across_companies(
     client,
     db_session,
@@ -75,7 +75,7 @@ async def test_payments_hidden_across_companies(
     assert all(it.get("id") != payment_id for it in items)
 
 
-@pytest.mark.anyio
+@pytest.mark.asyncio
 async def test_wallet_account_visible_same_company(client, db_session, company_a_admin_headers):
     """Ensure newly created wallet account is immediately readable by the same tenant."""
     user_a = _get_user_by_phone(db_session, "+70000010001")
@@ -92,7 +92,7 @@ async def test_wallet_account_visible_same_company(client, db_session, company_a
     assert got.status_code == 200, got.text
 
 
-@pytest.mark.anyio
+@pytest.mark.asyncio
 async def test_wallet_ledger_hidden_across_companies(
     client, db_session, company_a_admin_headers, company_b_admin_headers
 ):
@@ -110,7 +110,7 @@ async def test_wallet_ledger_hidden_across_companies(
     assert ledger.status_code == 404
 
 
-@pytest.mark.anyio
+@pytest.mark.asyncio
 async def test_deposit_cross_tenant_forbidden(client, db_session, company_a_admin_headers, company_b_admin_headers):
     user_a = _get_user_by_phone(db_session, "+70000010001")
     created = await client.post(
@@ -129,7 +129,7 @@ async def test_deposit_cross_tenant_forbidden(client, db_session, company_a_admi
     assert resp.status_code == 404
 
 
-@pytest.mark.anyio
+@pytest.mark.asyncio
 async def test_withdraw_cross_tenant_forbidden(client, db_session, company_a_admin_headers, company_b_admin_headers):
     user_a = _get_user_by_phone(db_session, "+70000010001")
     created = await client.post(
@@ -156,7 +156,7 @@ async def test_withdraw_cross_tenant_forbidden(client, db_session, company_a_adm
     assert resp.status_code == 404
 
 
-@pytest.mark.anyio
+@pytest.mark.asyncio
 async def test_transfer_cross_tenant_destination_forbidden(
     client,
     db_session,
@@ -203,7 +203,7 @@ async def test_transfer_cross_tenant_destination_forbidden(
     assert transfer.status_code == 404
 
 
-@pytest.mark.anyio
+@pytest.mark.asyncio
 async def test_payment_create_cross_tenant_forbidden(
     client,
     db_session,
@@ -235,7 +235,7 @@ async def test_payment_create_cross_tenant_forbidden(
     assert pay.status_code == 404
 
 
-@pytest.mark.anyio
+@pytest.mark.asyncio
 async def test_payments_list_scoped_by_token(
     client, db_session, company_a_admin_headers, company_b_admin_headers, auth_headers
 ):
@@ -279,7 +279,7 @@ async def test_payments_list_scoped_by_token(
     assert all(it.get("id") != payment_id for it in platform_items)
 
 
-@pytest.mark.anyio
+@pytest.mark.asyncio
 async def test_wallet_list_scoped_by_token(
     client, db_session, company_a_admin_headers, company_b_admin_headers, auth_headers
 ):

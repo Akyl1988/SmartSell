@@ -3,7 +3,7 @@ import pytest
 BASE = "/api/v1/subscriptions"
 
 
-@pytest.mark.anyio
+@pytest.mark.asyncio
 async def test_create_subscription_trial_ok(client, company_a_admin_headers):
     r = await client.post(
         BASE,
@@ -24,7 +24,7 @@ async def test_create_subscription_trial_ok(client, company_a_admin_headers):
     assert data["next_billing_date"]
 
 
-@pytest.mark.anyio
+@pytest.mark.asyncio
 async def test_forbid_second_active_subscription(client, company_a_admin_headers):
     # первая активная
     r1 = await client.post(
@@ -54,7 +54,7 @@ async def test_forbid_second_active_subscription(client, company_a_admin_headers
     assert r2.status_code == 409
 
 
-@pytest.mark.anyio
+@pytest.mark.asyncio
 async def test_update_cancel_resume_renew_flow(client, company_a_admin_headers):
     r = await client.post(
         BASE,
@@ -88,7 +88,7 @@ async def test_update_cancel_resume_renew_flow(client, company_a_admin_headers):
     assert rn.status_code == 200 and rn.json()["next_billing_date"] != before
 
 
-@pytest.mark.anyio
+@pytest.mark.asyncio
 async def test_current_and_filters(client, company_a_admin_headers):
     await client.post(
         BASE,

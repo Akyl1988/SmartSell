@@ -1,7 +1,7 @@
 import pytest
 
 
-@pytest.mark.anyio
+@pytest.mark.asyncio
 async def test_campaigns_isolation_between_companies(
     client,
     company_a_admin_headers,
@@ -44,7 +44,7 @@ async def test_campaigns_isolation_between_companies(
     assert messages.status_code == 404
 
 
-@pytest.mark.anyio
+@pytest.mark.asyncio
 async def test_campaign_messages_not_mutable_cross_company(
     client,
     company_a_admin_headers,

@@ -1,7 +1,7 @@
 import pytest
 
 
-@pytest.mark.anyio
+@pytest.mark.asyncio
 async def test_feature_flags_crud(client):
     r1 = await client.get("/feature-flags")
     assert r1.status_code == 200

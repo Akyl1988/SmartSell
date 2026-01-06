@@ -14,18 +14,26 @@ Kaspi.kz integration: product feed generation, orders sync, and availability syn
 """
 
 import asyncio
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
+from decimal import Decimal
 from typing import Any, Optional
 
 import httpx
-from sqlalchemy import and_, select
+from sqlalchemy import and_, literal_column, select, text
+from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
 from app.core.logging import get_logger
 from app.models import Order, OrderItem, Product
+from app.models.kaspi_order_sync_state import KaspiOrderSyncState
+from app.models.order import OrderSource
 
 logger = get_logger(__name__)
+
+
+class KaspiSyncAlreadyRunning(RuntimeError):
+    pass
 
 
 # ---------------------- small utils ---------------------- #
@@ -119,8 +127,8 @@ class KaspiService:
 
     def __init__(self, api_key: Optional[str] = None, base_url: Optional[str] = None):
         # Читаем из settings, но допускаем явную прокидку при создании сервиса
-        self.api_key = api_key or settings.KASPI_API_TOKEN or ""
-        self.base_url = (base_url or settings.KASPI_API_URL or "").rstrip("/")
+        self.api_key = api_key or getattr(settings, "KASPI_API_TOKEN", "") or ""
+        self.base_url = (base_url or getattr(settings, "KASPI_API_URL", "") or "").rstrip("/")
         self.headers = {
             "Authorization": f"Bearer {self.api_key}" if self.api_key else "",
             "Content-Type": "application/json",
@@ -239,56 +247,153 @@ class KaspiService:
 
     # ---------------------- Orders sync (DB) ---------------------- #
 
-    async def sync_orders(self, company_id: int, db: AsyncSession) -> dict[str, Any]:
-        """
-        Загружает свежие заказы из Kaspi и создаёт/обновляет их в локальной БД.
-        """
-        created = 0
+    async def sync_orders(
+        self,
+        *,
+        db: AsyncSession,
+        company_id: int,
+        date_from: datetime | None = None,
+        date_to: datetime | None = None,
+        statuses: list[str] | None = None,
+    ) -> dict[str, Any]:
+        """Инкрементальная и идемпотентная синхронизация заказов Kaspi."""
+        now = _utcnow()
+        effective_to = date_to or now
+        overlap = timedelta(minutes=2)
+        fetched = 0
+        inserted = 0
         updated = 0
-        errors: list[str] = []
 
         try:
-            kaspi_orders = await self.get_orders()
-        except Exception as e:
-            logger.error("Kaspi orders sync failed to fetch: %s", e)
-            raise RuntimeError(f"Kaspi orders sync failed: {e}") from e
+            await db.rollback()
+            async with db.begin():
+                await db.execute(text("SET LOCAL lock_timeout = '2s'"))
+                await db.execute(text("SET LOCAL statement_timeout = '10s'"))
 
-        for ko in kaspi_orders:
-            try:
-                ext_id = _as_str(ko.get("id"))
-                # Ищем существующий
-                q = await db.execute(
-                    select(Order).where(and_(Order.company_id == company_id, Order.external_id == ext_id))
-                )
-                existing: Order | None = q.scalar_one_or_none()
+                await self._acquire_company_lock(db, company_id)
 
-                mapped_status = self._map_kaspi_status(_as_str(ko.get("status")))
-                if existing:
-                    if existing.status != mapped_status:
-                        existing.status = mapped_status
-                        updated += 1
-                else:
-                    order = await self._create_order_from_kaspi(ko, company_id, db)
-                    if order:
-                        created += 1
-            except Exception as e:
-                logger.error("Error processing Kaspi order %s: %s", ko.get("id"), e)
-                errors.append(str(e))
+                state = await self._load_or_create_state(db, company_id)
 
-        try:
-            await db.commit()
-        except Exception as e:
-            logger.error("DB commit error during Kaspi orders sync: %s", e)
-            errors.append(f"commit: {e}")
+                base_from = date_from or state.last_synced_at or (effective_to - timedelta(days=1))
+                effective_from = base_from - overlap
 
-        result = {
-            "total_processed": len(kaspi_orders),
-            "created": created,
+                watermark = effective_from
+                last_ext = state.last_external_order_id
+
+                for status in statuses or [None]:
+                    page = 1
+                    while True:
+                        batch = await self.get_orders(
+                            date_from=effective_from,
+                            date_to=effective_to,
+                            status=status,
+                            page=page,
+                            page_size=100,
+                        )
+                        if not batch:
+                            break
+
+                        fetched += len(batch)
+                        for payload in batch:
+                            ext_id = _as_str(payload.get("id")).strip()
+                            if not ext_id:
+                                continue
+
+                            mapped_status = self._map_kaspi_status(_as_str(payload.get("status")))
+                            order_number = self._order_number_from_payload(company_id, ext_id, payload)
+                            customer = payload.get("customer") or {}
+                            currency = _as_str(payload.get("currency")) or "KZT"
+                            total_amount = self._decimal_or_zero(
+                                payload.get("totalPrice") or payload.get("total_amount") or payload.get("total") or 0
+                            )
+                            updated_ts = self._extract_order_timestamp(payload) or effective_to
+
+                            stmt = (
+                                insert(Order)
+                                .values(
+                                    company_id=company_id,
+                                    order_number=order_number,
+                                    external_id=ext_id,
+                                    source=OrderSource.KASPI,
+                                    status=mapped_status,
+                                    customer_phone=customer.get("phone") or None,
+                                    customer_name=customer.get("name") or None,
+                                    customer_address=payload.get("deliveryAddress")
+                                    or payload.get("delivery_address")
+                                    or None,
+                                    delivery_method=payload.get("deliveryMode") or payload.get("delivery_mode") or None,
+                                    total_amount=total_amount,
+                                    currency=currency,
+                                    updated_at=now,
+                                )
+                                .on_conflict_do_update(
+                                    index_elements=[Order.company_id, Order.external_id],
+                                    set_={
+                                        "status": mapped_status,
+                                        "source": OrderSource.KASPI,
+                                        "order_number": order_number,
+                                        "customer_phone": customer.get("phone") or None,
+                                        "customer_name": customer.get("name") or None,
+                                        "customer_address": payload.get("deliveryAddress")
+                                        or payload.get("delivery_address")
+                                        or None,
+                                        "delivery_method": payload.get("deliveryMode")
+                                        or payload.get("delivery_mode")
+                                        or None,
+                                        "total_amount": total_amount,
+                                        "currency": currency,
+                                        "updated_at": now,
+                                    },
+                                )
+                                .returning(literal_column("xmax = 0").label("inserted"))
+                            )
+
+                            async with db.begin_nested():
+                                res = await db.execute(stmt)
+
+                            inserted_flag: bool = bool(res.scalar_one())
+                            if inserted_flag:
+                                inserted += 1
+                            else:
+                                updated += 1
+
+                            if updated_ts > watermark or (
+                                updated_ts == watermark and ext_id and ext_id > (last_ext or "")
+                            ):
+                                watermark = updated_ts
+                                last_ext = ext_id
+
+                        if len(batch) < 100:
+                            break
+                        page += 1
+
+                state.last_synced_at = watermark
+                state.last_external_order_id = last_ext
+                state.updated_at = now
+        except KaspiSyncAlreadyRunning:
+            raise
+        except Exception:
+            logger.exception("Kaspi orders sync internal error: company_id=%s", company_id)
+            raise
+
+        summary = {
+            "company_id": company_id,
+            "fetched": fetched,
+            "inserted": inserted,
             "updated": updated,
-            "errors": errors,
+            "from": effective_from.isoformat(),
+            "to": effective_to.isoformat(),
+            "watermark": watermark.isoformat(),
         }
-        logger.info("Kaspi orders sync completed: %s", result)
-        return result
+
+        logger.info(
+            "Kaspi orders sync: company_id=%s fetched=%s inserted=%s updated=%s",
+            company_id,
+            fetched,
+            inserted,
+            updated,
+        )
+        return summary
 
     async def _create_order_from_kaspi(
         self, kaspi_order: dict[str, Any], company_id: int, db: AsyncSession
@@ -372,6 +477,67 @@ class KaspiService:
             "RETURNED": "refunded",
         }
         return mapping.get(kaspi_status.upper(), "pending")
+
+    async def _acquire_company_lock(self, db: AsyncSession, company_id: int) -> None:
+        lock_key = company_id * 97311
+        res = await db.execute(text("SELECT pg_try_advisory_xact_lock(:lock_key)").bindparams(lock_key=lock_key))
+        ok = res.scalar_one_or_none()
+        if not ok:
+            raise KaspiSyncAlreadyRunning("kaspi sync already running")
+
+    async def _load_or_create_state(self, db: AsyncSession, company_id: int) -> KaspiOrderSyncState:
+        q = await db.execute(
+            select(KaspiOrderSyncState).where(KaspiOrderSyncState.company_id == company_id).with_for_update()
+        )
+        state = q.scalar_one_or_none()
+        if not state:
+            state = KaspiOrderSyncState(company_id=company_id)
+            db.add(state)
+            await db.flush()
+        return state
+
+    def _order_number_from_payload(self, company_id: int, external_id: str, payload: dict[str, Any]) -> str:
+        candidate = _as_str(payload.get("orderNumber") or payload.get("code") or "").strip()
+        if candidate:
+            return candidate
+        return f"KASPI-{company_id}-{external_id}"
+
+    def _extract_order_timestamp(self, payload: dict[str, Any]) -> datetime | None:
+        candidates = [
+            payload.get("updated_at"),
+            payload.get("updatedAt"),
+            payload.get("updated"),
+            payload.get("modificationDate"),
+            payload.get("modified_at"),
+            payload.get("changedAt"),
+            payload.get("created_at"),
+            payload.get("createdAt"),
+        ]
+        for candidate in candidates:
+            ts = self._parse_dt(candidate)
+            if ts:
+                return ts
+        return None
+
+    @staticmethod
+    def _parse_dt(value: Any) -> datetime | None:
+        if isinstance(value, datetime):
+            return value.astimezone(UTC).replace(tzinfo=None) if value.tzinfo else value
+        if isinstance(value, str):
+            try:
+                cleaned = value.replace("Z", "+00:00")
+                dt = datetime.fromisoformat(cleaned)
+                return dt.astimezone(UTC).replace(tzinfo=None) if dt.tzinfo else dt
+            except Exception:
+                return None
+        return None
+
+    @staticmethod
+    def _decimal_or_zero(value: Any):
+        try:
+            return Decimal(str(value or 0))
+        except Exception:
+            return Decimal("0")
 
     # ---------------------- Product feed ---------------------- #
 
