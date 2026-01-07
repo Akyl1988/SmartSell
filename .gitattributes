@@ -106,3 +106,7 @@ migrations/versions/__pycache__/* text eol=lf -diff
 *.dmp     -text -diff
 *.dump    -text -diff
 
+
+# Markdown: always LF
+*.md text eol=lf
+
