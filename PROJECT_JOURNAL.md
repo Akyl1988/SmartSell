@@ -532,3 +532,151 @@ Commits (per git show):
 - added: unique constraint for OrderStatusHistory to prevent duplicates by (order_id, status, changed_at) + migration 29a2929fc59b_kaspi_order_status_history_unique
 - changed: Kaspi orders sync refreshes Order status/updated_at from payload timestamps and records status history idempotently (ON CONFLICT DO NOTHING)
 - tests: extended kaspi orders sync tests to cover status updates + non-duplicating status history
+
+## [2025-09-11] Repo bootstrap
+
+### Added
+- Repo created from uploaded archive (files 10.zip), immediately unpacked then replaced with a clean FastAPI/Alembic project skeleton (billing, wallet, payments, product models; routes; alembic baseline 20230910_161100_init; tests) per commits 0d718e6 → d575070.
+- Dockerfile, docker-compose, CI workflow, and pytest scaffolding seeded from the cleaned structure.
+
+### Notes
+- Earlier SmartSell work lived in other repositories and was migrated here before this initial upload; this repo’s history starts from the imported archive.
+
+## [2025-12-28] DB/CI cleanup and artifact hygiene
+
+### Changed
+- Pinned security scan workflow (trivy-action 0.33.1) and ignored bulky local scan artifacts to keep pipelines stable (84bd528, 7c81655).
+- Widened alembic_version length and hardened offline migrations/tests; improved ICU reset defaults (kk-KZ-x-icu) and documented UTF-8 workflow with utf8_probe script (a1b9c36, b58fba1, 3211767).
+- Removed generated DB_SETUP reports and repository artifacts to keep the tree clean (abc2b84, c5e30c4, 32212d0).
+
+### Fixed
+- Addressed pydantic/sqlalchemy deprecation warnings and stabilized test rollback behavior (5647f30).
+
+### Notes
+- Security/CI pinning and DB cleanup done ahead of end-of-year releases.
+
+## [2025-12-25] Auth hardening and token fixes
+
+### Fixed
+- change_password now verifies current password and revokes sessions; token generation and OTP audit stabilized; user name properties corrected (ec1d322, ec34c2a, cbf38d4).
+
+### Changed
+- Ignored local test output artifacts to keep the tree clean (75e3e30).
+
+### Notes
+- Auth/e2e/campaign tests were updated to run via async_client with dependency overrides earlier in the week (5b655f2).
+
+## [2025-12-24] Auth router + Alembic-first schema
+
+### Added
+- Mounted real `/api/auth` router and implemented `/api/auth/me`; bootstrap_schema.py marked DEV-ONLY and temp files ignored (a032613, 451e843, 5fc6770).
+
+### Changed
+- Disabled runtime create_all; enforced Alembic-managed schema and switched tests to `alembic upgrade head` (973f803, 78b70a3).
+- Baseline migration corrected (deferred FKs, JSONB) and audit logger/bootstrap schema fixes (0c2ee83, b2793f0).
+
+### Notes
+- Campaign/auth/test wiring moved to dependency overrides for async sessions (5b655f2).
+
+## [2025-12-23] API cleanup before auth/migration repair
+
+### Changed
+- Unified auth routing and removed legacy routers/duplicate models; aligned DB bootstrap and Kaspi/subscription models (7efbaac).
+- WIP migration order and async/sync session fixes started (c54aebd).
+
+### Notes
+- Auth/e2e/campaign tests adjusted to async_client with dependency overrides to unblock CI (5b655f2).
+
+## [2025-12-13] Repo re-import for dev/main alignment
+
+### Added
+- Re-imported full FastAPI stack (API v1, services, Alembic backups, frontend, tests, docs) with CI/CD/security workflows and alembic backups under _alembic_backup (1ed689e).
+- Preserved legacy migrations/quarantine scripts for reference while preparing dev/main alignment.
+
+### Notes
+- Snapshot kept on backup/main-before-dev-2025-12-26.
+
+## [2025-10-13] Repository hygiene and ignore normalization
+
+### Changed
+- Dropped committed venv/local DB artifacts; hardened .gitignore and .gitattributes; merged feat/all-in-one and backup/pre-sync snapshots (7842477, 9c9f7db, faca159, 603fc8c).
+- Created sync-20251013-0105 tag/backups to preserve state before merging ignore changes (bbe70c5).
+
+### Notes
+- Upstream ignore files from origin/main were preserved for comparison.
+
+## [2025-10-12] Ignore and attributes cleanup
+
+### Changed
+- Cleaned and reorganized .gitignore entries (a720bbf) and clarified .gitattributes (f8a13ae) to reduce churn ahead of snapshotting.
+
+## [2025-10-03] Git attributes and CI hygiene
+
+### Changed
+- Refined .gitattributes for consistent text handling and merged feat/all-in-one via PR #1 (eec8b9d, df68d99, 724c3f1).
+- Split CI/CD/security workflows and marked skip-CI/WIP commits while cleanup was in progress (11103bd, 5cb839e, 09f763b, 2aecba5).
+
+## [2025-10-02] Initial SmartSell sync import
+
+### Added
+- Imported full FastAPI application with auth, campaigns, wallet/payments, OTP (Mobizon), Kaspi service, services/workers, Alembic migrations, and frontend scaffold (f24b8f9).
+- Introduced CI/CD/security workflows, env templates, Makefile, requirements, and compliance/licensing docs; added database fixtures and tools.
+
+### Changed
+- Split CI/CD/security workflows and hardened .gitignore (local db/venv dropped) (11103bd, 7842477).
+
+## [2025-09-16] Python 3.11 target
+
+### Changed
+- Set toolchain to Python 3.11 in setup.cfg, pyproject, and .python-version (7791c66, 3c0b339, 95bede3).
+
+## [2025-09-17] Python 3.11 baseline and repo cleanup
+
+### Changed
+- Standardized Python target to 3.11 across setup.cfg, pyproject, and .python-version (7791c66, 95bede3).
+- Removed .github bot directory, app/core, and bot usage docs to restart from a cleaned stack (2aa2c48, 5440097, b1a9989, 530387c, 5a3c89f).
+
+## [2025-09-13] Bot automation and specs
+
+### Added
+- SmartSell Bot automation workflows with status/permissions checks and conflict-resolution commands; bot automation documentation (a27ef98, 6dc7248, 5ceb026, f375647).
+- Added SmartSell Bot system instructions and platform specs (ТЗ на Flask / ТЗ на FastAPI) and GitHub Actions bot automation (1065091).
+
+### Removed
+- Legacy backend files cleared to restart clean (0ee7668).
+
+### Notes
+- Multiple Copilot fix PRs merged to stabilize bot workflow.
+
+## [2025-09-12] FastAPI app + CI scaffolding
+
+### Added
+- Defined FastAPI app in app/main.py and aligned conftest imports; requirements updated for FastAPI dependencies; Swagger setup refactored (db3a10a, 70edd76, 4cfdf03, fa175a8).
+- Added GitHub Actions auto-merge workflow and CI config to gate PRs (affde9b, 432c9be, 325d691).
+
+### Notes
+- Early CI adjustments kept dependency overrides working for tests (d6ecc04).
+
+## [2026-01-02] Tenant scoping expansion + CI stability
+
+### Added
+- Tenant-scoped wallet/payments/subscriptions APIs and isolation tests landed (ca7e08b, b7db8e0, fdbeb42).
+
+### Changed
+- Standardized DB names for main/test and removed probe DB references; lazy-init wallet/payments storage and fail-fast imports to keep CI stable (1caeea1, 807f268, f1f3c24).
+- Added safe_inspect fallback for offline Alembic and stabilized billing tenant tests; formatted wallet/payments tenant tests (32b6e1b, fedb8c7).
+
+### Notes
+- Local audit/report artifacts were removed from version control to keep the tree clean (c5e30c4, 32212d0).
+
+## [2026-01-07] Current project state snapshot
+
+### Notes
+- API v1 is async-only (AsyncSession deps) with tenant scoping centralized in `resolve_tenant_company_id`; platform-admin overrides removed across wallet/payments/billing/campaigns/analytics/kaspi.
+- Integration Center supports provider config storage and resolver hot-switching for OTP/messaging/payments with admin endpoints and health checks.
+- Kaspi orders sync MVP ships with advisory lock, incremental watermarking, idempotent items/status history, and persisted sync metrics/error fields exposed via `/api/v1/kaspi/orders/sync/state`.
+- CI baseline relies on ruff format/check + pytest gates; Alembic smoke runs and v0.1.0/v0.1.1 releases are published; latest feature branch builds inherit the green baseline from 2026-01-06 checks.
+- Migrations cover wallet/payments tenant scope, kaspi state metrics, and offline-safe patterns; DB URL resolution is deterministic for async engines.
+
+### Verified
+- HEAD 8b36cc5 (feat/kaspi-sync-state-metrics-v1); rerun full suite (`python -m ruff format --check app tests tools`, `python -m ruff check app tests tools`, `python -m pytest -q`) after further changes.
