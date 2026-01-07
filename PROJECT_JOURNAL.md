@@ -1,5 +1,3 @@
-<<<<<<< Updated upstream
-=======
 ## [2025-09-11] Repo bootstrap
 
 ### Added
@@ -21,7 +19,6 @@
 - python -m ruff check app tests
 - pytest -q *(fails: missing wallet_accounts/wallet_ledger/wallet_payments tables after alembic upgrade in test DB)*
 
->>>>>>> Stashed changes
 ## [2026-01-06] Kaspi sync state last_error fields
 
 ### Added
