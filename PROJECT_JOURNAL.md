@@ -681,3 +681,18 @@ Commits (per git show):
 
 ### Verified
 - HEAD 8b36cc5 (feat/kaspi-sync-state-metrics-v1); rerun full suite (`python -m ruff format --check app tests tools`, `python -m ruff check app tests tools`, `python -m pytest -q`) after further changes.
+
+## [2026-01-06] Kaspi sync state metrics (Recovered from c60547e^)
+
+
+### Added
+- Persisted Kaspi sync state metrics: last_attempt_at, last_duration_ms, last_result, last_fetched/inserted/updated with success/failure/locked outcomes and safe error recording.
+- `/api/v1/kaspi/orders/sync/state` returns persisted metrics and error info; schemas updated accordingly.
+- Coverage for defaults, success, failure, and locked runs with state assertions.
+
+### Verified
+- python -m ruff format app tests
+- python -m ruff check app tests
+- pytest -q *(fails: missing wallet_accounts/wallet_ledger/wallet_payments tables after alembic upgrade in test DB)*
+
+>>>>>>> Stashed changes
