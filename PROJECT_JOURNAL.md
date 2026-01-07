@@ -695,4 +695,3 @@ Commits (per git show):
 - python -m ruff check app tests
 - pytest -q *(fails: missing wallet_accounts/wallet_ledger/wallet_payments tables after alembic upgrade in test DB)*
 
->>>>>>> Stashed changes
