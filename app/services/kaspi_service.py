@@ -30,6 +30,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.core.config import settings
+from app.core.errors import safe_error_message
 from app.core.logging import get_logger
 from app.integrations.kaspi_adapter import KaspiAdapterError
 from app.models import Order, OrderItem, Product
@@ -266,8 +267,8 @@ class KaspiService:
         request_id: str | None = None,
     ) -> dict[str, Any]:
         """Инкрементальная и идемпотентная синхронизация заказов Kaspi."""
-        now = _utcnow()
-        effective_to = date_to or now
+        attempt_at = _utcnow()
+        effective_to = date_to or attempt_at
         overlap = timedelta(minutes=2)
         fetched = 0
         inserted = 0
@@ -284,6 +285,13 @@ class KaspiService:
 
                 async with self._company_lock(db, company_id):
                     state = await self._load_or_create_state(db, company_id)
+
+                state.last_attempt_at = attempt_at
+                state.last_result = None
+                state.last_duration_ms = None
+                state.last_fetched = None
+                state.last_inserted = None
+                state.last_updated = None
 
                 prev_last_synced = state.last_synced_at
                 prev_last_ext = state.last_external_order_id
@@ -319,7 +327,7 @@ class KaspiService:
                             )
                             status_changed_at = self._extract_order_timestamp(payload)
                             updated_ts = status_changed_at or effective_to
-                            effective_updated = updated_ts or now
+                            effective_updated = updated_ts or attempt_at
 
                             stmt = (
                                 insert(Order)
@@ -405,24 +413,55 @@ class KaspiService:
                         state.last_synced_at = prev_last_synced
                         state.last_external_order_id = prev_last_ext
 
-                    state.updated_at = now
+                    finished_at = _utcnow()
+                    duration_ms = int((perf_counter() - started_at) * 1000)
+                    state.updated_at = finished_at
                     state.last_error_at = None
                     state.last_error_code = None
                     state.last_error_message = None
+                    state.last_result = "success"
+                    state.last_duration_ms = duration_ms
+                    state.last_attempt_at = attempt_at
+                    state.last_fetched = fetched
+                    state.last_inserted = inserted
+                    state.last_updated = updated
+            if db.in_transaction():
+                await db.commit()
         except KaspiSyncAlreadyRunning:
+            duration_ms = int((perf_counter() - started_at) * 1000)
+            await self.record_sync_locked(
+                db,
+                company_id=company_id,
+                attempt_at=attempt_at,
+                duration_ms=duration_ms,
+            )
             logger.warning(
                 "Kaspi orders sync locked: company_id=%s request_id=%s duration_ms=%s",
                 company_id,
                 request_id,
-                int((perf_counter() - started_at) * 1000),
+                duration_ms,
             )
             raise
-        except Exception:
+        except Exception as exc:
+            duration_ms = int((perf_counter() - started_at) * 1000)
+            error_code = self.classify_sync_error(exc)
+            await self.record_sync_error(
+                db,
+                company_id=company_id,
+                code=error_code,
+                message=safe_error_message(exc),
+                occurred_at=_utcnow(),
+                attempt_at=attempt_at,
+                duration_ms=duration_ms,
+                fetched=fetched,
+                inserted=inserted,
+                updated=updated,
+            )
             logger.exception(
                 "Kaspi orders sync internal error: company_id=%s request_id=%s duration_ms=%s",
                 company_id,
                 request_id,
-                int((perf_counter() - started_at) * 1000),
+                duration_ms,
             )
             raise
 
@@ -864,27 +903,55 @@ class KaspiService:
                 return None
         return None
 
-    async def _record_sync_error(
+    async def _persist_sync_state(
         self,
         db: AsyncSession,
         *,
         company_id: int,
-        code: str,
-        message: str,
-        occurred_at: datetime,
+        last_attempt_at: datetime | None = None,
+        last_duration_ms: int | None = None,
+        last_result: str | None = None,
+        last_fetched: int | None = None,
+        last_inserted: int | None = None,
+        last_updated: int | None = None,
+        error_at: datetime | None = None,
+        error_code: str | None = None,
+        error_message: str | None = None,
+        clear_error: bool = False,
     ) -> None:
         if db.in_transaction():
             try:
                 await db.rollback()
             except Exception:
                 pass
-        tx_ctx = nullcontext() if db.in_transaction() else db.begin()
-        async with tx_ctx:
+        async with db.begin():
             state = await self._load_or_create_state(db, company_id)
-            state.last_error_at = occurred_at
-            state.last_error_code = code
-            state.last_error_message = message[:500] if message else None
-            state.updated_at = occurred_at
+            if last_attempt_at is not None:
+                state.last_attempt_at = last_attempt_at
+            if last_duration_ms is not None:
+                state.last_duration_ms = last_duration_ms
+            if last_result is not None:
+                state.last_result = last_result
+            if last_fetched is not None:
+                state.last_fetched = last_fetched
+            if last_inserted is not None:
+                state.last_inserted = last_inserted
+            if last_updated is not None:
+                state.last_updated = last_updated
+
+            if clear_error:
+                state.last_error_at = None
+                state.last_error_code = None
+                state.last_error_message = None
+            else:
+                if error_at is not None:
+                    state.last_error_at = error_at
+                if error_code is not None:
+                    state.last_error_code = error_code
+                if error_message is not None:
+                    state.last_error_message = error_message[:500]
+
+            state.updated_at = _utcnow()
 
     async def record_sync_error(
         self,
@@ -892,10 +959,45 @@ class KaspiService:
         *,
         company_id: int,
         code: str,
-        message: str,
+        message: str | Exception,
         occurred_at: datetime,
+        attempt_at: datetime | None = None,
+        duration_ms: int | None = None,
+        fetched: int | None = None,
+        inserted: int | None = None,
+        updated: int | None = None,
+        result: str = "failure",
     ) -> None:
-        await self._record_sync_error(db, company_id=company_id, code=code, message=message, occurred_at=occurred_at)
+        safe_msg = safe_error_message(message) if isinstance(message, Exception) else str(message or "")[:500]
+        await self._persist_sync_state(
+            db,
+            company_id=company_id,
+            last_attempt_at=attempt_at or occurred_at,
+            last_duration_ms=duration_ms,
+            last_result=result,
+            last_fetched=fetched,
+            last_inserted=inserted,
+            last_updated=updated,
+            error_at=occurred_at,
+            error_code=code,
+            error_message=safe_msg,
+        )
+
+    async def record_sync_locked(
+        self,
+        db: AsyncSession,
+        *,
+        company_id: int,
+        attempt_at: datetime,
+        duration_ms: int,
+    ) -> None:
+        await self._persist_sync_state(
+            db,
+            company_id=company_id,
+            last_attempt_at=attempt_at,
+            last_duration_ms=duration_ms,
+            last_result="locked",
+        )
 
     async def _acquire_company_lock(self, db: AsyncSession, company_id: int) -> None:
         # Legacy helper preserved for compatibility; delegates to session-level advisory lock

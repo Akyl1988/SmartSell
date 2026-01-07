@@ -1,3 +1,15 @@
+## [2026-01-06] Kaspi sync state metrics
+
+### Added
+- Persisted Kaspi sync state metrics: last_attempt_at, last_duration_ms, last_result, last_fetched/inserted/updated with success/failure/locked outcomes and safe error recording.
+- `/api/v1/kaspi/orders/sync/state` returns persisted metrics and error info; schemas updated accordingly.
+- Coverage for defaults, success, failure, and locked runs with state assertions.
+
+### Verified
+- python -m ruff format app tests
+- python -m ruff check app tests
+- pytest -q *(fails: missing wallet_accounts/wallet_ledger/wallet_payments tables after alembic upgrade in test DB)*
+
 ## [2026-01-06] Kaspi sync state last_error fields
 
 ### Added

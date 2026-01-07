@@ -360,6 +360,11 @@ def include_object(object_, name: str, type_: str, reflected: bool, compare_to):
     - Исключаем таблицу версий Alembic из autogenerate.
     - Поддерживаем исключение целых схем через ALEMBIC_EXCLUDE_SCHEMAS.
     """
+    # Skip reflected objects that have no counterpart in metadata (Core-only tables),
+    # чтобы autogenerate не предлагал DROP для них.
+    if reflected and compare_to is None:
+        return False
+
     if type_ == "table" and name == ALEMBIC_VERSION_TABLE:
         return False
 

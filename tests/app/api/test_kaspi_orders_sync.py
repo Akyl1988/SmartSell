@@ -532,6 +532,15 @@ async def test_concurrent_sync_returns_locked(async_client, async_db_session, co
     finally:
         await async_db_session.execute(sa.text("SELECT pg_advisory_unlock(:k)").bindparams(k=lock_key))
 
+    state_resp = await async_client.get("/api/v1/kaspi/orders/sync/state", headers=company_a_admin_headers)
+    assert state_resp.status_code == 200
+    data = state_resp.json()
+    assert data["last_result"] == "locked"
+    assert data["last_attempt_at"] is not None
+    assert data["last_duration_ms"] is not None
+    assert data["last_error_code"] is None
+    assert data["last_error_message"] is None
+
 
 @pytest.mark.asyncio
 async def test_sync_state_endpoint_returns_defaults(async_client, company_a_admin_headers):
@@ -541,6 +550,12 @@ async def test_sync_state_endpoint_returns_defaults(async_client, company_a_admi
     assert data == {
         "watermark": None,
         "last_success_at": None,
+        "last_attempt_at": None,
+        "last_duration_ms": None,
+        "last_result": None,
+        "last_fetched": None,
+        "last_inserted": None,
+        "last_updated": None,
         "last_error_at": None,
         "last_error_code": None,
         "last_error_message": None,
@@ -562,6 +577,12 @@ async def test_sync_state_endpoint_reflects_watermark(monkeypatch, async_client,
     data = resp.json()
     assert data["watermark"] is not None
     assert data["last_success_at"] == data["watermark"]
+    assert data["last_result"] == "success"
+    assert data["last_attempt_at"] is not None
+    assert data["last_duration_ms"] is not None
+    assert data["last_fetched"] >= 0
+    assert data["last_inserted"] >= 0
+    assert data["last_updated"] >= 0
     assert data["last_error_at"] is None
     assert data["last_error_code"] is None
     assert data["last_error_message"] is None
@@ -580,6 +601,12 @@ async def test_sync_state_records_last_error(monkeypatch, async_client, company_
     state_resp = await async_client.get("/api/v1/kaspi/orders/sync/state", headers=company_a_admin_headers)
     assert state_resp.status_code == 200
     data = state_resp.json()
+    assert data["last_result"] == "failure"
+    assert data["last_attempt_at"] is not None
+    assert data["last_duration_ms"] is not None
+    assert data["last_fetched"] >= 0
+    assert data["last_inserted"] >= 0
+    assert data["last_updated"] >= 0
     assert data["last_error_code"] == "internal_error"
     assert data["last_error_at"] is not None
     assert data["last_error_message"] and "kaspi" in data["last_error_message"].lower()
@@ -606,6 +633,12 @@ async def test_sync_state_clears_last_error_after_success(monkeypatch, async_cli
     state_resp = await async_client.get("/api/v1/kaspi/orders/sync/state", headers=company_a_admin_headers)
     assert state_resp.status_code == 200
     data = state_resp.json()
+    assert data["last_result"] == "success"
+    assert data["last_attempt_at"] is not None
+    assert data["last_duration_ms"] is not None
+    assert data["last_fetched"] >= 0
+    assert data["last_inserted"] >= 0
+    assert data["last_updated"] >= 0
     assert data["last_error_code"] is None
     assert data["last_error_message"] is None
     assert data["last_error_at"] is None

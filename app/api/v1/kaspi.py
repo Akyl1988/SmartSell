@@ -27,7 +27,6 @@ app/api/v1/kaspi.py — Полный, боевой роутер интеграц
 """
 
 import logging
-from datetime import datetime
 from typing import Any
 
 import sqlalchemy as sa
@@ -37,7 +36,6 @@ from sqlalchemy import bindparam, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.db import get_async_db  # noqa — для совместимости импорт-алиас
-from app.core.errors import safe_error_message
 from app.core.security import get_current_user, resolve_tenant_company_id
 
 # Доменные зависимости/схемы:
@@ -358,34 +356,10 @@ async def kaspi_orders_sync(
         resolved_company_id = _resolve_company_id(current_user)
         svc = KaspiService()
         request_id = getattr(getattr(request, "state", None), "request_id", None) if request else None
-        tx_ctx = session.begin_nested() if session.in_transaction() else session.begin()
-        async with tx_ctx:
-            result = await svc.sync_orders(db=session, company_id=resolved_company_id, request_id=request_id)
-        await session.commit()
-        return result
+        return await svc.sync_orders(db=session, company_id=resolved_company_id, request_id=request_id)
     except KaspiSyncAlreadyRunning:
         raise HTTPException(status_code=status.HTTP_423_LOCKED, detail="kaspi sync already running")
     except Exception as e:
-        try:
-            await session.rollback()
-        except Exception:
-            pass
-        if resolved_company_id is not None:
-            try:
-                svc = svc or KaspiService()
-                error_code = svc.classify_sync_error(e)
-                await svc.record_sync_error(
-                    session,
-                    company_id=resolved_company_id,
-                    code=error_code,
-                    message=safe_error_message(e),
-                    occurred_at=datetime.utcnow(),
-                )
-                await session.commit()
-            except Exception:
-                logger.exception(
-                    "Kaspi orders sync: failed to persist error state for company_id=%s", resolved_company_id
-                )
         svc = svc or KaspiService()
         error_code = svc.classify_sync_error(e)
         retry_after = svc.get_retry_after_seconds(e)
@@ -480,6 +454,12 @@ async def kaspi_availability_bulk(
 class KaspiSyncStateOut(BaseModel):
     watermark: Any | None = None
     last_success_at: Any | None = None
+    last_attempt_at: Any | None = None
+    last_duration_ms: int | None = None
+    last_result: str | None = None
+    last_fetched: int | None = None
+    last_inserted: int | None = None
+    last_updated: int | None = None
     last_error_at: Any | None = None
     last_error_code: str | None = None
     last_error_message: str | None = None
@@ -499,12 +479,24 @@ async def kaspi_orders_sync_state(
     state = res.scalar_one_or_none()
     watermark = getattr(state, "last_synced_at", None) if state else None
     last_success_at = getattr(state, "last_synced_at", None) if state else None
+    last_attempt_at = getattr(state, "last_attempt_at", None) if state else None
+    last_duration_ms = getattr(state, "last_duration_ms", None) if state else None
+    last_result = getattr(state, "last_result", None) if state else None
+    last_fetched = getattr(state, "last_fetched", None) if state else None
+    last_inserted = getattr(state, "last_inserted", None) if state else None
+    last_updated = getattr(state, "last_updated", None) if state else None
     last_error_at = getattr(state, "last_error_at", None) if state else None
     last_error_code = getattr(state, "last_error_code", None) if state else None
     last_error_message = getattr(state, "last_error_message", None) if state else None
     return KaspiSyncStateOut(
         watermark=watermark,
         last_success_at=last_success_at,
+        last_attempt_at=last_attempt_at,
+        last_duration_ms=last_duration_ms,
+        last_result=last_result,
+        last_fetched=last_fetched,
+        last_inserted=last_inserted,
+        last_updated=last_updated,
         last_error_at=last_error_at,
         last_error_code=last_error_code,
         last_error_message=last_error_message,
