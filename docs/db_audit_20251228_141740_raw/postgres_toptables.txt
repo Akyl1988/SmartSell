@@ -1,4 +1,0 @@
-table\ttotal_size
-bridge.kaspi_secrets\t24 kB
-bridge.audit_events\t16 kB
-(2 rows)

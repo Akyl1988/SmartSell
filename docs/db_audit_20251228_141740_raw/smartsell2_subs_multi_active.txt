@@ -1,3 +1,0 @@
-ERROR:  column "deleted_at" does not exist
-LINE 4:   and (deleted_at is null)
-               ^

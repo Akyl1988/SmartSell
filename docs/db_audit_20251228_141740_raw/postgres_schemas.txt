@@ -1,4 +1,0 @@
-nspname
-bridge
-public
-(2 rows)

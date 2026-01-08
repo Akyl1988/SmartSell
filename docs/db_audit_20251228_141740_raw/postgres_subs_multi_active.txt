@@ -1,3 +1,0 @@
-ERROR:  relation "subscriptions" does not exist
-LINE 2: from subscriptions
-             ^
