@@ -632,9 +632,7 @@ def test_db() -> Iterator[None]:
     try:
         command.upgrade(cfg, "head")
     except Exception as e:
-        raise RuntimeError(
-            "Alembic upgrade(head) failed; refusing to continue with partial schema"
-        ) from e
+        raise RuntimeError("Alembic upgrade(head) failed; refusing to continue with partial schema") from e
 
     # Ensure alembic_version exists with a 256-char column for long revision ids
     with sa.create_engine(sync_url, future=True).begin() as conn:
