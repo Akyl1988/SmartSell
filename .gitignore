@@ -287,8 +287,11 @@ docs/DB_SETUP_*.md
 
 # Huge local scans/exports (never commit)
 docs/secrets_risk_scan_*.txt
-docs/db_audit_*_raw*
+docs/db_audit_*_raw/
+docs/**/db_audit_*_raw/
 docs/db_audit_all/*
+**/*_raw/**
+**/*_raw/00_db_list.txt
 
 
 # legacy migration archives
