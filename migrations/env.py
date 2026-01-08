@@ -4,6 +4,8 @@
 #  миграций «по-взрослому». Кодировка — UTF-8, переводы строк — LF.
 # ======================================================================
 
+from __future__ import annotations
+
 """
 Что умеет и чем полезен:
 - Берёт DATABASE_URL из окружения (с нормализацией под postgresql://).
@@ -35,8 +37,6 @@
 - sqlite:///path/to.db  (в этом случае включается render_as_batch)
 """
 
-from __future__ import annotations
-
 import importlib
 import os
 import re
@@ -45,7 +45,14 @@ import warnings
 from collections.abc import Iterable
 from logging import getLogger
 from logging.config import fileConfig
+from pathlib import Path
 from typing import Any, Optional
+
+# --- Alembic autogenerate filters (import-safe) ---
+_MIGRATIONS_DIR = Path(__file__).resolve().parent
+if str(_MIGRATIONS_DIR) not in sys.path:
+    sys.path.insert(0, str(_MIGRATIONS_DIR))
+from alembic_autogen_filters import build_target_table_ids, include_object_filter as core_filter  # noqa: E402
 
 # --- .env (опционально) -------------------------------------------------
 try:
@@ -336,6 +343,14 @@ except Exception:
 if target_metadata is None:
     _debug("ВНИМАНИЕ: ни одна MetaData не найдена. " "Autogenerate не сможет сравнить модели со схемой БД.")
 
+# Extract target table IDs from ORM metadata for autogenerate filtering
+# Format: set of (schema, tablename) tuples for all tables declared in ORM models
+target_table_ids: set[tuple[str | None, str]] = set()
+if target_metadata:
+
+    target_table_ids = build_target_table_ids(target_metadata)
+    _debug(f"Target table IDs extracted: {len(target_table_ids)} tables")
+
 # ======================================================================
 # 4) Политика включения/исключения объектов
 # ======================================================================
@@ -379,15 +394,19 @@ else:
 def include_object_with_system_filters(object_, name: str, type_: str, reflected: bool, compare_to):
     """
     Extended filter that combines app.core.alembic_autogen.include_object with project-specific
-    system table and schema filters.
+    system table and schema filters, plus table ID validation.
+
+    Rules:
+    - Tables: Allow alembic_version; otherwise only include if (schema, name) is in target_table_ids
+    - Indexes/constraints: Only include if parent table is in target_table_ids
+    - Everything else: Include by default
     """
-    # First check: reflected DB-only objects should be excluded
-    if not include_object(object_, name, type_, reflected, compare_to):
+
+    # Use core filter for DB-only detection and table ID checking
+    if not core_filter(object_, name, type_, reflected, compare_to, target_table_ids, ALEMBIC_VERSION_TABLE):
         return False
 
-    if type_ == "table" and name == ALEMBIC_VERSION_TABLE:
-        return False
-
+    # Additional checks: existing filters (system prefixes, exclude lists, schemas)
     schema_name = getattr(getattr(object_, "schema", None), "name", None) or getattr(object_, "schema", None)
     if schema_name and schema_name in EXCLUDE_SCHEMAS:
         return False
@@ -403,12 +422,11 @@ def include_object_with_system_filters(object_, name: str, type_: str, reflected
             return False
         if name in EXCLUDE_TABLES:
             return False
-        return True
 
     if type_ in ("view", "materialized_view"):
         return False
 
-    # Индексы/колонки/констрейнты — по умолчанию включаем
+    # All other types: included
     return True
 
 
