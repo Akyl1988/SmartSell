@@ -1,2 +1,0 @@
-company_id\tactive_count
-(0 rows)

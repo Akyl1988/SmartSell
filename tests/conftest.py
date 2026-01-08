@@ -2,22 +2,22 @@
 """
 Pytest configuration and fixtures for async database testing.
 
-РљР»СЋС‡РµРІС‹Рµ РѕСЃРѕР±РµРЅРЅРѕСЃС‚Рё:
-- PostgreSQL (asyncpg) РєР°Рє РµРґРёРЅСЃС‚РІРµРЅРЅС‹Р№ РёСЃС‚РѕС‡РЅРёРє РёСЃС‚РёРЅС‹ РґР»СЏ РёРЅС‚РµРіСЂР°С†РёРѕРЅРЅС‹С… С‚РµСЃС‚РѕРІ.
-- Р”Р»СЏ Postgres: РїРµСЂРµРґ create_all Р»РµРЅРёРІРѕ РїРѕРґРіСЂСѓР¶Р°РµРј РІРµСЃСЊ РґРѕРјРµРЅ (import_*_models) вЂ” РѕРґРёРЅ СЂР°Р·.
-- Р”Р»СЏ SQLite: РіР»РѕР±Р°Р»СЊРЅС‹Р№ Р±РµР·РѕРїР°СЃРЅС‹Р№ create_all вЂ” СЃРѕР·РґР°С‘Рј С‚РѕР»СЊРєРѕ СЃР°РјРѕРґРѕСЃС‚Р°С‚РѕС‡РЅС‹Рµ С‚Р°Р±Р»РёС†С‹ (Р±РµР· В«РІРёСЃСЏС‡РёС…В» FK)
-  Рё С‚РѕР»СЊРєРѕ СЃ С‚РёРїР°РјРё, РїРѕРґРґРµСЂР¶РёРІР°РµРјС‹РјРё SQLite (JSONB/ARRAY/INET/... РїСЂРѕРїСѓСЃРєР°РµРј).
-- Р›С‘РіРєР°СЏ Р°РІС‚РѕР·Р°РіСЂСѓР·РєР° РєР»СЋС‡РµРІС‹С… РјРѕРґРµР»РµР№ (Company/User/Warehouse/AuditLog), С‡С‚РѕР±С‹ СЃС‚СЂРѕРєРѕРІС‹Рµ relationship(...)
-  СЂРµР·РѕР»РІРёР»РёСЃСЊ Рё РЅРµ РїР°РґР°Р»Рё РјР°РїРїРµСЂС‹.
-- РЈРґРѕР±РЅС‹Рµ С„РёРєСЃС‚СѓСЂС‹ РєР»РёРµРЅС‚Р° (sync/async), СЃРµСЃСЃРёР№, СЃР±СЂРѕСЃР° РґР°РЅРЅС‹С… Рё С„Р°Р±СЂРёРє РґРѕРјРµРЅРЅС‹С… СЃСѓС‰РЅРѕСЃС‚РµР№.
-- РЇРІРЅРѕРµ DATABASE_URL (psycopg2) РґР»СЏ РїСЂРѕС…РѕР¶РґРµРЅРёСЏ test_database_url_default.
-- Р”СЂСѓР¶РµСЃС‚РІРµРЅРЅР°СЏ РѕР±СЂР°Р±РѕС‚РєР° env: TEST_ASYNC_DATABASE_URL (РїСЂРµРґРїРѕС‡С‚РёС‚РµР»СЊРЅРѕ) РёР»Рё fallback Рє TEST_DATABASE_URL,
-  РІРєР»СЋС‡Р°СЏ Р°РІС‚РѕРєРѕРЅРІРµСЂСЃРёСЋ РґСЂР°Р№РІРµСЂР° psycopg2 -> asyncpg РїСЂРё РЅРµРѕР±С…РѕРґРёРјРѕСЃС‚Рё (С‚РѕР»СЊРєРѕ РґР»СЏ С‚РµСЃС‚РѕРІРѕРіРѕ async engine).
-- РџР°С‚С‡ СЃРёРЅС…СЂРѕРЅРЅРѕРіРѕ SQLAlchemy create_engine РґР»СЏ СЃРѕРІРјРµСЃС‚РёРјРѕСЃС‚Рё СЃ NullPool: РІС‹СЂРµР·Р°РµРј pool_* kwargs,
-  С‡С‚РѕР±С‹ /api/auth/register РЅРµ РїР°РґР°Р» РІ С‚РµСЃС‚Р°С…, РєРѕС‚РѕСЂС‹Рµ СЃРѕР·РґР°СЋС‚ РєР»РёРµРЅС‚ Р±РµР· DI-РѕРІРµСЂСЂР°Р№РґРѕРІ.
-- РџР°С‚С‡ TestClient: РµРіРѕ HTTP-РјРµС‚РѕРґС‹ РјРѕР¶РЅРѕ Р±РµР·РѕРїР°СЃРЅРѕ await-РёС‚СЊ РІ async-С‚РµСЃС‚Р°С….
+Ключевые особенности:
+- PostgreSQL (asyncpg) как единственный источник истины для интеграционных тестов.
+- Для Postgres: перед create_all лениво подгружаем весь домен (import_*_models) — один раз.
+- Для SQLite: глобальный безопасный create_all — создаём только самодостаточные таблицы (без «висячих» FK)
+  и только с типами, поддерживаемыми SQLite (JSONB/ARRAY/INET/... пропускаем).
+- Лёгкая автозагрузка ключевых моделей (Company/User/Warehouse/AuditLog), чтобы строковые relationship(...)
+  резолвились и не падали мапперы.
+- Удобные фикстуры клиента (sync/async), сессий, сброса данных и фабрик доменных сущностей.
+- Явное DATABASE_URL (psycopg2) для прохождения test_database_url_default.
+- Дружественная обработка env: TEST_ASYNC_DATABASE_URL (предпочтительно) или fallback к TEST_DATABASE_URL,
+  включая автоконверсию драйвера psycopg2 -> asyncpg при необходимости (только для тестового async engine).
+- Патч синхронного SQLAlchemy create_engine для совместимости с NullPool: вырезаем pool_* kwargs,
+  чтобы /api/auth/register не падал в тестах, которые создают клиент без DI-оверрайдов.
+- Патч TestClient: его HTTP-методы можно безопасно await-ить в async-тестах.
 
-Р’Рѕ РІСЃС‘Рј РјРѕРґСѓР»Рµ вЂ” UTF-8.
+Во всём модуле — UTF-8.
 """
 
 from __future__ import annotations
@@ -628,11 +628,11 @@ def test_db() -> Iterator[None]:
     cfg = Config("alembic.ini")
     cfg.set_main_option("sqlalchemy.url", sync_url)
 
-    # Try alembic upgrade; if it doesn't create tables, fallback to create_all
+    # Try alembic upgrade; if it fails — FAIL FAST (otherwise schema will be incomplete)
     try:
         command.upgrade(cfg, "head")
-    except Exception:
-        pass  # Fallback below will handle it
+    except Exception as e:
+        raise RuntimeError("Alembic upgrade(head) failed; refusing to continue with partial schema") from e
 
     # Ensure alembic_version exists with a 256-char column for long revision ids
     with sa.create_engine(sync_url, future=True).begin() as conn:

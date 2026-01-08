@@ -1,3 +1,0 @@
-nspname
-public
-(1 row)

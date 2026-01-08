@@ -287,7 +287,8 @@ docs/DB_SETUP_*.md
 
 # Huge local scans/exports (never commit)
 docs/secrets_risk_scan_*.txt
-docs/db_audit_*_raw*
+docs/db_audit_*_raw/
+docs/**/db_audit_*_raw/
 docs/db_audit_all/*
 
 

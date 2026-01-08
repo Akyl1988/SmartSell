@@ -1,2 +1,0 @@
-table_schema\ttable_name\tcolumn_name\tdata_type\tis_nullable\tcolumn_default
-(0 rows)
