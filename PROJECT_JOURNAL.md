@@ -1377,8 +1377,6 @@ Commits (per git show):
 - python -m ruff format app tests
 - python -m ruff check app tests
 - pytest -q *(fails: missing wallet_accounts/wallet_ledger/wallet_payments tables after alembic upgrade in test DB)*
-<<<<<<< HEAD
-
 ## [2026-01-08] Docs / Repo hygiene
 - merged notes from docs/PROJECT_JOURNAL.md into root journal (single source of truth; append-only)
 
@@ -1391,6 +1389,3 @@ During code audit, found references to old test database names (smartsell_test2,
 **Current standard**: All tests use smartsell_test database name (defined via TEST_DATABASE_URL environment variable). The old names are not used in any active code, configuration, or scripts—they exist only as output snapshots in historical audit documents.
 
 No action required on old references in docs—kept for historical record. All active code correctly uses smartsell_test.
-
-=======
->>>>>>> origin/dev
