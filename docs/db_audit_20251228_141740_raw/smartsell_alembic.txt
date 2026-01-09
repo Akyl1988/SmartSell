@@ -1,3 +1,0 @@
-ERROR:  relation "alembic_version" does not exist
-LINE 1: select version_num from alembic_version;
-                                ^

@@ -1,2 +1,0 @@
-schemaname\ttablename\tindexname\tindexdef
-(0 rows)

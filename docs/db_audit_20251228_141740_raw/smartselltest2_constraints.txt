@@ -1,3 +1,0 @@
-ERROR:  syntax error at or near "table"
-LINE 11: order by schema, table;
-                          ^

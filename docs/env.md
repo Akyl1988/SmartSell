@@ -10,7 +10,7 @@
    ```
 4. Запустите Postgres и Redis (например, через Docker):
    ```powershell
-   docker run --rm -e POSTGRES_PASSWORD=postgres -e POSTGRES_USER=postgres -e POSTGRES_DB=smartsell -p 5432:5432 postgres:15
+   docker run --rm -e POSTGRES_PASSWORD=<PASS> -e POSTGRES_USER=<USER> -e POSTGRES_DB=smartsell -p 5432:5432 postgres:15
    docker run --rm -p 6379:6379 redis:7-alpine
    ```
 5. Примените миграции:
@@ -34,9 +34,9 @@
 | TESTING                   | True / False                                                       |
 | DEBUG                     | True / False                                                       |
 | SECRET_KEY                | dev-secret-key (замените в production)                             |
-| DATABASE_URL              | postgresql+psycopg://postgres:postgres@127.0.0.1:5432/smartsell     |
-| TEST_DATABASE_URL         | postgresql+psycopg://postgres:postgres@127.0.0.1:5432/smartsell_test|
-| TEST_ASYNC_DATABASE_URL   | postgresql+asyncpg://postgres:postgres@127.0.0.1:5432/smartsell_test|
+| DATABASE_URL              | postgresql+psycopg://<USER>:<PASS>@127.0.0.1:5432/smartsell         |
+| TEST_DATABASE_URL         | postgresql+psycopg://<USER>:<PASS>@127.0.0.1:5432/smartsell_test    |
+| TEST_ASYNC_DATABASE_URL   | postgresql+asyncpg://<USER>:<PASS>@127.0.0.1:5432/smartsell_test    |
 | REDIS_URL                 | redis://127.0.0.1:6379                                             |
 | CORS_ORIGINS              | http://localhost:3000                                              |
 

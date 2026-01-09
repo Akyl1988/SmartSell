@@ -1,3 +1,0 @@
-has_deleted_at\thas_ended_at
-f\tf
-(1 row)
