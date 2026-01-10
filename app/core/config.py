@@ -182,8 +182,7 @@ def resolve_database_url(settings: Settings | None = None) -> tuple[str, str, st
 
     env_environment = (env.get("ENVIRONMENT", s.ENVIRONMENT or "") or "").lower()
     explicit_testing_flag = bool(
-        (env.get("TESTING", "").lower() in ("1", "true", "yes", "on"))
-        or (env_environment in {"test", "testing"})
+        (env.get("TESTING", "").lower() in ("1", "true", "yes", "on")) or (env_environment in {"test", "testing"})
     )
     testing_flag = bool(explicit_testing_flag or _under_pytest())
 
