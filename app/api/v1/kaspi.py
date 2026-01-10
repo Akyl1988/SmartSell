@@ -515,9 +515,18 @@ def kaspi_debug_ping():
 
 
 class KaspiAutoSyncStatusOut(BaseModel):
-    """Ответ о статусе последнего запуска авто-синхронизации."""
+    """Ответ о статусе последнего запуска авто-синхронизации с конфигурацией и видимостью scheduler."""
 
+    # Configuration
     enabled: bool = Field(..., description="Включена ли автоматическая синхронизация")
+    interval_minutes: int = Field(0, description="Интервал синхронизации в минутах")
+    max_concurrency: int = Field(0, description="Максимум параллельных синхронизаций")
+
+    # Scheduler state
+    job_registered: bool = Field(False, description="Зарегистрирована ли задача в scheduler")
+    scheduler_running: bool | None = Field(None, description="Запущен ли scheduler (если доступно)")
+
+    # Last run summary
     last_run_at: str | None = Field(None, description="ISO время последнего запуска")
     eligible_companies: int = Field(0, description="Сколько компаний подходят для синхронизации")
     success: int = Field(0, description="Успешно синхронизировано")
@@ -534,40 +543,62 @@ async def kaspi_autosync_status(
     current_user: User = Depends(_auth_user),
 ):
     """
-    Возвращает статус последнего запуска автоматической синхронизации заказов Kaspi.
+    Возвращает статус последнего запуска автоматической синхронизации заказов Kaspi
+    с конфигурацией и видимостью scheduler.
     Не требует админских прав, но показывает глобальную статистику по всем компаниям.
     """
     from app.core.config import settings
 
+    # Получаем configuration
     enabled = getattr(settings, "KASPI_AUTOSYNC_ENABLED", False)
+    interval_minutes = getattr(settings, "KASPI_AUTOSYNC_INTERVAL_MINUTES", 15)
+    max_concurrency = getattr(settings, "KASPI_AUTOSYNC_MAX_CONCURRENCY", 3)
 
-    if not enabled:
-        return KaspiAutoSyncStatusOut(
-            enabled=False,
-            last_run_at=None,
-            eligible_companies=0,
-            success=0,
-            locked=0,
-            failed=0,
-        )
+    # Проверяем scheduler state
+    job_registered = False
+    scheduler_running = None
+    try:
+        from app.worker.scheduler_worker import scheduler
+
+        scheduler_running = scheduler.running
+        job = scheduler.get_job("kaspi_autosync")
+        job_registered = job is not None
+    except Exception:
+        # If scheduler not available, we still return safe defaults
+        pass
+
+    # Получаем last run summary (safe defaults if autosync disabled)
+    last_run_at = None
+    eligible_companies = 0
+    success = 0
+    locked = 0
+    failed = 0
 
     try:
         from app.worker.kaspi_autosync import get_last_run_summary
 
         summary = get_last_run_summary()
-        return KaspiAutoSyncStatusOut(
-            enabled=True,
-            last_run_at=summary.get("last_run_at"),
-            eligible_companies=summary.get("eligible_companies", 0),
-            success=summary.get("success", 0),
-            locked=summary.get("locked", 0),
-            failed=summary.get("failed", 0),
-        )
+        last_run_at = summary.get("last_run_at")
+        eligible_companies = summary.get("eligible_companies", 0)
+        success = summary.get("success", 0)
+        locked = summary.get("locked", 0)
+        failed = summary.get("failed", 0)
     except ImportError:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="Kaspi auto-sync module not available",
-        )
+        # Module not available, but we still return valid response
+        pass
+
+    return KaspiAutoSyncStatusOut(
+        enabled=enabled,
+        interval_minutes=interval_minutes,
+        max_concurrency=max_concurrency,
+        job_registered=job_registered,
+        scheduler_running=scheduler_running,
+        last_run_at=last_run_at,
+        eligible_companies=eligible_companies,
+        success=success,
+        locked=locked,
+        failed=failed,
+    )
 
 
 @router.post(
