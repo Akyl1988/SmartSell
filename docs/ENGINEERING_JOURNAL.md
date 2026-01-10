@@ -1,5 +1,21 @@
 # Engineering Journal
 
+## [2026-01-10] Kaspi Orders Sync Hardening (Locks + Timeout + Ops)
+
+### Added
+- **Transaction-scoped locks**: switched per-company advisory locks to `pg_try_advisory_xact_lock` so locks auto-release on commit/rollback.
+- **Run timeout guard**: wrapped sync run with `asyncio.timeout` and record `timeout` errors without advancing watermarks.
+- **Ops endpoint**: `GET /api/v1/kaspi/orders/sync/ops` returns sync state plus `lock_available` probe via short xact-lock attempt.
+
+### Tests
+- `test_sync_ops_lock_available_basic` — ops endpoint includes lock_available field.
+- `test_sync_timeout_records_error` — skipped (manual validation: set KASPI_SYNC_TIMEOUT_SECONDS=0.1 and observe timeout behavior).
+
+### Verified
+- `python -m pytest -q` (247 passed, 7 skipped)
+- `python -m ruff format app tests` + `python -m ruff check app tests --fix`
+- Timeout behavior: manually validated via KASPI_SYNC_TIMEOUT_SECONDS setting
+
 ## [2026-01-10] Kaspi Auto-Sync: Operational Observability (Configuration + Scheduler Visibility)
 
 ### Added
@@ -142,4 +158,41 @@
 - python -m ruff format tests/app/api/test_kaspi_orders_sync_mvp.py
 - python -m pytest tests/app/api/test_kaspi_orders_sync_mvp.py -q
 - python -m pytest tests/ -q
+
+## [2026-01-08] (no updates recorded)
+
+### Context
+No updates were recorded for this date.
+
+### Changes
+No changes captured.
+
+### Impact
+No noted impact.
+
+### Verification
+Not applicable.
+
+## [2026-01-10] Kaspi Orders Sync — Timeout persistence + hardened tests
+
+### Context
+Timeout could cancel/rollback the main sync transaction, causing `kaspi_order_sync_state` updates to be lost and making `/state` observability unreliable under timeouts.
+
+### Changes
+- Added `_record_timeout_state` to persist timeout result using a fresh async engine session (fallback to the original session when needed).
+- Ensured the timeout path records:
+  - `last_result="failed"`
+  - `last_error_code="timeout"`
+  - `last_attempt_at` set
+  - watermark preserved (no forward move on timeout)
+- Strengthened `test_sync_timeout_records_error` to assert HTTP 504 and persisted sync_state invariants.
+
+### Impact
+- Timeout behavior is now operationally observable and durable.
+- Test suite enforces the contract (no “504-only” weakening).
+
+### Verification
+- `python -m ruff format app tests`
+- `python -m ruff check app tests`
+- `python -m pytest -q` → `248 passed, 6 skipped`
 
