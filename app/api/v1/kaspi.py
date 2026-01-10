@@ -371,7 +371,7 @@ async def kaspi_orders_sync(
                 status_code=status.HTTP_429_TOO_MANY_REQUESTS, detail="kaspi rate limited", headers=headers
             )
 
-        if error_code == "kaspi_timeout":
+        if error_code in {"kaspi_timeout", "timeout"}:
             raise HTTPException(status_code=status.HTTP_504_GATEWAY_TIMEOUT, detail="kaspi timeout")
 
         if error_code.startswith("kaspi_http_") or error_code == "kaspi_adapter_error":
@@ -465,6 +465,10 @@ class KaspiSyncStateOut(BaseModel):
     last_error_message: str | None = None
 
 
+class KaspiSyncOpsOut(KaspiSyncStateOut):
+    lock_available: bool
+
+
 @router.get(
     "/orders/sync/state",
     summary="Текущее состояние синхронизации заказов Kaspi",
@@ -500,6 +504,54 @@ async def kaspi_orders_sync_state(
         last_error_at=last_error_at,
         last_error_code=last_error_code,
         last_error_message=last_error_message,
+    )
+
+
+@router.get(
+    "/orders/sync/ops",
+    summary="Операционный статус синхронизации заказов Kaspi (state + lock)",
+    response_model=KaspiSyncOpsOut,
+)
+async def kaspi_orders_sync_ops(
+    current_user: User = Depends(_auth_user),
+    session: AsyncSession = Depends(get_async_db),
+):
+    company_id = _resolve_company_id(current_user)
+    res = await session.execute(sa.select(KaspiOrderSyncState).where(KaspiOrderSyncState.company_id == company_id))
+    state = res.scalar_one_or_none()
+
+    watermark = getattr(state, "last_synced_at", None) if state else None
+    last_success_at = getattr(state, "last_synced_at", None) if state else None
+    last_attempt_at = getattr(state, "last_attempt_at", None) if state else None
+    last_duration_ms = getattr(state, "last_duration_ms", None) if state else None
+    last_result = getattr(state, "last_result", None) if state else None
+    last_fetched = getattr(state, "last_fetched", None) if state else None
+    last_inserted = getattr(state, "last_inserted", None) if state else None
+    last_updated = getattr(state, "last_updated", None) if state else None
+    last_error_at = getattr(state, "last_error_at", None) if state else None
+    last_error_code = getattr(state, "last_error_code", None) if state else None
+    last_error_message = getattr(state, "last_error_message", None) if state else None
+
+    svc = KaspiService()
+    lock_available = False
+    try:
+        lock_available = await svc.check_lock_available(session, company_id)
+    except Exception:
+        lock_available = False
+
+    return KaspiSyncOpsOut(
+        watermark=watermark,
+        last_success_at=last_success_at,
+        last_attempt_at=last_attempt_at,
+        last_duration_ms=last_duration_ms,
+        last_result=last_result,
+        last_fetched=last_fetched,
+        last_inserted=last_inserted,
+        last_updated=last_updated,
+        last_error_at=last_error_at,
+        last_error_code=last_error_code,
+        last_error_message=last_error_message,
+        lock_available=bool(lock_available),
     )
 
 
