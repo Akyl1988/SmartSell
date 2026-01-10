@@ -690,15 +690,19 @@ class KaspiService:
     ) -> dict[str, Any] | list[dict[str, Any]]:
         attempts = 3
         delays = [0.2, 0.5, 1.0]
+        fetch_timeout = float(getattr(settings, "KASPI_HTTP_TIMEOUT_SEC", 60))
 
         for attempt in range(attempts):
             try:
-                return await self.get_orders(
-                    date_from=date_from,
-                    date_to=date_to,
-                    status=status,
-                    page=page,
-                    page_size=page_size,
+                return await asyncio.wait_for(
+                    self.get_orders(
+                        date_from=date_from,
+                        date_to=date_to,
+                        status=status,
+                        page=page,
+                        page_size=page_size,
+                    ),
+                    timeout=fetch_timeout,
                 )
             except (httpx.TimeoutException, httpx.NetworkError, httpx.HTTPStatusError, RuntimeError) as e:
                 is_last = attempt == attempts - 1
