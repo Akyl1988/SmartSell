@@ -338,7 +338,7 @@ _SYNC_REPLICA_ENGINE: Engine | None = None
 _query_stats: dict[str, dict[str, float]] = {}
 
 
-def _log_effective_url(url: str, *, mode: str) -> None:
+def _log_effective_url(url: str, *, mode: str, source: str | None = None) -> None:
     """Логируем безопасную сводку по DSN перед созданием engine."""
     try:
         parsed = make_url(url)
@@ -351,7 +351,7 @@ def _log_effective_url(url: str, *, mode: str) -> None:
             parsed.host or "",
             parsed.port or "",
             parsed.database or "",
-            getattr(settings, "db_url_source", lambda: "unknown")(),
+            (source or getattr(settings, "db_url_source", lambda: "unknown")()),
             fp,
         )
     except Exception as e:
@@ -405,7 +405,7 @@ def _get_async_engine() -> AsyncEngine:
         except Exception:
             pass
 
-    _log_effective_url(url, mode="async")
+    _log_effective_url(url, mode="async", source=source)
     _ASYNC_ENGINE = create_async_engine(url, **_engine_options(async_engine=True))
     _ASYNC_SESSION_MAKER = async_sessionmaker(
         bind=_ASYNC_ENGINE,
@@ -469,7 +469,9 @@ def _get_sync_engine() -> Engine:
                 logger.warning("PG on_connect setup failed: %s", e)
 
     url = _resolve_sync_pg_url()
-    _log_effective_url(url, mode="sync")
+    # Recompute source for sync engine logging
+    _, source, _ = resolve_database_url(settings)
+    _log_effective_url(url, mode="sync", source=source)
     _SYNC_ENGINE = create_engine(url, **_engine_options(async_engine=False))
     _install_pg_connection_events(_SYNC_ENGINE)
     _SYNC_SESSION_MAKER = sessionmaker(bind=_SYNC_ENGINE, autocommit=False, autoflush=False, expire_on_commit=False)

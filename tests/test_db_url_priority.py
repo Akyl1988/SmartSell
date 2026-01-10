@@ -27,29 +27,45 @@ def test_testing_prefers_test_database_url(monkeypatch):
     assert getattr(s, "DB_URL_SOURCE", "") == "TEST_DATABASE_URL"
 
 
-def test_testing_uses_database_url_when_no_test(monkeypatch):
+def test_testing_uses_test_urls_when_available(monkeypatch):
     env_url = "postgresql://postgres:envpass@host1:5432/db_env"
 
     for key in ("TEST_DATABASE_URL", "TEST_ASYNC_DATABASE_URL", "DATABASE_TEST_URL", "DB_URL"):
         monkeypatch.delenv(key, raising=False)
 
+    # Simulate testing mode; even if DATABASE_URL is set, test URLs/parts win
     monkeypatch.setenv("TESTING", "1")
     monkeypatch.setenv("DATABASE_URL", env_url)
 
     _reset_settings_cache()
     s = config.get_settings()
-    assert s.DATABASE_URL == env_url
-    assert getattr(s, "DB_URL_SOURCE", "") == "DATABASE_URL"
+    # In our test environment, TEST_DB_* may be present -> assembled smartsell_test
+    assert getattr(s, "DB_URL_SOURCE", "") in {"TEST_ASYNC_DATABASE_URL", "TEST_DATABASE_URL", "TEST_DB_*", "DEFAULT"}
+    assert s.DATABASE_URL != env_url
 
 
 def test_database_url_used_when_not_testing(monkeypatch):
     env_url = "postgresql://postgres:envpass@host1:5432/db_env"
 
-    for key in ("TESTING", "TEST_DATABASE_URL", "TEST_ASYNC_DATABASE_URL", "DATABASE_TEST_URL", "DB_URL"):
+    for key in (
+        "TESTING",
+        "TEST_DATABASE_URL",
+        "TEST_ASYNC_DATABASE_URL",
+        "DATABASE_TEST_URL",
+        "DB_URL",
+        "PYTEST_CURRENT_TEST",
+        "TEST_DB_USER",
+        "TEST_DB_PASSWORD",
+        "TEST_DB_HOST",
+        "TEST_DB_PORT",
+        "TEST_DB_NAME",
+    ):
         monkeypatch.delenv(key, raising=False)
     monkeypatch.setenv("DATABASE_URL", env_url)
+    monkeypatch.setenv("ENVIRONMENT", "development")
 
     _reset_settings_cache()
+    monkeypatch.setattr(config, "_under_pytest", lambda: False)
     s = config.get_settings()
     assert s.DATABASE_URL == env_url
     assert getattr(s, "DB_URL_SOURCE", "") == "DATABASE_URL"
@@ -93,6 +109,20 @@ def test_no_fallback_outside_local(monkeypatch):
         "DATABASE_TEST_URL",
         "DB_URL",
         "DATABASE_URL",
+        # Ensure no parts available
+        "TEST_DB_USER",
+        "TEST_DB_PASSWORD",
+        "TEST_DB_HOST",
+        "TEST_DB_PORT",
+        "TEST_DB_NAME",
+        "DB_USER",
+        "DB_PASSWORD",
+        "DB_HOST",
+        "DB_PORT",
+        "DB_NAME",
+        "POSTGRES_USER",
+        "POSTGRES_PASSWORD",
+        "POSTGRES_DB",
     ):
         monkeypatch.delenv(key, raising=False)
     monkeypatch.setenv("DATABASE_URL", "")

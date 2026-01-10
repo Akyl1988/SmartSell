@@ -166,52 +166,94 @@ def _to_asyncpg_url(url: str) -> str:
 
 def resolve_database_url(settings: Settings | None = None) -> tuple[str, str, str]:
     """
-    Single source of truth for DB URL resolution.
-    Priority:
-      1) TESTING truthy AND TEST_DATABASE_URL (or TEST_ASYNC_DATABASE_URL/DATABASE_TEST_URL) → as-is
-      2) TESTING truthy AND DATABASE_URL present → as-is
-      3) DATABASE_URL present → as-is
-      4) Otherwise: local-only fallback; non-local → error
+    Strict DB URL resolution with runtime/pytest separation.
 
-    Returns (resolved_url, source, fingerprint_12)
+    Test mode (PYTEST_CURRENT_TEST or TESTING=true or ENVIRONMENT in {test, testing}):
+      - Prefer TEST_ASYNC_DATABASE_URL, then TEST_DATABASE_URL, then assemble from TEST_DB_* parts.
+
+    Runtime (otherwise):
+      - Use only DATABASE_URL (or DB_URL), or assemble from DB_* parts. Ignore all TEST_* variables.
+
+    Returns (resolved_url, source_token, fingerprint_8)
     """
 
     env = os.environ
     s = settings or Settings()
 
-    testing_flag = bool(s.TESTING or _under_pytest() or env.get("TESTING", "").lower() in ("1", "true", "yes", "on"))
-
-    test_candidate = (
-        env.get("TEST_DATABASE_URL")
-        or env.get("TEST_ASYNC_DATABASE_URL")
-        or env.get("DATABASE_TEST_URL")
-        or s.TEST_DATABASE_URL
-        or s.TEST_ASYNC_DATABASE_URL
-        or s.DATABASE_TEST_URL
+    env_environment = (env.get("ENVIRONMENT", s.ENVIRONMENT or "") or "").lower()
+    testing_flag = bool(
+        s.TESTING
+        or _under_pytest()
+        or (env.get("TESTING", "").lower() in ("1", "true", "yes", "on"))
+        or (env_environment in {"test", "testing"})
     )
-    db_candidate = env.get("DATABASE_URL") or env.get("DB_URL") or s.DATABASE_URL
+
+    def _assemble_from_parts(prefix: str) -> tuple[str | None, str]:
+        try:
+            user = env.get(f"{prefix}_DB_USER") or env.get("POSTGRES_USER")
+            password = env.get(f"{prefix}_DB_PASSWORD") or env.get("POSTGRES_PASSWORD")
+            host = env.get(f"{prefix}_DB_HOST") or "127.0.0.1"
+            port = env.get(f"{prefix}_DB_PORT") or "5432"
+            dbname = (
+                env.get(f"{prefix}_DB_NAME")
+                or env.get("POSTGRES_DB")
+                or ("smartsell_test" if prefix == "TEST" else "smartsell")
+            )
+            if not user or not password:
+                return None, ""
+            return (
+                f"postgresql://{quote(user, safe='')}:{quote(password, safe='')}@{host}:{port}/{dbname}",
+                ("TEST_DB_*" if prefix == "TEST" else "DB_*"),
+            )
+        except Exception:
+            return None, ""
 
     resolved_url: str | None = None
     source: str = "DEFAULT"
 
-    if testing_flag and test_candidate:
-        resolved_url = test_candidate.strip()
-        source = "TEST_DATABASE_URL"
-    elif testing_flag and db_candidate:
-        resolved_url = db_candidate.strip()
-        source = "DATABASE_URL"
-    elif db_candidate:
-        resolved_url = db_candidate.strip()
-        source = "DATABASE_URL"
+    if testing_flag:
+        # Prefer explicit async test URL first, then sync test URL, then parts
+        test_async = env.get("TEST_ASYNC_DATABASE_URL") or s.TEST_ASYNC_DATABASE_URL
+        test_sync = (
+            env.get("TEST_DATABASE_URL") or s.TEST_DATABASE_URL or env.get("DATABASE_TEST_URL") or s.DATABASE_TEST_URL
+        )
+        if test_async and test_async.strip():
+            resolved_url = test_async.strip()
+            source = "TEST_ASYNC_DATABASE_URL"
+        elif test_sync and test_sync.strip():
+            resolved_url = test_sync.strip()
+            source = "TEST_DATABASE_URL"
+        else:
+            parts_url, parts_src = _assemble_from_parts("TEST")
+            if parts_url:
+                resolved_url = parts_url
+                source = parts_src
+    else:
+        # Runtime path: ignore any TEST_*; use DATABASE_URL or DB_URL or parts
+        base_url = env.get("DATABASE_URL") or env.get("DB_URL") or s.DATABASE_URL
+        if base_url and base_url.strip():
+            resolved_url = base_url.strip()
+            # Prefer explicit env token for source
+            if env.get("DATABASE_URL") and env.get("DATABASE_URL").strip() == resolved_url:
+                source = "DATABASE_URL"
+            elif env.get("DB_URL") and env.get("DB_URL").strip() == resolved_url:
+                source = "DB_URL"
+            else:
+                source = "DATABASE_URL"
+        else:
+            parts_url, parts_src = _assemble_from_parts("DB")
+            if parts_url:
+                resolved_url = parts_url
+                source = parts_src
 
     if not resolved_url:
         if _is_local_env(s.ENVIRONMENT, s.DEBUG):
             resolved_url = _default_test_db_url()
             source = "DEFAULT"
         else:
-            raise ValueError("DATABASE_URL/TEST_DATABASE_URL is required in non-local environments")
+            raise ValueError("DATABASE_URL is required in non-local environments")
 
-    # Local/dev/pytest: if URL lacks password but PGPASSWORD is set, inject it for async connections
+    # Local/dev/pytest: if URL lacks password but PGPASSWORD is set, inject it
     resolved_url = _inject_password_if_missing(resolved_url)
 
     fingerprint = db_url_fingerprint(resolved_url)
@@ -219,28 +261,48 @@ def resolve_database_url(settings: Settings | None = None) -> tuple[str, str, st
 
 
 def resolve_async_database_url(settings: Settings) -> tuple[str, str, str]:
+    """
+    Resolve async DB URL with driver normalization and strict test/runtime separation.
+    Returns (url, source_with_context, fingerprint_no_pw)
+    """
     env = os.environ
 
-    url: str | None = None
-    source = ""
+    env_environment = (env.get("ENVIRONMENT", settings.ENVIRONMENT or "") or "").lower()
+    testing_flag = bool(
+        settings.TESTING
+        or _under_pytest()
+        or (env.get("TESTING", "").lower() in ("1", "true", "yes", "on"))
+        or (env_environment in {"test", "testing"})
+    )
 
-    if env.get("TEST_ASYNC_DATABASE_URL"):
-        url = env.get("TEST_ASYNC_DATABASE_URL")
-        source = "TEST_ASYNC_DATABASE_URL"
-    elif env.get("TEST_DATABASE_URL"):
-        url = env.get("TEST_DATABASE_URL")
-        source = "TEST_DATABASE_URL"
+    if testing_flag:
+        # Prefer test async URL, then test sync URL, then fall back to base resolver (which may build from parts)
+        test_async = env.get("TEST_ASYNC_DATABASE_URL") or settings.TEST_ASYNC_DATABASE_URL
+        test_sync = (
+            env.get("TEST_DATABASE_URL")
+            or settings.TEST_DATABASE_URL
+            or env.get("DATABASE_TEST_URL")
+            or settings.DATABASE_TEST_URL
+        )
+        if test_async and test_async.strip():
+            base = test_async.strip()
+            src = "TEST_ASYNC_DATABASE_URL"
+        elif test_sync and test_sync.strip():
+            base = test_sync.strip()
+            src = "TEST_DATABASE_URL"
+        else:
+            base, src, _ = resolve_database_url(settings)
     else:
-        url_base, src_base, _ = resolve_database_url(settings)
-        url = url_base
-        source = src_base
+        base, src, _ = resolve_database_url(settings)
 
-    url = url or ""
-    url = _to_asyncpg_url(url)
+    url = _to_asyncpg_url(base or "")
     url = _inject_password_if_missing(url)
-
     fp = _mask_db_fp(url)
-    return url, f"{source}->async", fp
+
+    # Provide context in source while keeping prefix compatible with existing tests
+    context = "test" if testing_flag else "runtime"
+    source_with_ctx = f"{src} ({context})->async"
+    return url, source_with_ctx, fp
 
 
 def _parse_list_like(v: Any) -> Any:

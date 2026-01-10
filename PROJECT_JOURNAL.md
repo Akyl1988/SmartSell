@@ -1,3 +1,22 @@
+## [2026-01-10] Strict runtime/pytest DB URL resolution
+
+### Fixed
+- **Root issue**: app in development mode sometimes incorrectly resolved to `smartsell_test` when TEST_* environment variables were present, breaking production-safety invariant.
+- **Solution**: Strict separation of DB URL resolution paths in `app/core/config.py`:
+  - **Test mode** (PYTEST_CURRENT_TEST or TESTING=true or ENVIRONMENT in {test,testing}): prioritize TEST_ASYNC_DATABASE_URL > TEST_DATABASE_URL > assemble from TEST_DB_* parts; ignore DATABASE_URL/DB_*.
+  - **Runtime** (otherwise): use **only** DATABASE_URL/DB_URL or assemble from DB_* parts; **ignore all TEST_*** variables entirely.
+- URL assembly from parts: added fallback assembly in `resolve_database_url` and `resolve_async_database_url` to support TEST_DB_{USER,PASSWORD,HOST,PORT,NAME} (test mode) and DB_{USER,PASSWORD,HOST,PORT,NAME} (runtime).
+- Enhanced logging: `db_url_resolved` log now includes contextual source (`source=(TEST_ASYNC_DATABASE_URL|TEST_DATABASE_URL|DATABASE_URL|DB_*|TEST_DB_*|...) (runtime|test)->async`) passed through from resolver to `app/core/db.py::_log_effective_url`.
+- Updated tests:
+  - `tests/test_db_runtime_vs_test_selection.py`: new test verifies runtime prefers DATABASE_URL over TEST_* and pytest mode prefers TEST_ASYNC_DATABASE_URL.
+  - `tests/test_db_async_url_resolution.py`: updated existing tests to set PYTEST_CURRENT_TEST so strict resolver enables test mode.
+  - `tests/test_db_url_priority.py`: adjusted `test_database_url_used_when_not_testing` to clear PYTEST_CURRENT_TEST and mock `_under_pytest()` for runtime path.
+
+### Verified
+- ruff format app/core/{config,db}.py tests/test_db_{async_url_resolution,runtime_vs_test_selection,url_priority}.py
+- ruff check (passes)
+- pytest -q (250 passed, 6 skipped)
+
 ## [2026-01-06] Kaspi sync state metrics
 
 ### Added
