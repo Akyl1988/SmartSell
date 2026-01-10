@@ -435,7 +435,7 @@ class Settings(BaseSettings):
 
     # Kaspi Auto-Sync Settings
     KASPI_AUTOSYNC_ENABLED: bool = Field(
-        default=True,
+        default=False,
         description="Enable automatic Kaspi orders sync",
         validation_alias="KASPI_AUTOSYNC_ENABLED",
     )

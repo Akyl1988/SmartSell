@@ -1,5 +1,37 @@
 # Engineering Journal
 
+## [2026-01-10] Kaspi Auto-Sync: Production Safety (Disabled by Default)
+
+### Changed
+- **Configuration Default**: Changed `KASPI_AUTOSYNC_ENABLED` from `default=True` to `default=False` in `app/core/config.py`
+  - **Rationale**: Production safety - auto-sync must be explicitly enabled
+  - **Impact**: New deployments will not auto-sync until enabled via environment variable
+
+- **API Endpoints Enhanced**: Updated `app/api/v1/kaspi.py`
+  - `GET /api/v1/kaspi/autosync/status` now returns `enabled: bool` field
+  - Returns `enabled=false` with zero stats when disabled
+  - `POST /api/v1/kaspi/autosync/trigger` now returns 409 Conflict when disabled
+  - Clear error message: "Kaspi auto-sync is disabled. Set KASPI_AUTOSYNC_ENABLED=true to enable."
+
+### Added Tests
+- `test_autosync_status_disabled` - Verifies status endpoint shows disabled state
+- `test_autosync_trigger_disabled` - Verifies trigger returns 409 when disabled
+- Updated existing tests to check for `enabled` field
+
+### Updated Documentation
+- `KASPI_AUTOSYNC_IMPLEMENTATION.md` - Updated configuration defaults section
+- Added warning about production safety in deployment notes
+
+### Decision Rationale
+- **Why disabled by default?**: Prevents unexpected behavior in production environments
+- **Why 409 Conflict?**: Semantic HTTP status for operational state conflict
+- **Why explicit enable?**: Forces conscious decision to enable background jobs
+
+### Verified
+- All tests passing (243 passed, 6 skipped)
+- ruff format/check clean
+- API endpoints behave correctly in disabled state
+
 ## [2026-01-10] Kaspi Orders Auto-Sync Scheduler (Production-Grade)
 
 ### Added
@@ -27,7 +59,7 @@
   - `POST /api/v1/kaspi/autosync/trigger` - Manual trigger for immediate sync
 
 - **Configuration**: Three new settings in `app/core/config.py` (lines 431-450)
-  - `KASPI_AUTOSYNC_ENABLED: bool` - Enable/disable auto-sync (default: True)
+  - `KASPI_AUTOSYNC_ENABLED: bool` - Enable/disable auto-sync (default: False, changed for production safety)
   - `KASPI_AUTOSYNC_INTERVAL_MINUTES: int` - Sync frequency (default: 15)
   - `KASPI_AUTOSYNC_MAX_CONCURRENCY: int` - Parallel sync limit (default: 3)
 
