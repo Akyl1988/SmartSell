@@ -26,10 +26,11 @@ from typing import Any, Optional
 import httpx
 from sqlalchemy import and_, literal_column, select, text
 from sqlalchemy.dialects.postgresql import insert
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from sqlalchemy.orm import selectinload
 
 from app.core.config import settings
+from app.core.db import _get_async_engine
 from app.core.errors import safe_error_message
 from app.core.logging import get_logger
 from app.integrations.kaspi_adapter import KaspiAdapterError
@@ -149,6 +150,10 @@ class KaspiService:
             "Content-Type": "application/json",
             "Accept": "application/json",
         }
+
+        # Hard timeout guard for a single sync run (seconds).
+        if not hasattr(self, "_sync_timeout_seconds"):
+            self._sync_timeout_seconds = getattr(settings, "KASPI_SYNC_TIMEOUT_SECONDS", 30)
 
         if not self.base_url:
             logger.warning("KaspiService: BASE URL не задан (settings.KASPI_API_URL).")
@@ -274,159 +279,166 @@ class KaspiService:
         inserted = 0
         updated = 0
         started_at = perf_counter()
+        timeout_seconds = float(self._sync_timeout_seconds or 30)
 
         logger.info("Kaspi orders sync start: company_id=%s request_id=%s", company_id, request_id)
 
         try:
-            tx_ctx = nullcontext() if db.in_transaction() else db.begin()
-            async with tx_ctx:
-                await db.execute(text("SET LOCAL lock_timeout = '2s'"))
-                await db.execute(text("SET LOCAL statement_timeout = '10s'"))
+            async with asyncio.timeout(timeout_seconds):
+                tx_ctx = nullcontext() if db.in_transaction() else db.begin()
+                async with tx_ctx:
+                    await db.execute(text("SET LOCAL lock_timeout = '2s'"))
+                    await db.execute(text("SET LOCAL statement_timeout = '10s'"))
 
-                async with self._company_lock(db, company_id):
-                    state = await self._load_or_create_state(db, company_id)
+                    async with self._company_lock(db, company_id):
+                        state = await self._load_or_create_state(db, company_id)
 
-                state.last_attempt_at = attempt_at
-                state.last_result = None
-                state.last_duration_ms = None
-                state.last_fetched = None
-                state.last_inserted = None
-                state.last_updated = None
+                    state.last_attempt_at = attempt_at
+                    state.last_result = None
+                    state.last_duration_ms = None
+                    state.last_fetched = None
+                    state.last_inserted = None
+                    state.last_updated = None
 
-                prev_last_synced = state.last_synced_at
-                prev_last_ext = state.last_external_order_id
-                is_new_state = prev_last_synced is None and prev_last_ext is None
+                    prev_last_synced = state.last_synced_at
+                    prev_last_ext = state.last_external_order_id
+                    is_new_state = prev_last_synced is None and prev_last_ext is None
 
-                base_from = date_from or prev_last_synced or (effective_to - timedelta(days=1))
-                effective_from = base_from - overlap
+                    base_from = date_from or prev_last_synced or (effective_to - timedelta(days=1))
+                    effective_from = base_from - overlap
 
-                watermark = prev_last_synced or base_from
-                last_ext = prev_last_ext
-                made_progress = False
+                    watermark = prev_last_synced or base_from
+                    last_ext = prev_last_ext
+                    made_progress = False
 
-                for status in statuses or [None]:
-                    async for batch in self._iter_orders_pages(
-                        date_from=effective_from,
-                        date_to=effective_to,
-                        status=status,
-                        page_size=100,
-                        company_id=company_id,
-                    ):
-                        fetched += len(batch)
-                        for payload in batch:
-                            ext_id = _as_str(payload.get("id")).strip()
-                            if not ext_id:
-                                continue
+                    for status in statuses or [None]:
+                        async for batch in self._iter_orders_pages(
+                            date_from=effective_from,
+                            date_to=effective_to,
+                            status=status,
+                            page_size=100,
+                            company_id=company_id,
+                        ):
+                            fetched += len(batch)
+                            for payload in batch:
+                                ext_id = _as_str(payload.get("id")).strip()
+                                if not ext_id:
+                                    continue
 
-                            mapped_status = self._map_kaspi_status(_as_str(payload.get("status")))
-                            order_number = self._order_number_from_payload(company_id, ext_id, payload)
-                            customer = payload.get("customer") or {}
-                            currency = _as_str(payload.get("currency")) or "KZT"
-                            total_amount = self._decimal_or_zero(
-                                payload.get("totalPrice") or payload.get("total_amount") or payload.get("total") or 0
-                            )
-                            status_changed_at = self._extract_order_timestamp(payload)
-                            updated_ts = status_changed_at or effective_to
-                            effective_updated = updated_ts or attempt_at
-
-                            stmt = (
-                                insert(Order)
-                                .values(
-                                    company_id=company_id,
-                                    order_number=order_number,
-                                    external_id=ext_id,
-                                    source=OrderSource.KASPI,
-                                    status=mapped_status,
-                                    customer_phone=customer.get("phone") or None,
-                                    customer_name=customer.get("name") or None,
-                                    customer_address=payload.get("deliveryAddress")
-                                    or payload.get("delivery_address")
-                                    or None,
-                                    delivery_method=payload.get("deliveryMode") or payload.get("delivery_mode") or None,
-                                    total_amount=total_amount,
-                                    currency=currency,
-                                    updated_at=effective_updated,
+                                mapped_status = self._map_kaspi_status(_as_str(payload.get("status")))
+                                order_number = self._order_number_from_payload(company_id, ext_id, payload)
+                                customer = payload.get("customer") or {}
+                                currency = _as_str(payload.get("currency")) or "KZT"
+                                total_amount = self._decimal_or_zero(
+                                    payload.get("totalPrice")
+                                    or payload.get("total_amount")
+                                    or payload.get("total")
+                                    or 0
                                 )
-                                .on_conflict_do_update(
-                                    index_elements=[Order.company_id, Order.external_id],
-                                    set_={
-                                        "status": mapped_status,
-                                        "source": OrderSource.KASPI,
-                                        "order_number": order_number,
-                                        "customer_phone": customer.get("phone") or None,
-                                        "customer_name": customer.get("name") or None,
-                                        "customer_address": payload.get("deliveryAddress")
+                                status_changed_at = self._extract_order_timestamp(payload)
+                                updated_ts = status_changed_at or effective_to
+                                effective_updated = updated_ts or attempt_at
+
+                                stmt = (
+                                    insert(Order)
+                                    .values(
+                                        company_id=company_id,
+                                        order_number=order_number,
+                                        external_id=ext_id,
+                                        source=OrderSource.KASPI,
+                                        status=mapped_status,
+                                        customer_phone=customer.get("phone") or None,
+                                        customer_name=customer.get("name") or None,
+                                        customer_address=payload.get("deliveryAddress")
                                         or payload.get("delivery_address")
                                         or None,
-                                        "delivery_method": payload.get("deliveryMode")
+                                        delivery_method=payload.get("deliveryMode")
                                         or payload.get("delivery_mode")
                                         or None,
-                                        "total_amount": total_amount,
-                                        "currency": currency,
-                                        "updated_at": effective_updated,
-                                    },
+                                        total_amount=total_amount,
+                                        currency=currency,
+                                        updated_at=effective_updated,
+                                    )
+                                    .on_conflict_do_update(
+                                        index_elements=[Order.company_id, Order.external_id],
+                                        set_={
+                                            "status": mapped_status,
+                                            "source": OrderSource.KASPI,
+                                            "order_number": order_number,
+                                            "customer_phone": customer.get("phone") or None,
+                                            "customer_name": customer.get("name") or None,
+                                            "customer_address": payload.get("deliveryAddress")
+                                            or payload.get("delivery_address")
+                                            or None,
+                                            "delivery_method": payload.get("deliveryMode")
+                                            or payload.get("delivery_mode")
+                                            or None,
+                                            "total_amount": total_amount,
+                                            "currency": currency,
+                                            "updated_at": effective_updated,
+                                        },
+                                    )
+                                    .returning(Order.id, literal_column("xmax = 0").label("inserted"))
                                 )
-                                .returning(Order.id, literal_column("xmax = 0").label("inserted"))
-                            )
 
-                            async with db.begin_nested():
-                                res = await db.execute(stmt)
+                                async with db.begin_nested():
+                                    res = await db.execute(stmt)
 
-                            row = res.one()
-                            inserted_flag: bool = bool(row.inserted)
-                            if inserted_flag:
-                                inserted += 1
-                            else:
-                                updated += 1
+                                row = res.one()
+                                inserted_flag: bool = bool(row.inserted)
+                                if inserted_flag:
+                                    inserted += 1
+                                else:
+                                    updated += 1
 
-                            order_pk = row.id
+                                order_pk = row.id
 
-                            if updated_ts > watermark or (
-                                updated_ts == watermark and ext_id and ext_id > (last_ext or "")
-                            ):
-                                watermark = updated_ts
-                                last_ext = ext_id
-                            made_progress = True
+                                if updated_ts > watermark or (
+                                    updated_ts == watermark and ext_id and ext_id > (last_ext or "")
+                                ):
+                                    watermark = updated_ts
+                                    last_ext = ext_id
+                                made_progress = True
 
-                            items_updated = await self._upsert_order_items(
-                                db, order_id=order_pk, company_id=company_id, payload=payload
-                            )
+                                items_updated = await self._upsert_order_items(
+                                    db, order_id=order_pk, company_id=company_id, payload=payload
+                                )
 
-                            if items_updated:
-                                await self._recalculate_order_totals(db, order_id=order_pk)
+                                if items_updated:
+                                    await self._recalculate_order_totals(db, order_id=order_pk)
 
-                            await self._upsert_status_history(
-                                db,
-                                order_id=order_pk,
-                                new_status=mapped_status,
-                                changed_at=status_changed_at,
-                            )
+                                await self._upsert_status_history(
+                                    db,
+                                    order_id=order_pk,
+                                    new_status=mapped_status,
+                                    changed_at=status_changed_at,
+                                )
 
-                        # page handling happens inside _iter_orders_pages
+                            # page handling happens inside _iter_orders_pages
 
-                    if made_progress or is_new_state:
-                        final_wm = watermark if prev_last_synced is None else max(prev_last_synced, watermark)
-                        state.last_synced_at = final_wm
-                        state.last_external_order_id = last_ext
-                    else:
-                        final_wm = prev_last_synced or watermark
-                        state.last_synced_at = prev_last_synced
-                        state.last_external_order_id = prev_last_ext
+                        if made_progress or is_new_state:
+                            final_wm = watermark if prev_last_synced is None else max(prev_last_synced, watermark)
+                            state.last_synced_at = final_wm
+                            state.last_external_order_id = last_ext
+                        else:
+                            final_wm = prev_last_synced or watermark
+                            state.last_synced_at = prev_last_synced
+                            state.last_external_order_id = prev_last_ext
 
-                    finished_at = _utcnow()
-                    duration_ms = int((perf_counter() - started_at) * 1000)
-                    state.updated_at = finished_at
-                    state.last_error_at = None
-                    state.last_error_code = None
-                    state.last_error_message = None
-                    state.last_result = "success"
-                    state.last_duration_ms = duration_ms
-                    state.last_attempt_at = attempt_at
-                    state.last_fetched = fetched
-                    state.last_inserted = inserted
-                    state.last_updated = updated
-            if db.in_transaction():
-                await db.commit()
+                        finished_at = _utcnow()
+                        duration_ms = int((perf_counter() - started_at) * 1000)
+                        state.updated_at = finished_at
+                        state.last_error_at = None
+                        state.last_error_code = None
+                        state.last_error_message = None
+                        state.last_result = "success"
+                        state.last_duration_ms = duration_ms
+                        state.last_attempt_at = attempt_at
+                        state.last_fetched = fetched
+                        state.last_inserted = inserted
+                        state.last_updated = updated
+                if db.in_transaction():
+                    await db.commit()
         except KaspiSyncAlreadyRunning:
             duration_ms = int((perf_counter() - started_at) * 1000)
             await self.record_sync_locked(
@@ -437,6 +449,24 @@ class KaspiService:
             )
             logger.warning(
                 "Kaspi orders sync locked: company_id=%s request_id=%s duration_ms=%s",
+                company_id,
+                request_id,
+                duration_ms,
+            )
+            raise
+        except asyncio.TimeoutError:
+            duration_ms = int((perf_counter() - started_at) * 1000)
+            await self._record_timeout_state(
+                db=db,
+                company_id=company_id,
+                attempt_at=attempt_at,
+                duration_ms=duration_ms,
+                fetched=fetched,
+                inserted=inserted,
+                updated=updated,
+            )
+            logger.error(
+                "Kaspi orders sync timeout: company_id=%s request_id=%s duration_ms=%s",
                 company_id,
                 request_id,
                 duration_ms,
@@ -862,19 +892,15 @@ class KaspiService:
     @asynccontextmanager
     async def _company_lock(self, db: AsyncSession, company_id: int):
         lock_key = self._company_lock_key(company_id)
-        res = await db.execute(text("SELECT pg_try_advisory_lock(:lock_key)").bindparams(lock_key=lock_key))
+        res = await db.execute(text("SELECT pg_try_advisory_xact_lock(:lock_key)").bindparams(lock_key=lock_key))
         ok = res.scalar_one_or_none()
         if not ok:
             raise KaspiSyncAlreadyRunning("kaspi sync already running")
-        try:
-            yield
-        finally:
-            try:
-                await db.execute(text("SELECT pg_advisory_unlock(:lock_key)").bindparams(lock_key=lock_key))
-            except Exception:
-                pass
+        yield
 
     def _classify_sync_error(self, exc: Exception) -> str:
+        if isinstance(exc, asyncio.TimeoutError | TimeoutError):
+            return "timeout"
         if isinstance(exc, httpx.TimeoutException):
             return "kaspi_timeout"
         if isinstance(exc, httpx.HTTPStatusError):
@@ -983,6 +1009,61 @@ class KaspiService:
             error_message=safe_msg,
         )
 
+    async def _record_timeout_state(
+        self,
+        *,
+        db: AsyncSession,
+        company_id: int,
+        attempt_at: datetime,
+        duration_ms: int,
+        fetched: int | None,
+        inserted: int | None,
+        updated: int | None,
+    ) -> None:
+        try:
+            engine = _get_async_engine()
+            session_maker = async_sessionmaker(engine, expire_on_commit=False, class_=AsyncSession)
+            async with session_maker() as fresh_db:
+                await self.record_sync_error(
+                    fresh_db,
+                    company_id=company_id,
+                    code="timeout",
+                    message="kaspi orders sync timeout",
+                    occurred_at=_utcnow(),
+                    attempt_at=attempt_at,
+                    duration_ms=duration_ms,
+                    fetched=fetched,
+                    inserted=inserted,
+                    updated=updated,
+                    result="failed",
+                )
+                return
+        except Exception:
+            logger.exception(
+                "Kaspi orders sync: failed to persist timeout state via fresh session: company_id=%s",
+                company_id,
+            )
+
+        try:
+            await self.record_sync_error(
+                db,
+                company_id=company_id,
+                code="timeout",
+                message="kaspi orders sync timeout",
+                occurred_at=_utcnow(),
+                attempt_at=attempt_at,
+                duration_ms=duration_ms,
+                fetched=fetched,
+                inserted=inserted,
+                updated=updated,
+                result="failed",
+            )
+        except Exception:
+            logger.exception(
+                "Kaspi orders sync: fallback timeout state persistence failed: company_id=%s",
+                company_id,
+            )
+
     async def record_sync_locked(
         self,
         db: AsyncSession,
@@ -1002,10 +1083,30 @@ class KaspiService:
     async def _acquire_company_lock(self, db: AsyncSession, company_id: int) -> None:
         # Legacy helper preserved for compatibility; delegates to session-level advisory lock
         lock_key = self._company_lock_key(company_id)
-        res = await db.execute(text("SELECT pg_try_advisory_lock(:lock_key)").bindparams(lock_key=lock_key))
+        res = await db.execute(text("SELECT pg_try_advisory_xact_lock(:lock_key)").bindparams(lock_key=lock_key))
         ok = res.scalar_one_or_none()
         if not ok:
             raise KaspiSyncAlreadyRunning("kaspi sync already running")
+
+    async def check_lock_available(self, db: AsyncSession, company_id: int) -> bool:
+        """Returns True if lock can be acquired within a short transaction."""
+        lock_key = self._company_lock_key(company_id)
+        from sqlalchemy.ext.asyncio import AsyncEngine
+
+        try:
+            engine: AsyncEngine = db.get_bind()  # type: ignore
+            # Create truly fresh connection by disposing and getting new one
+            async with engine.connect() as conn:
+                # Start a new transaction and try to acquire lock
+                async with conn.begin():
+                    res = await conn.execute(
+                        text("SELECT pg_try_advisory_xact_lock(:lock_key)").bindparams(lock_key=lock_key)
+                    )
+                    ok = res.scalar_one_or_none()
+                    # Lock is automatically released at end of transaction
+                    return bool(ok)
+        except Exception:
+            return False
 
     async def _load_or_create_state(self, db: AsyncSession, company_id: int) -> KaspiOrderSyncState:
         q = await db.execute(

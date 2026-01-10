@@ -77,6 +77,58 @@ def _orders_payload_with_status_timestamp(status: str, ts: datetime) -> list[dic
 
 
 @pytest.mark.asyncio
+async def test_sync_ops_lock_available_field(async_client, company_a_admin_headers):
+    """
+    Test that ops endpoint includes lock_available field as boolean.
+    """
+    resp = await async_client.get("/api/v1/kaspi/orders/sync/ops", headers=company_a_admin_headers)
+    assert resp.status_code == 200
+    data = resp.json()
+    assert "lock_available" in data
+    assert isinstance(data["lock_available"], bool)
+
+
+@pytest.mark.asyncio
+async def test_sync_timeout_records_error(monkeypatch, async_client, async_db_session, company_a_admin_headers):
+    """
+    Timeout should return 504 and persist failure state without advancing the watermark.
+    """
+    from app.services.kaspi_service import KaspiService
+
+    original_init = KaspiService.__init__
+
+    def patched_init(self, *args, **kwargs):  # noqa: ANN001, ARG001
+        original_init(self, *args, **kwargs)
+        self._sync_timeout_seconds = 0.01  # Very short timeout
+
+    monkeypatch.setattr(KaspiService, "__init__", patched_init)
+
+    async def slow_get_orders(self, **kwargs):  # noqa: ANN001, ARG001
+        await asyncio.sleep(0.2)
+        return []
+
+    monkeypatch.setattr(KaspiService, "get_orders", slow_get_orders)
+
+    prev_res = await async_db_session.execute(
+        sa.select(KaspiOrderSyncState).where(KaspiOrderSyncState.company_id == 1001)
+    )
+    prev_state = prev_res.scalar_one_or_none()
+    prev_watermark = prev_state.last_synced_at if prev_state else None
+
+    resp = await async_client.post("/api/v1/kaspi/orders/sync", headers=company_a_admin_headers)
+    assert resp.status_code == 504, f"Expected 504, got {resp.status_code}: {resp.text}"
+
+    async_db_session.expire_all()
+    res = await async_db_session.execute(sa.select(KaspiOrderSyncState).where(KaspiOrderSyncState.company_id == 1001))
+    state = res.scalar_one_or_none()
+    assert state is not None, "State should exist after timeout"
+    assert state.last_result == "failed"
+    assert state.last_error_code == "timeout"
+    assert state.last_attempt_at is not None
+    assert state.last_synced_at == prev_watermark
+
+
+@pytest.mark.asyncio
 async def test_first_sync_creates_orders(monkeypatch, async_client, async_db_session, company_a_admin_headers):
     async def fake_get_orders(self, *, date_from=None, date_to=None, status=None, page=1, page_size=100):  # noqa: ARG001
         return _orders_payload() if page == 1 else []
