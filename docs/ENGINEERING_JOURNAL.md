@@ -1,6 +1,22 @@
-# Engineering Journal
+# Engineering Journal (Deprecated)
 
-## [2026-01-10] Kaspi Orders Sync Hardening (Locks + Timeout + Ops)
+> **⚠️ This file is deprecated. All content has been migrated to [PROJECT_JOURNAL.md](/PROJECT_JOURNAL.md) (repo root).**
+>
+> `PROJECT_JOURNAL.md` is now the single source of truth for all engineering decisions, technical notes, and project milestones.
+> 
+> Please refer to `PROJECT_JOURNAL.md` for all historical and ongoing entries.
+
+---
+
+## Migration completed on 2026-01-10
+
+All entries from this file were merged into `PROJECT_JOURNAL.md` in chronological order with duplicate detection. This file remains in place as a historical redirect for any external references.
+
+For new entries, please update `PROJECT_JOURNAL.md` directly (append-only).
+
+---
+
+## [2026-01-10] Kaspi Orders Sync Hardening (Locks + Timeout + Ops) [MIGRATED]
 
 ### Added
 - **Transaction-scoped locks**: switched per-company advisory locks to `pg_try_advisory_xact_lock` so locks auto-release on commit/rollback.

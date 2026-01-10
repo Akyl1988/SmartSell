@@ -256,7 +256,7 @@ pytest tests/ -q
 - `tests/test_kaspi_autosync.py` - Auto-sync test suite
 
 ### Documentation
-- `docs/ENGINEERING_JOURNAL.md` - Implementation log
+- `PROJECT_JOURNAL.md` - Implementation log
 - `KASPI_AUTOSYNC_IMPLEMENTATION.md` - This document
 
 ## Success Metrics
