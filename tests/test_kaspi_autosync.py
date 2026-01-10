@@ -233,8 +233,46 @@ async def test_autosync_status_endpoint(async_client, auth_headers):
 
     assert response.status_code == 200
     data = response.json()
+    assert "enabled" in data
     assert "last_run_at" in data
     assert "eligible_companies" in data
     assert "success" in data
     assert "locked" in data
     assert "failed" in data
+
+
+@pytest.mark.asyncio
+async def test_autosync_status_disabled(async_client, auth_headers):
+    """
+    Тест: GET /api/v1/kaspi/autosync/status должен показывать enabled=False когда отключено.
+    """
+    with patch("app.core.config.settings") as mock_settings:
+        mock_settings.KASPI_AUTOSYNC_ENABLED = False
+
+        response = await async_client.get("/api/v1/kaspi/autosync/status", headers=auth_headers)
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["enabled"] is False
+        assert data["last_run_at"] is None
+        assert data["eligible_companies"] == 0
+        assert data["success"] == 0
+        assert data["locked"] == 0
+        assert data["failed"] == 0
+
+
+@pytest.mark.asyncio
+async def test_autosync_trigger_disabled(async_client, auth_headers):
+    """
+    Тест: POST /api/v1/kaspi/autosync/trigger должен возвращать 409 когда autosync отключен.
+    """
+    with patch("app.core.config.settings") as mock_settings:
+        mock_settings.KASPI_AUTOSYNC_ENABLED = False
+
+        response = await async_client.post("/api/v1/kaspi/autosync/trigger", headers=auth_headers)
+
+        assert response.status_code == 409
+        data = response.json()
+        assert "detail" in data
+        assert "disabled" in data["detail"].lower()
+        assert "KASPI_AUTOSYNC_ENABLED" in data["detail"]

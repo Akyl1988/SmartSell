@@ -517,6 +517,7 @@ def kaspi_debug_ping():
 class KaspiAutoSyncStatusOut(BaseModel):
     """Ответ о статусе последнего запуска авто-синхронизации."""
 
+    enabled: bool = Field(..., description="Включена ли автоматическая синхронизация")
     last_run_at: str | None = Field(None, description="ISO время последнего запуска")
     eligible_companies: int = Field(0, description="Сколько компаний подходят для синхронизации")
     success: int = Field(0, description="Успешно синхронизировано")
@@ -536,11 +537,26 @@ async def kaspi_autosync_status(
     Возвращает статус последнего запуска автоматической синхронизации заказов Kaspi.
     Не требует админских прав, но показывает глобальную статистику по всем компаниям.
     """
+    from app.core.config import settings
+
+    enabled = getattr(settings, "KASPI_AUTOSYNC_ENABLED", False)
+
+    if not enabled:
+        return KaspiAutoSyncStatusOut(
+            enabled=False,
+            last_run_at=None,
+            eligible_companies=0,
+            success=0,
+            locked=0,
+            failed=0,
+        )
+
     try:
         from app.worker.kaspi_autosync import get_last_run_summary
 
         summary = get_last_run_summary()
         return KaspiAutoSyncStatusOut(
+            enabled=True,
             last_run_at=summary.get("last_run_at"),
             eligible_companies=summary.get("eligible_companies", 0),
             success=summary.get("success", 0),
@@ -566,6 +582,16 @@ async def kaspi_autosync_trigger(
     Запускает синхронизацию заказов Kaspi для всех активных компаний вручную.
     Полезно для диагностики или немедленного обновления без ожидания следующего цикла.
     """
+    from app.core.config import settings
+
+    enabled = getattr(settings, "KASPI_AUTOSYNC_ENABLED", False)
+
+    if not enabled:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Kaspi auto-sync is disabled. Set KASPI_AUTOSYNC_ENABLED=true to enable.",
+        )
+
     # Можно добавить проверку на админские права:
     # if not current_user.is_admin:
     #     raise HTTPException(status_code=403, detail="Admin only")
@@ -581,6 +607,7 @@ async def kaspi_autosync_trigger(
 
         summary = get_last_run_summary()
         return KaspiAutoSyncStatusOut(
+            enabled=True,
             last_run_at=summary.get("last_run_at"),
             eligible_companies=summary.get("eligible_companies", 0),
             success=summary.get("success", 0),

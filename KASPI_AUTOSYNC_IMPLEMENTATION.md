@@ -20,7 +20,7 @@ Production-grade background job for automatic synchronization of Kaspi orders ac
 
 ```python
 KASPI_AUTOSYNC_ENABLED: bool = Field(
-    default=True, 
+    default=False,  # Disabled by default for production safety
     description="Enable automatic Kaspi orders synchronization"
 )
 KASPI_AUTOSYNC_INTERVAL_MINUTES: int = Field(
@@ -32,6 +32,8 @@ KASPI_AUTOSYNC_MAX_CONCURRENCY: int = Field(
     description="Maximum number of companies to sync in parallel"
 )
 ```
+
+**Note**: Auto-sync is **disabled by default** for production safety. Set `KASPI_AUTOSYNC_ENABLED=true` in environment to enable.
 
 ### 3. Core Functionality
 
@@ -69,25 +71,35 @@ KASPI_AUTOSYNC_MAX_CONCURRENCY: int = Field(
 #### GET /api/v1/kaspi/autosync/status
 - **Returns**: Last run summary
 - **Fields**:
+  - `enabled` (bool) - whether auto-sync is enabled
   - `last_run_at` (ISO timestamp)
   - `eligible_companies` (count)
   - `success` (count)
   - `locked` (count)
   - `failed` (count)
+- **Behavior**: Returns `enabled=false` with zero stats when disabled
 
 #### POST /api/v1/kaspi/autosync/trigger
 - **Action**: Manual trigger of auto-sync
 - **Returns**: Updated run summary
 - **Use Case**: Immediate sync without waiting for next scheduled run
+- **Disabled State**: Returns 409 Conflict with error message when auto-sync is disabled
 
 ### 5. Test Coverage
-**File**: `tests/test_kaspi_autosync.py` (240 lines, 6 tests)
+**File**: `tests/test_kaspi_autosync.py` (290 lines, 8 tests)
 
 | Test | Status | Purpose |
 |------|--------|---------|
 | test_get_eligible_companies_filters_correctly | ✅ PASS | Validates company selection logic |
 | test_sync_respects_concurrency_limit | ✅ PASS | Ensures max_concurrency honored |
 | test_locked_companies_dont_stop_batch | ✅ PASS | Advisory lock doesn't break batch |
+| test_failed_companies_tracked_in_summary | ✅ PASS | Errors tracked, don't crash job |
+| test_manual_trigger_via_endpoint | ⏭️ SKIP | API trigger (needs fixture refactor) |
+| test_autosync_status_endpoint | ✅ PASS | Status endpoint returns valid data |
+| test_autosync_status_disabled | ✅ PASS | Status shows disabled when KASPI_AUTOSYNC_ENABLED=false |
+| test_autosync_trigger_disabled | ✅ PASS | Trigger returns 409 when disabled |
+
+**Overall**: 7 passed, 1 skipped
 | test_failed_companies_tracked_in_summary | ✅ PASS | Errors tracked, don't crash job |
 | test_manual_trigger_via_endpoint | ⏭️ SKIP | API trigger (needs fixture refactor) |
 | test_autosync_status_endpoint | ✅ PASS | Status endpoint returns valid data |
@@ -147,10 +159,12 @@ Kaspi auto-sync: company_id=9 failed: Connection timeout
 
 ### Typical Execution Times
 - **Single company**: 2-5 seconds (depends on order count)
-- **10 companies (concurrency=3)**: ~10-15 seconds
-- **100 companies (concurrency=5)**: ~2-3 minutes
+- **10 companies (concufalse  # Disabled by default, set to true to enable
+KASPI_AUTOSYNC_INTERVAL_MINUTES=15
+KASPI_AUTOSYNC_MAX_CONCURRENCY=3
+```
 
-## Deployment Notes
+**Important**: Auto-sync is disabled by default for production safety. Enable explicitly when ready.Deployment Notes
 
 ### Environment Variables
 ```bash
