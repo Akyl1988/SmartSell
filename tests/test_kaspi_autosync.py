@@ -276,3 +276,85 @@ async def test_autosync_trigger_disabled(async_client, auth_headers):
         assert "detail" in data
         assert "disabled" in data["detail"].lower()
         assert "KASPI_AUTOSYNC_ENABLED" in data["detail"]
+
+
+@pytest.mark.asyncio
+async def test_autosync_status_includes_config(async_client, auth_headers):
+    """
+    Тест: GET /api/v1/kaspi/autosync/status должен включать configuration (interval, concurrency).
+    """
+    with patch("app.core.config.settings") as mock_settings:
+        mock_settings.KASPI_AUTOSYNC_ENABLED = True
+        mock_settings.KASPI_AUTOSYNC_INTERVAL_MINUTES = 30
+        mock_settings.KASPI_AUTOSYNC_MAX_CONCURRENCY = 5
+
+        response = await async_client.get("/api/v1/kaspi/autosync/status", headers=auth_headers)
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["enabled"] is True
+        assert data["interval_minutes"] == 30
+        assert data["max_concurrency"] == 5
+
+
+@pytest.mark.asyncio
+async def test_autosync_status_includes_scheduler_state(async_client, auth_headers):
+    """
+    Тест: GET /api/v1/kaspi/autosync/status должен включать scheduler state (job_registered, scheduler_running).
+    """
+    import sys
+
+    # Create mock scheduler
+    mock_scheduler = MagicMock()
+    mock_scheduler.running = True
+    mock_job = MagicMock()
+    mock_scheduler.get_job.return_value = mock_job
+
+    # Create mock module with scheduler
+    mock_scheduler_module = MagicMock()
+    mock_scheduler_module.scheduler = mock_scheduler
+
+    with patch("app.core.config.settings") as mock_settings:
+        mock_settings.KASPI_AUTOSYNC_ENABLED = True
+        mock_settings.KASPI_AUTOSYNC_INTERVAL_MINUTES = 15
+        mock_settings.KASPI_AUTOSYNC_MAX_CONCURRENCY = 3
+
+        with patch.dict(sys.modules, {"app.worker.scheduler_worker": mock_scheduler_module}):
+            response = await async_client.get("/api/v1/kaspi/autosync/status", headers=auth_headers)
+
+            assert response.status_code == 200
+            data = response.json()
+            assert "job_registered" in data
+            assert "scheduler_running" in data
+            assert data["job_registered"] is True
+            assert data["scheduler_running"] is True
+
+
+@pytest.mark.asyncio
+async def test_autosync_status_job_not_registered(async_client, auth_headers):
+    """
+    Тест: GET /api/v1/kaspi/autosync/status должен показывать job_registered=False если job не найден.
+    """
+    import sys
+
+    # Create mock scheduler with no job
+    mock_scheduler = MagicMock()
+    mock_scheduler.running = False
+    mock_scheduler.get_job.return_value = None  # Job not found
+
+    # Create mock module with scheduler
+    mock_scheduler_module = MagicMock()
+    mock_scheduler_module.scheduler = mock_scheduler
+
+    with patch("app.core.config.settings") as mock_settings:
+        mock_settings.KASPI_AUTOSYNC_ENABLED = True
+        mock_settings.KASPI_AUTOSYNC_INTERVAL_MINUTES = 15
+        mock_settings.KASPI_AUTOSYNC_MAX_CONCURRENCY = 3
+
+        with patch.dict(sys.modules, {"app.worker.scheduler_worker": mock_scheduler_module}):
+            response = await async_client.get("/api/v1/kaspi/autosync/status", headers=auth_headers)
+
+            assert response.status_code == 200
+            data = response.json()
+            assert data["job_registered"] is False
+            assert data["scheduler_running"] is False

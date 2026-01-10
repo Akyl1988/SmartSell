@@ -1,5 +1,35 @@
 # Engineering Journal
 
+## [2026-01-10] Kaspi Auto-Sync: Operational Observability (Configuration + Scheduler Visibility)
+
+### Added
+- **Enhanced Status Endpoint**: `GET /api/v1/kaspi/autosync/status` now returns full operational state
+  - **Configuration fields**: `interval_minutes`, `max_concurrency` (from settings)
+  - **Scheduler visibility**: `job_registered` (bool), `scheduler_running` (bool | null)
+  - **Backward compatible**: All existing `last_run_summary` fields preserved
+  - **Safe**: Returns valid response even if scheduler unavailable
+
+- **Updated Response Model**: `KaspiAutoSyncStatusOut` reorganized with sections:
+  1. Configuration (enabled, interval_minutes, max_concurrency)
+  2. Scheduler state (job_registered, scheduler_running)
+  3. Last run summary (last_run_at, eligible_companies, success, locked, failed)
+
+- **Tests Added**: Comprehensive coverage for new fields
+  - `test_autosync_status_includes_config` - Verifies configuration fields returned
+  - `test_autosync_status_includes_scheduler_state` - Verifies scheduler visibility when running
+  - `test_autosync_status_job_not_registered` - Verifies job_registered reflects actual state
+
+### Decision Rationale
+- **Why configuration in status?**: Operators need quick visibility into active settings
+- **Why scheduler state?**: Helps diagnose if background job is properly registered
+- **Why safe defaults?**: Never fails even if scheduler/module unavailable
+
+### Verified
+- All 246 tests passing (10 autosync tests including 3 new observability tests, 1 skipped)
+- Fixed test mocking: Using `patch.dict(sys.modules)` for dynamic imports inside endpoints
+- Backward compatible (no breaking changes)
+- Safe fallbacks for unavailable components
+
 ## [2026-01-10] Kaspi Auto-Sync: Production Safety (Disabled by Default)
 
 ### Changed
