@@ -182,6 +182,7 @@ scheduler = BackgroundScheduler(
 )
 
 _JOB_ID_PROCESS_CAMPAIGNS = "process_campaigns"
+_JOB_ID_KASPI_AUTOSYNC = "kaspi_autosync"
 
 
 # События планировщика для детального лога
@@ -344,6 +345,7 @@ def start() -> None:
     """
     Запуск планировщика:
       - job process_scheduled_campaigns каждую минуту
+      - job kaspi_autosync (если enabled) с настраиваемым интервалом
       - graceful shutdown при завершении процесса
     """
     logger.info("Запуск APScheduler worker")
@@ -358,6 +360,29 @@ def start() -> None:
         coalesce=True,  # слить пропущенные запуски в один
         misfire_grace_time=60,  # допуск по пропуску
     )
+
+    # Kaspi auto-sync job (если включен)
+    if getattr(settings, "KASPI_AUTOSYNC_ENABLED", True):
+        try:
+            from app.worker.kaspi_autosync import run_kaspi_autosync
+
+            interval_minutes = getattr(settings, "KASPI_AUTOSYNC_INTERVAL_MINUTES", 15)
+            scheduler.add_job(
+                run_kaspi_autosync,
+                trigger=IntervalTrigger(minutes=interval_minutes),
+                id=_JOB_ID_KASPI_AUTOSYNC,
+                replace_existing=True,
+                max_instances=1,
+                coalesce=True,
+                misfire_grace_time=300,  # 5 минут допуска
+            )
+            logger.info(
+                "Kaspi auto-sync job добавлен (интервал=%d мин, concurrency=%d)",
+                interval_minutes,
+                getattr(settings, "KASPI_AUTOSYNC_MAX_CONCURRENCY", 3),
+            )
+        except ImportError as e:
+            logger.warning("Не удалось загрузить kaspi_autosync: %s", e)
 
     scheduler.start()
     logger.info("APScheduler запущен (timezone=%s)", getattr(settings, "SCHEDULER_TIMEZONE", "UTC"))
@@ -391,6 +416,30 @@ def reload_jobs() -> None:
         coalesce=True,
         misfire_grace_time=60,
     )
+
+    # Также перезагружаем Kaspi auto-sync если включен
+    if getattr(settings, "KASPI_AUTOSYNC_ENABLED", True):
+        try:
+            scheduler.remove_job(_JOB_ID_KASPI_AUTOSYNC)
+        except Exception:
+            pass
+
+        try:
+            from app.worker.kaspi_autosync import run_kaspi_autosync
+
+            interval_minutes = getattr(settings, "KASPI_AUTOSYNC_INTERVAL_MINUTES", 15)
+            scheduler.add_job(
+                run_kaspi_autosync,
+                trigger=IntervalTrigger(minutes=interval_minutes),
+                id=_JOB_ID_KASPI_AUTOSYNC,
+                replace_existing=True,
+                max_instances=1,
+                coalesce=True,
+                misfire_grace_time=300,
+            )
+        except ImportError as e:
+            logger.warning("Не удалось загрузить kaspi_autosync: %s", e)
+
     logger.info("Базовые задачи планировщика пересозданы")
 
 

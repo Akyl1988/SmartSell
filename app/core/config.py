@@ -433,6 +433,23 @@ class Settings(BaseSettings):
     )
     EAGER_SIDE_EFFECTS: bool = Field(default=True, validation_alias="EAGER_SIDE_EFFECTS")
 
+    # Kaspi Auto-Sync Settings
+    KASPI_AUTOSYNC_ENABLED: bool = Field(
+        default=True,
+        description="Enable automatic Kaspi orders sync",
+        validation_alias="KASPI_AUTOSYNC_ENABLED",
+    )
+    KASPI_AUTOSYNC_INTERVAL_MINUTES: int = Field(
+        default=15,
+        description="Kaspi auto-sync interval in minutes",
+        validation_alias="KASPI_AUTOSYNC_INTERVAL_MINUTES",
+    )
+    KASPI_AUTOSYNC_MAX_CONCURRENCY: int = Field(
+        default=3,
+        description="Maximum number of companies to sync concurrently",
+        validation_alias="KASPI_AUTOSYNC_MAX_CONCURRENCY",
+    )
+
     # ---- rate limits
     RATE_LIMIT_PER_MINUTE: int = Field(
         default=100, description="Rate limit per minute", validation_alias="RATE_LIMIT_PER_MINUTE"
