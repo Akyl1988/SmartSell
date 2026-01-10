@@ -509,3 +509,86 @@ async def kaspi_orders_sync_state(
 @router.get("/_debug/ping", summary="Kaspi debug ping")
 def kaspi_debug_ping():
     return {"ok": True, "module": "kaspi", "prefix": router.prefix}
+
+
+# ============================= AUTO-SYNC ADMIN ===============================
+
+
+class KaspiAutoSyncStatusOut(BaseModel):
+    """Ответ о статусе последнего запуска авто-синхронизации."""
+
+    last_run_at: str | None = Field(None, description="ISO время последнего запуска")
+    eligible_companies: int = Field(0, description="Сколько компаний подходят для синхронизации")
+    success: int = Field(0, description="Успешно синхронизировано")
+    locked: int = Field(0, description="Заблокировано (уже выполняется)")
+    failed: int = Field(0, description="Неуспешно (ошибка)")
+
+
+@router.get(
+    "/autosync/status",
+    summary="Статус автоматической синхронизации заказов",
+    response_model=KaspiAutoSyncStatusOut,
+)
+async def kaspi_autosync_status(
+    current_user: User = Depends(_auth_user),
+):
+    """
+    Возвращает статус последнего запуска автоматической синхронизации заказов Kaspi.
+    Не требует админских прав, но показывает глобальную статистику по всем компаниям.
+    """
+    try:
+        from app.worker.kaspi_autosync import get_last_run_summary
+
+        summary = get_last_run_summary()
+        return KaspiAutoSyncStatusOut(
+            last_run_at=summary.get("last_run_at"),
+            eligible_companies=summary.get("eligible_companies", 0),
+            success=summary.get("success", 0),
+            locked=summary.get("locked", 0),
+            failed=summary.get("failed", 0),
+        )
+    except ImportError:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Kaspi auto-sync module not available",
+        )
+
+
+@router.post(
+    "/autosync/trigger",
+    summary="Ручной запуск автоматической синхронизации",
+    response_model=KaspiAutoSyncStatusOut,
+)
+async def kaspi_autosync_trigger(
+    current_user: User = Depends(_auth_user),
+):
+    """
+    Запускает синхронизацию заказов Kaspi для всех активных компаний вручную.
+    Полезно для диагностики или немедленного обновления без ожидания следующего цикла.
+    """
+    # Можно добавить проверку на админские права:
+    # if not current_user.is_admin:
+    #     raise HTTPException(status_code=403, detail="Admin only")
+
+    try:
+        from app.worker.kaspi_autosync import run_kaspi_autosync
+
+        # Запускаем синхронно (блокирующий вызов)
+        run_kaspi_autosync()
+
+        # Возвращаем обновлённую статистику
+        from app.worker.kaspi_autosync import get_last_run_summary
+
+        summary = get_last_run_summary()
+        return KaspiAutoSyncStatusOut(
+            last_run_at=summary.get("last_run_at"),
+            eligible_companies=summary.get("eligible_companies", 0),
+            success=summary.get("success", 0),
+            locked=summary.get("locked", 0),
+            failed=summary.get("failed", 0),
+        )
+    except ImportError:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Kaspi auto-sync module not available",
+        )
