@@ -26,12 +26,14 @@ app/api/v1/kaspi.py — Полный, боевой роутер интеграц
 - Расширяемость: аккуратные модели ввода/вывода; готово к будущим эндпоинтам.
 """
 
+import inspect
+import json
 import logging
 from typing import Any
 
 import sqlalchemy as sa
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field
 from sqlalchemy import bindparam, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -41,12 +43,15 @@ from app.core.security import get_current_user, resolve_tenant_company_id
 # Доменные зависимости/схемы:
 from app.integrations.kaspi_adapter import KaspiAdapter, KaspiAdapterError
 from app.models import Product
+from app.models.company import Company
 from app.models.kaspi_order_sync_state import KaspiOrderSyncState
 from app.models.marketplace import KaspiStoreToken
 from app.models.user import User
 from app.schemas.kaspi import (
     ImportRequest,
     ImportStatusQuery,
+    KaspiConnectIn,
+    KaspiConnectOut,
     KaspiTokenIn,
     KaspiTokenOut,
     OrdersQuery,
@@ -67,6 +72,12 @@ def normalize_name(name: str) -> str:
     return name.strip().lower()
 
 
+async def _maybe_await(value):
+    if inspect.isawaitable(value):
+        return await value
+    return value
+
+
 async def _auth_user(current_user: User = Depends(get_current_user)) -> User:
     return current_user
 
@@ -75,31 +86,7 @@ def _resolve_company_id(current_user: User) -> int:
     return resolve_tenant_company_id(current_user, not_found_detail="Company not set")
 
 
-# ------------------------------- Локальные схемы -----------------------------
-
-
-class ConnectStoreInput(BaseModel):
-    store_name: str = Field(..., min_length=3, description="Имя магазина (уникальное)")
-    token: str = Field(..., min_length=8, description="API token для Kaspi API")
-    verify: bool = Field(True, description="Проверить токен запросом к Kaspi")
-    save: bool = Field(True, description="Сохранить токен в БД при успехе")
-
-    @field_validator("store_name")
-    @classmethod
-    def _strip_name(cls, v: str) -> str:
-        v = v.strip()
-        if not v:
-            raise ValueError("store_name is empty")
-        return v
-
-
-class ConnectStoreOut(BaseModel):
-    ok: bool
-    store_name: str
-    verified: bool
-    saved: bool
-    message: str | None = None
-    adapter_health: Any | None = None
+# ------------------------------- Локальные схемы (deprecated - use app/schemas/kaspi.py) ------
 
 
 class AvailabilitySyncIn(BaseModel):
@@ -120,59 +107,105 @@ class KaspiTokenMaskedOut(BaseModel):
     updated_at: Any
 
 
-# ================================= CONNECT ===================================
-
-
 @router.post(
     "/connect",
-    response_model=ConnectStoreOut,
+    response_model=KaspiConnectOut,
     status_code=status.HTTP_200_OK,
-    summary="Подключить магазин Kaspi (verify/save)",
+    summary="Kaspi onboarding: connect and configure store (main entry point)",
 )
 async def connect_store(
-    body: ConnectStoreInput,
+    body: KaspiConnectIn,
+    current_user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_async_db),
 ):
     """
-    1) (опц.) Проверяем токен/магазин (через адаптер, health).
-    2) (опц.) Сохраняем токен.
-    """
-    verified = False
-    saved = False
-    health_payload: Any | None = None
+    Main Kaspi onboarding endpoint:
+    1) Resolve tenant company from current user.
+    2) Validate and optionally verify token with Kaspi adapter.
+    3) Update Company.name with provided company_name.
+    4) Store encrypted token via KaspiStoreToken.upsert_token().
+    5) Store optional private metadata in Company.settings JSON.
+    6) Return only safe fields (no token, no metadata exposed).
 
-    # 1) verify
+    Requires: company_name (min_length=2).
+    Optional: meta (private marketplace metadata, not exposed).
+    """
+    # Resolve company from current user (tenant isolation)
+    company_id = _resolve_company_id(current_user)
+
+    # Load Company
+    result = await session.execute(sa.select(Company).where(Company.id == company_id))
+    company = result.scalars().first()
+    if not company:
+        logger.error("Kaspi connect: company not found id=%s", company_id)
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Company not found",
+        )
+
+    # Verify token if requested (before persisting)
     if body.verify:
         try:
-            # На этапе verify — проверяем доступность профиля магазина.
-            health_payload = KaspiAdapter().health(body.store_name)
-            verified = True
+            logger.info("Kaspi connect: verifying token for store=%s", body.store_name)
+            adapter = KaspiAdapter()
+            await _maybe_await(adapter.health(body.store_name))
+            logger.info("Kaspi connect: verification succeeded for store=%s", body.store_name)
         except KaspiAdapterError as e:
-            logger.warning("Kaspi connect verify failed: store=%s err=%s", body.store_name, e)
+            logger.warning("Kaspi connect: verification failed store=%s error=%s", body.store_name, e)
             raise HTTPException(
-                status_code=status.HTTP_502_BAD_GATEWAY,
-                detail=f"verification_failed: {e}",
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=f"Token verification failed: {str(e)}",
             )
 
-    # 2) save token
-    if body.save:
+    # Update Company with provided company_name
+    company.name = body.company_name.strip()
+    company.kaspi_store_id = body.store_name
+
+    # Store private metadata in Company.settings if provided
+    if body.meta:
         try:
-            await KaspiStoreToken.upsert_token(session, body.store_name, body.token)
-            saved = True
+            settings_dict = {}
+            if company.settings:
+                try:
+                    settings_dict = json.loads(company.settings)
+                except (json.JSONDecodeError, TypeError):
+                    settings_dict = {}
+            settings_dict["kaspi_meta"] = body.meta
+            company.settings = json.dumps(settings_dict)
+            logger.debug("Kaspi connect: stored private metadata for company_id=%s", company_id)
         except Exception as e:
-            logger.error("Kaspi connect save token failed: store=%s err=%s", body.store_name, e)
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail=f"save_failed: {e}",
-            )
+            logger.warning("Kaspi connect: failed to store metadata company_id=%s error=%s", company_id, e)
+            # Don't fail the entire request if metadata storage fails
 
-    return ConnectStoreOut(
-        ok=True,
+    # Upsert encrypted token (never expose plaintext)
+    try:
+        logger.info("Kaspi connect: upserting token for store=%s", body.store_name)
+        await KaspiStoreToken.upsert_token(session, body.store_name, body.token)
+        logger.info("Kaspi connect: token upserted for store=%s company_id=%s", body.store_name, company_id)
+    except Exception as e:
+        logger.error("Kaspi connect: token upsert failed store=%s error=%s", body.store_name, e)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to save token: {str(e)}",
+        )
+
+    # Commit all changes in single transaction
+    try:
+        await session.commit()
+        logger.info("Kaspi connect: transaction committed company_id=%s store=%s", company_id, body.store_name)
+    except Exception as e:
+        await session.rollback()
+        logger.error("Kaspi connect: commit failed company_id=%s error=%s", company_id, e)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to save configuration: {str(e)}",
+        )
+
+    return KaspiConnectOut(
         store_name=body.store_name,
-        verified=verified or not body.verify,
-        saved=saved,
-        adapter_health=health_payload,
-        message="connected",
+        company_id=company_id,
+        connected=True,
+        message="Successfully connected to Kaspi store",
     )
 
 
