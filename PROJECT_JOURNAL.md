@@ -1585,3 +1585,28 @@ Timeout could cancel/rollback the main sync transaction, causing `kaspi_order_sy
 - `python -m ruff format app tests`
 - `python -m ruff check app tests`
 - `python -m pytest -q` → `248 passed, 6 skipped`
+### 2026-01-11 — Registration creates draft Company tenant
+
+**Context**
+- `/api/v1/auth/register` создавал пользователя, но tenant-компания не создавалась → таблица `companies` оставалась пустой, tenant-scoping и онбординг ломались.
+
+**Changes**
+- `app/api/v1/auth.py`: в `register()` добавлено создание **draft Company** в одной транзакции:
+  - `company.name = user_data.company_name` или fallback `Draft {normalized_phone}`
+  - `company.is_active = true`, `company.subscription_plan = 'start'`
+  - связь: `company.owner_id = user.id`, `user.company_id = company.id`
+- `tests/app/test_auth.py`: добавлены регрессионные тесты:
+  - `test_register_creates_draft_company_tenant`
+  - `test_register_creates_company_with_default_name`
+  - тесты учитывают нормализацию телефона (хранится только digits, без '+').
+- Добавлена документация: `docs/REGISTRATION_COMPANY_TENANT.md`
+- Quality gate: `ruff format/check` пройдено; `pytest tests/app/test_auth.py` зелёный.
+
+**Impact**
+- После регистрации всегда существует tenant `Company`, а `User` привязан к ней.
+- Появилась стабильная основа для онбординга (позже переименование/реквизиты на шаге подключения Kaspi).
+
+**Follow-ups**
+- В онбординге подключения Kaspi сделать `company_name` обязательным и обновлять `companies.name` (источник истины — ввод владельца, не маркетплейс).
+- При желании добавить флаг onboarding в `companies.settings` (например `kaspi_connected`), и запускать autosync только при активной интеграции.
+
