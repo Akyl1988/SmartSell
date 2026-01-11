@@ -478,14 +478,14 @@ class KaspiService:
             raise
         except asyncio.TimeoutError:
             duration_ms = int((perf_counter() - started_at) * 1000)
-            
+
             # Critical fix: explicit rollback before creating fresh session to avoid deadlock
             try:
                 if db.in_transaction():
                     await db.rollback()
             except Exception:
                 logger.exception("Failed to rollback after timeout: company_id=%s", company_id)
-            
+
             await self._record_timeout_state(
                 db=db,
                 company_id=company_id,
@@ -759,11 +759,21 @@ class KaspiService:
                         "[CI_DIAG] _fetch_orders_page POST get_orders SUCCESS: company_id=%s page=%s items=%s monotonic=%s",
                         company_id,
                         page,
-                        len(result.get("items", [])) if isinstance(result, dict) else len(result) if isinstance(result, list) else 0,
+                        len(result.get("items", []))
+                        if isinstance(result, dict)
+                        else len(result)
+                        if isinstance(result, list)
+                        else 0,
                         perf_counter(),
                     )
                 return result
-            except (asyncio.TimeoutError, httpx.TimeoutException, httpx.NetworkError, httpx.HTTPStatusError, RuntimeError) as e:
+            except (
+                asyncio.TimeoutError,
+                httpx.TimeoutException,
+                httpx.NetworkError,
+                httpx.HTTPStatusError,
+                RuntimeError,
+            ) as e:
                 if _diag_enabled():
                     logger.error(
                         "[CI_DIAG] _fetch_orders_page EXCEPTION: company_id=%s page=%s attempt=%s exc=%s monotonic=%s",
@@ -776,7 +786,7 @@ class KaspiService:
                 is_last = attempt == attempts - 1
                 code = getattr(getattr(e, "response", None), "status_code", None)
                 transient = code in {429, 500, 502, 503, 504} or isinstance(
-                    e, (asyncio.TimeoutError, httpx.TimeoutException, httpx.NetworkError)
+                    e, asyncio.TimeoutError | httpx.TimeoutException | httpx.NetworkError
                 )
                 if not transient or is_last:
                     logger.error("Kaspi get_orders failed after retries: %s", e)
