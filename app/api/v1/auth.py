@@ -51,6 +51,7 @@ from app.core.security import (
     verify_password,
 )
 from app.integrations.ports.otp import OtpProvider
+from app.models.company import Company
 from app.models.otp import OtpAttempt, OTPCode  # таблица otp_codes и enterprise-OTP попытки
 from app.models.user import User, UserSession
 from app.schemas.base import SuccessResponse
@@ -279,6 +280,22 @@ async def register(user_data: UserCreate, request: Request, db: AsyncSession = D
 
     try:
         hashed_password = get_password_hash(user_data.password)
+
+        # Create draft Company (tenant) for the new user
+        company_name = (user_data.company_name or "").strip()
+        if not company_name:
+            # Use phone as fallback for company name (normalized, human-readable)
+            company_name = f"Draft {phone}"
+
+        company = Company(
+            name=company_name,
+            is_active=True,
+            subscription_plan="start",
+        )
+        db.add(company)
+        await db.flush()  # Get company.id without committing
+
+        # Create user and bind to company
         user = User(
             phone=phone,
             email=email,
@@ -286,23 +303,29 @@ async def register(user_data: UserCreate, request: Request, db: AsyncSession = D
             hashed_password=hashed_password,
             is_active=True,
             is_verified=False,
+            company_id=company.id,
         )
         db.add(user)
+        await db.flush()  # Get user.id without committing
+
+        # Set company owner to the new user
+        company.owner_id = user.id
         await db.commit()
         await db.refresh(user)
+        await db.refresh(company)
 
         audit_logger.log_data_change(
             user_id=user.id,
             action="create",
             resource_type="user",
             resource_id=str(user.id),
-            changes={"phone": phone, "email": email},
+            changes={"phone": phone, "email": email, "company_id": company.id},
         )
 
         if not AUTH_REGISTER_ISSUE_TOKENS:
             return SuccessResponse(
                 message="User registered successfully. Please verify your phone number.",
-                data={"user_id": user.id},
+                data={"user_id": user.id, "company_id": company.id},
             )
 
         access_token, refresh_token = _issue_tokens_for_user(user.id)

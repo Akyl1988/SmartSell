@@ -4,6 +4,7 @@ Tests for authentication functionality (legacy /api/auth/* alias supported).
 
 import pytest
 from httpx import AsyncClient
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.security import get_password_hash
@@ -37,6 +38,73 @@ class TestAuth:
         assert "access_token" in data
         assert "refresh_token" in data
         assert data.get("token_type") == "bearer"
+
+    @pytest.mark.asyncio
+    async def test_register_creates_draft_company_tenant(
+        self, async_client: AsyncClient, async_db_session: AsyncSession
+    ):
+        """Regression test: Registration should create a draft Company tenant bound to the user."""
+        user_data = {
+            "phone": "+77009876543",
+            "password": "securepassword123",
+            "company_name": "My Test Store",
+        }
+
+        # Register user
+        response = await async_client.post("/api/auth/register", json=user_data)
+        assert response.status_code == 200, response.text
+        data = response.json()
+        assert "access_token" in data
+
+        # Refresh session to see changes from the endpoint's transaction
+        await async_db_session.rollback()
+
+        # Verify exactly one company was created
+        companies = await async_db_session.execute(select(Company).where(Company.name == "My Test Store"))
+        company = companies.scalars().first()
+        assert company is not None, "Company should be created during registration"
+        assert company.id is not None
+        assert company.is_active is True
+        assert company.subscription_plan == "start"
+
+        # Verify user is bound to that company (phone is stored as digits only)
+        users = await async_db_session.execute(select(User).where(User.phone == "77009876543"))
+        user = users.scalars().first()
+        assert user is not None
+        assert user.company_id == company.id, "User should be bound to the created company"
+
+        # Verify company owner is set to the user
+        assert company.owner_id == user.id, "Company owner should be set to the user"
+
+    @pytest.mark.asyncio
+    async def test_register_creates_company_with_default_name(
+        self, async_client: AsyncClient, async_db_session: AsyncSession
+    ):
+        """Regression test: When no company_name is provided, use 'Draft {phone}' format."""
+        user_data = {
+            "phone": "+77008765432",
+            "password": "securepassword456",
+            # no company_name provided
+        }
+
+        # Register user
+        response = await async_client.post("/api/auth/register", json=user_data)
+        assert response.status_code == 200, response.text
+
+        # Refresh session to see changes from the endpoint's transaction
+        await async_db_session.rollback()
+
+        # Verify company was created with default name (phone is stored as digits only)
+        users = await async_db_session.execute(select(User).where(User.phone == "77008765432"))
+        user = users.scalars().first()
+        assert user is not None
+        assert user.company_id is not None
+
+        companies = await async_db_session.execute(select(Company).where(Company.id == user.company_id))
+        company = companies.scalars().first()
+        assert company is not None
+        assert company.name == "Draft 77008765432", f"Expected 'Draft 77008765432', got '{company.name}'"
+        assert company.owner_id == user.id
 
     @pytest.mark.asyncio
     async def test_register_duplicate_phone(self, async_client: AsyncClient, async_db_session: AsyncSession):
