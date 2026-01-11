@@ -833,11 +833,45 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:  # type: ignore[overrid
     except Exception as e:
         logger.error("Scheduler start failed: %s", e)
 
+    # Kaspi orders sync runner background task (guarded by startup hooks check)
+    kaspi_sync_task = None
+    try:
+        enable_kaspi_sync = _env_truthy(os.getenv("ENABLE_KASPI_SYNC_RUNNER", "0"))
+        if not disable_hooks and enable_kaspi_sync and not _GLOBAL.get("kaspi_sync_started"):
+            from app.services.kaspi_orders_sync_runner import run_kaspi_orders_sync_once
+
+            async def _kaspi_sync_loop():
+                """Periodic Kaspi sync loop with configurable interval."""
+                interval_seconds = int(os.getenv("KASPI_SYNC_INTERVAL_SECONDS", "300"))  # default: 5 min
+                logger.info("kaspi_sync_runner: background task started", interval_seconds=interval_seconds)
+                while True:
+                    try:
+                        await run_kaspi_orders_sync_once()
+                    except Exception as exc:
+                        logger.error("kaspi_sync_runner: unexpected error in loop", error=str(exc), exc_info=True)
+                    await asyncio.sleep(interval_seconds)
+
+            kaspi_sync_task = asyncio.create_task(_kaspi_sync_loop())
+            _GLOBAL["kaspi_sync_task"] = kaspi_sync_task
+            _GLOBAL["kaspi_sync_started"] = True
+            logger.info("Kaspi orders sync runner started (ENABLE_KASPI_SYNC_RUNNER=1)")
+    except Exception as e:
+        logger.error("Kaspi sync runner start failed: %s", e)
+
     # передаём управление приложению
     try:
         yield
     finally:
         # ---- Shutdown (graceful)
+        # Cancel Kaspi sync task if running
+        if kaspi_sync_task and not kaspi_sync_task.done():
+            kaspi_sync_task.cancel()
+            try:
+                await kaspi_sync_task
+            except asyncio.CancelledError:
+                pass
+            logger.info("Kaspi sync runner stopped")
+
         try:
             client = _GLOBAL.get("httpx")
             if client is not None:
