@@ -1,43 +1,3 @@
-## [2026-01-11] Kaspi connect (POST /api/v1/kaspi/connect) - main onboarding endpoint
-
-### Enhanced
-- **POST /api/v1/kaspi/connect** redesigned as primary Kaspi marketplace onboarding step with improved security and multi-tenant isolation.
-- **Schema updates** (app/schemas/kaspi.py):
-  - `KaspiConnectIn`: added required `company_name` field (min_length=2), kept `store_name`, `token`, `verify` (bool), optional `meta` (dict for private metadata).
-  - `KaspiConnectOut`: response with only safe fields: `store_name`, `company_id`, `connected` (bool), `message`. No token or metadata exposed.
-- **Endpoint implementation** (app/api/v1/kaspi.py::connect_store):
-  - **Tenant isolation**: company_id resolved from `current_user` via `resolve_tenant_company_id()`, not from request (strict multi-tenant).
-  - **Company validation**: loads Company by resolved company_id, returns 404 if not found.
-  - **Conditional verification**: if `verify=true`, calls `KaspiAdapter.health(store_name)` to validate token; returns 422 with error details on verification failure.
-  - **Company updates**: sets `Company.name = company_name.strip()` and `Company.kaspi_store_id = store_name`.
-  - **Private metadata storage**: if `meta` dict provided, stores under `Company.settings["kaspi_meta"]` as JSON (not exposed in response).
-  - **Token encryption**: calls `KaspiStoreToken.upsert_token(session, store_name, token)` to encrypt and upsert token via pgcrypto.
-  - **Single transaction**: all updates (Company + KaspiStoreToken) committed in one transaction with proper rollback on error.
-  - **Comprehensive logging**: info-level for verification/upsert success, warning-level for verification failures, error-level for system errors. No plaintext tokens in logs.
-  - **Response security**: returns only store_name, company_id, connected, message; excludes token, metadata, settings.
-- **Tests** (tests/app/api/test_kaspi_connect.py) - 9 comprehensive test cases:
-  1. `test_connect_requires_company_name`: missing field returns 422.
-  2. `test_connect_rejects_blank_company_name`: empty/whitespace returns 422.
-  3. `test_connect_updates_company_name`: Company.name and kaspi_store_id updated correctly.
-  4. `test_connect_verify_false_skips_adapter`: verify=false doesn't call adapter.
-  5. `test_connect_stores_private_metadata`: meta dict stored in Company.settings["kaspi_meta"].
-  6. `test_connect_response_safe_fields_only`: response has store_name/company_id/connected, no token/meta/settings.
-  7. `test_connect_token_not_readable_from_api`: token field excluded from response.
-  8. `test_connect_verify_true_calls_adapter`: verify=true calls adapter.health(); returns 422 on error.
-  9. `test_connect_tenant_isolation`: company_id sourced from current_user only; user cannot modify other companies.
-
-### Quality assurance
-- All 9 tests pass; mocked KaspiStoreToken.upsert_token and KaspiAdapter to avoid external dependencies.
-- ruff format: 1 file reformatted (app/schemas/kaspi.py).
-- ruff check: 0 errors (removed unused field_validator import, removed unused health_payload variable).
-- No breaking changes to other Kaspi endpoints.
-
-### Key design principles
-- **Security first**: token encryption via pgcrypto, no plaintext exposure in API or logs.
-- **Multi-tenant strict**: company resolution from authenticated user only; request cannot override.
-- **Metadata privacy**: optional meta dict stored in Company.settings but not returned in responses.
-- **Fail-safe verification**: verify=false allows offline operation; verify=true validates with adapter before persisting.
-
 ## [2026-01-10] Strict runtime/pytest DB URL resolution
 
 ### Fixed
@@ -1650,3 +1610,42 @@ Timeout could cancel/rollback the main sync transaction, causing `kaspi_order_sy
 - В онбординге подключения Kaspi сделать `company_name` обязательным и обновлять `companies.name` (источник истины — ввод владельца, не маркетплейс).
 - При желании добавить флаг onboarding в `companies.settings` (например `kaspi_connected`), и запускать autosync только при активной интеграции.
 
+## [2026-01-11] Kaspi connect (POST /api/v1/kaspi/connect) - main onboarding endpoint
+
+### Enhanced
+- **POST /api/v1/kaspi/connect** redesigned as primary Kaspi marketplace onboarding step with improved security and multi-tenant isolation.
+- **Schema updates** (app/schemas/kaspi.py):
+  - `KaspiConnectIn`: added required `company_name` field (min_length=2), kept `store_name`, `token`, `verify` (bool), optional `meta` (dict for private metadata).
+  - `KaspiConnectOut`: response with only safe fields: `store_name`, `company_id`, `connected` (bool), `message`. No token or metadata exposed.
+- **Endpoint implementation** (app/api/v1/kaspi.py::connect_store):
+  - **Tenant isolation**: company_id resolved from `current_user` via `resolve_tenant_company_id()`, not from request (strict multi-tenant).
+  - **Company validation**: loads Company by resolved company_id, returns 404 if not found.
+  - **Conditional verification**: if `verify=true`, calls `KaspiAdapter.health(store_name)` to validate token; returns 422 with error details on verification failure.
+  - **Company updates**: sets `Company.name = company_name.strip()` and `Company.kaspi_store_id = store_name`.
+  - **Private metadata storage**: if `meta` dict provided, stores under `Company.settings["kaspi_meta"]` as JSON (not exposed in response).
+  - **Token encryption**: calls `KaspiStoreToken.upsert_token(session, store_name, token)` to encrypt and upsert token via pgcrypto.
+  - **Single transaction**: all updates (Company + KaspiStoreToken) committed in one transaction with proper rollback on error.
+  - **Comprehensive logging**: info-level for verification/upsert success, warning-level for verification failures, error-level for system errors. No plaintext tokens in logs.
+  - **Response security**: returns only store_name, company_id, connected, message; excludes token, metadata, settings.
+- **Tests** (tests/app/api/test_kaspi_connect.py) - 9 comprehensive test cases:
+  1. `test_connect_requires_company_name`: missing field returns 422.
+  2. `test_connect_rejects_blank_company_name`: empty/whitespace returns 422.
+  3. `test_connect_updates_company_name`: Company.name and kaspi_store_id updated correctly.
+  4. `test_connect_verify_false_skips_adapter`: verify=false doesn't call adapter.
+  5. `test_connect_stores_private_metadata`: meta dict stored in Company.settings["kaspi_meta"].
+  6. `test_connect_response_safe_fields_only`: response has store_name/company_id/connected, no token/meta/settings.
+  7. `test_connect_token_not_readable_from_api`: token field excluded from response.
+  8. `test_connect_verify_true_calls_adapter`: verify=true calls adapter.health(); returns 422 on error.
+  9. `test_connect_tenant_isolation`: company_id sourced from current_user only; user cannot modify other companies.
+
+### Quality assurance
+- All 9 tests pass; mocked KaspiStoreToken.upsert_token and KaspiAdapter to avoid external dependencies.
+- ruff format: 1 file reformatted (app/schemas/kaspi.py).
+- ruff check: 0 errors (removed unused field_validator import, removed unused health_payload variable).
+- No breaking changes to other Kaspi endpoints.
+
+### Key design principles
+- **Security first**: token encryption via pgcrypto, no plaintext exposure in API or logs.
+- **Multi-tenant strict**: company resolution from authenticated user only; request cannot override.
+- **Metadata privacy**: optional meta dict stored in Company.settings but not returned in responses.
+- **Fail-safe verification**: verify=false allows offline operation; verify=true validates with adapter before persisting.
