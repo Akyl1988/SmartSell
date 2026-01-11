@@ -181,12 +181,10 @@ def resolve_database_url(settings: Settings | None = None) -> tuple[str, str, st
     s = settings or Settings()
 
     env_environment = (env.get("ENVIRONMENT", s.ENVIRONMENT or "") or "").lower()
-    testing_flag = bool(
-        s.TESTING
-        or _under_pytest()
-        or (env.get("TESTING", "").lower() in ("1", "true", "yes", "on"))
-        or (env_environment in {"test", "testing"})
+    explicit_testing_flag = bool(
+        (env.get("TESTING", "").lower() in ("1", "true", "yes", "on")) or (env_environment in {"test", "testing"})
     )
+    testing_flag = bool(explicit_testing_flag or _under_pytest())
 
     def _assemble_from_parts(prefix: str) -> tuple[str | None, str]:
         try:
@@ -247,7 +245,10 @@ def resolve_database_url(settings: Settings | None = None) -> tuple[str, str, st
                 source = parts_src
 
     if not resolved_url:
-        if _is_local_env(s.ENVIRONMENT, s.DEBUG):
+        if explicit_testing_flag:
+            resolved_url = _default_test_db_url()
+            source = "DEFAULT"
+        elif _is_local_env(s.ENVIRONMENT, s.DEBUG):
             resolved_url = _default_test_db_url()
             source = "DEFAULT"
         else:
@@ -370,6 +371,16 @@ def _writable(p: Path) -> bool:
 def _default_test_db_url() -> str:
     """Local-only safe fallback for development (no secrets, file-based)."""
     return "sqlite+aiosqlite:///./.smartsell_test.sqlite3"
+
+
+def should_disable_startup_hooks() -> bool:
+    """Return True when startup hooks should be skipped (tests/CI)."""
+    if os.getenv("DISABLE_APP_STARTUP_HOOKS") == "1":
+        return True
+    try:
+        return bool(getattr(settings, "TESTING", False) or _under_pytest())
+    except Exception:
+        return _under_pytest()
 
 
 # ================================
@@ -1916,6 +1927,7 @@ __all__ = [
     "Settings",
     "get_settings",
     "settings",
+    "should_disable_startup_hooks",
     "db_url_fingerprint",
     "db_connection_fingerprint",
     "JSONAPI_MIME",

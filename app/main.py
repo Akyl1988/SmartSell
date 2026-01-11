@@ -33,7 +33,7 @@ from fastapi.responses import JSONResponse, PlainTextResponse, RedirectResponse
 # ✅ агрегатор v1-роутеров (wallet/payments/campaigns/users/auth/products)
 from app.api.routes import mount_v1
 from app.core import config as core_config
-from app.core.config import settings
+from app.core.config import settings, should_disable_startup_hooks
 from app.core.exceptions import register_exception_handlers
 
 try:
@@ -792,6 +792,9 @@ def get_feature_flag(key: str, default: bool | None = None) -> bool | None:
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:  # type: ignore[override]
     # ---- Startup
     logger.info("Application startup… env=%s version=%s", settings.ENVIRONMENT, settings.VERSION)
+    disable_hooks = should_disable_startup_hooks()
+    if disable_hooks:
+        logger.info("Startup hooks disabled (tests/CI flag)")
     try:
         settings.ensure_dirs()
     except Exception as e:
@@ -815,12 +818,18 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:  # type: ignore[overrid
 
     # автозапуск планировщика (по флагу)
     try:
-        if getattr(settings, "ENABLE_SCHEDULER", False) and not _GLOBAL.get("scheduler_started"):
-            from app.worker import scheduler_worker  # type: ignore
-
-            scheduler_worker.start()
-            _GLOBAL["scheduler_started"] = True
-            logger.info("APScheduler worker started (ENABLE_SCHEDULER=True)")
+        enable_scheduler = _env_truthy(os.getenv("ENABLE_SCHEDULER", "0")) or getattr(
+            settings, "ENABLE_SCHEDULER", False
+        )
+        if not disable_hooks and enable_scheduler and not _GLOBAL.get("scheduler_started"):
+            try:
+                from app.worker import scheduler_worker  # type: ignore
+            except ImportError as e:
+                logger.warning("Scheduler start skipped: APScheduler not installed (%s)", e)
+            else:
+                scheduler_worker.start()
+                _GLOBAL["scheduler_started"] = True
+                logger.info("APScheduler worker started (ENABLE_SCHEDULER=True)")
     except Exception as e:
         logger.error("Scheduler start failed: %s", e)
 
@@ -871,14 +880,24 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:  # type: ignore[overrid
         except Exception:
             pass
 
+        try:
+            from app.core.provider_registry import ProviderRegistry
+
+            await ProviderRegistry.shutdown()
+        except Exception:
+            pass
+
         # Остановка планировщика
         try:
             if _GLOBAL.get("scheduler_started"):
-                from app.worker import scheduler_worker  # type: ignore
-
-                scheduler_worker.stop()
-                _GLOBAL["scheduler_started"] = False
-                logger.info("APScheduler worker stopped")
+                try:
+                    from app.worker import scheduler_worker  # type: ignore
+                except ImportError:
+                    logger.warning("Scheduler stop skipped: APScheduler not installed")
+                else:
+                    scheduler_worker.stop()
+                    _GLOBAL["scheduler_started"] = False
+                    logger.info("APScheduler worker stopped")
         except Exception as e:
             logger.error("Scheduler stop failed: %s", e)
 

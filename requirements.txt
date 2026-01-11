@@ -51,6 +51,7 @@ openpyxl==3.1.5
 pytest==7.4.3
 pytest-asyncio==0.21.1
 pytest-cov==4.1.0
+pytest-timeout==2.4.0
 trio==0.31.0
 
 # Linting/formatting
