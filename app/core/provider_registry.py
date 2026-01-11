@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import logging
 import time
@@ -10,7 +11,7 @@ from typing import Any, Optional
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.config import settings
+from app.core.config import settings, should_disable_startup_hooks
 from app.models.integration_provider import IntegrationProvider
 
 try:  # optional redis
@@ -89,6 +90,8 @@ class ProviderRegistry:
     async def _ensure_listener(cls) -> None:
         if cls._listener_task or not _HAS_REDIS:
             return
+        if should_disable_startup_hooks():
+            return
         client = await cls._redis_client()
         if not client or not hasattr(client, "pubsub"):
             return
@@ -116,6 +119,26 @@ class ProviderRegistry:
                 log.warning("ProviderRegistry listener stopped", exc_info=exc)
 
         cls._listener_task = asyncio.create_task(_listen())
+
+    @classmethod
+    async def shutdown(cls) -> None:
+        task = cls._listener_task
+        cls._listener_task = None
+        if task:
+            task.cancel()
+            with contextlib.suppress(Exception):
+                await task
+        try:
+            client = cls._redis_conn
+            if client:
+                if hasattr(client, "aclose"):
+                    await client.aclose()
+                elif hasattr(client, "close"):
+                    await client.close()
+        except Exception:
+            pass
+        cls._redis_conn = None
+        cls._cache.clear()
 
     @classmethod
     async def publish_change(cls, domain: str, version: int | None = None) -> None:

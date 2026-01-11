@@ -373,6 +373,16 @@ def _default_test_db_url() -> str:
     return "sqlite+aiosqlite:///./.smartsell_test.sqlite3"
 
 
+def should_disable_startup_hooks() -> bool:
+    """Return True when startup hooks should be skipped (tests/CI)."""
+    if os.getenv("DISABLE_APP_STARTUP_HOOKS") == "1":
+        return True
+    try:
+        return bool(getattr(settings, "TESTING", False) or _under_pytest())
+    except Exception:
+        return _under_pytest()
+
+
 # ================================
 # НАСТРОЙКИ ПРИЛОЖЕНИЯ (Pydantic v2)
 # ================================
@@ -1917,6 +1927,7 @@ __all__ = [
     "Settings",
     "get_settings",
     "settings",
+    "should_disable_startup_hooks",
     "db_url_fingerprint",
     "db_connection_fingerprint",
     "JSONAPI_MIME",

@@ -29,6 +29,7 @@ from collections.abc import AsyncIterator, Awaitable, Callable, Iterator
 from typing import Any
 from urllib.parse import quote
 
+import httpx
 import pytest
 import pytest_asyncio
 import sqlalchemy as sa
@@ -785,11 +786,21 @@ async def async_client(test_db: None) -> AsyncIterator[AsyncClient]:
     for sync_dep in _find_sync_get_db_funcs():
         overrides[sync_dep] = _override_get_db_sync
     app.dependency_overrides.update(overrides)
-    async with AsyncClient(app=app, base_url="http://test") as client:
-        try:
-            yield client
-        finally:
-            app.dependency_overrides.clear()
+    # httpx 0.28+ removed the `app=` shortcut. Use ASGITransport, but keep backward-compat.
+    try:
+        async with AsyncClient(app=app, base_url="http://test") as client:
+            try:
+                yield client
+            finally:
+                app.dependency_overrides.clear()
+            return
+    except TypeError:
+        transport = httpx.ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            try:
+                yield client
+            finally:
+                app.dependency_overrides.clear()
 
 
 @pytest_asyncio.fixture
