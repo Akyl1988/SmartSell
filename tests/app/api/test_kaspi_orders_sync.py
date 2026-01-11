@@ -595,6 +595,31 @@ async def test_concurrent_sync_returns_locked(async_client, async_db_session, co
 
 
 @pytest.mark.asyncio
+async def test_sync_locked_then_succeeds_after_lock_release(
+    monkeypatch, async_client, async_db_session, company_a_admin_headers
+):
+    """Regression: lock held during first call returns 409/423, then succeeds after release."""
+
+    svc = KaspiService()
+    lock_key = svc._company_lock_key(1001)
+
+    # Hold advisory lock inside a short transaction to block the first sync attempt
+    async with async_db_session.begin():
+        await async_db_session.execute(sa.text("SELECT pg_advisory_xact_lock(:k)").bindparams(k=lock_key))
+        resp_locked = await async_client.post("/api/v1/kaspi/orders/sync", headers=company_a_admin_headers)
+        assert resp_locked.status_code in {409, 423}
+
+    # After lock is released, sync should proceed normally
+    async def fake_get_orders(self, *, date_from=None, date_to=None, status=None, page=1, page_size=100):  # noqa: ARG001
+        return []
+
+    monkeypatch.setattr(KaspiService, "get_orders", fake_get_orders)
+
+    resp_ok = await async_client.post("/api/v1/kaspi/orders/sync", headers=company_a_admin_headers)
+    assert resp_ok.status_code == 200, resp_ok.text
+
+
+@pytest.mark.asyncio
 async def test_sync_state_endpoint_returns_defaults(async_client, company_a_admin_headers):
     resp = await async_client.get("/api/v1/kaspi/orders/sync/state", headers=company_a_admin_headers)
     assert resp.status_code == 200
