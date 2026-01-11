@@ -95,7 +95,7 @@ jobs:
           ENVIRONMENT: testing
           TESTING: "True"
           REDIS_URL: redis://localhost:6379
-        run: python -m pytest -vv -ra --maxfail=1 --durations=25 --timeout=600 --timeout-method=thread
+        run: python -m pytest -vv -ra --maxfail=1 --durations=25 --timeout=600 --timeout-method=thread --timeout-func-only=False
 
   alembic-smoke:
     name: Alembic smoke (Postgres)

@@ -15,6 +15,7 @@ Kaspi.kz integration: product feed generation, orders sync, and availability syn
 
 import asyncio
 import hashlib
+import os
 import random
 from collections.abc import AsyncIterator, Mapping
 from contextlib import asynccontextmanager, nullcontext
@@ -46,6 +47,11 @@ class KaspiSyncAlreadyRunning(RuntimeError):
 
 
 # ---------------------- small utils ---------------------- #
+
+
+def _diag_enabled() -> bool:
+    """Check if CI diagnostic logging is enabled."""
+    return os.environ.get("CI_DIAG", "").strip() == "1"
 
 
 def _utcnow() -> datetime:
@@ -203,6 +209,14 @@ class KaspiService:
 
         async with self._client() as client:
             try:
+                if _diag_enabled():
+                    logger.info(
+                        "[CI_DIAG] get_orders REAL HTTP CALL: page=%s page_size=%s status=%s monotonic=%s",
+                        page,
+                        page_size,
+                        status,
+                        perf_counter(),
+                    )
                 resp = await client.get(self._url("/orders"), headers=self.headers, params=params)
                 resp.raise_for_status()
                 data = resp.json() or {}
@@ -282,6 +296,14 @@ class KaspiService:
         timeout_seconds = float(self._sync_timeout_seconds or 30)
 
         logger.info("Kaspi orders sync start: company_id=%s request_id=%s", company_id, request_id)
+        if _diag_enabled():
+            logger.info(
+                "[CI_DIAG] sync_orders ENTRY: company_id=%s request_id=%s timeout=%s monotonic=%s",
+                company_id,
+                request_id,
+                timeout_seconds,
+                perf_counter(),
+            )
 
         try:
             async with asyncio.timeout(timeout_seconds):
@@ -456,6 +478,14 @@ class KaspiService:
             raise
         except asyncio.TimeoutError:
             duration_ms = int((perf_counter() - started_at) * 1000)
+            
+            # Critical fix: explicit rollback before creating fresh session to avoid deadlock
+            try:
+                if db.in_transaction():
+                    await db.rollback()
+            except Exception:
+                logger.exception("Failed to rollback after timeout: company_id=%s", company_id)
+            
             await self._record_timeout_state(
                 db=db,
                 company_id=company_id,
@@ -514,6 +544,16 @@ class KaspiService:
             inserted,
             updated,
         )
+        if _diag_enabled():
+            logger.info(
+                "[CI_DIAG] sync_orders EXIT: company_id=%s request_id=%s fetched=%s inserted=%s updated=%s monotonic=%s",
+                company_id,
+                request_id,
+                fetched,
+                inserted,
+                updated,
+                perf_counter(),
+            )
         return summary
 
     async def _upsert_order_items(
@@ -694,7 +734,17 @@ class KaspiService:
 
         for attempt in range(attempts):
             try:
-                return await asyncio.wait_for(
+                if _diag_enabled():
+                    logger.info(
+                        "[CI_DIAG] _fetch_orders_page PRE get_orders: company_id=%s page=%s status=%s attempt=%s timeout=%s monotonic=%s",
+                        company_id,
+                        page,
+                        status,
+                        attempt + 1,
+                        fetch_timeout,
+                        perf_counter(),
+                    )
+                result = await asyncio.wait_for(
                     self.get_orders(
                         date_from=date_from,
                         date_to=date_to,
@@ -704,11 +754,29 @@ class KaspiService:
                     ),
                     timeout=fetch_timeout,
                 )
-            except (httpx.TimeoutException, httpx.NetworkError, httpx.HTTPStatusError, RuntimeError) as e:
+                if _diag_enabled():
+                    logger.info(
+                        "[CI_DIAG] _fetch_orders_page POST get_orders SUCCESS: company_id=%s page=%s items=%s monotonic=%s",
+                        company_id,
+                        page,
+                        len(result.get("items", [])) if isinstance(result, dict) else len(result) if isinstance(result, list) else 0,
+                        perf_counter(),
+                    )
+                return result
+            except (asyncio.TimeoutError, httpx.TimeoutException, httpx.NetworkError, httpx.HTTPStatusError, RuntimeError) as e:
+                if _diag_enabled():
+                    logger.error(
+                        "[CI_DIAG] _fetch_orders_page EXCEPTION: company_id=%s page=%s attempt=%s exc=%s monotonic=%s",
+                        company_id,
+                        page,
+                        attempt + 1,
+                        type(e).__name__,
+                        perf_counter(),
+                    )
                 is_last = attempt == attempts - 1
                 code = getattr(getattr(e, "response", None), "status_code", None)
                 transient = code in {429, 500, 502, 503, 504} or isinstance(
-                    e, httpx.TimeoutException | httpx.NetworkError
+                    e, (asyncio.TimeoutError, httpx.TimeoutException, httpx.NetworkError)
                 )
                 if not transient or is_last:
                     logger.error("Kaspi get_orders failed after retries: %s", e)
@@ -1025,23 +1093,31 @@ class KaspiService:
         updated: int | None,
     ) -> None:
         try:
-            engine = _get_async_engine()
-            session_maker = async_sessionmaker(engine, expire_on_commit=False, class_=AsyncSession)
-            async with session_maker() as fresh_db:
-                await self.record_sync_error(
-                    fresh_db,
-                    company_id=company_id,
-                    code="timeout",
-                    message="kaspi orders sync timeout",
-                    occurred_at=_utcnow(),
-                    attempt_at=attempt_at,
-                    duration_ms=duration_ms,
-                    fetched=fetched,
-                    inserted=inserted,
-                    updated=updated,
-                    result="failed",
-                )
-                return
+            # Critical fix: timeout on fresh session creation to prevent deadlock
+            async with asyncio.timeout(5.0):
+                engine = _get_async_engine()
+                session_maker = async_sessionmaker(engine, expire_on_commit=False, class_=AsyncSession)
+                async with session_maker() as fresh_db:
+                    await self.record_sync_error(
+                        fresh_db,
+                        company_id=company_id,
+                        code="timeout",
+                        message="kaspi orders sync timeout",
+                        occurred_at=_utcnow(),
+                        attempt_at=attempt_at,
+                        duration_ms=duration_ms,
+                        fetched=fetched,
+                        inserted=inserted,
+                        updated=updated,
+                        result="failed",
+                    )
+                    return
+        except asyncio.TimeoutError:
+            logger.error(
+                "Timeout while recording timeout state (fresh session deadlock?): company_id=%s",
+                company_id,
+            )
+            return
         except Exception:
             logger.exception(
                 "Kaspi orders sync: failed to persist timeout state via fresh session: company_id=%s",
