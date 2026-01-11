@@ -104,7 +104,7 @@ async def test_sync_timeout_records_error(monkeypatch, async_client, async_db_se
     monkeypatch.setattr(KaspiService, "__init__", patched_init)
 
     async def slow_get_orders(self, **kwargs):  # noqa: ANN001, ARG001
-        await asyncio.sleep(0.2)
+        await asyncio.sleep(999)
         return []
 
     monkeypatch.setattr(KaspiService, "get_orders", slow_get_orders)

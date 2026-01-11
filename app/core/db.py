@@ -95,6 +95,7 @@ __all__ = [
     # Base
     "Base",
     # Async
+    "async_session_maker",
     "get_async_db",
     "get_async_session",  # совместимость
     "init_db_async",
@@ -377,6 +378,15 @@ def _install_query_metrics_on_sync_engine(eng: Engine) -> None:
 
 def get_query_stats() -> dict[str, dict[str, float]]:
     return {k: dict(v) for k, v in _query_stats.items()}
+
+
+def async_session_maker(**kwargs):
+    """Backwards-compatible async session factory helper."""
+    _get_async_engine()
+    maker = _ASYNC_SESSION_MAKER
+    if maker is None:
+        raise RuntimeError("Async session maker is not initialized")
+    return maker(**kwargs)
 
 
 def _get_async_engine() -> AsyncEngine:
