@@ -607,7 +607,11 @@ class KaspiAutoSyncStatusOut(BaseModel):
     interval_minutes: int = Field(0, description="Интервал синхронизации в минутах")
     max_concurrency: int = Field(0, description="Максимум параллельных синхронизаций")
 
-    # Scheduler state
+    # Scheduler state (mutual exclusion observability)
+    runner_enabled: bool = Field(False, description="Включен ли main.py runner loop (ENABLE_KASPI_SYNC_RUNNER)")
+    scheduler_job_effective_enabled: bool = Field(
+        False, description="Включена ли APScheduler job после mutual exclusion"
+    )
     job_registered: bool = Field(False, description="Зарегистрирована ли задача в scheduler")
     scheduler_running: bool | None = Field(None, description="Запущен ли scheduler (если доступно)")
 
@@ -632,12 +636,25 @@ async def kaspi_autosync_status(
     с конфигурацией и видимостью scheduler.
     Не требует админских прав, но показывает глобальную статистику по всем компаниям.
     """
+    import os
+
     from app.core.config import settings
 
     # Получаем configuration
     enabled = getattr(settings, "KASPI_AUTOSYNC_ENABLED", False)
     interval_minutes = getattr(settings, "KASPI_AUTOSYNC_INTERVAL_MINUTES", 15)
     max_concurrency = getattr(settings, "KASPI_AUTOSYNC_MAX_CONCURRENCY", 3)
+
+    # Check mutual exclusion state
+    runner_enabled = False
+    scheduler_job_effective_enabled = False
+    try:
+        from app.worker.scheduler_worker import _env_truthy, should_register_kaspi_autosync
+
+        runner_enabled = _env_truthy(os.getenv("ENABLE_KASPI_SYNC_RUNNER", "0"))
+        scheduler_job_effective_enabled = should_register_kaspi_autosync()
+    except Exception:
+        pass
 
     # Проверяем scheduler state
     job_registered = False
@@ -676,6 +693,8 @@ async def kaspi_autosync_status(
         enabled=enabled,
         interval_minutes=interval_minutes,
         max_concurrency=max_concurrency,
+        runner_enabled=runner_enabled,
+        scheduler_job_effective_enabled=scheduler_job_effective_enabled,
         job_registered=job_registered,
         scheduler_running=scheduler_running,
         last_run_at=last_run_at,
