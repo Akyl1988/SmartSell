@@ -70,6 +70,38 @@ logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
 
 
+# -------- Kaspi autosync mutual exclusion helper -------- #
+
+
+def _env_truthy(value: str | None, default: bool = False) -> bool:
+    """Check if environment variable is truthy (same logic as main.py)."""
+    if value is None:
+        return default
+    return value.strip().lower() in ("1", "true", "yes", "on", "enable", "enabled")
+
+
+def should_register_kaspi_autosync() -> bool:
+    """
+    Determine if Kaspi autosync APScheduler job should be registered.
+
+    Returns True only when:
+    - settings.KASPI_AUTOSYNC_ENABLED is True
+    - AND env ENABLE_KASPI_SYNC_RUNNER is NOT truthy (runner takes precedence)
+
+    This ensures mutual exclusion between APScheduler job and main.py runner loop.
+    """
+    import os
+
+    # Check if runner is enabled (takes precedence)
+    runner_enabled = _env_truthy(os.getenv("ENABLE_KASPI_SYNC_RUNNER", "0"))
+    if runner_enabled:
+        return False  # Runner takes precedence
+
+    # Only register if explicitly enabled
+    scheduler_enabled = getattr(settings, "KASPI_AUTOSYNC_ENABLED", False)
+    return scheduler_enabled
+
+
 # -------- Вспомогательные сущности -------- #
 
 
@@ -361,8 +393,8 @@ def start() -> None:
         misfire_grace_time=60,  # допуск по пропуску
     )
 
-    # Kaspi auto-sync job (если включен)
-    if getattr(settings, "KASPI_AUTOSYNC_ENABLED", True):
+    # Kaspi auto-sync job (mutual exclusion with runner)
+    if should_register_kaspi_autosync():
         try:
             from app.worker.kaspi_autosync import run_kaspi_autosync
 
@@ -383,6 +415,14 @@ def start() -> None:
             )
         except ImportError as e:
             logger.warning("Не удалось загрузить kaspi_autosync: %s", e)
+    else:
+        import os
+
+        runner_enabled = _env_truthy(os.getenv("ENABLE_KASPI_SYNC_RUNNER", "0"))
+        if runner_enabled:
+            logger.info("Kaspi autosync APScheduler job skipped: runner enabled (ENABLE_KASPI_SYNC_RUNNER=1)")
+        elif not getattr(settings, "KASPI_AUTOSYNC_ENABLED", False):
+            logger.debug("Kaspi autosync APScheduler job skipped: KASPI_AUTOSYNC_ENABLED=False")
 
     scheduler.start()
     logger.info("APScheduler запущен (timezone=%s)", getattr(settings, "SCHEDULER_TIMEZONE", "UTC"))
@@ -417,13 +457,13 @@ def reload_jobs() -> None:
         misfire_grace_time=60,
     )
 
-    # Также перезагружаем Kaspi auto-sync если включен
-    if getattr(settings, "KASPI_AUTOSYNC_ENABLED", True):
-        try:
-            scheduler.remove_job(_JOB_ID_KASPI_AUTOSYNC)
-        except Exception:
-            pass
+    # Также перезагружаем Kaspi auto-sync (mutual exclusion with runner)
+    try:
+        scheduler.remove_job(_JOB_ID_KASPI_AUTOSYNC)
+    except Exception:
+        pass
 
+    if should_register_kaspi_autosync():
         try:
             from app.worker.kaspi_autosync import run_kaspi_autosync
 
@@ -439,6 +479,12 @@ def reload_jobs() -> None:
             )
         except ImportError as e:
             logger.warning("Не удалось загрузить kaspi_autosync: %s", e)
+    else:
+        import os
+
+        runner_enabled = _env_truthy(os.getenv("ENABLE_KASPI_SYNC_RUNNER", "0"))
+        if runner_enabled:
+            logger.info("Kaspi autosync APScheduler job reload skipped: runner enabled")
 
     logger.info("Базовые задачи планировщика пересозданы")
 

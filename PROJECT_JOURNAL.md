@@ -1660,3 +1660,29 @@ Timeout could cancel/rollback the main sync transaction, causing `kaspi_order_sy
   - per-company advisory lock (pg_try_advisory_xact_lock) returns 423 when locked
   - 429 Retry-After handling + backoff/jitter + safe logging
 - Tests: python -m pytest tests/app/api/test_kaspi_orders_sync_mvp.py -q => 5 passed
+
+## [2026-01-12] Kaspi autosync mutual exclusion hardening
+
+### Fixed
+- **Root issue**: APScheduler kaspi_autosync job and main.py ENABLE_KASPI_SYNC_RUNNER could run simultaneously, causing duplicate sync operations.
+- **Solution**: Implemented mutual exclusion with runner taking precedence:
+  - Added `_env_truthy()` helper in `app/worker/scheduler_worker.py` (replicates main.py pattern).
+  - Added `should_register_kaspi_autosync()` helper that returns True only when KASPI_AUTOSYNC_ENABLED=True AND ENABLE_KASPI_SYNC_RUNNER is NOT truthy.
+  - Updated `start()` and `reload_jobs()` in scheduler_worker.py to use new helper instead of direct settings check.
+  - Changed unsafe default from `getattr(settings, "KASPI_AUTOSYNC_ENABLED", True)` to `should_register_kaspi_autosync()` (respects mutual exclusion).
+  - Added logging: "Kaspi autosync APScheduler job skipped: runner enabled" when runner takes precedence.
+- **Observability**: Extended `/api/v1/kaspi/autosync/status` endpoint:
+  - Added `runner_enabled` field (bool from ENABLE_KASPI_SYNC_RUNNER env var).
+  - Added `scheduler_job_effective_enabled` field (bool from should_register_kaspi_autosync()).
+  - Operators can now verify mutual exclusion is working correctly.
+
+### Added
+- `tests/test_kaspi_autosync_mutual_exclusion.py`: 3 regression tests covering:
+  - env_truthy_helper_logic: validates truthy string parsing ("1", "true", "yes", "on", "enable", "enabled").
+  - mutual_exclusion_logic: verifies runner takes precedence, autosync enabled when runner off, disabled when config false.
+  - mutual_exclusion_observability_in_status_endpoint: validates new schema fields with proper descriptions.
+
+### Verified
+- ruff format/check: clean
+- pytest tests/test_kaspi_autosync_mutual_exclusion.py: 3 passed
+- pytest -k "kaspi": 63 passed, 1 skipped (all existing tests remain green)
