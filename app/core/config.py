@@ -739,6 +739,11 @@ class Settings(BaseSettings):
     )
     UVICORN_WORKERS: int = Field(default=1, description="Uvicorn workers count", validation_alias="UVICORN_WORKERS")
     ROOT_PATH: str = Field(default="", description="ASGI root_path for reverse proxy", validation_alias="ROOT_PATH")
+    PROCESS_ROLE: str = Field(
+        default="web",
+        description="Process role: web/scheduler/runner/worker/migrator",
+        validation_alias="PROCESS_ROLE",
+    )
 
     # ---- PostgreSQL доп-настройки
     POSTGRES_STATEMENT_TIMEOUT_MS: int | None = Field(default=None, validation_alias="POSTGRES_STATEMENT_TIMEOUT_MS")
