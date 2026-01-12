@@ -1686,3 +1686,110 @@ Timeout could cancel/rollback the main sync transaction, causing `kaspi_order_sy
 - ruff format/check: clean
 - pytest tests/test_kaspi_autosync_mutual_exclusion.py: 3 passed
 - pytest -k "kaspi": 63 passed, 1 skipped (all existing tests remain green)
+
+## [2026-01-12] Catch-up journal (last 4 days)
+
+### Summary by subsystem
+
+- **CI/Workflows**: Added pytest-timeout stabilization and fail-fast verbosity; addressed ruff UP038; documented CI hang diagnostics and timeout hardening.
+  - Changed: .github/workflows/ci.yml, pytest.ini, requirements.txt
+  - Added: docs/CI_HANG_DIAGNOSTIC_REPORT.md, docs/TIMEOUT_HARDENING.md
+
+- **Migrations/Alembic**: Enabled autogen guard via merge (#73); normalized line endings across migrations and source files for Windows stability.
+  - Changed: migrations/versions/*, .gitattributes, .editorconfig (new)
+
+- **Kaspi Sync/Autosync**: Major iteration from scheduler to safe runner and mutual exclusion.
+  - Added: app/worker/kaspi_autosync.py, tests/test_kaspi_autosync.py, docs/KASPI_AUTOSYNC_IMPLEMENTATION.md, app/services/kaspi_orders_sync_runner.py, docs/KASPI_SYNC_RUNNER.md, tests/test_kaspi_orders_sync_runner.py, docs/KASPI_AUTOSYNC_MUTUAL_EXCLUSION.md, tests/test_kaspi_autosync_mutual_exclusion.py
+  - Changed: app/api/v1/kaspi.py (autosync endpoints, status visibility, ops timeout mapping, connect endpoint), app/core/config.py (default-off + guards), app/worker/scheduler_worker.py (job registration, mutual exclusion), app/main.py (opt-in runner), app/services/kaspi_service.py (timeout hardening, advisory lock scope)
+  - Fixed: hold advisory lock for full sync; persist timeout state on failure; mutual exclusion so runner wins when enabled
+  - Added docs: docs/KASPI_SYNC_RUNNER.md, docs/KASPI_AUTOSYNC_MUTUAL_EXCLUSION.md, KASPI_SYNC_MVP_SUMMARY.md
+
+- **Auth/Tenant Scoping**: Registration now creates a draft Company tenant in one transaction with tests and doc.
+  - Changed: app/api/v1/auth.py
+  - Added: docs/REGISTRATION_COMPANY_TENANT.md, tests/app/test_auth.py
+
+- **Database/Config**: Strict async DB URL resolution (runtime vs test modes) and production safety gates.
+  - Changed: app/core/config.py, app/core/db.py
+  - Added: tests/test_db_runtime_vs_test_selection.py, test_startup_hooks_disabled.py
+
+- **Tests**: Expanded coverage for Kaspi MVP, runner, autosync, mutual exclusion, and startup hooks.
+  - Added: tests/app/api/test_kaspi_orders_sync_mvp.py, tests/test_kaspi_orders_sync_runner.py, tests/test_kaspi_autosync_mutual_exclusion.py, tests/app/api/test_kaspi_connect.py, tests/test_startup_hooks_disabled.py
+
+- **Hooks/Tooling**: Added _hook_test.txt for hook validation; folded docs journal into root.
+  - Added: _hook_test.txt
+  - Changed: PROJECT_JOURNAL.md, tests/conftest.py
+
+### Chronology
+
+- **2026-01-09**
+  - 3dc6c87 test(kaspi): add orders sync MVP test suite + summary
+    - Added: KASPI_SYNC_MVP_SUMMARY.md, tests/app/api/test_kaspi_orders_sync_mvp.py
+  - a72dda8 docs(journal): add 2026-01-09 kaspi sync mvp coverage
+    - Changed: docs/ENGINEERING_JOURNAL.md
+
+- **2026-01-10**
+  - 7031dd5 feat(kaspi): autosync scheduler + endpoints + tests
+    - Added: KASPI_AUTOSYNC_IMPLEMENTATION.md, app/worker/kaspi_autosync.py, tests/test_kaspi_autosync.py
+    - Changed: app/api/v1/kaspi.py, app/core/config.py, app/worker/scheduler_worker.py, docs/ENGINEERING_JOURNAL.md
+  - bcf03db fix(kaspi): autosync default-off + disabled-mode guards
+    - Changed: KASPI_AUTOSYNC_IMPLEMENTATION.md, app/api/v1/kaspi.py, app/core/config.py, docs/ENGINEERING_JOURNAL.md, tests/test_kaspi_autosync.py
+  - d5ad818 feat(kaspi): autosync status adds config + scheduler visibility
+    - Changed: app/api/v1/kaspi.py, docs/ENGINEERING_JOURNAL.md, tests/test_kaspi_autosync.py
+  - da4a6aa fix(kaspi): persist timeout sync_state + harden timeout test
+    - Changed: app/services/kaspi_service.py, tests/app/api/test_kaspi_orders_sync.py
+  - 1f0b220 docs(journal): migrate engineering journal to PROJECT_JOURNAL
+    - Changed: KASPI_AUTOSYNC_IMPLEMENTATION.md, PROJECT_JOURNAL.md, docs/ENGINEERING_JOURNAL.md
+  - 9ea4823 feat(kaspi): ops endpoint + map timeout 504
+    - Changed: app/api/v1/kaspi.py
+  - 5d34f8f fix(db): strict runtime/pytest DB URL resolution
+    - Changed: PROJECT_JOURNAL.md, app/core/config.py, app/core/db.py, tests/test_db_async_url_resolution.py
+    - Added: tests/test_db_runtime_vs_test_selection.py
+    - Changed: tests/test_db_url_priority.py
+  - 498943f ci: make pytest verbose fail-fast + add hard timeout
+    - Changed: .github/workflows/ci.yml
+  - d11b72b fix(config): require DATABASE_URL in production unless TESTING explicit
+    - Changed: app/core/config.py
+  - 62bddfe style: ruff format app/core/config.py
+    - Changed: app/core/config.py
+  - d61c371 fix(kaspi): enforce hard timeout type + deterministic timeout test
+    - Changed: app/services/kaspi_service.py, tests/app/api/test_kaspi_orders_sync.py
+
+- **2026-01-11**
+  - 0825431 test(conftest): httpx AsyncClient compat + disable startup hooks in tests
+    - Changed: app/core/config.py, app/core/db.py, app/core/provider_registry.py, app/main.py, tests/conftest.py
+    - Added: tests/test_startup_hooks_disabled.py
+  - f0aa1ae ci(kaspi): stabilize CI hangs (pytest-timeout, safe rollback, docs)
+    - Changed: .github/workflows/ci.yml, app/services/kaspi_service.py, pytest.ini, requirements.txt
+    - Added: docs/CI_HANG_DIAGNOSTIC_REPORT.md, docs/TIMEOUT_HARDENING.md
+  - 37039cc ci: fix pytest-timeout flag + satisfy ruff UP038
+    - Changed: .github/workflows/ci.yml, app/services/kaspi_service.py
+  - 8159aa3 fix(kaspi): hold advisory lock for full sync + regression test
+    - Changed: app/services/kaspi_service.py, tests/app/api/test_kaspi_orders_sync.py
+  - bc1da71 feat(kaspi): add orders sync runner (guarded; opt-in) + tests
+    - Added: app/services/kaspi_orders_sync_runner.py, docs/KASPI_SYNC_RUNNER.md, tests/test_kaspi_orders_sync_runner.py
+    - Changed: app/main.py
+  - 49bf1c4 feat(auth): create draft company tenant on registration
+    - Changed: PROJECT_JOURNAL.md, app/api/v1/auth.py, tests/app/test_auth.py
+    - Added: docs/REGISTRATION_COMPANY_TENANT.md
+  - 14b2db2 feat(kaspi): onboarding connect endpoint (safe fields + tenant isolation)
+    - Changed: PROJECT_JOURNAL.md, app/api/v1/kaspi.py, app/schemas/kaspi.py
+    - Added: tests/app/api/test_kaspi_connect.py
+  - b244c2f docs(journal): append kaspi connect entry (append-only)
+    - Changed: PROJECT_JOURNAL.md
+
+- **2026-01-12**
+  - fbd6772 docs(journal): verify kaspi orders sync mvp (no code changes)
+    - Changed: PROJECT_JOURNAL.md
+  - 79a189b feat(kaspi): autosync mutual exclusion (runner wins)
+    - Changed: PROJECT_JOURNAL.md, app/api/v1/kaspi.py, app/worker/scheduler_worker.py
+    - Added: docs/KASPI_AUTOSYNC_MUTUAL_EXCLUSION.md, tests/test_kaspi_autosync_mutual_exclusion.py
+  - b6b4534 test: hook check
+    - Added: _hook_test.txt
+
+### Verified
+
+- Local checks during this window:
+  - ruff check app/worker/scheduler_worker.py, app/api/v1/kaspi.py, tests/test_kaspi_autosync_mutual_exclusion.py → clean
+  - python -m pytest -k "kaspi" -v → 63 passed, 1 skipped
+  - python -m pytest tests/test_kaspi_autosync_mutual_exclusion.py -v → 3 passed
+  - git log --since="4 days ago" collected; no merge conflicts on append-only journal updates
