@@ -241,6 +241,47 @@ class KaspiService:
                 logger.error("Kaspi get_orders error: %s", e)
                 raise RuntimeError(f"Failed to fetch orders from Kaspi: {e}") from e
 
+    async def verify_token(self, *, store_name: str | None = None, token: str) -> bool:
+        """
+        Verify Kaspi API token validity by making a minimal API call.
+
+        Uses get_orders with page_size=1 to check token authentication.
+        Returns True if token is valid (HTTP 200), False or raises on auth/network errors.
+
+        Raises:
+            httpx.HTTPStatusError: on 401/403 (invalid token)
+            httpx.HTTPError: on network/timeout errors
+        """
+        # Create temporary service with the provided token
+        temp_service = KaspiService(api_key=token, base_url=self.base_url)
+
+        try:
+            # Make minimal request to verify token (last 24h, page_size=1)
+            logger.info("Kaspi verify_token: attempting minimal get_orders call store=%s", store_name or "N/A")
+            await temp_service.get_orders(page_size=1)
+
+            # If we got here without exception, token is valid
+            logger.info("Kaspi verify_token: success store=%s", store_name or "N/A")
+            return True
+
+        except httpx.HTTPStatusError as e:
+            # Auth errors (401/403) mean invalid token
+            if e.response.status_code in (401, 403):
+                logger.warning(
+                    "Kaspi verify_token: auth failed store=%s status=%s", store_name or "N/A", e.response.status_code
+                )
+                raise
+            # Other HTTP errors are upstream problems
+            logger.warning(
+                "Kaspi verify_token: HTTP error store=%s status=%s", store_name or "N/A", e.response.status_code
+            )
+            raise
+
+        except (httpx.TimeoutException, httpx.NetworkError) as e:
+            # Network/timeout errors
+            logger.warning("Kaspi verify_token: network error store=%s error=%s", store_name or "N/A", type(e).__name__)
+            raise
+
     # ---------------------- Products API ---------------------- #
 
     async def get_products(self, *, page: int = 1, page_size: int = 100) -> list[dict[str, Any]]:
