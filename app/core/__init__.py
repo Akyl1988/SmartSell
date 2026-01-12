@@ -30,7 +30,7 @@ from fastapi.responses import JSONResponse, PlainTextResponse
 
 # --- Settings ---
 try:
-    from app.core.config import get_settings, settings  # type: ignore
+    from app.core.config import get_settings, settings, should_disable_startup_hooks  # type: ignore
 except Exception as e:  # pragma: no cover
     raise RuntimeError("Failed to import settings from app.core.config") from e
 
@@ -478,9 +478,20 @@ def init_core(app: FastAPI) -> None:
     # Startup hook: Alembic (best-effort)
     @app.on_event("startup")
     async def _on_startup() -> None:
+        log = get_logger("startup")
+
+        # tests/CI short-circuit
+        if should_disable_startup_hooks():
+            log.info("Core startup hook skipped (tests/CI)")
+            return
+
+        role = getattr(settings, "PROCESS_ROLE", os.getenv("PROCESS_ROLE", "web")) or "web"
+        if role not in ("web", "migrator"):
+            log.info("Core startup hook skipped for role", role=role)
+            return
+
         # предупреждения по критичным ENV
         issues = _critical_env_warnings()
-        log = get_logger("startup")
         if issues:
             log.warning("Critical ENV issues", issues=issues)
         # alembic
