@@ -320,3 +320,7 @@ __pycache__/
 
 
 _branch_protection_*.json
+
+# local hook artifacts
+_hook_test.txt
+

@@ -5,8 +5,8 @@ Covers:
 - company_name requirement (missing/blank -> 422)
 - Company.name updated from request
 - Token stored encrypted via KaspiStoreToken
-- Verify=false skips adapter call
-- Verify=true calls adapter and fails if invalid
+- Verify=false skips HTTP verification
+- Verify=true uses HTTP API (not PowerShell adapter) and fails on 401/403/network errors
 - Private metadata storage in Company.settings
 - Tenant isolation (company_id from current_user only)
 """
@@ -14,6 +14,7 @@ Covers:
 import json
 from unittest.mock import AsyncMock, patch
 
+import httpx
 import pytest
 from httpx import AsyncClient
 from sqlalchemy import select
@@ -96,13 +97,14 @@ class TestKaspiConnect:
         user, company = await self._create_user_and_company(async_db_session, "77001234569")
         headers = self._get_auth_header(user)
 
-        # Mock KaspiAdapter.health and KaspiStoreToken.upsert_token to avoid pgcrypto dependency
-        with patch("app.api.v1.kaspi.KaspiAdapter") as mock_adapter, patch(
+        # Mock KaspiService.verify_token and KaspiStoreToken.upsert_token
+        with patch("app.api.v1.kaspi.KaspiService") as mock_service_class, patch(
             "app.api.v1.kaspi.KaspiStoreToken.upsert_token"
         ) as mock_upsert:
+            # Mock service instance and verify_token to succeed
             mock_instance = AsyncMock()
-            mock_instance.health.return_value = {"status": "ok"}
-            mock_adapter.return_value = mock_instance
+            mock_instance.verify_token = AsyncMock(return_value=True)
+            mock_service_class.return_value = mock_instance
             mock_upsert.return_value = AsyncMock()
 
             response = await async_client.post(
@@ -127,15 +129,22 @@ class TestKaspiConnect:
             assert company.name == "My Kaspi Store"
             assert company.kaspi_store_id == "test_store_name"
 
+            # Verify that verify_token was called
+            mock_instance.verify_token.assert_called_once()
+
     @pytest.mark.asyncio
     async def test_connect_verify_false_skips_adapter(self, async_client: AsyncClient, async_db_session: AsyncSession):
-        """Test: verify=false should save token without calling adapter."""
+        """Test: verify=false should save token without calling HTTP verification."""
         user, company = await self._create_user_and_company(async_db_session, "77001234570")
         headers = self._get_auth_header(user)
 
-        with patch("app.api.v1.kaspi.KaspiAdapter") as mock_adapter, patch(
+        with patch("app.api.v1.kaspi.KaspiService") as mock_service_class, patch(
             "app.api.v1.kaspi.KaspiStoreToken.upsert_token"
         ):
+            mock_instance = AsyncMock()
+            mock_instance.verify_token = AsyncMock(return_value=True)
+            mock_service_class.return_value = mock_instance
+
             response = await async_client.post(
                 "/api/v1/kaspi/connect",
                 json={
@@ -149,8 +158,8 @@ class TestKaspiConnect:
 
             assert response.status_code == 200, response.text
 
-            # Adapter.health should NOT have been called
-            mock_adapter.return_value.health.assert_not_called()
+            # verify_token should NOT have been called
+            mock_instance.verify_token.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_connect_stores_private_metadata(self, async_client: AsyncClient, async_db_session: AsyncSession):
@@ -246,18 +255,22 @@ class TestKaspiConnect:
 
     @pytest.mark.asyncio
     async def test_connect_verify_true_calls_adapter(self, async_client: AsyncClient, async_db_session: AsyncSession):
-        """Test: verify=true calls adapter.health() and fails if invalid."""
+        """Test: verify=true uses HTTP API and fails on 401 with 400 response."""
         user, company = await self._create_user_and_company(async_db_session, "77001234574")
         headers = self._get_auth_header(user)
 
-        # Mock adapter to raise error
-        with patch("app.api.v1.kaspi.KaspiAdapter") as mock_adapter_class, patch(
+        # Mock service to raise HTTPStatusError with 401
+        with patch("app.api.v1.kaspi.KaspiService") as mock_service_class, patch(
             "app.api.v1.kaspi.KaspiStoreToken.upsert_token"
         ):
-            mock_instance = mock_adapter_class.return_value
-            from app.integrations.kaspi_adapter import KaspiAdapterError
-
-            mock_instance.health.side_effect = KaspiAdapterError("Invalid token")
+            mock_instance = AsyncMock()
+            # Create a mock response for 401
+            mock_response = AsyncMock()
+            mock_response.status_code = 401
+            mock_instance.verify_token.side_effect = httpx.HTTPStatusError(
+                "Unauthorized", request=AsyncMock(), response=mock_response
+            )
+            mock_service_class.return_value = mock_instance
 
             response = await async_client.post(
                 "/api/v1/kaspi/connect",
@@ -270,10 +283,100 @@ class TestKaspiConnect:
                 headers=headers,
             )
 
-            # Should fail with 422
-            assert response.status_code == 422
+            # Should fail with 400 (not 422 anymore)
+            assert response.status_code == 400
             data = response.json()
-            assert "verification failed" in data.get("detail", "").lower()
+            assert data.get("detail") == "kaspi_invalid_token"
+
+    @pytest.mark.asyncio
+    async def test_connect_verify_403_returns_400(self, async_client: AsyncClient, async_db_session: AsyncSession):
+        """Test: verify=true with 403 Forbidden returns 400 kaspi_invalid_token."""
+        user, company = await self._create_user_and_company(async_db_session, "77001234575")
+        headers = self._get_auth_header(user)
+
+        with patch("app.api.v1.kaspi.KaspiService") as mock_service_class, patch(
+            "app.api.v1.kaspi.KaspiStoreToken.upsert_token"
+        ):
+            mock_instance = AsyncMock()
+            mock_response = AsyncMock()
+            mock_response.status_code = 403
+            mock_instance.verify_token.side_effect = httpx.HTTPStatusError(
+                "Forbidden", request=AsyncMock(), response=mock_response
+            )
+            mock_service_class.return_value = mock_instance
+
+            response = await async_client.post(
+                "/api/v1/kaspi/connect",
+                json={
+                    "company_name": "Forbidden Test",
+                    "store_name": "forbidden_store",
+                    "token": "forbidden_token",
+                    "verify": True,
+                },
+                headers=headers,
+            )
+
+            assert response.status_code == 400
+            data = response.json()
+            assert data.get("detail") == "kaspi_invalid_token"
+
+    @pytest.mark.asyncio
+    async def test_connect_verify_network_error_returns_502(
+        self, async_client: AsyncClient, async_db_session: AsyncSession
+    ):
+        """Test: verify=true with network error returns 502 kaspi_upstream_error."""
+        user, company = await self._create_user_and_company(async_db_session, "77001234576")
+        headers = self._get_auth_header(user)
+
+        with patch("app.api.v1.kaspi.KaspiService") as mock_service_class, patch(
+            "app.api.v1.kaspi.KaspiStoreToken.upsert_token"
+        ):
+            mock_instance = AsyncMock()
+            mock_instance.verify_token.side_effect = httpx.NetworkError("Connection failed")
+            mock_service_class.return_value = mock_instance
+
+            response = await async_client.post(
+                "/api/v1/kaspi/connect",
+                json={
+                    "company_name": "Network Error Test",
+                    "store_name": "network_store",
+                    "token": "network_token",
+                    "verify": True,
+                },
+                headers=headers,
+            )
+
+            assert response.status_code == 502
+            data = response.json()
+            assert data.get("detail") == "kaspi_upstream_error"
+
+    @pytest.mark.asyncio
+    async def test_connect_verify_timeout_returns_502(self, async_client: AsyncClient, async_db_session: AsyncSession):
+        """Test: verify=true with timeout returns 502 kaspi_upstream_error."""
+        user, company = await self._create_user_and_company(async_db_session, "77001234577")
+        headers = self._get_auth_header(user)
+
+        with patch("app.api.v1.kaspi.KaspiService") as mock_service_class, patch(
+            "app.api.v1.kaspi.KaspiStoreToken.upsert_token"
+        ):
+            mock_instance = AsyncMock()
+            mock_instance.verify_token.side_effect = httpx.TimeoutException("Request timeout")
+            mock_service_class.return_value = mock_instance
+
+            response = await async_client.post(
+                "/api/v1/kaspi/connect",
+                json={
+                    "company_name": "Timeout Test",
+                    "store_name": "timeout_store",
+                    "token": "timeout_token",
+                    "verify": True,
+                },
+                headers=headers,
+            )
+
+            assert response.status_code == 502
+            data = response.json()
+            assert data.get("detail") == "kaspi_upstream_error"
 
     @pytest.mark.asyncio
     async def test_connect_tenant_isolation(self, async_client: AsyncClient, async_db_session: AsyncSession):
