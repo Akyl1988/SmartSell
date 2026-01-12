@@ -1649,3 +1649,14 @@ Timeout could cancel/rollback the main sync transaction, causing `kaspi_order_sy
 - **Multi-tenant strict**: company resolution from authenticated user only; request cannot override.
 - **Metadata privacy**: optional meta dict stored in Company.settings but not returned in responses.
 - **Fail-safe verification**: verify=false allows offline operation; verify=true validates with adapter before persisting.
+
+## [2026-01-12] Kaspi orders sync MVP — verification (no code changes)
+
+### Verified
+- This branch contains **no code diffs vs origin/dev**; only journal update.
+- Kaspi orders sync MVP is already present in dev:
+  - idempotent upsert via UNIQUE (company_id, external_id)
+  - watermark via kaspi_order_sync_state (last_synced_at / last_external_order_id)
+  - per-company advisory lock (pg_try_advisory_xact_lock) returns 423 when locked
+  - 429 Retry-After handling + backoff/jitter + safe logging
+- Tests: python -m pytest tests/app/api/test_kaspi_orders_sync_mvp.py -q => 5 passed
