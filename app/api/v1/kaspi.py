@@ -121,7 +121,7 @@ async def connect_store(
     """
     Main Kaspi onboarding endpoint:
     1) Resolve tenant company from current user.
-    2) Validate and optionally verify token with Kaspi adapter.
+    2) Validate and optionally verify token with Kaspi HTTP API (NOT PowerShell adapter).
     3) Update Company.name with provided company_name.
     4) Store encrypted token via KaspiStoreToken.upsert_token().
     5) Store optional private metadata in Company.settings JSON.
@@ -129,6 +129,12 @@ async def connect_store(
 
     Requires: company_name (min_length=2).
     Optional: meta (private marketplace metadata, not exposed).
+
+    Token verification (verify=true):
+    - Uses KaspiService.verify_token() which makes minimal HTTP call to Kaspi API
+    - 401/403 -> returns 400 with detail="kaspi_invalid_token"
+    - Network/timeout errors -> returns 502 with detail="kaspi_upstream_error"
+    - Never calls KaspiAdapter (no PowerShell dependency)
     """
     # Resolve company from current user (tenant isolation)
     company_id = _resolve_company_id(current_user)
@@ -143,19 +149,50 @@ async def connect_store(
             detail="Company not found",
         )
 
-    # Verify token if requested (before persisting)
+    # Verify token if requested (before persisting) - HTTP only, no PowerShell
     if body.verify:
         try:
-            logger.info("Kaspi connect: verifying token for store=%s", body.store_name)
-            adapter = KaspiAdapter()
-            await _maybe_await(adapter.health(body.store_name))
-            logger.info("Kaspi connect: verification succeeded for store=%s", body.store_name)
-        except KaspiAdapterError as e:
-            logger.warning("Kaspi connect: verification failed store=%s error=%s", body.store_name, e)
-            raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                detail=f"Token verification failed: {str(e)}",
-            )
+            logger.info("Kaspi connect: verifying token via HTTP for store=%s", body.store_name)
+            kaspi_service = KaspiService()
+            await kaspi_service.verify_token(store_name=body.store_name, token=body.token)
+            logger.info("Kaspi connect: HTTP verification succeeded for store=%s", body.store_name)
+        except Exception as e:
+            # Handle different error types
+            import httpx
+
+            if isinstance(e, httpx.HTTPStatusError):
+                if e.response.status_code in (401, 403):
+                    # Invalid token
+                    logger.warning(
+                        "Kaspi connect: invalid token store=%s status=%s", body.store_name, e.response.status_code
+                    )
+                    raise HTTPException(
+                        status_code=status.HTTP_400_BAD_REQUEST,
+                        detail="kaspi_invalid_token",
+                    )
+                else:
+                    # Other HTTP errors are upstream problems
+                    logger.error(
+                        "Kaspi connect: upstream HTTP error store=%s status=%s", body.store_name, e.response.status_code
+                    )
+                    raise HTTPException(
+                        status_code=status.HTTP_502_BAD_GATEWAY,
+                        detail="kaspi_upstream_error",
+                    )
+            elif isinstance(e, httpx.TimeoutException | httpx.NetworkError):
+                # Network/timeout errors
+                logger.error("Kaspi connect: network error store=%s error=%s", body.store_name, type(e).__name__)
+                raise HTTPException(
+                    status_code=status.HTTP_502_BAD_GATEWAY,
+                    detail="kaspi_upstream_error",
+                )
+            else:
+                # Unexpected errors
+                logger.error("Kaspi connect: verification error store=%s error=%s", body.store_name, str(e))
+                raise HTTPException(
+                    status_code=status.HTTP_502_BAD_GATEWAY,
+                    detail="kaspi_upstream_error",
+                )
 
     # Update Company with provided company_name
     company.name = body.company_name.strip()
