@@ -38,6 +38,7 @@ from sqlalchemy import bindparam, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.db import get_async_db  # noqa — для совместимости импорт-алиас
+from app.core.logging import get_logger
 from app.core.security import get_current_user, resolve_tenant_company_id
 
 # Доменные зависимости/схемы:
@@ -47,6 +48,9 @@ from app.models.company import Company
 from app.models.kaspi_order_sync_state import KaspiOrderSyncState
 from app.models.marketplace import KaspiStoreToken
 from app.models.user import User
+
+logger = get_logger(__name__)
+
 from app.schemas.kaspi import (
     ImportRequest,
     ImportStatusQuery,
@@ -666,6 +670,7 @@ class KaspiAutoSyncStatusOut(BaseModel):
     response_model=KaspiAutoSyncStatusOut,
 )
 async def kaspi_autosync_status(
+    request: Request,
     current_user: User = Depends(_auth_user),
 ):
     """
@@ -690,8 +695,18 @@ async def kaspi_autosync_status(
 
         runner_enabled = _env_truthy(os.getenv("ENABLE_KASPI_SYNC_RUNNER", "0"))
         scheduler_job_effective_enabled = should_register_kaspi_autosync()
-    except Exception:
-        pass
+    except ImportError as e:
+        logger.debug(
+            "scheduler_worker unavailable for autosync status",
+            error=str(e),
+            request_id=getattr(request.state, "request_id", None),
+        )
+    except Exception as e:
+        logger.warning(
+            "Failed to check scheduler_worker mutual exclusion state",
+            error=str(e),
+            request_id=getattr(request.state, "request_id", None),
+        )
 
     # Проверяем scheduler state
     job_registered = False
@@ -702,9 +717,18 @@ async def kaspi_autosync_status(
         scheduler_running = scheduler.running
         job = scheduler.get_job("kaspi_autosync")
         job_registered = job is not None
-    except Exception:
-        # If scheduler not available, we still return safe defaults
-        pass
+    except ImportError as e:
+        logger.debug(
+            "APScheduler not available for autosync status",
+            error=str(e),
+            request_id=getattr(request.state, "request_id", None),
+        )
+    except Exception as e:
+        logger.warning(
+            "Failed to get APScheduler job state",
+            error=str(e),
+            request_id=getattr(request.state, "request_id", None),
+        )
 
     # Получаем last run summary (safe defaults if autosync disabled)
     last_run_at = None
@@ -722,9 +746,18 @@ async def kaspi_autosync_status(
         success = summary.get("success", 0)
         locked = summary.get("locked", 0)
         failed = summary.get("failed", 0)
-    except ImportError:
-        # Module not available, but we still return valid response
-        pass
+    except ImportError as e:
+        logger.debug(
+            "kaspi_autosync module unavailable for last_run_summary",
+            error=str(e),
+            request_id=getattr(request.state, "request_id", None),
+        )
+    except Exception as e:
+        logger.warning(
+            "Failed to get kaspi_autosync last_run_summary",
+            error=str(e),
+            request_id=getattr(request.state, "request_id", None),
+        )
 
     return KaspiAutoSyncStatusOut(
         enabled=enabled,
