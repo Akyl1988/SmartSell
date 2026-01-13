@@ -1793,3 +1793,20 @@ Timeout could cancel/rollback the main sync transaction, causing `kaspi_order_sy
   - python -m pytest -k "kaspi" -v → 63 passed, 1 skipped
   - python -m pytest tests/test_kaspi_autosync_mutual_exclusion.py -v → 3 passed
   - git log --since="4 days ago" collected; no merge conflicts on append-only journal updates
+
+## [2026-01-13] Kaspi autosync — PROCESS_ROLE gating
+
+### Added
+- PROCESS_ROLE-based gating to prevent dual start of Kaspi autosync:
+  - scheduler starts only for role=scheduler + ENABLE_SCHEDULER=1
+  - kaspi runner loop starts only for role in (web, runner) + ENABLE_KASPI_SYNC_RUNNER=1
+  - kaspi_autosync APScheduler job registers only for role=scheduler, and is suppressed when runner is enabled
+- Regression tests: tests/test_process_role_gating.py
+- Pytest warning filter for FastAPI on_event deprecation.
+
+### Changed
+- app/main.py: lifespan guards for scheduler/runner by role and flags.
+- app/worker/scheduler_worker.py: should_register_kaspi_autosync() now requires role=scheduler.
+
+### Notes
+- GitHub Actions may fail to start due to billing/spending limits; local gates (ruff + full pytest + alembic smoke) are the source of truth.
