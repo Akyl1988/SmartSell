@@ -487,7 +487,7 @@ def init_core(app: FastAPI) -> None:
 
         role = getattr(settings, "PROCESS_ROLE", os.getenv("PROCESS_ROLE", "web")) or "web"
         if role not in ("web", "migrator"):
-            log.info("Core startup hook skipped for role", role=role)
+            log.info("Core startup hook skipped for role", extra={"role": role})
             return
 
         # предупреждения по критичным ENV

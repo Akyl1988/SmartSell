@@ -823,7 +823,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:  # type: ignore[overrid
             settings, "ENABLE_SCHEDULER", False
         )
         if role != "scheduler":
-            logger.info("Scheduler start skipped for role", role=role, enable_scheduler=enable_scheduler)
+            logger.info("Scheduler start skipped for role", extra={"role": role, "enable_scheduler": enable_scheduler})
         elif disable_hooks:
             logger.info("Scheduler start skipped: startup hooks disabled")
         elif not enable_scheduler:
@@ -848,7 +848,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:  # type: ignore[overrid
         role = getattr(settings, "PROCESS_ROLE", os.getenv("PROCESS_ROLE", "web")) or "web"
         enable_kaspi_sync = _env_truthy(os.getenv("ENABLE_KASPI_SYNC_RUNNER", "0"))
         if role not in ("web", "runner"):
-            logger.info("Kaspi sync runner start skipped for role", role=role, enable_kaspi_sync=enable_kaspi_sync)
+            logger.info("Kaspi sync runner start skipped for role", extra={"role": role, "enable_kaspi_sync": enable_kaspi_sync})
         elif disable_hooks:
             logger.info("Kaspi sync runner start skipped: startup hooks disabled")
         elif not enable_kaspi_sync:
