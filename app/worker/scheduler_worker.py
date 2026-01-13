@@ -85,12 +85,19 @@ def should_register_kaspi_autosync() -> bool:
     Determine if Kaspi autosync APScheduler job should be registered.
 
     Returns True only when:
-    - settings.KASPI_AUTOSYNC_ENABLED is True
+    - PROCESS_ROLE == "scheduler" (settings or env PROCESS_ROLE, default "web")
+    - AND settings.KASPI_AUTOSYNC_ENABLED is True
     - AND env ENABLE_KASPI_SYNC_RUNNER is NOT truthy (runner takes precedence)
 
-    This ensures mutual exclusion between APScheduler job and main.py runner loop.
+    This ensures mutual exclusion between APScheduler job and main.py runner loop,
+    and prevents dual activation in production.
     """
     import os
+
+    # Check PROCESS_ROLE: only scheduler role can register
+    role = getattr(settings, "PROCESS_ROLE", os.getenv("PROCESS_ROLE", "web")) or "web"
+    if role != "scheduler":
+        return False
 
     # Check if runner is enabled (takes precedence)
     runner_enabled = _env_truthy(os.getenv("ENABLE_KASPI_SYNC_RUNNER", "0"))

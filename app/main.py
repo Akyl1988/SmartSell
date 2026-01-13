@@ -816,12 +816,21 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:  # type: ignore[overrid
     except Exception as e:
         logger.info("Campaigns module not loaded: %s", e)
 
-    # автозапуск планировщика (по флагу)
+    # автозапуск планировщика (по флагу и роли)
     try:
+        role = getattr(settings, "PROCESS_ROLE", os.getenv("PROCESS_ROLE", "web")) or "web"
         enable_scheduler = _env_truthy(os.getenv("ENABLE_SCHEDULER", "0")) or getattr(
             settings, "ENABLE_SCHEDULER", False
         )
-        if not disable_hooks and enable_scheduler and not _GLOBAL.get("scheduler_started"):
+        if role != "scheduler":
+            logger.info("Scheduler start skipped for role", role=role, enable_scheduler=enable_scheduler)
+        elif disable_hooks:
+            logger.info("Scheduler start skipped: startup hooks disabled")
+        elif not enable_scheduler:
+            logger.info("Scheduler start skipped: ENABLE_SCHEDULER=False")
+        elif _GLOBAL.get("scheduler_started"):
+            logger.info("Scheduler already started")
+        else:
             try:
                 from app.worker import scheduler_worker  # type: ignore
             except ImportError as e:
@@ -833,11 +842,20 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:  # type: ignore[overrid
     except Exception as e:
         logger.error("Scheduler start failed: %s", e)
 
-    # Kaspi orders sync runner background task (guarded by startup hooks check)
+    # Kaspi orders sync runner background task (guarded by role, startup hooks check)
     kaspi_sync_task = None
     try:
+        role = getattr(settings, "PROCESS_ROLE", os.getenv("PROCESS_ROLE", "web")) or "web"
         enable_kaspi_sync = _env_truthy(os.getenv("ENABLE_KASPI_SYNC_RUNNER", "0"))
-        if not disable_hooks and enable_kaspi_sync and not _GLOBAL.get("kaspi_sync_started"):
+        if role not in ("web", "runner"):
+            logger.info("Kaspi sync runner start skipped for role", role=role, enable_kaspi_sync=enable_kaspi_sync)
+        elif disable_hooks:
+            logger.info("Kaspi sync runner start skipped: startup hooks disabled")
+        elif not enable_kaspi_sync:
+            logger.info("Kaspi sync runner start skipped: ENABLE_KASPI_SYNC_RUNNER=False")
+        elif _GLOBAL.get("kaspi_sync_started"):
+            logger.info("Kaspi sync runner already started")
+        else:
             from app.services.kaspi_orders_sync_runner import run_kaspi_orders_sync_once
 
             async def _kaspi_sync_loop():
