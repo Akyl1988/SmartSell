@@ -4,6 +4,30 @@ from app.api.v1 import kaspi as kaspi_module
 
 
 @pytest.mark.asyncio
+async def test_kaspi_health_returns_proper_json(monkeypatch, async_client):
+    """Test that /api/v1/kaspi/health/{store} returns proper JSON object, not double-encoded string."""
+
+    class _FakeKaspiAdapter:
+        def health(self, store: str) -> dict:  # noqa: ANN001, ARG002
+            # Simulate what PowerShell script returns after parsing
+            return {"ok": True, "store": store, "cmd": "ks:health", "note": "test health"}
+
+    monkeypatch.setattr(kaspi_module, "KaspiAdapter", _FakeKaspiAdapter)
+
+    resp = await async_client.get("/api/v1/kaspi/health/default")
+    assert resp.status_code == 200, resp.text
+
+    # Check that response is proper JSON object, not a string
+    data = resp.json()
+    assert isinstance(data, dict), f"Expected dict, got {type(data)}: {data}"
+    assert data["ok"] is True
+    assert data["store"] == "default"
+
+    # Verify response text is NOT double-encoded (should not start with quote)
+    assert not resp.text.startswith('"'), f"Response should not be quoted JSON string: {resp.text[:100]}"
+
+
+@pytest.mark.asyncio
 async def test_kaspi_orders_sync_allows_empty_body(monkeypatch, async_client, company_a_admin_headers):
     called = {"count": 0, "company_id": None}
 
