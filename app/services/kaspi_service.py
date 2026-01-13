@@ -1072,8 +1072,12 @@ class KaspiService:
         if db.in_transaction():
             try:
                 await db.rollback()
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(
+                    "Rollback failed in _update_state (non-critical)",
+                    company_id=company_id,
+                    error=str(e),
+                )
         async with db.begin():
             state = await self._load_or_create_state(db, company_id)
             if last_attempt_at is not None:
@@ -1397,8 +1401,12 @@ class KaspiService:
                 rp = extra.get("repricing")
                 if isinstance(rp, dict) and rp.get("brand"):
                     return str(rp["brand"])
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(
+                "Brand extraction failed for product",
+                product_id=getattr(p, "id", None),
+                error=str(e),
+            )
         return ""
 
     # ---------------------- Availability sync ---------------------- #
