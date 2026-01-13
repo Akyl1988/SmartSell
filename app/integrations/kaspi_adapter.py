@@ -62,7 +62,7 @@ class KaspiAdapter:
         try:
             parsed = json.loads(json_line)
             # Гарантируем, что наружу возвращается объект/массив, а не JSON-строка
-            if isinstance(parsed, (dict, list)):
+            if isinstance(parsed, dict | list):
                 return parsed
             return {"raw": parsed}
         except json.JSONDecodeError:
