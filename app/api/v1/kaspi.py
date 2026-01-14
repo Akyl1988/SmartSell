@@ -45,6 +45,7 @@ from app.core.security import get_current_user, resolve_tenant_company_id
 from app.integrations.kaspi_adapter import KaspiAdapter, KaspiAdapterError
 from app.models import Product
 from app.models.company import Company
+from app.models.kaspi_catalog_product import KaspiCatalogProduct
 from app.models.kaspi_order_sync_state import KaspiOrderSyncState
 from app.models.marketplace import KaspiStoreToken
 from app.models.user import User
@@ -823,4 +824,149 @@ async def kaspi_autosync_trigger(
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="Kaspi auto-sync module not available",
+        )
+
+
+# ============================= CATALOG PRODUCTS ==============================
+
+
+class KaspiProductSyncOut(BaseModel):
+    """Response model for catalog sync operation."""
+
+    ok: bool
+    company_id: int
+    fetched: int
+    inserted: int
+    updated: int
+
+
+class KaspiProductOut(BaseModel):
+    """Response model for single product in catalog list."""
+
+    offer_id: str
+    name: str | None = None
+    sku: str | None = None
+    price: str | None = None
+    qty: int | None = None
+    is_active: bool
+
+
+class KaspiProductListOut(BaseModel):
+    """Response model for catalog products list."""
+
+    items: list[KaspiProductOut]
+    total: int
+    limit: int
+    offset: int
+
+
+@router.post(
+    "/products/sync",
+    summary="Синхронизировать каталог Kaspi в локальную БД",
+    response_model=KaspiProductSyncOut,
+)
+async def kaspi_products_sync(
+    current_user: User = Depends(_auth_user),
+    session: AsyncSession = Depends(get_async_db),
+):
+    """
+    Синхронизирует каталог продуктов Kaspi для текущей компании.
+    Использует tenant isolation через resolved_company_id.
+    Идемпотентен: повторный запуск обновляет существующие записи.
+    """
+    from app.services.kaspi_products_sync_service import sync_kaspi_catalog_products
+
+    company_id = _resolve_company_id(current_user)
+
+    try:
+        result = await sync_kaspi_catalog_products(session, company_id)
+        return KaspiProductSyncOut(**result)
+    except Exception as e:
+        logger.error("Kaspi products sync failed: company_id=%s error=%s", company_id, e)
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="Failed to sync products from Kaspi",
+        )
+
+
+@router.get(
+    "/products",
+    summary="Получить список каталога Kaspi",
+    response_model=KaspiProductListOut,
+)
+async def kaspi_products_list(
+    limit: int = 50,
+    offset: int = 0,
+    q: str | None = None,
+    current_user: User = Depends(_auth_user),
+    session: AsyncSession = Depends(get_async_db),
+):
+    """
+    Возвращает список продуктов каталога Kaspi для текущей компании.
+
+    Args:
+        limit: Максимум записей (default 50, max 200)
+        offset: Смещение для пагинации (default 0)
+        q: Опциональный поиск по name/sku (ILIKE)
+
+    Returns:
+        Список продуктов с безопасными полями (без raw)
+    """
+    company_id = _resolve_company_id(current_user)
+
+    # Validate limit
+    limit = max(1, min(limit, 200))
+    offset = max(0, offset)
+
+    try:
+        # Build query
+        query = sa.select(KaspiCatalogProduct).where(KaspiCatalogProduct.company_id == company_id)
+
+        # Optional search
+        if q:
+            search_pattern = f"%{q}%"
+            query = query.where(
+                sa.or_(
+                    KaspiCatalogProduct.name.ilike(search_pattern),
+                    KaspiCatalogProduct.sku.ilike(search_pattern),
+                )
+            )
+
+        # Count total
+        count_query = sa.select(sa.func.count()).select_from(query.subquery())
+        total_result = await session.execute(count_query)
+        total = total_result.scalar() or 0
+
+        # Apply pagination
+        query = query.limit(limit).offset(offset).order_by(KaspiCatalogProduct.id)
+
+        # Execute
+        result = await session.execute(query)
+        products = result.scalars().all()
+
+        # Map to response model (safe fields only)
+        items = [
+            KaspiProductOut(
+                offer_id=p.offer_id,
+                name=p.name,
+                sku=p.sku,
+                price=str(p.price) if p.price is not None else None,
+                qty=p.qty,
+                is_active=p.is_active,
+            )
+            for p in products
+        ]
+
+        return KaspiProductListOut(
+            items=items,
+            total=total,
+            limit=limit,
+            offset=offset,
+        )
+
+    except Exception as e:
+        logger.error("Kaspi products list failed: company_id=%s error=%s", company_id, e)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to retrieve products",
         )
