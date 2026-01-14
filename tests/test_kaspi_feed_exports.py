@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from datetime import datetime, timedelta
+
 import pytest
 import sqlalchemy as sa
 from sqlalchemy import select
@@ -573,19 +575,11 @@ async def test_upload_classifies_non_retryable_errors(
 
 
 @pytest.mark.asyncio
-async def test_concurrent_upload_protection_with_advisory_lock(
+async def test_concurrent_upload_protection_when_recently_uploading(
     monkeypatch,
     async_db_session,
 ):
-    """
-    Test that concurrent uploads are prevented via advisory lock.
-
-    This test simulates the lock being busy by mocking the pg_try_advisory_xact_lock result.
-    """
-    from unittest.mock import AsyncMock
-
-    from sqlalchemy.engine import Result
-
+    """If status is uploading with a fresh attempt, service must not re-upload."""
     from app.models.company import Company
     from app.services.kaspi_feed_export_service import generate_products_feed, upload_feed_export
 
@@ -605,26 +599,24 @@ async def test_concurrent_upload_protection_with_advisory_lock(
     async_db_session.add(p)
     await async_db_session.commit()
 
-    # Generate export
     gen_result = await generate_products_feed(async_db_session, company.id)
     export_id = gen_result["export_id"]
 
-    # Mock the session.execute to return False for advisory lock (lock busy)
-    original_execute = async_db_session.execute
+    # Mark as uploading recently
+    now = datetime.utcnow()
+    await async_db_session.execute(
+        sa.update(KaspiFeedExport)
+        .where(KaspiFeedExport.id == export_id)
+        .values(status="uploading", last_attempt_at=now, attempts=1)
+    )
+    await async_db_session.commit()
 
-    async def mock_execute(stmt, *args, **kwargs):
-        # Check if this is the advisory lock query
-        if hasattr(stmt, "text") and "pg_try_advisory_xact_lock" in str(stmt):
-            # Return False to simulate lock busy
-            mock_result = AsyncMock(spec=Result)
-            mock_result.scalar.return_value = False
-            return mock_result
-        # Otherwise, call the original
-        return await original_execute(stmt, *args, **kwargs)
+    # Ensure upload is NOT called
+    async def mock_upload_should_not_run(self, xml_payload: str) -> bool:
+        raise AssertionError("Upload should not be invoked when another upload is in progress")
 
-    monkeypatch.setattr(async_db_session, "execute", mock_execute)
+    monkeypatch.setattr(KaspiService, "upload_products_feed", mock_upload_should_not_run)
 
-    # Attempt upload (should fail due to lock busy)
     upload_result = await upload_feed_export(
         async_db_session,
         export_id,
@@ -633,6 +625,148 @@ async def test_concurrent_upload_protection_with_advisory_lock(
     )
 
     assert upload_result["ok"] is False
-    assert upload_result["upload_in_progress"] is True  # key assertion
-    assert "already in progress" in upload_result["error"].lower()
+    assert upload_result["upload_in_progress"] is True
     assert upload_result["is_retryable"] is True
+    assert upload_result["already_uploaded"] is False
+
+    # attempts should remain unchanged when we fail to acquire
+    stmt = select(KaspiFeedExport).where(KaspiFeedExport.id == export_id)
+    db_result = await async_db_session.execute(stmt)
+    export = db_result.scalars().first()
+    assert export.attempts == 1
+
+
+@pytest.mark.asyncio
+async def test_stale_upload_takeover(monkeypatch, async_db_session):
+    """If upload is stale (>15m), new upload should take over and succeed."""
+    from app.models.company import Company
+    from app.services.kaspi_feed_export_service import generate_products_feed, upload_feed_export
+
+    company = Company(name="TestCo")
+    async_db_session.add(company)
+    await async_db_session.flush()
+
+    p = KaspiCatalogProduct(
+        company_id=company.id,
+        offer_id="OFFER001",
+        name="Product A",
+        sku="SKU-A",
+        price=100.00,
+        qty=10,
+        is_active=True,
+    )
+    async_db_session.add(p)
+    await async_db_session.commit()
+
+    gen_result = await generate_products_feed(async_db_session, company.id)
+    export_id = gen_result["export_id"]
+
+    stale_time = datetime.utcnow() - timedelta(minutes=20)
+    await async_db_session.execute(
+        sa.update(KaspiFeedExport)
+        .where(KaspiFeedExport.id == export_id)
+        .values(status="uploading", last_attempt_at=stale_time, attempts=1)
+    )
+    await async_db_session.commit()
+
+    upload_called = False
+
+    async def mock_upload_success(self, xml_payload: str) -> bool:
+        nonlocal upload_called
+        upload_called = True
+        return True
+
+    monkeypatch.setattr(KaspiService, "upload_products_feed", mock_upload_success)
+
+    result = await upload_feed_export(
+        async_db_session,
+        export_id,
+        company.id,
+        kaspi_service=KaspiService(),
+    )
+
+    assert result["ok"] is True
+    assert result["upload_in_progress"] is False
+    assert upload_called is True
+
+    stmt = select(KaspiFeedExport).where(KaspiFeedExport.id == export_id)
+    db_result = await async_db_session.execute(stmt)
+    export = db_result.scalars().first()
+    assert export.status == "uploaded"
+    assert export.attempts == 2  # previous attempt + takeover
+    assert export.last_attempt_at is not None
+    assert export.uploaded_at is not None
+    assert export.duration_ms is not None
+
+
+@pytest.mark.asyncio
+async def test_claim_fail_then_already_uploaded(monkeypatch, async_db_session):
+    """If claim fails but row becomes uploaded, return already_uploaded without calling upload."""
+    from app.models.company import Company
+    from app.services.kaspi_feed_export_service import generate_products_feed, upload_feed_export
+
+    company = Company(name="TestCo")
+    async_db_session.add(company)
+    await async_db_session.flush()
+
+    p = KaspiCatalogProduct(
+        company_id=company.id,
+        offer_id="OFFER001",
+        name="Product A",
+        sku="SKU-A",
+        price=100.00,
+        qty=10,
+        is_active=True,
+    )
+    async_db_session.add(p)
+    await async_db_session.commit()
+
+    gen_result = await generate_products_feed(async_db_session, company.id)
+    export_id = gen_result["export_id"]
+
+    # Put into uploading recent so CAS will fail, and flip to uploaded during claim attempt
+    now = datetime.utcnow()
+    await async_db_session.execute(
+        sa.update(KaspiFeedExport)
+        .where(KaspiFeedExport.id == export_id)
+        .values(status="uploading", last_attempt_at=now, attempts=1)
+    )
+    await async_db_session.commit()
+
+    original_execute = async_db_session.execute
+
+    async def mock_execute(stmt, *args, **kwargs):
+        # On claim attempt, switch row to uploaded and return no rows to simulate another worker
+        if isinstance(stmt, sa.sql.dml.Update) and getattr(stmt.table, "name", "") == KaspiFeedExport.__tablename__:
+            await original_execute(
+                sa.update(KaspiFeedExport)
+                .where(KaspiFeedExport.id == export_id)
+                .values(status="uploaded", uploaded_at=datetime.utcnow())
+            )
+            await async_db_session.commit()
+
+            class _Empty:
+                def first(self_inner):
+                    return None
+
+            return _Empty()
+        return await original_execute(stmt, *args, **kwargs)
+
+    monkeypatch.setattr(async_db_session, "execute", mock_execute)
+
+    async def mock_upload_should_not_run(self, xml_payload: str) -> bool:
+        raise AssertionError("Upload should not be called when already uploaded is detected")
+
+    monkeypatch.setattr(KaspiService, "upload_products_feed", mock_upload_should_not_run)
+
+    result = await upload_feed_export(
+        async_db_session,
+        export_id,
+        company.id,
+        kaspi_service=KaspiService(),
+    )
+
+    assert result["ok"] is True
+    assert result["already_uploaded"] is True
+    assert result["upload_in_progress"] is False
+    assert result["is_retryable"] is False
