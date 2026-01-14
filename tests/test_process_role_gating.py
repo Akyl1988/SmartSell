@@ -32,9 +32,9 @@ async def test_scheduler_skipped_for_web_role(monkeypatch):
     # Simulate the lifespan startup logic
     disable_hooks = main_module.should_disable_startup_hooks()
     role = getattr(settings, "PROCESS_ROLE", os.getenv("PROCESS_ROLE", "web")) or "web"
-    enable_scheduler = main_module._env_truthy(
-        os.getenv("ENABLE_SCHEDULER", "0")
-    ) or getattr(settings, "ENABLE_SCHEDULER", False)
+    enable_scheduler = main_module._env_truthy(os.getenv("ENABLE_SCHEDULER", "0")) or getattr(
+        settings, "ENABLE_SCHEDULER", False
+    )
 
     if role == "scheduler" and not disable_hooks and enable_scheduler:
         _record_start()
@@ -58,9 +58,9 @@ async def test_scheduler_starts_for_scheduler_role(monkeypatch):
     # Simulate the lifespan startup logic
     disable_hooks = main_module.should_disable_startup_hooks()
     role = getattr(settings, "PROCESS_ROLE", os.getenv("PROCESS_ROLE", "web")) or "web"
-    enable_scheduler = main_module._env_truthy(
-        os.getenv("ENABLE_SCHEDULER", "0")
-    ) or getattr(settings, "ENABLE_SCHEDULER", False)
+    enable_scheduler = main_module._env_truthy(os.getenv("ENABLE_SCHEDULER", "0")) or getattr(
+        settings, "ENABLE_SCHEDULER", False
+    )
 
     if role == "scheduler" and not disable_hooks and enable_scheduler:
         _record_start()
@@ -83,9 +83,7 @@ def test_should_register_kaspi_autosync_false_for_web_role():
         from app.worker.scheduler_worker import should_register_kaspi_autosync
 
         result = should_register_kaspi_autosync()
-        assert (
-            not result
-        ), "should_register_kaspi_autosync should return False for role='web'"
+        assert not result, "should_register_kaspi_autosync should return False for role='web'"
 
     monkeypatch.undo()
 
@@ -104,9 +102,7 @@ def test_should_register_kaspi_autosync_true_for_scheduler_role():
         from app.worker.scheduler_worker import should_register_kaspi_autosync
 
         result = should_register_kaspi_autosync()
-        assert (
-            result
-        ), "should_register_kaspi_autosync should return True for role='scheduler' with autosync enabled"
+        assert result, "should_register_kaspi_autosync should return True for role='scheduler' with autosync enabled"
 
     monkeypatch.undo()
 
@@ -125,9 +121,7 @@ def test_should_register_kaspi_autosync_false_with_runner_enabled():
         from app.worker.scheduler_worker import should_register_kaspi_autosync
 
         result = should_register_kaspi_autosync()
-        assert (
-            not result
-        ), "should_register_kaspi_autosync should return False when ENABLE_KASPI_SYNC_RUNNER=1"
+        assert not result, "should_register_kaspi_autosync should return False when ENABLE_KASPI_SYNC_RUNNER=1"
 
     monkeypatch.undo()
 

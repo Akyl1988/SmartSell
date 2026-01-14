@@ -26,8 +26,8 @@ class KaspiAdapter:
     @staticmethod
     def _strip_ansi(text: str) -> str:
         """Remove ANSI escape sequences from text."""
-        ansi_escape = re.compile(r'\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])')
-        return ansi_escape.sub('', text)
+        ansi_escape = re.compile(r"\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])")
+        return ansi_escape.sub("", text)
 
     def _run_json(self, ps_command: str) -> Any:
         """
@@ -44,21 +44,21 @@ class KaspiAdapter:
         if completed.returncode != 0:
             stderr = self._strip_ansi(completed.stderr.strip())
             raise KaspiAdapterError(f"Kaspi.ps1 error: {stderr}")
-        
+
         stdout = completed.stdout.strip()
         if not stdout:
             return None
-        
+
         # Strip ANSI sequences
         stdout = self._strip_ansi(stdout)
-        
+
         # Handle multi-line output: take the last non-empty line (should be JSON)
         lines = [line.strip() for line in stdout.splitlines() if line.strip()]
         if not lines:
             return None
-        
+
         json_line = lines[-1]
-        
+
         try:
             parsed = json.loads(json_line)
             # Гарантируем, что наружу возвращается объект/массив, а не JSON-строка
