@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import hashlib
+import time
 import xml.etree.ElementTree as ET
 from datetime import datetime
 from typing import TYPE_CHECKING
 
-from sqlalchemy import and_, select
+import httpx
+from sqlalchemy import and_, select, text
 from sqlalchemy.dialects.postgresql import insert
 
 from app.models import KaspiCatalogProduct, KaspiFeedExport
@@ -134,6 +136,32 @@ async def generate_products_feed(
     }
 
 
+def _classify_error(error: Exception) -> tuple[str, bool]:
+    """
+    Classify an error as retryable or not.
+
+    Returns: (error_message, is_retryable)
+    - Retryable: timeouts, network errors, 5xx server errors
+    - Non-retryable: 4xx client errors, validation errors
+    """
+    error_str = str(error)
+    error_type = type(error).__name__
+
+    # Retryable errors
+    if isinstance(error, httpx.TimeoutException | httpx.NetworkError | httpx.ConnectError):
+        return f"{error_type}: {error_str}", True
+
+    if isinstance(error, httpx.HTTPStatusError):
+        status_code = error.response.status_code
+        if 500 <= status_code < 600:
+            return f"HTTP {status_code}: {error_str}", True
+        elif 400 <= status_code < 500:
+            return f"HTTP {status_code}: {error_str}", False
+
+    # Default: treat unknown errors as non-retryable
+    return f"{error_type}: {error_str}", False
+
+
 async def upload_feed_export(
     session: AsyncSession,
     export_id: int,
@@ -141,14 +169,13 @@ async def upload_feed_export(
     kaspi_service: KaspiService | None = None,
 ) -> dict:
     """
-    Upload a feed export to Kaspi.
+    Upload a feed export to Kaspi with concurrency protection and retry tracking.
 
-    1. Load export scoped by company_id
-    2. Update status to "uploading"
-    3. Call KaspiService.upload_products_feed(payload)
-    4. On success: status="uploaded", last_error=None
-    5. On failure: status="failed", last_error=str(error)
-    6. Return summary {ok, export_id, status, error (if any)}
+    Uses PostgreSQL advisory lock to prevent concurrent uploads.
+    Tracks attempts, timestamps, and duration.
+    Classifies errors as retryable or non-retryable.
+
+    Returns: {ok, export_id, status, error, is_retryable, already_uploaded, upload_in_progress}
     """
     if kaspi_service is None:
         kaspi_service = KaspiService()
@@ -170,31 +197,97 @@ async def upload_feed_export(
             "export_id": export_id,
             "status": None,
             "error": "Export not found or access denied",
+            "is_retryable": False,
+            "already_uploaded": False,
+            "upload_in_progress": False,
         }
 
-    # Update status to uploading
+    # Idempotency: if already uploaded, return existing state
+    if export.status == "uploaded":
+        return {
+            "ok": True,
+            "export_id": export_id,
+            "status": "uploaded",
+            "error": None,
+            "is_retryable": False,
+            "already_uploaded": True,
+            "upload_in_progress": False,
+        }
+
+    # Try to acquire advisory lock (key: export_id)
+    # pg_try_advisory_lock returns true if lock acquired, false if already locked
+    lock_key = export_id
+    lock_result = await session.execute(text("SELECT pg_try_advisory_xact_lock(:key)"), {"key": lock_key})
+    lock_acquired = lock_result.scalar()
+
+    if not lock_acquired:
+        # Another process is uploading this export
+        return {
+            "ok": False,
+            "export_id": export_id,
+            "status": export.status,
+            "error": "Upload already in progress",
+            "is_retryable": True,
+            "already_uploaded": False,
+            "upload_in_progress": True,
+        }
+
+    # Lock acquired, proceed with upload
+    start_time = time.perf_counter()
+
+    # Update attempts and status
+    export.attempts = (export.attempts or 0) + 1
+    export.last_attempt_at = datetime.utcnow()
     export.status = "uploading"
     export.updated_at = datetime.utcnow()
     await session.flush()
 
     try:
-        # Call kaspi service stub
+        # Call kaspi service
         await kaspi_service.upload_products_feed(export.payload_text)
 
         # Success
+        end_time = time.perf_counter()
+        duration_ms = int((end_time - start_time) * 1000)
+
         export.status = "uploaded"
+        export.uploaded_at = datetime.utcnow()
+        export.duration_ms = duration_ms
         export.last_error = None
+        export.updated_at = datetime.utcnow()
+
+        await session.commit()
+
+        return {
+            "ok": True,
+            "export_id": export_id,
+            "status": "uploaded",
+            "error": None,
+            "is_retryable": False,
+            "already_uploaded": False,
+            "upload_in_progress": False,
+        }
+
     except Exception as e:
         # Failure
+        end_time = time.perf_counter()
+        duration_ms = int((end_time - start_time) * 1000)
+
+        error_message, is_retryable = _classify_error(e)
+
         export.status = "failed"
-        export.last_error = str(e)
+        export.last_error = error_message
+        export.duration_ms = duration_ms
+        export.updated_at = datetime.utcnow()
 
-    export.updated_at = datetime.utcnow()
-    await session.commit()
+        await session.commit()
 
-    return {
-        "ok": export.status == "uploaded",
-        "export_id": export_id,
-        "status": export.status,
-        "error": export.last_error,
-    }
+        return {
+            "ok": False,
+            "export_id": export_id,
+            "status": "failed",
+            "error": error_message,
+            "is_retryable": is_retryable,
+            "already_uploaded": False,
+            "upload_in_progress": False,
+        }

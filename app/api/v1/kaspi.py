@@ -976,7 +976,7 @@ async def kaspi_products_list(
 
 
 class KaspiFeedExportOut(BaseModel):
-    """Response model for feed export metadata."""
+    """Response model for feed export metadata with retry diagnostics."""
 
     id: int
     kind: str
@@ -985,6 +985,10 @@ class KaspiFeedExportOut(BaseModel):
     checksum: str
     stats_json: dict | None = None
     last_error: str | None = None
+    attempts: int = 0
+    last_attempt_at: str | None = None
+    uploaded_at: str | None = None
+    duration_ms: int | None = None
     created_at: str | None = None
     updated_at: str | None = None
 
@@ -1002,12 +1006,15 @@ class KaspiFeedGenerateOut(BaseModel):
 
 
 class KaspiFeedUploadOut(BaseModel):
-    """Response model for feed upload."""
+    """Response model for feed upload with retry diagnostics."""
 
     ok: bool
     export_id: int
     status: str
     error: str | None = None
+    is_retryable: bool | None = None
+    already_uploaded: bool = False
+    upload_in_progress: bool = False
 
 
 class KaspiFeedListOut(BaseModel):
@@ -1135,6 +1142,10 @@ async def kaspi_feeds_list(
                 checksum=e.checksum,
                 stats_json=e.stats_json,
                 last_error=e.last_error,
+                attempts=e.attempts or 0,
+                last_attempt_at=e.last_attempt_at.isoformat() if e.last_attempt_at else None,
+                uploaded_at=e.uploaded_at.isoformat() if e.uploaded_at else None,
+                duration_ms=e.duration_ms,
                 created_at=e.created_at.isoformat() if e.created_at else None,
                 updated_at=e.updated_at.isoformat() if e.updated_at else None,
             )
@@ -1197,6 +1208,10 @@ async def kaspi_feed_get(
             checksum=export.checksum,
             stats_json=export.stats_json,
             last_error=export.last_error,
+            attempts=export.attempts or 0,
+            last_attempt_at=export.last_attempt_at.isoformat() if export.last_attempt_at else None,
+            uploaded_at=export.uploaded_at.isoformat() if export.uploaded_at else None,
+            duration_ms=export.duration_ms,
             created_at=export.created_at.isoformat() if export.created_at else None,
             updated_at=export.updated_at.isoformat() if export.updated_at else None,
         )
