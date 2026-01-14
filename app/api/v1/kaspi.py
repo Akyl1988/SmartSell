@@ -970,3 +970,291 @@ async def kaspi_products_list(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to retrieve products",
         )
+
+
+# ============================= FEED EXPORTS ==============================
+
+
+class KaspiFeedExportOut(BaseModel):
+    """Response model for feed export metadata."""
+
+    id: int
+    kind: str
+    format: str
+    status: str  # generated, uploading, uploaded, failed
+    checksum: str
+    stats_json: dict | None = None
+    last_error: str | None = None
+    created_at: str | None = None
+    updated_at: str | None = None
+
+
+class KaspiFeedGenerateOut(BaseModel):
+    """Response model for feed generation."""
+
+    ok: bool
+    export_id: int
+    company_id: int
+    total: int
+    active: int
+    checksum: str
+    is_new: bool
+
+
+class KaspiFeedUploadOut(BaseModel):
+    """Response model for feed upload."""
+
+    ok: bool
+    export_id: int
+    status: str
+    error: str | None = None
+
+
+class KaspiFeedListOut(BaseModel):
+    """Response model for feed exports list."""
+
+    items: list[KaspiFeedExportOut]
+    total: int
+    limit: int
+    offset: int
+
+
+@router.post(
+    "/feeds/products/generate",
+    summary="Сгенерировать фид продуктов для Kaspi",
+    response_model=KaspiFeedGenerateOut,
+)
+async def kaspi_feed_generate_products(
+    current_user: User = Depends(_auth_user),
+    session: AsyncSession = Depends(get_async_db),
+):
+    """
+    Генерирует фид продуктов для текущей компании.
+    Идемпотентен: повторный вызов вернёт существующий фид если контент не изменился.
+    """
+    from app.services.kaspi_feed_export_service import generate_products_feed
+
+    company_id = _resolve_company_id(current_user)
+
+    try:
+        result = await generate_products_feed(session, company_id)
+        return KaspiFeedGenerateOut(**result)
+    except Exception as e:
+        logger.error("Kaspi feed generation failed: company_id=%s error=%s", company_id, e)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to generate feed",
+        )
+
+
+@router.post(
+    "/feeds/{export_id}/upload",
+    summary="Загрузить фид на Kaspi",
+    response_model=KaspiFeedUploadOut,
+)
+async def kaspi_feed_upload(
+    export_id: int,
+    current_user: User = Depends(_auth_user),
+    session: AsyncSession = Depends(get_async_db),
+):
+    """
+    Загружает фид на Kaspi. Текущий пользователь должен иметь доступ к компании фида.
+    """
+    from app.services.kaspi_feed_export_service import upload_feed_export
+
+    company_id = _resolve_company_id(current_user)
+
+    try:
+        result = await upload_feed_export(session, export_id, company_id)
+        if not result["ok"]:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=result.get("error", "Export not found"),
+            )
+        return KaspiFeedUploadOut(**result)
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error("Kaspi feed upload failed: export_id=%s company_id=%s error=%s", export_id, company_id, e)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to upload feed",
+        )
+
+
+@router.get(
+    "/feeds",
+    summary="Получить список фидов",
+    response_model=KaspiFeedListOut,
+)
+async def kaspi_feeds_list(
+    kind: str | None = None,
+    limit: int = 50,
+    offset: int = 0,
+    current_user: User = Depends(_auth_user),
+    session: AsyncSession = Depends(get_async_db),
+):
+    """
+    Возвращает список фидов для текущей компании с опциональной фильтрацией по kind.
+    """
+    from app.models.kaspi_feed_export import KaspiFeedExport
+
+    company_id = _resolve_company_id(current_user)
+
+    # Validate limit
+    limit = max(1, min(limit, 200))
+    offset = max(0, offset)
+
+    try:
+        # Build query
+        query = sa.select(KaspiFeedExport).where(KaspiFeedExport.company_id == company_id)
+
+        # Optional filter by kind
+        if kind:
+            query = query.where(KaspiFeedExport.kind == kind)
+
+        # Count total
+        count_query = sa.select(sa.func.count()).select_from(query.subquery())
+        total_result = await session.execute(count_query)
+        total = total_result.scalar() or 0
+
+        # Apply pagination and ordering
+        query = query.order_by(KaspiFeedExport.created_at.desc()).limit(limit).offset(offset)
+
+        # Execute
+        result = await session.execute(query)
+        exports = result.scalars().all()
+
+        # Map to response models
+        items = [
+            KaspiFeedExportOut(
+                id=e.id,
+                kind=e.kind,
+                format=e.format,
+                status=e.status,
+                checksum=e.checksum,
+                stats_json=e.stats_json,
+                last_error=e.last_error,
+                created_at=e.created_at.isoformat() if e.created_at else None,
+                updated_at=e.updated_at.isoformat() if e.updated_at else None,
+            )
+            for e in exports
+        ]
+
+        return KaspiFeedListOut(
+            items=items,
+            total=total,
+            limit=limit,
+            offset=offset,
+        )
+
+    except Exception as e:
+        logger.error("Kaspi feeds list failed: company_id=%s error=%s", company_id, e)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to retrieve feeds",
+        )
+
+
+@router.get(
+    "/feeds/{export_id}",
+    summary="Получить метаданные фида",
+    response_model=KaspiFeedExportOut,
+)
+async def kaspi_feed_get(
+    export_id: int,
+    current_user: User = Depends(_auth_user),
+    session: AsyncSession = Depends(get_async_db),
+):
+    """
+    Возвращает метаданные фида (без payload).
+    """
+    from app.models.kaspi_feed_export import KaspiFeedExport
+
+    company_id = _resolve_company_id(current_user)
+
+    try:
+        stmt = sa.select(KaspiFeedExport).where(
+            sa.and_(
+                KaspiFeedExport.id == export_id,
+                KaspiFeedExport.company_id == company_id,
+            )
+        )
+        result = await session.execute(stmt)
+        export = result.scalars().first()
+
+        if not export:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Export not found",
+            )
+
+        return KaspiFeedExportOut(
+            id=export.id,
+            kind=export.kind,
+            format=export.format,
+            status=export.status,
+            checksum=export.checksum,
+            stats_json=export.stats_json,
+            last_error=export.last_error,
+            created_at=export.created_at.isoformat() if export.created_at else None,
+            updated_at=export.updated_at.isoformat() if export.updated_at else None,
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error("Kaspi feed get failed: export_id=%s company_id=%s error=%s", export_id, company_id, e)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to retrieve feed",
+        )
+
+
+@router.get(
+    "/feeds/{export_id}/payload",
+    summary="Получить XML фида",
+    response_class=Response,
+)
+async def kaspi_feed_get_payload(
+    export_id: int,
+    current_user: User = Depends(_auth_user),
+    session: AsyncSession = Depends(get_async_db),
+):
+    """
+    Возвращает XML payload фида с типом application/xml.
+    """
+    from app.models.kaspi_feed_export import KaspiFeedExport
+
+    company_id = _resolve_company_id(current_user)
+
+    try:
+        stmt = sa.select(KaspiFeedExport).where(
+            sa.and_(
+                KaspiFeedExport.id == export_id,
+                KaspiFeedExport.company_id == company_id,
+            )
+        )
+        result = await session.execute(stmt)
+        export = result.scalars().first()
+
+        if not export:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Export not found",
+            )
+
+        return Response(
+            content=export.payload_text,
+            media_type="application/xml",
+            headers={"Content-Disposition": f'attachment; filename="kaspi_feed_{export_id}.xml"'},
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error("Kaspi feed payload failed: export_id=%s company_id=%s error=%s", export_id, company_id, e)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to retrieve payload",
+        )

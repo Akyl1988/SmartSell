@@ -314,6 +314,32 @@ class KaspiService:
                 logger.error("Kaspi update_product_availability(%s) error: %s", product_id, e)
                 return False
 
+    async def upload_products_feed(self, xml_payload: str) -> bool:
+        """
+        Upload a products feed (XML) to Kaspi.
+        Stub implementation for MVP: accepts XML and logs it.
+        In production, would POST to Kaspi feed upload endpoint.
+        """
+        try:
+            # Stub: for now just validate XML is valid and log
+            if not xml_payload or not isinstance(xml_payload, str):
+                raise ValueError("Invalid payload: must be non-empty XML string")
+            
+            # In production, would do:
+            # async with self._client() as client:
+            #     resp = await client.post(
+            #         self._url("/feeds/upload"),
+            #         headers={**self.headers, "Content-Type": "application/xml"},
+            #         content=xml_payload.encode("utf-8"),
+            #     )
+            #     resp.raise_for_status()
+            
+            logger.info("Kaspi: feed upload stub called with %d bytes", len(xml_payload))
+            return True
+        except Exception as e:
+            logger.error("Kaspi upload_products_feed error: %s", e)
+            raise RuntimeError(f"Failed to upload products feed to Kaspi: {e}") from e
+
     # ---------------------- Orders sync (DB) ---------------------- #
 
     async def sync_orders(
