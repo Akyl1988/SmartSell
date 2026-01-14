@@ -324,3 +324,7 @@ _branch_protection_*.json
 # local hook artifacts
 _hook_test.txt
 
+
+# local state snapshots (do not commit)
+/docs/STATE_SNAPSHOT_*.md
+
