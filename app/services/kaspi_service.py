@@ -324,7 +324,7 @@ class KaspiService:
             # Stub: for now just validate XML is valid and log
             if not xml_payload or not isinstance(xml_payload, str):
                 raise ValueError("Invalid payload: must be non-empty XML string")
-            
+
             # In production, would do:
             # async with self._client() as client:
             #     resp = await client.post(
@@ -333,7 +333,7 @@ class KaspiService:
             #         content=xml_payload.encode("utf-8"),
             #     )
             #     resp.raise_for_status()
-            
+
             logger.info("Kaspi: feed upload stub called with %d bytes", len(xml_payload))
             return True
         except Exception as e:
