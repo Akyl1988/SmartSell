@@ -184,6 +184,7 @@ _LAZY_MODELS: dict[str, tuple[str, str]] = {
         "IntegrationProviderConfig",
     ),
     "KaspiOrderSyncState": ("app.models.kaspi_order_sync_state", "KaspiOrderSyncState"),
+    "KaspiCatalogProduct": ("app.models.kaspi_catalog_product", "KaspiCatalogProduct"),
 }
 
 # Поддерживаемые модули доменов для «массового» импорта (ручной whitelisting).
@@ -200,6 +201,7 @@ _DOMAIN_MODULES: tuple[str, ...] = (
     "app.models.warehouse",
     "app.models.inventory_outbox",
     "app.models.kaspi_order_sync_state",
+    "app.models.kaspi_catalog_product",
     "app.models.system_integrations",
     "app.models.integration_provider",
     "app.models.integration_provider_config",
@@ -403,6 +405,9 @@ __all__ = [
     "reload_all_model_modules",
     # Test helpers
     "import_models_once",
+    # Kaspi
+    "KaspiOrderSyncState",
+    "KaspiCatalogProduct",
 ]
 
 
