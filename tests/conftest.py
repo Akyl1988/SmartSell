@@ -29,6 +29,13 @@ from collections.abc import AsyncIterator, Awaitable, Callable, Iterator
 from typing import Any
 from urllib.parse import quote
 
+# Guard against pytest-xdist usage (not supported in this repo)
+if os.environ.get("PYTEST_XDIST_WORKER") or os.environ.get("XDIST_WORKER"):
+    raise RuntimeError(
+        "pytest-xdist is not supported in this repository. "
+        "Please run tests with: python -m pytest -q"
+    )
+
 import httpx
 import pytest
 import pytest_asyncio
