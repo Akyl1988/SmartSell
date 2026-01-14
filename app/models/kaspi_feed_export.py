@@ -23,6 +23,13 @@ class KaspiFeedExport(Base):
     payload_text = Column(Text, nullable=False)  # XML content
     stats_json = Column(JSONB, nullable=True, server_default=text("NULL"))  # {total, active}
     last_error = Column(Text, nullable=True)
+    
+    # Retry and diagnostics
+    attempts = Column(Integer, nullable=False, server_default=text("0"))
+    last_attempt_at = Column(DateTime, nullable=True)
+    uploaded_at = Column(DateTime, nullable=True)
+    duration_ms = Column(Integer, nullable=True)
+    
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
 
