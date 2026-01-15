@@ -5,6 +5,7 @@ OTP (One-Time Password) utilities for phone verification.
 import hashlib
 import hmac
 import random
+import re
 from datetime import datetime, timedelta
 
 from sqlalchemy import and_, select
@@ -33,21 +34,38 @@ def verify_otp_hash(code: str, code_hash: str) -> bool:
     return hmac.compare_digest(expected_hash, code_hash)
 
 
-async def create_otp_attempt(
-    db: AsyncSession, phone: str, purpose: str = "login", expires_minutes: int = 5
-) -> tuple[str, OtpAttempt]:
-    """Create new OTP attempt and return code"""
+def _phone_variants(phone: str) -> list[str]:
+    """Return normalized variants for phone matching (digits, +digits, raw)."""
+    raw = (phone or "").strip()
+    digits = re.sub(r"\D", "", raw)
+    variants: list[str] = []
+    for val in (raw, digits, f"+{digits}"):
+        if val and val not in variants:
+            variants.append(val)
+    return variants
 
-    # Generate OTP code
-    otp_code = generate_otp_code()
+
+async def create_otp_attempt(
+    db: AsyncSession,
+    phone: str,
+    purpose: str = "login",
+    expires_minutes: int = 5,
+    attempts_left: int | None = None,
+    code: str | None = None,
+    user_id: int | None = None,
+) -> tuple[str, OtpAttempt]:
+    """Create new OTP attempt and return code."""
+
+    otp_code = (code or "").strip() or generate_otp_code()
     code_hash = hash_otp_code(otp_code)
 
-    # Create OTP attempt
     otp_attempt = OtpAttempt.create_new(
         phone=phone,
         code_hash=code_hash,
         purpose=purpose,
         expires_minutes=expires_minutes,
+        attempts_left=attempts_left if attempts_left is not None else 5,
+        user_id=user_id,
     )
 
     db.add(otp_attempt)
@@ -59,19 +77,23 @@ async def create_otp_attempt(
 
 
 async def verify_otp_code(db: AsyncSession, phone: str, code: str, purpose: str = "login") -> bool:
-    """Verify OTP code for phone number"""
+    """Verify OTP code for phone number."""
+
+    variants = _phone_variants(phone)
+    if not variants:
+        return False
 
     try:
-        # Get latest valid OTP attempt
         result = await db.execute(
             select(OtpAttempt)
             .where(
                 and_(
-                    OtpAttempt.phone == phone,
+                    OtpAttempt.phone.in_(variants),
                     OtpAttempt.purpose == purpose,
                     OtpAttempt.expires_at > datetime.utcnow(),
-                    not OtpAttempt.is_verified,
+                    OtpAttempt.is_verified.is_(False),
                     OtpAttempt.attempts_left > 0,
+                    OtpAttempt.deleted_at.is_(None),
                 )
             )
             .order_by(OtpAttempt.created_at.desc())
@@ -84,30 +106,25 @@ async def verify_otp_code(db: AsyncSession, phone: str, code: str, purpose: str 
             logger.warning(f"No valid OTP attempt found for {phone}")
             return False
 
-        # Check if OTP is still valid
-        if not otp_attempt.is_valid:
-            logger.warning(f"OTP attempt expired or used for {phone}")
+        if not otp_attempt.is_valid():
+            logger.warning(f"OTP attempt expired or blocked for {phone}")
             return False
 
-        # Use one attempt
         if not otp_attempt.use_attempt():
             logger.warning(f"No attempts left for OTP {phone}")
             await db.commit()
             return False
 
-        # Verify code
         if verify_otp_hash(code, otp_attempt.code_hash):
-            # Mark as verified
             otp_attempt.verify()
             await db.commit()
 
             logger.info(f"OTP verified successfully for {phone}")
             return True
-        else:
-            # Wrong code, save attempt count
-            await db.commit()
-            logger.warning(f"Invalid OTP code for {phone}")
-            return False
+
+        await db.commit()
+        logger.warning(f"Invalid OTP code for {phone}")
+        return False
 
     except Exception as e:
         logger.error(f"OTP verification error for {phone}: {e}")

@@ -171,6 +171,36 @@ except Exception:  # pragma: no cover
 
 
 # ------------------------------------------------------------------------------
+# Auth DB dependency: prefer async db when available
+# ------------------------------------------------------------------------------
+try:
+    from app.core.db import get_async_db  # type: ignore
+except Exception:  # pragma: no cover
+    get_async_db = None  # type: ignore
+
+
+async def _get_auth_db():
+    """Yield DB session; prefer async session when available."""
+
+    if get_async_db:
+        res = get_async_db()
+        if hasattr(res, "__aiter__"):
+            async for db in res:  # type: ignore[misc]
+                yield db
+            return
+        if hasattr(res, "__await__"):
+            db = await res  # type: ignore[misc]
+            yield db
+            return
+        yield res
+        return
+
+    # Fallback: sync generator from get_db
+    for db in get_db():
+        yield db
+
+
+# ------------------------------------------------------------------------------
 # Security helpers (advanced -> legacy)
 # ------------------------------------------------------------------------------
 _HAS_ADV_SECURITY = False
@@ -270,29 +300,34 @@ def _auth_context_from_payload(token: str, payload: dict) -> AuthContext:
 
 
 async def _fetch_user(db, user_id: int):
-    """Fetch active user; return None if missing."""
+    """Fetch active user; return None if missing; log unexpected DB issues."""
     try:
         from app.models.user import User  # type: ignore
-    except Exception:
-        return None
+    except Exception as exc:  # pragma: no cover - import failure should surface
+        log.error("Failed to import User model", exc_info=exc)
+        raise
+
+    from sqlalchemy.ext.asyncio import AsyncSession as _AsyncSession  # type: ignore
 
     try:
-        from sqlalchemy.ext.asyncio import AsyncSession as _AsyncSession  # type: ignore
-
         if isinstance(db, _AsyncSession):
             res = await db.execute(select(User).where(User.id == user_id, User.is_active.is_(True)))
             return res.scalars().first()
 
-        res = db.execute(select(User).where(User.id == user_id, User.is_active.is_(True)))
-        return res.scalars().first() if hasattr(res, "scalars") else None
-    except Exception:
-        return None
+        if hasattr(db, "execute"):
+            res = db.execute(select(User).where(User.id == user_id, User.is_active.is_(True)))
+            return res.scalars().first() if hasattr(res, "scalars") else None
+
+        raise TypeError(f"Unsupported db type for _fetch_user: {type(db)!r}")
+    except Exception as exc:
+        log.error("Failed to fetch user", exc_info=exc)
+        raise
 
 
 async def get_current_user_optional(
     request: Request,
     credentials: HTTPAuthorizationCredentials | None = Depends(security),
-    db=Depends(get_db),
+    db=Depends(_get_auth_db),
 ) -> Any | None:
     token: str | None = credentials.credentials if credentials else None
     if not token:
@@ -313,7 +348,7 @@ async def get_current_user(
     request: Request,
     response: Response,
     credentials: HTTPAuthorizationCredentials | None = Depends(security),
-    db=Depends(get_db),
+    db=Depends(_get_auth_db),
 ) -> Any:
     token: str | None = credentials.credentials if credentials else None
     if not token:

@@ -52,7 +52,7 @@ from app.core.security import (
 )
 from app.integrations.ports.otp import OtpProvider
 from app.models.company import Company
-from app.models.otp import OtpAttempt, OTPCode  # таблица otp_codes и enterprise-OTP попытки
+from app.models.otp import OtpAttempt  # таблица otp_codes и enterprise-OTP попытки
 from app.models.user import User, UserSession
 from app.schemas.base import SuccessResponse
 from app.schemas.user import (
@@ -64,7 +64,7 @@ from app.schemas.user import (
     UserCreate,
     UserLogin,
 )
-from app.utils.otp import verify_otp_hash
+from app.utils.otp import create_otp_attempt, verify_otp_code
 
 router = APIRouter(prefix="/auth", tags=["Authentication"])
 
@@ -396,27 +396,9 @@ async def login(login_data: UserLogin, request: Request, db: AsyncSession = Depe
         if not user:
             raise AuthenticationError("Invalid OTP code", "INVALID_OTP")
 
-        res = await db.execute(
-            select(OtpAttempt)
-            .where(
-                OtpAttempt.phone.in_(_phone_variants(phone)),
-                OtpAttempt.purpose == "login",
-                OtpAttempt.expires_at > _utcnow_naive(),
-                OtpAttempt.is_verified.is_(False),
-            )
-            .order_by(OtpAttempt.created_at.desc())
-            .limit(1)
-        )
-        attempt = res.scalars().first()
-
-        if not attempt or not attempt.is_active:
+        verified = await verify_otp_code(db, phone, otp_code, "login")
+        if not verified:
             raise AuthenticationError("Invalid OTP code", "INVALID_OTP")
-
-        if not attempt.verify_with_plain(otp_code, verify_otp_hash, auto_archive=False):
-            await db.commit()
-            raise AuthenticationError("Invalid OTP code", "INVALID_OTP")
-
-        await db.commit()
     else:
         password = login_data.password or ""
         if not user or not verify_password(password, user.hashed_password):
@@ -610,45 +592,42 @@ async def request_otp(
     ttl = timedelta(minutes=OTP_TTL_MINUTES)
 
     res = await db.execute(
-        select(OTPCode)
+        select(OtpAttempt)
         .where(
-            OTPCode.phone == phone,
-            OTPCode.purpose == purpose,
-            OTPCode.is_used.is_(False),
-            OTPCode.expires_at > now,
+            OtpAttempt.phone.in_(_phone_variants(phone)),
+            OtpAttempt.purpose == purpose,
+            OtpAttempt.expires_at > now,
+            OtpAttempt.is_verified.is_(False),
+            OtpAttempt.deleted_at.is_(None),
         )
-        .order_by(OTPCode.id.desc())
+        .order_by(OtpAttempt.created_at.desc())
         .limit(1)
     )
     existing = res.scalars().first()
 
-    if existing:
-        # cooldown на повторную отправку
+    if existing and existing.is_valid():
         created_at = getattr(existing, "created_at", None)
         age = (now - created_at).total_seconds() if isinstance(created_at, datetime) else 0.0
         if age < OTP_RESEND_COOLDOWN_SEC:
             return SuccessResponse(
                 message="OTP already sent recently",
-                data={"expires_in": int((existing.expires_at - now).total_seconds())},
+                data={"expires_in": existing.seconds_left},
             )
 
-    code = _gen_otp_code()
-    if DEBUG_MODE and DEBUG_OTP_CODE:
-        code = str(DEBUG_OTP_CODE)
+    code_override = str(DEBUG_OTP_CODE) if (DEBUG_MODE and DEBUG_OTP_CODE) else None
 
-    otp = OTPCode(
-        phone=phone,
-        code=code,
-        purpose=purpose,
-        expires_at=now + ttl,
-        is_used=False,
-        attempts=0,
-    )
+    user_for_otp = await _get_user_by_phone(db, phone)
 
     try:
-        db.add(otp)
-        await db.commit()
-        await db.refresh(otp)
+        code, otp_attempt = await create_otp_attempt(
+            db,
+            phone=phone,
+            purpose=purpose,
+            expires_minutes=OTP_TTL_MINUTES,
+            attempts_left=OTP_MAX_ATTEMPTS,
+            code=code_override,
+            user_id=user_for_otp.id if user_for_otp else None,
+        )
     except IntegrityError:
         await db.rollback()
         raise SmartSellValidationError("Failed to create OTP", "OTP_CREATE_FAILED")
@@ -693,7 +672,7 @@ async def request_otp(
         print(f"[DEBUG] OTP for {phone}: {code}")
 
     data = {
-        "expires_in": OTP_TTL_MINUTES * 60,
+        "expires_in": otp_attempt.seconds_left,
         "provider_success": (send_result or {}).get("success") if send_result else None,
         "provider_status": (send_result or {}).get("status") if send_result else None,
     }
@@ -701,6 +680,10 @@ async def request_otp(
     if _should_return_provider_info():
         data["provider"] = provider_name
         data["provider_version"] = provider_version
+
+    env = str(os.getenv("ENVIRONMENT") or getattr(settings, "ENVIRONMENT", "production") or "production").lower()
+    if env != "production" and (provider_name or "noop").startswith("noop"):
+        data["dev_code"] = code
 
     return SuccessResponse(message="OTP code sent successfully", data=data)
 
@@ -712,50 +695,44 @@ async def request_otp(
 )
 async def verify_otp(otp_verify: OTPVerify, db: AsyncSession = Depends(get_async_db)):
     """Проверка OTP кода."""
-    phone = _normalize_phone(otp_verify.phone)
+    raw_phone = otp_verify.phone or ""
+    phone = _normalize_phone(raw_phone)
     purpose = _normalize_purpose(otp_verify.purpose)
 
-    now = _utcnow_naive()
+    verified = await verify_otp_code(db, phone, otp_verify.code or "", purpose)
 
-    dev_master_ok = DEBUG_MODE and DEBUG_OTP_CODE and (str(otp_verify.code).strip() == str(DEBUG_OTP_CODE))
-
-    res = await db.execute(
-        select(OTPCode).where(
-            OTPCode.phone == phone,
-            OTPCode.code == (otp_verify.code or "").strip(),
-            OTPCode.purpose == purpose,
-            OTPCode.is_used.is_(False),
-            OTPCode.expires_at > now,
-            OTPCode.attempts < OTP_MAX_ATTEMPTS,
-        )
-    )
-    otp = res.scalars().first()
-
-    if not otp and not dev_master_ok:
-        res2 = await db.execute(
-            select(OTPCode).where(
-                OTPCode.phone == phone,
-                OTPCode.purpose == purpose,
-                OTPCode.is_used.is_(False),
-                OTPCode.expires_at > now,
-            )
-        )
-        existing_otp = res2.scalars().first()
-        if existing_otp:
-            existing_otp.attempts = (existing_otp.attempts or 0) + 1
-            await db.commit()
-
+    if not verified:
         raise SmartSellValidationError("Invalid or expired OTP code", "INVALID_OTP")
 
-    if otp:
-        otp.is_used = True
-    await db.commit()
-
     if purpose in OTP_PURPOSE_VERIFY_FLAGS:
-        user = await _get_user_by_phone(db, phone)
+        variants = _phone_variants(raw_phone)
+        user = await _get_user_by_phone(db, raw_phone)
+        if not user and variants:
+            res_user = await db.execute(select(User).where(User.phone.in_(variants)).limit(1))
+            user = res_user.scalars().first()
+        if not user and variants:
+            res_attempt = await db.execute(
+                select(OtpAttempt)
+                .where(OtpAttempt.phone.in_(variants), OtpAttempt.purpose == purpose)
+                .order_by(OtpAttempt.created_at.desc())
+                .limit(1)
+            )
+            attempt = res_attempt.scalars().first()
+            if attempt and attempt.user_id:
+                user = await db.get(User, attempt.user_id)
         if user:
             user.is_verified = True
-            await db.commit()
+        updated_users = 0
+        if variants:
+            res_update = await db.execute(update(User).where(User.phone.in_(variants)).values(is_verified=True))
+            updated_users = res_update.rowcount or 0
+        await db.commit()
+        audit_logger.log_system_event(
+            level="info",
+            event="otp_verify_mark_user",
+            message="Marked user as verified",
+            meta={"phone": raw_phone, "updated": updated_users, "user_found": bool(user)},
+        )
 
     audit_logger.log_system_event(
         level="info",
@@ -780,34 +757,8 @@ async def verify_otp(otp_verify: OTPVerify, db: AsyncSession = Depends(get_async
 async def reset_password(reset_data: PasswordReset, db: AsyncSession = Depends(get_async_db)):
     """Сброс пароля по OTP (purpose='reset')."""
     phone = _normalize_phone(reset_data.phone)
-
-    now = _utcnow_naive()
-    res = await db.execute(
-        select(OTPCode).where(
-            OTPCode.phone == phone,
-            OTPCode.code == (reset_data.otp_code or "").strip(),
-            OTPCode.purpose == "reset",
-            OTPCode.is_used.is_(False),
-            OTPCode.expires_at > now,
-            OTPCode.attempts < OTP_MAX_ATTEMPTS,
-        )
-    )
-    otp = res.scalars().first()
-
-    if not otp:
-        res2 = await db.execute(
-            select(OTPCode).where(
-                OTPCode.phone == phone,
-                OTPCode.purpose == "reset",
-                OTPCode.is_used.is_(False),
-                OTPCode.expires_at > now,
-            )
-        )
-        existing_otp = res2.scalars().first()
-        if existing_otp:
-            existing_otp.attempts = (existing_otp.attempts or 0) + 1
-            await db.commit()
-
+    verified = await verify_otp_code(db, phone, reset_data.otp_code or "", "reset")
+    if not verified:
         raise SmartSellValidationError("Invalid or expired OTP code", "INVALID_OTP")
 
     user = await _get_user_by_phone(db, phone)
@@ -817,8 +768,6 @@ async def reset_password(reset_data: PasswordReset, db: AsyncSession = Depends(g
     user.hashed_password = get_password_hash(reset_data.new_password)
     user.failed_login_attempts = 0
     user.locked_until = None
-
-    otp.is_used = True
 
     # инвалидируем все активные refresh-сессии пользователя
     await db.execute(update(UserSession).where(UserSession.user_id == user.id).values(is_active=False))
