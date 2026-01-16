@@ -6,26 +6,23 @@ from __future__ import annotations
 
 from typing import Any
 
-from fastapi import APIRouter, Depends, Path, Query
-from sqlalchemy import func, or_, select, update
+from fastapi import APIRouter, Body, Depends, Path, Query
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.db import get_async_db
-from app.core.dependencies import (
-    Pagination,
-    api_rate_limit,
-    get_current_user,
-    get_current_verified_user,
-    get_pagination,
-)
-from app.core.exceptions import AuthenticationError, NotFoundError, SmartSellValidationError
+from app.core.dependencies import api_rate_limit, get_current_user, get_current_verified_user
+from app.core.exceptions import AuthenticationError, AuthorizationError, NotFoundError, SmartSellValidationError
 from app.core.logging import audit_logger
-from app.core.security import get_password_hash, verify_password
+from app.core.security import get_password_hash, resolve_tenant_company_id, verify_password
+from app.models.company import Company
 from app.models.user import User, UserSession
-from app.schemas.base import PaginatedResponse, SuccessResponse
+from app.schemas.base import SuccessResponse
 from app.schemas.user import UserResponse, UserUpdate
+from app.schemas.users import UserPublicOut, UserRoleUpdate, UsersListOut
+from app.schemas.users import UserUpdate as CompanyUserUpdate
 
-router = APIRouter(prefix="/users", tags=["Users"], dependencies=[Depends(api_rate_limit)])
+router = APIRouter(prefix="/users", tags=["users"], dependencies=[Depends(api_rate_limit)])
 
 
 # ---------------------------------------------------------------------------
@@ -33,46 +30,231 @@ router = APIRouter(prefix="/users", tags=["Users"], dependencies=[Depends(api_ra
 # ---------------------------------------------------------------------------
 
 
-def _is_admin(user: User) -> bool:
-    # Поддерживаем обе возможные модели флага
-    return bool(getattr(user, "is_superuser", False) or getattr(user, "is_admin", False))
+async def _get_company_and_owner(db: AsyncSession, company_id: int) -> Company | None:
+    res = await db.execute(select(Company).where(Company.id == company_id))
+    return res.scalars().first()
 
 
-def _apply_user_filters(stmt, search: str | None, is_active: bool | None):
-    if is_active is not None:
-        stmt = stmt.where(User.is_active == is_active)
-
-    if search:
-        s = f"%{search}%"
-        stmt = stmt.where(
-            or_(
-                User.full_name.ilike(s),
-                User.phone.ilike(s),
-                User.email.ilike(s),
-            )
-        )
-    return stmt
-
-
-_ALLOWED_SORT_FIELDS = {
-    "id": User.id,
-    "full_name": User.full_name,
-    "phone": User.phone,
-    "email": User.email,
-    "created_at": getattr(User, "created_at", User.id),
-    "updated_at": getattr(User, "updated_at", User.id),
-    "last_login_at": getattr(User, "last_login_at", User.id),
-}
-
-
-def _apply_sorting(stmt, sort_by: str, sort_order: str):
-    col = _ALLOWED_SORT_FIELDS.get(sort_by, _ALLOWED_SORT_FIELDS["created_at"])
-    return stmt.order_by(col.asc() if sort_order.lower() == "asc" else col.desc())
+def _require_owner_or_admin(*, current_user: User, company: Company | None) -> bool:
+    is_owner = bool(company and company.owner_id == current_user.id)
+    role = (getattr(current_user, "role", "") or "").lower()
+    if is_owner or role == "admin":
+        return is_owner
+    raise AuthorizationError("Insufficient permissions", "FORBIDDEN")
 
 
 # ---------------------------------------------------------------------------
 # Me
 # ---------------------------------------------------------------------------
+
+
+@router.get("", response_model=UsersListOut)
+async def list_company_users(
+    active_only: bool | None = Query(None),
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_async_db),
+):
+    company_id = resolve_tenant_company_id(current_user)
+    company = await _get_company_and_owner(db, company_id)
+    _require_owner_or_admin(current_user=current_user, company=company)
+
+    stmt = select(User).where(User.company_id == company_id)
+    if active_only:
+        stmt = stmt.where(User.is_active.is_(True))
+    res = await db.execute(stmt.order_by(User.id.asc()))
+    users = res.scalars().all()
+
+    items = [
+        UserPublicOut(
+            id=u.id,
+            phone=u.phone,
+            email=u.email,
+            full_name=getattr(u, "full_name", None),
+            role=getattr(u, "role", None),
+            is_active=bool(getattr(u, "is_active", True)),
+            is_verified=bool(getattr(u, "is_verified", False)),
+            created_at=getattr(u, "created_at", None),
+        )
+        for u in users
+    ]
+    return UsersListOut(items=items)
+
+
+@router.patch("/{user_id}", response_model=UserPublicOut)
+async def update_company_user(
+    user_id: int = Path(...),
+    payload: CompanyUserUpdate = Body(...),
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_async_db),
+):
+    company_id = resolve_tenant_company_id(current_user)
+    company = await _get_company_and_owner(db, company_id)
+    _require_owner_or_admin(current_user=current_user, company=company)
+
+    res = await db.execute(select(User).where(User.id == user_id, User.company_id == company_id))
+    user = res.scalars().first()
+    if not user:
+        raise NotFoundError("User not found", "USER_NOT_FOUND")
+
+    data = payload.model_dump(exclude_unset=True)
+    if "full_name" in data:
+        user.full_name = data["full_name"]
+        await db.commit()
+
+    if "full_name" in data:
+        audit_logger.log_data_change(
+            user_id=current_user.id,
+            action="update",
+            resource_type="user",
+            resource_id=str(user_id),
+            changes={"full_name": data.get("full_name")},
+        )
+
+    return UserPublicOut(
+        id=user.id,
+        phone=user.phone,
+        email=user.email,
+        full_name=user.full_name,
+        role=user.role,
+        is_active=user.is_active,
+        is_verified=user.is_verified,
+        created_at=getattr(user, "created_at", None),
+    )
+
+
+def _is_owner(company: Company | None, user: User) -> bool:
+    return bool(company and company.owner_id == user.id)
+
+
+def _is_admin(user: User) -> bool:
+    return (getattr(user, "role", "") or "").lower() == "admin"
+
+
+@router.post("/{user_id}/deactivate", response_model=SuccessResponse)
+async def deactivate_user(
+    user_id: int = Path(...),
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_async_db),
+):
+    company_id = resolve_tenant_company_id(current_user)
+    company = await _get_company_and_owner(db, company_id)
+    is_owner = _is_owner(company, current_user)
+    is_admin = _is_admin(current_user)
+    if not (is_owner or is_admin):
+        raise AuthorizationError("Insufficient permissions", "FORBIDDEN")
+
+    if current_user.id == user_id:
+        raise SmartSellValidationError("Cannot deactivate self", "SELF_ACTION_FORBIDDEN")
+
+    res = await db.execute(select(User).where(User.id == user_id, User.company_id == company_id))
+    user = res.scalars().first()
+    if not user:
+        raise NotFoundError("User not found", "USER_NOT_FOUND")
+
+    if company and company.owner_id == user.id:
+        raise AuthorizationError("Cannot deactivate owner", "OWNER_PROTECTED")
+
+    target_role = (getattr(user, "role", "") or "").lower()
+    if is_admin and not is_owner and target_role != "employee":
+        raise AuthorizationError("Admin can deactivate only employees", "FORBIDDEN")
+
+    user.is_active = False
+    await db.execute(update(UserSession).where(UserSession.user_id == user.id).values(is_active=False))
+    await db.commit()
+
+    audit_logger.log_data_change(
+        user_id=current_user.id,
+        action="deactivate",
+        resource_type="user",
+        resource_id=str(user_id),
+        changes={"is_active": False},
+    )
+    return SuccessResponse(message="User deactivated")
+
+
+@router.post("/{user_id}/activate", response_model=SuccessResponse)
+async def activate_user(
+    user_id: int = Path(...),
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_async_db),
+):
+    company_id = resolve_tenant_company_id(current_user)
+    company = await _get_company_and_owner(db, company_id)
+    is_owner = _is_owner(company, current_user)
+    is_admin = _is_admin(current_user)
+    if not (is_owner or is_admin):
+        raise AuthorizationError("Insufficient permissions", "FORBIDDEN")
+
+    if current_user.id == user_id:
+        raise SmartSellValidationError("Cannot activate self", "SELF_ACTION_FORBIDDEN")
+
+    res = await db.execute(select(User).where(User.id == user_id, User.company_id == company_id))
+    user = res.scalars().first()
+    if not user:
+        raise NotFoundError("User not found", "USER_NOT_FOUND")
+
+    if company and company.owner_id == user.id:
+        raise AuthorizationError("Cannot modify owner", "OWNER_PROTECTED")
+
+    target_role = (getattr(user, "role", "") or "").lower()
+    if is_admin and not is_owner and target_role != "employee":
+        raise AuthorizationError("Admin can activate only employees", "FORBIDDEN")
+
+    user.is_active = True
+    await db.commit()
+
+    audit_logger.log_data_change(
+        user_id=current_user.id,
+        action="activate",
+        resource_type="user",
+        resource_id=str(user_id),
+        changes={"is_active": True},
+    )
+    return SuccessResponse(message="User activated")
+
+
+@router.post("/{user_id}/role", response_model=SuccessResponse)
+async def change_user_role(
+    user_id: int = Path(...),
+    payload: UserRoleUpdate = Body(...),
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_async_db),
+):
+    company_id = resolve_tenant_company_id(current_user)
+    company = await _get_company_and_owner(db, company_id)
+    is_owner = _is_owner(company, current_user)
+    is_admin = _is_admin(current_user)
+    if not (is_owner or is_admin):
+        raise AuthorizationError("Insufficient permissions", "FORBIDDEN")
+
+    if current_user.id == user_id:
+        raise SmartSellValidationError("Cannot change own role", "SELF_ACTION_FORBIDDEN")
+
+    res = await db.execute(select(User).where(User.id == user_id, User.company_id == company_id))
+    user = res.scalars().first()
+    if not user:
+        raise NotFoundError("User not found", "USER_NOT_FOUND")
+
+    if company and company.owner_id == user.id:
+        raise AuthorizationError("Cannot change owner role", "OWNER_PROTECTED")
+
+    target_role = (payload.role or "").lower()
+    if target_role == "admin" and not is_owner:
+        raise AuthorizationError("Only owner can assign admin", "OWNER_REQUIRED")
+    if is_admin and not is_owner and target_role in {"admin", "platform_admin"}:
+        raise AuthorizationError("Admin cannot assign this role", "FORBIDDEN")
+
+    user.role = target_role
+    await db.commit()
+
+    audit_logger.log_data_change(
+        user_id=current_user.id,
+        action="role_change",
+        resource_type="user",
+        resource_id=str(user_id),
+        changes={"role": payload.role},
+    )
+    return SuccessResponse(message="Role updated")
 
 
 @router.get("/me", response_model=UserResponse)
@@ -313,7 +495,7 @@ async def revoke_all_my_sessions(
 
 
 # ---------------------------------------------------------------------------
-# Public profiles & admin listing
+# Public profiles
 # ---------------------------------------------------------------------------
 
 
@@ -331,39 +513,6 @@ async def get_user_public_profile(
     if not user:
         raise NotFoundError("User not found", "USER_NOT_FOUND")
     return user
-
-
-@router.get("", response_model=PaginatedResponse[UserResponse])
-async def list_users(
-    pagination: Pagination = Depends(get_pagination),
-    sort_by: str = Query("created_at"),
-    sort_order: str = Query("desc", pattern="^(?i)(asc|desc)$"),
-    search: str | None = Query(None),
-    is_active: bool | None = Query(None),
-    current_user: User = Depends(get_current_verified_user),
-    db: AsyncSession = Depends(get_async_db),
-):
-    """
-    List users with filters (admin-only if флаг админа присутствует).
-    Если в модели нет флага админа — допускаем только самого пользователя (вернём 1 запись — его).
-    """
-    if hasattr(User, "is_superuser") or hasattr(User, "is_admin"):
-        if not _is_admin(current_user):
-            # Не админ — ограничим только собой
-            total = 1
-            items = [current_user]
-            return PaginatedResponse.create(
-                items=items, total=total, page=pagination.page, per_page=pagination.per_page
-            )
-
-    stmt = select(User)
-    stmt = _apply_user_filters(stmt, search, is_active)
-    total_stmt = select(func.count()).select_from(stmt.subquery())
-    total = int((await db.execute(total_stmt)).scalar_one())
-    items_stmt = _apply_sorting(stmt, sort_by, sort_order).offset(pagination.offset).limit(pagination.limit)
-    users = (await db.execute(items_stmt)).scalars().all()
-
-    return PaginatedResponse.create(items=users, total=total, page=pagination.page, per_page=pagination.per_page)
 
 
 # ---------------------------------------------------------------------------

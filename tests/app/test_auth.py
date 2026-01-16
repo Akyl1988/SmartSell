@@ -7,6 +7,7 @@ from httpx import AsyncClient
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.api.v1 import auth as auth_mod
 from app.core.security import get_password_hash
 from app.models import Company, OtpAttempt, User
 from app.utils.otp import hash_otp_code
@@ -156,7 +157,7 @@ class TestAuth:
         await async_db_session.commit()
 
         # Login
-        login_data = {"phone": "+77001234567", "password": "password123"}
+        login_data = {"identifier": "+77001234567", "password": "password123"}
 
         response = await async_client.post("/api/auth/login", json=login_data)
 
@@ -185,7 +186,7 @@ class TestAuth:
         await async_db_session.commit()
 
         # Login with wrong password
-        login_data = {"phone": "+77001234567", "password": "wrongpassword"}
+        login_data = {"identifier": "+77001234567", "password": "wrongpassword"}
 
         response = await async_client.post("/api/auth/login", json=login_data)
 
@@ -210,7 +211,7 @@ class TestAuth:
         await async_db_session.commit()
 
         # Login with OTP
-        login_data = {"phone": "+77001234567", "otp_code": otp_code}
+        login_data = {"identifier": "+77001234567", "otp_code": otp_code}
 
         response = await async_client.post("/api/auth/login", json=login_data)
 
@@ -219,6 +220,148 @@ class TestAuth:
 
         assert "access_token" in data
         assert "refresh_token" in data
+
+    @pytest.mark.asyncio
+    async def test_login_with_email(self, async_client: AsyncClient, async_db_session: AsyncSession):
+        company = Company(name="Email Login Co")
+        async_db_session.add(company)
+        await async_db_session.flush()
+
+        user = User(
+            company_id=company.id,
+            phone="+77001112222",
+            email="user@example.com",
+            hashed_password=get_password_hash("password123"),
+            role="admin",
+        )
+        async_db_session.add(user)
+        await async_db_session.commit()
+
+        login_data = {"identifier": "user@example.com", "password": "password123"}
+        response = await async_client.post("/api/auth/login", json=login_data)
+        assert response.status_code == 200, response.text
+        data = response.json()
+        assert "access_token" in data
+        assert "refresh_token" in data
+
+        @pytest.mark.asyncio
+        async def test_password_reset_request_reset_url_dev_only(
+            self,
+            async_client: AsyncClient,
+            async_db_session: AsyncSession,
+            monkeypatch,
+        ):
+            company = Company(name="Reset URL Co")
+            async_db_session.add(company)
+            await async_db_session.flush()
+
+            user = User(
+                company_id=company.id,
+                phone="77001119999",
+                email="reset-url@example.com",
+                hashed_password=get_password_hash("Password123!"),
+                role="admin",
+                is_active=True,
+                is_verified=True,
+            )
+            async_db_session.add(user)
+            await async_db_session.commit()
+
+            async def _noop_send_email(*args, **kwargs):
+                return True
+
+            monkeypatch.setattr(auth_mod, "send_email", _noop_send_email)
+
+            monkeypatch.setenv("ENVIRONMENT", "development")
+            resp_dev = await async_client.post(
+                "/api/v1/auth/password/reset/request",
+                json={"identifier": "reset-url@example.com"},
+            )
+            assert resp_dev.status_code == 200
+            dev_data = resp_dev.json().get("data") or {}
+            assert "reset_url" in dev_data
+
+            monkeypatch.setenv("ENVIRONMENT", "production")
+            resp_prod = await async_client.post(
+                "/api/v1/auth/password/reset/request",
+                json={"identifier": "reset-url@example.com"},
+            )
+            assert resp_prod.status_code == 200
+            prod_data = resp_prod.json().get("data") or {}
+            assert "reset_url" not in prod_data
+
+    @pytest.mark.asyncio
+    async def test_phone_change_happy_path(
+        self, async_client: AsyncClient, async_db_session: AsyncSession, company_a_admin_headers
+    ):
+        new_phone = "77009991122"
+        otp_code = "123456"
+        await async_db_session.rollback()
+        res_user = await async_db_session.execute(select(User).where(User.phone.in_(["70000010001", "+70000010001"])))
+        existing = res_user.scalars().first()
+        assert existing is not None
+        user_id = existing.id
+        otp_attempt = OtpAttempt.create_new(
+            phone=new_phone,
+            code_hash=hash_otp_code(otp_code),
+            purpose="phone_change",
+        )
+        async_db_session.add(otp_attempt)
+        await async_db_session.commit()
+
+        resp = await async_client.post(
+            "/api/v1/auth/phone/change/confirm",
+            headers=company_a_admin_headers,
+            json={"new_phone": new_phone, "code": otp_code},
+        )
+        assert resp.status_code == 200, resp.text
+
+        await async_db_session.rollback()
+        async_db_session.expire_all()
+        refreshed = await async_db_session.get(User, user_id)
+        assert refreshed is not None
+        assert refreshed.phone == new_phone
+        assert refreshed.is_verified is True
+
+    @pytest.mark.asyncio
+    async def test_phone_change_uniqueness_rejected(
+        self, async_client: AsyncClient, async_db_session: AsyncSession, company_a_admin_headers
+    ):
+        company = Company(name="Phone Change Co")
+        async_db_session.add(company)
+        await async_db_session.flush()
+
+        taken = User(
+            company_id=company.id,
+            phone="77008887766",
+            hashed_password=get_password_hash("Secret123!"),
+            role="admin",
+            is_active=True,
+            is_verified=True,
+        )
+        async_db_session.add(taken)
+        await async_db_session.commit()
+
+        resp = await async_client.post(
+            "/api/v1/auth/phone/change/request",
+            headers=company_a_admin_headers,
+            json={"new_phone": "77008887766"},
+        )
+        assert resp.status_code == 400
+
+    @pytest.mark.asyncio
+    async def test_phone_change_request_no_dev_code_in_production(
+        self, async_client: AsyncClient, company_a_admin_headers, monkeypatch
+    ):
+        monkeypatch.setenv("ENVIRONMENT", "production")
+        resp = await async_client.post(
+            "/api/v1/auth/phone/change/request",
+            headers=company_a_admin_headers,
+            json={"new_phone": "77007776655"},
+        )
+        assert resp.status_code == 200, resp.text
+        data = resp.json().get("data") or {}
+        assert "dev_code" not in data
 
     @pytest.mark.asyncio
     async def test_send_otp(self, async_client: AsyncClient):
@@ -283,7 +426,7 @@ class TestAuth:
         await async_db_session.commit()
 
         # Login to get tokens
-        login_data = {"phone": "+77001234567", "password": "password123"}
+        login_data = {"identifier": "+77001234567", "password": "password123"}
 
         login_response = await async_client.post("/api/auth/login", json=login_data)
         assert login_response.status_code == 200, login_response.text
@@ -320,7 +463,7 @@ class TestAuth:
         await async_db_session.commit()
 
         # Login to get token
-        login_data = {"phone": "+77001234567", "password": "password123"}
+        login_data = {"identifier": "+77001234567", "password": "password123"}
 
         login_response = await async_client.post("/api/auth/login", json=login_data)
         assert login_response.status_code == 200, login_response.text
@@ -357,7 +500,7 @@ class TestAuth:
         await async_db_session.commit()
 
         # Login to get token
-        login_data = {"phone": "+77001234567", "password": "oldpassword"}
+        login_data = {"identifier": "+77001234567", "password": "oldpassword"}
 
         login_response = await async_client.post("/api/auth/login", json=login_data)
         assert login_response.status_code == 200, login_response.text
@@ -375,7 +518,7 @@ class TestAuth:
         assert response.status_code == 200, response.text
 
         # Verify new password works
-        login_data = {"phone": "+77001234567", "password": "newpassword123"}
+        login_data = {"identifier": "+77001234567", "password": "newpassword123"}
 
         response = await async_client.post("/api/auth/login", json=login_data)
 

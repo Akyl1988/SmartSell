@@ -411,6 +411,12 @@ class Settings(BaseSettings):
     DEBUG: bool = Field(default=False, description="Debug mode", validation_alias="DEBUG")
     ENVIRONMENT: str = Field(default="development", description="Environment", validation_alias="ENVIRONMENT")
     TESTING: bool = Field(default=False, description="Testing mode", validation_alias="TESTING")
+    DEBUG_OTP_LOGGING: bool = Field(
+        default=False, description="Allow masked OTP debug logging in development", validation_alias="DEBUG_OTP_LOGGING"
+    )
+    DEBUG_CONFIG_DUMP: bool = Field(
+        default=False, description="Allow masked config dumps", validation_alias="DEBUG_CONFIG_DUMP"
+    )
     API_V1_STR: str = Field(default="/api/v1", description="API v1 prefix")
     HOST: str = Field(default="127.0.0.1", description="Server host", validation_alias="HOST")
     PORT: int = Field(default=8000, description="Server port", validation_alias="PORT")
@@ -1466,9 +1472,9 @@ class Settings(BaseSettings):
         return result
 
     def dump_settings(self) -> None:
-        import pprint
-
-        pprint.pprint(self.model_dump())
+        if not self.DEBUG_CONFIG_DUMP:
+            return
+        logging.getLogger(__name__).info("Settings dump: %s", self.dump_settings_safe())
 
     def dump_settings_safe(self) -> dict:
         raw = self.model_dump()

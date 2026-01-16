@@ -49,7 +49,7 @@ from app.core.exceptions import (
     ExternalServiceError,
     SmartSellValidationError,
 )
-from app.core.logging import audit_logger
+from app.core.logging import audit_logger, get_logger
 from app.core.security import (
     create_access_token,
     create_refresh_token,
@@ -72,6 +72,8 @@ from app.schemas.user import (
     PasswordReset,
     PasswordResetConfirm,
     PasswordResetRequest,
+    PhoneChangeConfirm,
+    PhoneChangeRequest,
     RefreshTokenRequest,
     TokenResponse,
     UserCreate,
@@ -82,6 +84,7 @@ from app.utils.otp import create_otp_attempt, verify_otp_code
 from app.utils.tokens import generate_token, hash_token
 
 router = APIRouter(prefix="/auth", tags=["Authentication"])
+logger = get_logger(__name__)
 
 # =============================================================================
 # Конфигурация/политики (с дефолтами)
@@ -101,6 +104,7 @@ LOGIN_LOCK_MINUTES: int = int(_conf("LOGIN_LOCK_MINUTES", 15))
 PROJECT_NAME: str = str(_conf("PROJECT_NAME", "SmartSell"))
 DEBUG_MODE: bool = bool(_conf("DEBUG", False))
 DEBUG_OTP_CODE: str | None = getattr(settings, "DEBUG_OTP_CODE", None)
+DEBUG_OTP_LOGGING: bool = bool(_conf("DEBUG_OTP_LOGGING", False))
 AUTH_REGISTER_ISSUE_TOKENS: bool = str(_conf("AUTH_REGISTER_ISSUE_TOKENS", "1")) in (
     "1",
     "true",
@@ -148,6 +152,11 @@ def _normalize_email(v: str | None) -> str | None:
     return vv or None
 
 
+def _looks_like_email(value: str) -> bool:
+    v = (value or "").strip()
+    return bool(re.match(r"^[^@\s]+@[^@\s]+\.[^@\s]+$", v))
+
+
 def _normalize_purpose(v: str | None) -> str:
     return (v or "").strip().lower() or "login"
 
@@ -163,6 +172,15 @@ def _issue_tokens_for_user(user_id: int) -> tuple[str, str]:
 def _sms_text_for_otp(code: str, purpose: str) -> str:
     p = purpose or "login"
     return f"{PROJECT_NAME}: код подтверждения {code} для {p}. Никому не сообщайте."
+
+
+def _mask_phone(value: str) -> str:
+    digits = re.sub(r"\D", "", value or "")
+    if not digits:
+        return ""
+    if len(digits) <= 4:
+        return "*" * len(digits)
+    return "*" * (len(digits) - 2) + digits[-2:]
 
 
 def _should_return_provider_info() -> bool:
@@ -401,22 +419,27 @@ async def register(user_data: UserCreate, request: Request, db: AsyncSession = D
 async def login(login_data: UserLogin, request: Request, db: AsyncSession = Depends(get_async_db)):
     """Аутентификация по телефону и паролю. Возвращает access/refresh токены."""
     client_info = get_client_info(request)
-    phone = _normalize_phone(login_data.phone)
+    identifier = (login_data.identifier or "").strip()
+    is_email = _looks_like_email(identifier)
+    phone = _normalize_phone(identifier) if not is_email else ""
+    email = identifier.lower() if is_email else ""
     otp_code = (login_data.otp_code or "").strip()
     via_otp = bool(otp_code)
 
-    user = await _get_user_by_phone(db, phone)
+    user = await (_get_user_by_email(db, email) if is_email else _get_user_by_phone(db, phone))
 
     # Блокировка по неудачным попыткам
     if user and user.locked_until and user.locked_until > _utcnow_naive():
         audit_logger.log_auth_failure(
-            username=phone,
+            username=identifier,
             ip_address=client_info["ip_address"],
             reason="Account locked",
         )
         raise AuthenticationError("Account is temporarily locked", "ACCOUNT_LOCKED")
 
     if via_otp:
+        if is_email:
+            raise AuthenticationError("Invalid OTP code", "INVALID_OTP")
         if not user:
             raise AuthenticationError("Invalid OTP code", "INVALID_OTP")
 
@@ -433,15 +456,15 @@ async def login(login_data: UserLogin, request: Request, db: AsyncSession = Depe
                 await db.commit()
 
             audit_logger.log_auth_failure(
-                username=phone,
+                username=identifier,
                 ip_address=client_info["ip_address"],
                 reason="Invalid credentials",
             )
-            raise AuthenticationError("Invalid phone number or password", "INVALID_CREDENTIALS")
+            raise AuthenticationError("Invalid credentials", "INVALID_CREDENTIALS")
 
     if not user.is_active:
         audit_logger.log_auth_failure(
-            username=phone,
+            username=identifier,
             ip_address=client_info["ip_address"],
             reason="Inactive account",
         )
@@ -692,8 +715,9 @@ async def request_otp(
         },
     )
 
-    if DEBUG_MODE:
-        print(f"[DEBUG] OTP for {phone}: {code}")
+    env = str(os.getenv("ENVIRONMENT") or getattr(settings, "ENVIRONMENT", "production") or "production").lower()
+    if DEBUG_OTP_LOGGING and env == "development":
+        logger.info("OTP issued for phone=%s purpose=%s", _mask_phone(phone), purpose)
 
     data = {
         "expires_in": otp_attempt.seconds_left,
@@ -926,6 +950,134 @@ async def reset_password(reset_data: PasswordReset, db: AsyncSession = Depends(g
     )
 
     return SuccessResponse(message="Password reset successfully")
+
+
+# =============================================================================
+# Phone change
+# =============================================================================
+
+
+@router.post(
+    "/phone/change/request",
+    response_model=SuccessResponse,
+    dependencies=[Depends(auth_rate_limit), Depends(otp_rate_limit)],
+)
+async def phone_change_request(
+    payload: PhoneChangeRequest,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_async_db),
+    otp_service: OtpProvider = Depends(get_otp_service),
+):
+    phone = _normalize_phone(payload.new_phone)
+    variants = _phone_variants(phone)
+
+    if any(v == current_user.phone for v in variants):
+        raise SmartSellValidationError("Phone is unchanged", "PHONE_UNCHANGED")
+
+    res = await db.execute(select(User).where(User.phone.in_(variants), User.id != current_user.id))
+    if res.scalars().first():
+        raise ConflictError("Phone number already in use", "PHONE_IN_USE")
+
+    code, otp_attempt = await create_otp_attempt(
+        db,
+        phone=phone,
+        purpose="phone_change",
+        expires_minutes=OTP_TTL_MINUTES,
+        attempts_left=OTP_MAX_ATTEMPTS,
+        user_id=current_user.id,
+    )
+
+    text = _sms_text_for_otp(code, "phone_change")
+    send_result: dict[str, Any] | None = None
+    provider_name: str | None = None
+    provider_version: int | None = None
+
+    try:
+        send_result = await otp_service.send_otp(
+            phone=phone,
+            code=code,
+            ttl_seconds=int(timedelta(minutes=OTP_TTL_MINUTES).total_seconds()),
+            metadata={"purpose": "phone_change", "text": text},
+        )
+        provider_name = (send_result or {}).get("provider") or getattr(otp_service, "name", None)
+        provider_version = (send_result or {}).get("version") or getattr(otp_service, "version", None)
+    except Exception as exc:
+        provider_name = getattr(otp_service, "name", None) or "noop"
+        provider_version = getattr(otp_service, "version", None)
+        audit_logger.log_system_event(
+            level="warning",
+            event="otp_send_failed",
+            message=str(exc),
+            meta={"phone": phone, "purpose": "phone_change", "provider": provider_name},
+        )
+
+    audit_logger.log_system_event(
+        level="info",
+        event="otp_requested",
+        message="OTP issued",
+        meta={
+            "phone": phone,
+            "purpose": "phone_change",
+            "provider": provider_name or (send_result or {}).get("provider", "none"),
+            "provider_version": provider_version,
+        },
+    )
+
+    data: dict[str, Any] = {
+        "expires_in": otp_attempt.seconds_left,
+        "provider_success": (send_result or {}).get("success") if send_result else None,
+        "provider_status": (send_result or {}).get("status") if send_result else None,
+    }
+
+    if _should_return_provider_info():
+        data["provider"] = provider_name
+        data["provider_version"] = provider_version
+
+    env = str(os.getenv("ENVIRONMENT") or getattr(settings, "ENVIRONMENT", "production") or "production").lower()
+    if env != "production" and (provider_name or "noop").startswith("noop"):
+        data["dev_code"] = code
+
+    return SuccessResponse(message="OTP code sent successfully", data=data)
+
+
+@router.post(
+    "/phone/change/confirm",
+    response_model=SuccessResponse,
+    dependencies=[Depends(auth_rate_limit)],
+)
+async def phone_change_confirm(
+    payload: PhoneChangeConfirm,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_async_db),
+):
+    phone = _normalize_phone(payload.new_phone)
+    variants = _phone_variants(phone)
+
+    verified = await verify_otp_code(db, phone, payload.code or "", "phone_change")
+    if not verified:
+        raise SmartSellValidationError("Invalid or expired OTP code", "INVALID_OTP")
+
+    res = await db.execute(select(User).where(User.phone.in_(variants), User.id != current_user.id))
+    if res.scalars().first():
+        raise ConflictError("Phone number already in use", "PHONE_IN_USE")
+
+    user = await db.get(User, current_user.id)
+    if not user:
+        raise AuthenticationError("User not found", "USER_NOT_FOUND")
+
+    user.phone = phone
+    user.is_verified = True
+    await db.commit()
+
+    audit_logger.log_data_change(
+        user_id=user.id,
+        action="update",
+        resource_type="user",
+        resource_id=str(user.id),
+        changes={"phone": phone, "is_verified": True},
+    )
+
+    return SuccessResponse(message="Phone updated successfully")
 
 
 # =============================================================================

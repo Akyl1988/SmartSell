@@ -2,7 +2,7 @@
 target-version = "py311"
 
 [lint]
-select = ["E","F","I","B","UP","C4"]
+select = ["E","F","I","B","UP","C4","T20"]
 ignore = ["B904","E402","C401","C408","C416","B009","B010","UP007","E501"]  # временно, E501 handled by formatter
 
 exclude = [
@@ -27,3 +27,4 @@ exclude = [
 "app/main.py"            = ["B008"]
 "app/core/dependencies.py" = ["B008"]
 "app/core/security.py"     = ["B008"]
+"tools/**/*.py"          = ["T201"]

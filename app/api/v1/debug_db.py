@@ -35,7 +35,7 @@ async def debug_db() -> dict[str, Any]:
     url = settings.DATABASE_URL or ""
     parts = _url_parts(url)
 
-    fp = config.db_connection_fingerprint(url, include_password=True)
+    fp = config.db_connection_fingerprint(url, include_password=False)
     fp_no_pw = config.db_connection_fingerprint(url, include_password=False)
     source = settings.db_url_source() if hasattr(settings, "db_url_source") else "unknown"
 
