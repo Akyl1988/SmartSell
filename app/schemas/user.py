@@ -41,6 +41,8 @@ __all__ = [
     "OTPRequest",
     "OTPVerify",
     "PasswordReset",
+    "PhoneChangeConfirm",
+    "PhoneChangeRequest",
 ]
 
 # -----------------------------------------------------------------------------
@@ -174,16 +176,14 @@ class UserCreate(UserBase):
 class UserLogin(BaseSchema):
     """Schema for user login (password or OTP)."""
 
-    phone: str = Field(..., description="Phone number")
+    identifier: str = Field(..., description="Phone or email")
     password: str | None = Field(None, description="Password (required if no OTP)")
     otp_code: str | None = Field(None, description="One-time password code")
 
-    @field_validator("phone", mode="before")
+    @field_validator("identifier", mode="before")
     @classmethod
-    def _normalize_and_validate_phone(cls, v: str) -> str:
-        digits = _normalize_phone(v)
-        _validate_phone_digits(digits)
-        return digits
+    def _normalize_identifier(cls, v: str) -> str:
+        return (v or "").strip()
 
     @model_validator(mode="after")
     def _require_password_or_otp(self) -> UserLogin:
@@ -285,6 +285,34 @@ class PasswordResetConfirm(BaseSchema):
     def _validate_reset_password_strength(cls, v: str) -> str:
         _password_strength_check(v)
         return v
+
+
+# -----------------------------------------------------------------------------
+# Phone change
+# -----------------------------------------------------------------------------
+
+
+class PhoneChangeRequest(BaseSchema):
+    new_phone: str = Field(..., description="New phone number")
+
+    @field_validator("new_phone", mode="before")
+    @classmethod
+    def _normalize_new_phone(cls, v: str) -> str:
+        digits = _normalize_phone(v)
+        _validate_phone_digits(digits)
+        return digits
+
+
+class PhoneChangeConfirm(BaseSchema):
+    new_phone: str = Field(..., description="New phone number")
+    code: str = Field(..., min_length=4, max_length=6, description="OTP code")
+
+    @field_validator("new_phone", mode="before")
+    @classmethod
+    def _normalize_new_phone_confirm(cls, v: str) -> str:
+        digits = _normalize_phone(v)
+        _validate_phone_digits(digits)
+        return digits
 
 
 # -----------------------------------------------------------------------------

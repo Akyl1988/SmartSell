@@ -332,7 +332,8 @@ def mount_v1(target: Target, base_prefix: str = "/api/v1") -> None:
     Также монтирует диагностические эндпоинты под /api/v1.
     """
     current_settings = config.get_settings()
-    debug_enabled = bool(current_settings.DEBUG) or str(getattr(current_settings, "ENVIRONMENT", "")).lower() == "local"
+    env = str(getattr(current_settings, "ENVIRONMENT", "") or "").lower()
+    debug_enabled = bool(current_settings.DEBUG) or env in {"development", "dev", "local"}
 
     for name, router, is_absolute in V1_ROUTERS:
         if name == "debug_db" and not debug_enabled:

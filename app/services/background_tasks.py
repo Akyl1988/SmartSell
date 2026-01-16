@@ -2,12 +2,32 @@
 Background task services using Celery for async operations.
 """
 
+from __future__ import annotations
+
+import os
+import re
+
 from celery import Celery
 
 from app.core.config import settings
 from app.core.logging import get_logger
 
 logger = get_logger(__name__)
+
+
+def _mask_phone(value: str) -> str:
+    digits = re.sub(r"\D", "", value or "")
+    if not digits:
+        return ""
+    if len(digits) <= 4:
+        return "*" * len(digits)
+    return "*" * (len(digits) - 2) + digits[-2:]
+
+
+def _should_log_otp_debug() -> bool:
+    env = str(os.getenv("ENVIRONMENT") or getattr(settings, "ENVIRONMENT", "production") or "production").lower()
+    return bool(getattr(settings, "DEBUG_OTP_LOGGING", False)) and env == "development"
+
 
 # Initialize Celery
 celery_app = Celery(
@@ -35,16 +55,15 @@ def send_sms_otp(phone: str, code: str) -> bool:
     """Send SMS OTP code using Mobizon API."""
     try:
         # TODO: Implement actual Mobizon API call
-        logger.info(f"Sending OTP {code} to {phone}")
+        logger.info(f"Sending OTP to {_mask_phone(phone)}")
 
         # Simulate API call delay
         import time
 
         time.sleep(1)
 
-        # For now, just log the OTP (remove in production)
-        if settings.DEBUG:
-            print(f"SMS OTP for {phone}: {code}")
+        if _should_log_otp_debug():
+            logger.info(f"OTP requested for phone {_mask_phone(phone)}")
 
         return True
     except Exception as e:

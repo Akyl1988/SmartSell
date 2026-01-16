@@ -133,7 +133,7 @@ def test_debug_routes_disabled_in_non_local_without_debug(monkeypatch):
     env = {
         "TESTING": "1",
         "TEST_DATABASE_URL": "postgresql://user:pass@host:5432/db",
-        "ENVIRONMENT": "development",
+        "ENVIRONMENT": "production",
         "DEBUG": "0",
     }
 
