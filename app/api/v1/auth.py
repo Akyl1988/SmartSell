@@ -42,29 +42,44 @@ from app.core.dependencies import (
     get_otp_service,
     otp_rate_limit,
 )
-from app.core.exceptions import AuthenticationError, ConflictError, SmartSellValidationError
+from app.core.exceptions import (
+    AuthenticationError,
+    AuthorizationError,
+    ConflictError,
+    ExternalServiceError,
+    SmartSellValidationError,
+)
 from app.core.logging import audit_logger
 from app.core.security import (
     create_access_token,
     create_refresh_token,
     get_password_hash,
+    require_company_admin,
+    resolve_tenant_company_id,
     verify_password,
 )
 from app.integrations.ports.otp import OtpProvider
 from app.models.company import Company
+from app.models.invitation import InvitationToken, PasswordResetToken
 from app.models.otp import OtpAttempt  # таблица otp_codes и enterprise-OTP попытки
 from app.models.user import User, UserSession
 from app.schemas.base import SuccessResponse
 from app.schemas.user import (
+    InvitationAccept,
+    InvitationCreate,
     OTPRequest,
     OTPVerify,
     PasswordReset,
+    PasswordResetConfirm,
+    PasswordResetRequest,
     RefreshTokenRequest,
     TokenResponse,
     UserCreate,
     UserLogin,
 )
+from app.services.messaging import MessagingConfigError, send_email
 from app.utils.otp import create_otp_attempt, verify_otp_code
+from app.utils.tokens import generate_token, hash_token
 
 router = APIRouter(prefix="/auth", tags=["Authentication"])
 
@@ -159,6 +174,15 @@ def _should_return_provider_info() -> bool:
         return False
     is_test_env = bool(os.getenv("PYTEST_CURRENT_TEST")) or bool(getattr(settings, "TESTING", False))
     return is_test_env or (env != "production")
+
+
+def _is_production() -> bool:
+    env = str(os.getenv("ENVIRONMENT") or getattr(settings, "ENVIRONMENT", "production") or "production").lower()
+    return env == "production"
+
+
+def _public_url() -> str:
+    return str(getattr(settings, "PUBLIC_URL", os.getenv("PUBLIC_URL", "http://localhost:8000")) or "").rstrip("/")
 
 
 # =============================================================================
@@ -745,6 +769,125 @@ async def verify_otp(otp_verify: OTPVerify, db: AsyncSession = Depends(get_async
 
 
 # =============================================================================
+# Invitations
+# =============================================================================
+
+
+@router.post(
+    "/invitations",
+    response_model=SuccessResponse,
+    dependencies=[Depends(auth_rate_limit)],
+)
+async def create_invitation(
+    payload: InvitationCreate,
+    current_user: User = Depends(require_company_admin),
+    db: AsyncSession = Depends(get_async_db),
+):
+    company_id = resolve_tenant_company_id(current_user)
+    res_company = await db.execute(select(Company).where(Company.id == company_id))
+    company = res_company.scalars().first()
+    is_owner = bool(company and company.owner_id and company.owner_id == current_user.id)
+    email = (payload.email or "").strip().lower()
+    phone = _normalize_phone(payload.phone)
+    variants = _phone_variants(phone)
+    role = (payload.role or "employee").strip().lower()
+    if role not in {"admin", "employee"}:
+        raise SmartSellValidationError("Invalid role", "INVALID_ROLE")
+    if not is_owner and role == "admin":
+        raise AuthorizationError("Only owner can invite admins", "OWNER_REQUIRED")
+
+    # Ensure no existing user for this company (phone/email uniqueness assumed global)
+    res = await db.execute(select(User).where(User.phone.in_(variants)))
+    if res.scalars().first():
+        raise SmartSellValidationError("User with this phone already exists", "USER_EXISTS")
+    if email:
+        res_e = await db.execute(select(User).where(User.email == email))
+        if res_e.scalars().first():
+            raise SmartSellValidationError("User with this email already exists", "USER_EXISTS")
+
+    token = generate_token()
+    token_hash = hash_token(token, secret=getattr(settings, "INVITE_TOKEN_SECRET", None))
+    invite = InvitationToken.build(
+        company_id=company_id,
+        role=role,
+        phone=phone,
+        email=email,
+        display_name=payload.display_name,
+        token_hash=token_hash,
+        ttl_hours=72,
+        created_by_user_id=current_user.id,
+    )
+    db.add(invite)
+    await db.commit()
+    await db.refresh(invite)
+
+    data = {"invitation_id": invite.id, "expires_at": invite.expires_at}
+
+    return SuccessResponse(message="Invitation created", data=data)
+
+
+@router.post(
+    "/invitations/accept",
+    response_model=TokenResponse,
+    dependencies=[Depends(auth_rate_limit)],
+)
+async def accept_invitation(payload: InvitationAccept, db: AsyncSession = Depends(get_async_db)):
+    token_hash = hash_token(payload.token, secret=getattr(settings, "INVITE_TOKEN_SECRET", None))
+    async with db.begin():
+        res = await db.execute(
+            select(InvitationToken).where(InvitationToken.token_hash == token_hash).with_for_update()
+        )
+        invite = res.scalars().first()
+
+        if not invite or invite.used_at or invite.expires_at <= _utcnow_naive():
+            raise SmartSellValidationError("Invitation is invalid or expired", "INVITATION_INVALID")
+
+        # Guard against duplicate user creation
+        if invite.phone:
+            res_u = await db.execute(select(User).where(User.phone.in_(_phone_variants(invite.phone))))
+            if res_u.scalars().first():
+                raise SmartSellValidationError("User already exists", "USER_EXISTS")
+        if invite.email:
+            res_e = await db.execute(select(User).where(User.email == invite.email))
+            if res_e.scalars().first():
+                raise SmartSellValidationError("User already exists", "USER_EXISTS")
+
+        user = User(
+            company_id=invite.company_id,
+            phone=invite.phone,
+            email=invite.email,
+            full_name=invite.display_name,
+            role=invite.role,
+            is_active=True,
+            is_verified=False,
+            hashed_password=get_password_hash(payload.password),
+        )
+        db.add(user)
+        invite.used_at = _utcnow_naive()
+
+    await db.refresh(user)
+
+    access_token, refresh_token = _issue_tokens_for_user(user.id)
+    session = UserSession(
+        user_id=user.id,
+        refresh_token=hashlib.sha256(refresh_token.encode()).hexdigest(),
+        ip_address="",
+        user_agent="",
+        expires_at=_utcnow_naive() + timedelta(days=settings.REFRESH_TOKEN_EXPIRE_DAYS),
+        is_active=True,
+    )
+    db.add(session)
+    await db.commit()
+
+    return TokenResponse(
+        access_token=access_token,
+        refresh_token=refresh_token,
+        token_type="bearer",
+        expires_in=settings.ACCESS_TOKEN_EXPIRE_MINUTES * 60,
+    )
+
+
+# =============================================================================
 # Password reset
 # =============================================================================
 
@@ -783,6 +926,106 @@ async def reset_password(reset_data: PasswordReset, db: AsyncSession = Depends(g
     )
 
     return SuccessResponse(message="Password reset successfully")
+
+
+# =============================================================================
+# Password reset (token-based)
+# =============================================================================
+
+
+@router.post(
+    "/password/reset/request",
+    response_model=SuccessResponse,
+    dependencies=[Depends(auth_rate_limit)],
+)
+async def password_reset_request(
+    payload: PasswordResetRequest,
+    request: Request,
+    db: AsyncSession = Depends(get_async_db),
+):
+    identifier = (payload.identifier or "").strip()
+    phone = _normalize_phone(identifier)
+    email = (identifier or "").strip().lower()
+    client_info = get_client_info(request)
+
+    user = None
+    if phone:
+        res = await db.execute(select(User).where(User.phone.in_(_phone_variants(phone))))
+        user = res.scalars().first()
+    if not user and email:
+        res_e = await db.execute(select(User).where(User.email == email))
+        user = res_e.scalars().first()
+
+    # Always return success to avoid leaking existence
+    if not user or not user.email or not user.is_active:
+        return SuccessResponse(message="If the account exists, reset instructions were sent")
+
+    token = generate_token()
+    token_hash = hash_token(token, secret=getattr(settings, "RESET_TOKEN_SECRET", None))
+    reset_obj = PasswordResetToken.build(
+        user_id=user.id,
+        token_hash=token_hash,
+        ttl_minutes=10,
+        requested_ip=client_info.get("ip_address"),
+        user_agent=client_info.get("user_agent"),
+    )
+    db.add(reset_obj)
+    await db.commit()
+
+    reset_url = f"{_public_url()}/reset-password?token={token}"
+    try:
+        await send_email(
+            to=user.email,
+            subject="Password reset",
+            body=f"Reset your password: {reset_url}",
+            meta={"user_id": user.id},
+        )
+    except MessagingConfigError:
+        if _is_production():
+            raise ExternalServiceError(
+                "Email provider not configured",
+                "EMAIL_PROVIDER_NOT_CONFIGURED",
+                http_status=503,
+            )
+        # In non-prod: log-only via send_email, ignore
+
+    data = {}
+    if not _is_production():
+        data["reset_url"] = reset_url
+
+    return SuccessResponse(message="If the account exists, reset instructions were sent", data=data)
+
+
+@router.post(
+    "/password/reset/confirm",
+    response_model=SuccessResponse,
+    dependencies=[Depends(auth_rate_limit)],
+)
+async def password_reset_confirm(
+    payload: PasswordResetConfirm,
+    db: AsyncSession = Depends(get_async_db),
+):
+    token_hash = hash_token(payload.token, secret=getattr(settings, "RESET_TOKEN_SECRET", None))
+    async with db.begin():
+        res = await db.execute(
+            select(PasswordResetToken).where(PasswordResetToken.token_hash == token_hash).with_for_update()
+        )
+        reset_obj = res.scalars().first()
+
+        if not reset_obj or reset_obj.used_at or reset_obj.expires_at <= _utcnow_naive():
+            raise SmartSellValidationError("Invalid or expired token", "RESET_TOKEN_INVALID")
+
+        user = await db.get(User, reset_obj.user_id)
+        if not user:
+            raise SmartSellValidationError("Invalid or expired token", "RESET_TOKEN_INVALID")
+
+        user.hashed_password = get_password_hash(payload.new_password)
+        user.failed_login_attempts = 0
+        user.locked_until = None
+        reset_obj.used_at = _utcnow_naive()
+        await db.execute(update(UserSession).where(UserSession.user_id == user.id).values(is_active=False))
+
+    return SuccessResponse(message="Password reset successful")
 
 
 # =============================================================================
