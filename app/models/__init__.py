@@ -168,6 +168,8 @@ _LAZY_MODELS: dict[str, tuple[str, str]] = {
     # OTP / 2FA (строго в app.models.otp)
     "OTPCode": ("app.models.otp", "OTPCode"),
     "OtpAttempt": ("app.models.otp", "OtpAttempt"),
+    "InvitationToken": ("app.models.invitation", "InvitationToken"),
+    "PasswordResetToken": ("app.models.invitation", "PasswordResetToken"),
     # склад/инвентарь
     "Warehouse": ("app.models.warehouse", "Warehouse"),
     "ProductStock": ("app.models.warehouse", "ProductStock"),
@@ -194,6 +196,7 @@ _DOMAIN_MODULES: tuple[str, ...] = (
     "app.models.campaign",
     "app.models.company",
     "app.models.customer",
+    "app.models.invitation",
     "app.models.order",
     "app.models.payment",
     "app.models.product",
@@ -335,6 +338,9 @@ __all__ = [
     # OTP
     "OTPCode",
     "OtpAttempt",
+    # Invitations / Password reset
+    "InvitationToken",
+    "PasswordResetToken",
     # Компания, клиенты, склад
     "Company",
     "Customer",

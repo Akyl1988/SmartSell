@@ -33,6 +33,11 @@ __all__ = [
     "UserUpdate",
     "TokenResponse",
     "RefreshTokenRequest",
+    "InvitationCreate",
+    "InvitationAccept",
+    "InvitationStatus",
+    "PasswordResetRequest",
+    "PasswordResetConfirm",
     "OTPRequest",
     "OTPVerify",
     "PasswordReset",
@@ -231,6 +236,55 @@ class RefreshTokenRequest(BaseSchema):
     """Schema for refresh token request."""
 
     refresh_token: str = Field(..., description="Refresh token")
+
+
+# -----------------------------------------------------------------------------
+# Invitations / Password reset
+# -----------------------------------------------------------------------------
+
+
+class InvitationCreate(BaseSchema):
+    email: EmailStr = Field(..., description="Invitee email")
+    phone: str = Field(..., description="Invitee phone")
+    role: Literal["admin", "employee"] = Field("employee", description="Role for invitee")
+    display_name: str | None = Field(None, max_length=255)
+
+    @field_validator("phone", mode="before")
+    @classmethod
+    def _normalize_invite_phone(cls, v: str) -> str:
+        digits = _normalize_phone(v)
+        _validate_phone_digits(digits)
+        return digits
+
+
+class InvitationAccept(BaseSchema):
+    token: str = Field(..., min_length=16, description="Invitation token")
+    password: str = Field(..., min_length=8, description="Initial password")
+
+    @field_validator("password")
+    @classmethod
+    def _validate_password_strength(cls, v: str) -> str:
+        _password_strength_check(v)
+        return v
+
+
+class InvitationStatus(BaseSchema):
+    token: str = Field(..., min_length=16, description="Invitation token")
+
+
+class PasswordResetRequest(BaseSchema):
+    identifier: str = Field(..., description="Email or phone")
+
+
+class PasswordResetConfirm(BaseSchema):
+    token: str = Field(..., min_length=16)
+    new_password: str = Field(..., min_length=8)
+
+    @field_validator("new_password")
+    @classmethod
+    def _validate_reset_password_strength(cls, v: str) -> str:
+        _password_strength_check(v)
+        return v
 
 
 # -----------------------------------------------------------------------------

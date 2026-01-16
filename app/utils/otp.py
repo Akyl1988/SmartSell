@@ -17,6 +17,8 @@ from app.models import OtpAttempt
 
 logger = get_logger(__name__)
 
+DEFAULT_OTP_TTL_MINUTES = 5
+
 
 def generate_otp_code(length: int = 6) -> str:
     """Generate random OTP code"""
@@ -49,7 +51,7 @@ async def create_otp_attempt(
     db: AsyncSession,
     phone: str,
     purpose: str = "login",
-    expires_minutes: int = 5,
+    expires_minutes: int = DEFAULT_OTP_TTL_MINUTES,
     attempts_left: int | None = None,
     code: str | None = None,
     user_id: int | None = None,

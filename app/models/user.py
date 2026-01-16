@@ -138,7 +138,7 @@ from app.models.base import (  # async helpers (опциональны, но а�
 # ======================================================================================
 # Constants & Policies
 # ======================================================================================
-ALLOWED_ROLES = {"admin", "manager", "storekeeper", "analyst", "platform_admin"}
+ALLOWED_ROLES = {"admin", "employee", "manager", "storekeeper", "analyst", "platform_admin"}
 EMAIL_REGEX = re.compile(r"^[^@]+@[^@]+\.[^@]+$")
 PHONE_REGEX = re.compile(r"^\+?\d{10,15}$")
 
