@@ -883,6 +883,12 @@ async def kaspi_products_sync(
     try:
         result = await sync_kaspi_catalog_products(session, company_id)
         return KaspiProductSyncOut(**result)
+    except ValueError as e:
+        detail = str(e) or "kaspi_sync_not_configured"
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=detail,
+        )
     except Exception as e:
         logger.error("Kaspi products sync failed: company_id=%s error=%s", company_id, e)
         raise HTTPException(

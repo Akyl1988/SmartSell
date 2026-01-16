@@ -12,7 +12,9 @@ from __future__ import annotations
 import pytest
 import sqlalchemy as sa
 
+from app.models.company import Company
 from app.models.kaspi_catalog_product import KaspiCatalogProduct
+from app.models.marketplace import KaspiStoreToken
 
 
 def _fake_products_payload() -> list[dict]:
@@ -39,6 +41,16 @@ def _fake_products_payload() -> list[dict]:
     ]
 
 
+async def _ensure_company_store(async_db_session, company_id: int, store_id: str) -> None:
+    company = await async_db_session.get(Company, company_id)
+    if not company:
+        company = Company(id=company_id, name=f"Company {company_id}", kaspi_store_id=store_id)
+        async_db_session.add(company)
+    else:
+        company.kaspi_store_id = store_id
+    await async_db_session.commit()
+
+
 @pytest.mark.asyncio
 async def test_kaspi_products_sync_creates_and_lists(
     monkeypatch,
@@ -57,6 +69,13 @@ async def test_kaspi_products_sync_creates_and_lists(
     5. Verify: 2 products returned with correct fields
     """
     from app.services.kaspi_service import KaspiService
+
+    await _ensure_company_store(async_db_session, 1001, "store-a")
+
+    async def _get_token(session, store_name: str):
+        return "token-a" if store_name == "store-a" else None
+
+    monkeypatch.setattr(KaspiStoreToken, "get_token", _get_token)
 
     # Mock get_products
     async def fake_get_products(self, *, page=1, page_size=100):  # noqa: ARG001
@@ -110,6 +129,13 @@ async def test_kaspi_products_sync_idempotent(
     """
     from app.services.kaspi_service import KaspiService
 
+    await _ensure_company_store(async_db_session, 1001, "store-a")
+
+    async def _get_token(session, store_name: str):
+        return "token-a" if store_name == "store-a" else None
+
+    monkeypatch.setattr(KaspiStoreToken, "get_token", _get_token)
+
     # Mock get_products
     async def fake_get_products(self, *, page=1, page_size=100):  # noqa: ARG001
         return _fake_products_payload()
@@ -156,6 +182,14 @@ async def test_kaspi_products_tenant_isolation(
     4. List products for company B: should see only B's products
     """
     from app.services.kaspi_service import KaspiService
+
+    await _ensure_company_store(async_db_session, 1001, "store-a")
+    await _ensure_company_store(async_db_session, 2001, "store-b")
+
+    async def _get_token(session, store_name: str):
+        return "token-a" if store_name == "store-a" else "token-b"
+
+    monkeypatch.setattr(KaspiStoreToken, "get_token", _get_token)
 
     # Mock get_products to return different data based on call count
     call_count = [0]
