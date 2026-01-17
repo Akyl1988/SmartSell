@@ -189,6 +189,9 @@ _LAZY_MODELS: dict[str, tuple[str, str]] = {
     "KaspiCatalogProduct": ("app.models.kaspi_catalog_product", "KaspiCatalogProduct"),
     "KaspiFeedExport": ("app.models.kaspi_feed_export", "KaspiFeedExport"),
     "KaspiGoodsImport": ("app.models.kaspi_goods_import", "KaspiGoodsImport"),
+    "CatalogImportBatch": ("app.models.catalog_import", "CatalogImportBatch"),
+    "CatalogImportRow": ("app.models.catalog_import", "CatalogImportRow"),
+    "KaspiOffer": ("app.models.kaspi_offer", "KaspiOffer"),
 }
 
 # Поддерживаемые модули доменов для «массового» импорта (ручной whitelisting).
@@ -209,6 +212,8 @@ _DOMAIN_MODULES: tuple[str, ...] = (
     "app.models.kaspi_catalog_product",
     "app.models.kaspi_feed_export",
     "app.models.kaspi_goods_import",
+    "app.models.catalog_import",
+    "app.models.kaspi_offer",
     "app.models.system_integrations",
     "app.models.integration_provider",
     "app.models.integration_provider_config",

@@ -26,14 +26,17 @@ app/api/v1/kaspi.py — Полный, боевой роутер интеграц
 - Расширяемость: аккуратные модели ввода/вывода; готово к будущим эндпоинтам.
 """
 
+import csv
 import inspect
+import io
 import json
 from datetime import datetime, timedelta
+from hashlib import sha256
 from typing import Any
 
 import httpx
 import sqlalchemy as sa
-from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
+from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, Response, UploadFile, status
 from pydantic import BaseModel, Field
 from sqlalchemy import bindparam, text
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -45,10 +48,12 @@ from app.core.security import get_current_user, resolve_tenant_company_id
 # Доменные зависимости/схемы:
 from app.integrations.kaspi_adapter import KaspiAdapter, KaspiAdapterError
 from app.models import Product
+from app.models.catalog_import import CatalogImportBatch, CatalogImportRow
 from app.models.company import Company
 from app.models.kaspi_catalog_product import KaspiCatalogProduct
 from app.models.kaspi_feed_export import KaspiFeedExport
 from app.models.kaspi_goods_import import KaspiGoodsImport
+from app.models.kaspi_offer import KaspiOffer
 from app.models.kaspi_order_sync_state import KaspiOrderSyncState
 from app.models.marketplace import KaspiStoreToken
 from app.models.user import User
@@ -119,6 +124,64 @@ def _product_to_goods_payload(product: Product) -> dict[str, Any]:
         "quantity": int(product.stock_quantity or 0),
         "isActive": bool(product.is_active),
     }
+
+
+def _norm_header(name: str) -> str:
+    return "".join(ch if ch.isalnum() else "_" for ch in (name or "").strip().lower()).strip("_")
+
+
+_HEADER_ALIASES = {
+    "sku": {"sku", "offer_id", "offersku", "merchant_sku"},
+    "master_sku": {"master_sku", "mastersku", "merchant_uid", "merchantuid", "parent_sku"},
+    "title": {"title", "name", "product_name"},
+    "price": {"price", "price_kzt", "price_kz"},
+    "old_price": {"old_price", "oldprice", "price_old"},
+    "stock_count": {"stock", "stock_count", "qty", "quantity"},
+    "pre_order": {"pre_order", "preorder", "pre_order_flag"},
+    "stock_specified": {"stock_specified", "stockspecified", "stock_flag"},
+    "updated_at": {"updated_at", "updated", "last_update"},
+}
+
+
+def _normalize_headers(fieldnames: list[str]) -> dict[str, str]:
+    normalized = {_norm_header(name): name for name in fieldnames}
+    mapping: dict[str, str] = {}
+    for canonical, aliases in _HEADER_ALIASES.items():
+        for alias in aliases:
+            alias_norm = _norm_header(alias)
+            if alias_norm in normalized:
+                mapping[canonical] = alias_norm
+                break
+    return mapping
+
+
+def _get_mapped_value(normalized_raw: dict[str, Any], header_map: dict[str, str], key: str) -> str | None:
+    lookup = header_map.get(key)
+    return normalized_raw.get(lookup) if lookup else None
+
+
+def _parse_int(value: str | None) -> int | None:
+    if value is None:
+        return None
+    v = str(value).strip().replace(" ", "")
+    if not v:
+        return None
+    v = v.replace(",", ".")
+    try:
+        return int(float(v))
+    except ValueError:
+        return None
+
+
+def _parse_bool(value: str | None) -> bool | None:
+    if value is None:
+        return None
+    v = str(value).strip().lower()
+    if v in {"1", "true", "yes", "y", "on"}:
+        return True
+    if v in {"0", "false", "no", "n", "off"}:
+        return False
+    return None
 
 
 # ------------------------------- Локальные схемы (deprecated - use app/schemas/kaspi.py) ------
@@ -929,6 +992,15 @@ class KaspiTokenSelftestOut(BaseModel):
     orders_error: str | None = None
 
 
+class KaspiCatalogImportOut(BaseModel):
+    batch_id: str
+    status: str
+    rows_total: int
+    rows_ok: int
+    rows_failed: int
+    errors: list[dict[str, Any]]
+
+
 @router.post(
     "/products/sync",
     summary="Синхронизировать каталог Kaspi в локальную БД",
@@ -1274,6 +1346,185 @@ async def kaspi_token_selftest(
         goods_categories_http=goods_categories_resp.status_code,
         goods_access=goods_access,
         orders_error=orders_error,
+    )
+
+
+@router.post(
+    "/catalog/import",
+    summary="Kaspi catalog import (CSV)",
+    response_model=KaspiCatalogImportOut,
+)
+async def kaspi_catalog_import(
+    file: UploadFile = File(...),
+    merchant_uid: str | None = Query(None, alias="merchantUid"),
+    current_user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_async_db),
+):
+    if not (current_user.is_superuser or current_user.role == "admin"):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="forbidden")
+
+    if not merchant_uid or not merchant_uid.strip():
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="missing_merchant_uid")
+
+    merchant_uid = merchant_uid.strip()
+
+    company_id = _resolve_company_id(current_user)
+
+    content = await file.read()
+    if not content:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="empty_file")
+
+    content_hash = sha256(content).hexdigest()
+    filename = file.filename or "catalog.csv"
+
+    try:
+        text = content.decode("utf-8-sig", errors="replace")
+    except Exception:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="invalid_encoding")
+
+    reader = csv.DictReader(io.StringIO(text))
+    if not reader.fieldnames:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="missing_headers")
+
+    header_map = _normalize_headers(reader.fieldnames)
+
+    batch = CatalogImportBatch(
+        company_id=company_id,
+        source="kaspi",
+        filename=filename,
+        content_hash=content_hash,
+        status="RUNNING",
+        merchant_uid=merchant_uid,
+        started_at=datetime.utcnow(),
+    )
+    session.add(batch)
+    await session.commit()
+    await session.refresh(batch)
+
+    rows_total = 0
+    rows_ok = 0
+    rows_failed = 0
+    row_errors: list[dict[str, Any]] = []
+    row_records: list[dict[str, Any]] = []
+    offer_records: list[dict[str, Any]] = []
+
+    for idx, raw in enumerate(reader, start=1):
+        rows_total += 1
+        normalized_raw = {_norm_header(k): (v.strip() if isinstance(v, str) else v) for k, v in raw.items()}
+
+        sku = _get_mapped_value(normalized_raw, header_map, "sku")
+        master_sku = _get_mapped_value(normalized_raw, header_map, "master_sku")
+        title = _get_mapped_value(normalized_raw, header_map, "title")
+        price = _parse_int(_get_mapped_value(normalized_raw, header_map, "price"))
+        old_price = _parse_int(_get_mapped_value(normalized_raw, header_map, "old_price"))
+        stock_count = _parse_int(_get_mapped_value(normalized_raw, header_map, "stock_count"))
+        pre_order = _parse_bool(_get_mapped_value(normalized_raw, header_map, "pre_order"))
+        stock_specified = _parse_bool(_get_mapped_value(normalized_raw, header_map, "stock_specified"))
+        updated_at_raw = _get_mapped_value(normalized_raw, header_map, "updated_at")
+        updated_at = None
+        if updated_at_raw:
+            try:
+                updated_at = datetime.fromisoformat(updated_at_raw.replace("Z", ""))
+            except Exception:
+                updated_at = None
+
+        error = None
+        if not sku:
+            error = "missing_sku"
+
+        row_records.append(
+            {
+                "batch_id": batch.id,
+                "company_id": company_id,
+                "row_num": idx,
+                "raw": normalized_raw,
+                "sku": sku,
+                "master_sku": master_sku,
+                "title": title,
+                "price": price,
+                "old_price": old_price,
+                "stock_count": stock_count,
+                "pre_order": pre_order,
+                "stock_specified": stock_specified,
+                "updated_at": updated_at,
+                "error": error,
+            }
+        )
+
+        if error:
+            rows_failed += 1
+            if len(row_errors) < 5:
+                row_errors.append({"row": idx, "error": error})
+            continue
+
+        rows_ok += 1
+        offer_records.append(
+            {
+                "company_id": company_id,
+                "merchant_uid": merchant_uid,
+                "sku": sku,
+                "master_sku": master_sku,
+                "title": title,
+                "price": price,
+                "old_price": old_price,
+                "stock_count": stock_count,
+                "pre_order": pre_order,
+                "stock_specified": stock_specified,
+                "raw": normalized_raw,
+                "updated_at": datetime.utcnow(),
+            }
+        )
+
+    try:
+        if row_records:
+            await session.execute(sa.insert(CatalogImportRow), row_records)
+
+        if offer_records:
+            for chunk_start in range(0, len(offer_records), 500):
+                chunk = offer_records[chunk_start : chunk_start + 500]
+                stmt = sa.dialects.postgresql.insert(KaspiOffer).values(chunk)
+                stmt = stmt.on_conflict_do_update(
+                    index_elements=["company_id", "merchant_uid", "sku"],
+                    set_={
+                        "master_sku": stmt.excluded.master_sku,
+                        "title": stmt.excluded.title,
+                        "price": stmt.excluded.price,
+                        "old_price": stmt.excluded.old_price,
+                        "stock_count": stmt.excluded.stock_count,
+                        "pre_order": stmt.excluded.pre_order,
+                        "stock_specified": stmt.excluded.stock_specified,
+                        "raw": stmt.excluded.raw,
+                        "updated_at": datetime.utcnow(),
+                    },
+                )
+                await session.execute(stmt)
+
+        batch.rows_total = rows_total
+        batch.rows_ok = rows_ok
+        batch.rows_failed = rows_failed
+        batch.status = "DONE"
+        batch.finished_at = datetime.utcnow()
+        if rows_failed:
+            batch.error_summary = "; ".join({e["error"] for e in row_errors})
+
+        await session.commit()
+    except Exception as exc:
+        await session.rollback()
+        batch = await session.get(CatalogImportBatch, batch.id)
+        if batch:
+            batch.status = "FAILED"
+            batch.finished_at = datetime.utcnow()
+            batch.error_summary = str(exc)[:500]
+            await session.commit()
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="catalog_import_failed")
+
+    return KaspiCatalogImportOut(
+        batch_id=str(batch.id),
+        status=batch.status,
+        rows_total=rows_total,
+        rows_ok=rows_ok,
+        rows_failed=rows_failed,
+        errors=row_errors,
     )
 
 
