@@ -98,6 +98,11 @@ def _resolve_company_id(current_user: User) -> int:
     return resolve_tenant_company_id(current_user, not_found_detail="Company not set")
 
 
+def _require_admin(current_user: User) -> None:
+    if not (current_user.is_superuser or current_user.role == "admin"):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="forbidden")
+
+
 async def _resolve_kaspi_token(session: AsyncSession, company_id: int) -> tuple[str, str]:
     company = (await session.execute(sa.select(Company).where(Company.id == company_id))).scalars().first()
     if not company:
@@ -182,6 +187,18 @@ def _parse_bool(value: str | None) -> bool | None:
     if v in {"0", "false", "no", "n", "off"}:
         return False
     return None
+
+
+def _truncate_raw(raw: Any, max_len: int = 2000) -> str | None:
+    if raw is None:
+        return None
+    try:
+        text_value = json.dumps(raw, ensure_ascii=False, default=str)
+    except Exception:
+        text_value = str(raw)
+    if len(text_value) <= max_len:
+        return text_value
+    return f"{text_value[:max_len]}..."
 
 
 # ------------------------------- Локальные схемы (deprecated - use app/schemas/kaspi.py) ------
@@ -1001,6 +1018,54 @@ class KaspiCatalogImportOut(BaseModel):
     errors: list[dict[str, Any]]
 
 
+class KaspiCatalogImportBatchOut(BaseModel):
+    id: str
+    merchant_uid: str | None = None
+    filename: str
+    status: str
+    rows_total: int
+    rows_ok: int
+    rows_failed: int
+    started_at: datetime | None = None
+    finished_at: datetime | None = None
+    created_at: datetime
+    error_summary: str | None = None
+
+
+class KaspiCatalogImportBatchDetailOut(KaspiCatalogImportBatchOut):
+    duration_seconds: int | None = None
+
+
+class KaspiCatalogImportErrorOut(BaseModel):
+    row_num: int
+    error: str | None = None
+    sku: str | None = None
+    master_sku: str | None = None
+    title: str | None = None
+    raw: str | None = None
+
+
+class KaspiOfferOut(BaseModel):
+    id: int
+    merchant_uid: str
+    sku: str
+    master_sku: str | None = None
+    title: str | None = None
+    price: float | None = None
+    old_price: float | None = None
+    stock_count: int | None = None
+    pre_order: bool | None = None
+    stock_specified: bool | None = None
+    updated_at: datetime
+
+
+class KaspiOfferListOut(BaseModel):
+    items: list[KaspiOfferOut]
+    total: int
+    limit: int
+    offset: int
+
+
 @router.post(
     "/products/sync",
     summary="Синхронизировать каталог Kaspi в локальную БД",
@@ -1360,8 +1425,7 @@ async def kaspi_catalog_import(
     current_user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_async_db),
 ):
-    if not (current_user.is_superuser or current_user.role == "admin"):
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="forbidden")
+    _require_admin(current_user)
 
     if not merchant_uid or not merchant_uid.strip():
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="missing_merchant_uid")
@@ -1526,6 +1590,214 @@ async def kaspi_catalog_import(
         rows_failed=rows_failed,
         errors=row_errors,
     )
+
+
+@router.get(
+    "/catalog/import/batches",
+    summary="List catalog import batches (newest first)",
+    response_model=list[KaspiCatalogImportBatchOut],
+)
+async def kaspi_catalog_import_batches(
+    limit: int = 50,
+    offset: int = 0,
+    current_user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_async_db),
+):
+    _require_admin(current_user)
+    company_id = _resolve_company_id(current_user)
+
+    result = await session.execute(
+        sa.select(CatalogImportBatch)
+        .where(CatalogImportBatch.company_id == company_id)
+        .order_by(CatalogImportBatch.created_at.desc())
+        .limit(limit)
+        .offset(offset)
+    )
+    batches = result.scalars().all()
+
+    return [
+        KaspiCatalogImportBatchOut(
+            id=str(batch.id),
+            merchant_uid=batch.merchant_uid,
+            filename=batch.filename,
+            status=batch.status,
+            rows_total=batch.rows_total,
+            rows_ok=batch.rows_ok,
+            rows_failed=batch.rows_failed,
+            started_at=batch.started_at,
+            finished_at=batch.finished_at,
+            created_at=batch.created_at,
+            error_summary=batch.error_summary,
+        )
+        for batch in batches
+    ]
+
+
+@router.get(
+    "/catalog/import/batches/{batch_id}",
+    summary="Get catalog import batch detail",
+    response_model=KaspiCatalogImportBatchDetailOut,
+)
+async def kaspi_catalog_import_batch_detail(
+    batch_id: str,
+    current_user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_async_db),
+):
+    _require_admin(current_user)
+    company_id = _resolve_company_id(current_user)
+
+    result = await session.execute(
+        sa.select(CatalogImportBatch).where(
+            CatalogImportBatch.company_id == company_id,
+            CatalogImportBatch.id == batch_id,
+        )
+    )
+    batch = result.scalars().first()
+    if not batch:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="batch_not_found")
+
+    duration_seconds = None
+    if batch.started_at and batch.finished_at:
+        duration_seconds = int((batch.finished_at - batch.started_at).total_seconds())
+
+    return KaspiCatalogImportBatchDetailOut(
+        id=str(batch.id),
+        merchant_uid=batch.merchant_uid,
+        filename=batch.filename,
+        status=batch.status,
+        rows_total=batch.rows_total,
+        rows_ok=batch.rows_ok,
+        rows_failed=batch.rows_failed,
+        started_at=batch.started_at,
+        finished_at=batch.finished_at,
+        created_at=batch.created_at,
+        error_summary=batch.error_summary,
+        duration_seconds=duration_seconds,
+    )
+
+
+@router.get(
+    "/catalog/import/batches/{batch_id}/errors",
+    summary="List catalog import errors",
+    response_model=list[KaspiCatalogImportErrorOut],
+)
+async def kaspi_catalog_import_batch_errors(
+    batch_id: str,
+    limit: int = 200,
+    offset: int = 0,
+    current_user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_async_db),
+):
+    _require_admin(current_user)
+    company_id = _resolve_company_id(current_user)
+
+    batch = (
+        await session.execute(
+            sa.select(CatalogImportBatch).where(
+                CatalogImportBatch.company_id == company_id,
+                CatalogImportBatch.id == batch_id,
+            )
+        )
+    ).scalars().first()
+    if not batch:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="batch_not_found")
+
+    result = await session.execute(
+        sa.select(CatalogImportRow)
+        .where(
+            CatalogImportRow.company_id == company_id,
+            CatalogImportRow.batch_id == batch_id,
+            CatalogImportRow.error.is_not(None),
+        )
+        .order_by(CatalogImportRow.row_num.asc())
+        .limit(limit)
+        .offset(offset)
+    )
+    rows = result.scalars().all()
+
+    return [
+        KaspiCatalogImportErrorOut(
+            row_num=row.row_num,
+            error=row.error,
+            sku=row.sku,
+            master_sku=row.master_sku,
+            title=row.title,
+            raw=_truncate_raw(row.raw),
+        )
+        for row in rows
+    ]
+
+
+@router.get(
+    "/offers",
+    summary="List Kaspi offers",
+    response_model=KaspiOfferListOut,
+)
+async def kaspi_offers_list(
+    merchant_uid: str | None = Query(None, alias="merchantUid"),
+    q: str | None = None,
+    limit: int = 50,
+    offset: int = 0,
+    current_user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_async_db),
+):
+    _require_admin(current_user)
+    company_id = _resolve_company_id(current_user)
+
+    conditions = [KaspiOffer.company_id == company_id]
+    if merchant_uid:
+        conditions.append(KaspiOffer.merchant_uid == merchant_uid)
+    if q:
+        like = f"%{q}%"
+        conditions.append(sa.or_(KaspiOffer.sku.ilike(like), KaspiOffer.title.ilike(like)))
+
+    total = (
+        await session.execute(sa.select(sa.func.count()).select_from(KaspiOffer).where(*conditions))
+    ).scalar_one()
+
+    result = await session.execute(
+        sa.select(KaspiOffer)
+        .where(*conditions)
+        .order_by(KaspiOffer.updated_at.desc())
+        .limit(limit)
+        .offset(offset)
+    )
+    offers = result.scalars().all()
+
+    items = [
+        KaspiOfferOut(
+            id=offer.id,
+            merchant_uid=offer.merchant_uid,
+            sku=offer.sku,
+            master_sku=offer.master_sku,
+            title=offer.title,
+            price=float(offer.price) if offer.price is not None else None,
+            old_price=float(offer.old_price) if offer.old_price is not None else None,
+            stock_count=offer.stock_count,
+            pre_order=offer.pre_order,
+            stock_specified=offer.stock_specified,
+            updated_at=offer.updated_at,
+        )
+        for offer in offers
+    ]
+
+    return KaspiOfferListOut(items=items, total=int(total or 0), limit=limit, offset=offset)
+
+
+@router.get(
+    "/catalog/import/template.csv",
+    summary="Download catalog import CSV template",
+)
+async def kaspi_catalog_import_template(
+    current_user: User = Depends(get_current_user),
+):
+    _require_admin(current_user)
+    content = (
+        "sku,master_sku,title,price,old_price,stock_count,pre_order,stock_specified,updated_at\n"
+        "SKU-001,MASTER-001,Sample title,1000,1200,5,false,true,2026-01-17T12:00:00\n"
+    )
+    headers = {"Content-Disposition": "attachment; filename=kaspi_catalog_template.csv"}
+    return Response(content=content, media_type="text/csv", headers=headers)
 
 
 @router.get(
