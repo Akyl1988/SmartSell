@@ -30,6 +30,8 @@ import csv
 import inspect
 import io
 import json
+import os
+import secrets
 import time
 from datetime import datetime, timedelta
 from hashlib import sha256
@@ -54,6 +56,7 @@ from app.models.catalog_import import CatalogImportBatch, CatalogImportRow
 from app.models.company import Company
 from app.models.kaspi_catalog_product import KaspiCatalogProduct
 from app.models.kaspi_feed_export import KaspiFeedExport
+from app.models.kaspi_feed_public_token import KaspiFeedPublicToken
 from app.models.kaspi_goods_import import KaspiGoodsImport
 from app.models.kaspi_offer import KaspiOffer
 from app.models.kaspi_order_sync_state import KaspiOrderSyncState
@@ -1949,6 +1952,24 @@ class KaspiFeedExportOut(BaseModel):
     updated_at: str | None = None
 
 
+class KaspiFeedPublicTokenIn(BaseModel):
+    comment: str | None = None
+
+
+class KaspiFeedPublicTokenOut(BaseModel):
+    id: int
+    merchant_uid: str | None = None
+    token: str | None = None
+    created_at: datetime
+    revoked_at: datetime | None = None
+    last_used_at: datetime | None = None
+    comment: str | None = None
+
+
+class KaspiFeedPublicTokenListOut(BaseModel):
+    items: list[KaspiFeedPublicTokenOut]
+
+
 class KaspiFeedGenerateOut(BaseModel):
     """Response model for feed generation."""
 
@@ -2151,6 +2172,203 @@ async def kaspi_feed_export_download(
         content=export.payload_text,
         media_type="application/xml",
         headers={"Content-Disposition": f"attachment; filename={filename}"},
+    )
+
+
+# ============================= PUBLIC FEED TOKENS =============================
+
+
+@router.post(
+    "/feed/public-tokens",
+    summary="Create public feed token",
+    response_model=KaspiFeedPublicTokenOut,
+)
+async def kaspi_feed_public_token_create(
+    payload: KaspiFeedPublicTokenIn,
+    merchant_uid: str | None = Query(None, alias="merchantUid"),
+    current_user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_async_db),
+):
+    _require_admin(current_user)
+    company_id = _resolve_company_id(current_user)
+    env = os.getenv("ENVIRONMENT", "").lower()
+
+    token_value = None
+    token_hash = None
+    for _ in range(3):
+        candidate = secrets.token_urlsafe(32)
+        candidate_hash = sha256(candidate.encode("utf-8")).hexdigest()
+        exists = (
+            await session.execute(
+                sa.select(sa.func.count())
+                .select_from(KaspiFeedPublicToken)
+                .where(KaspiFeedPublicToken.token_hash == candidate_hash)
+            )
+        ).scalar_one()
+        if not exists:
+            token_value = candidate
+            token_hash = candidate_hash
+            break
+
+    if not token_value or not token_hash:
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="token_generation_failed")
+
+    token_row = KaspiFeedPublicToken(
+        company_id=company_id,
+        merchant_uid=merchant_uid.strip() if merchant_uid else None,
+        token_hash=token_hash,
+        comment=payload.comment,
+    )
+    session.add(token_row)
+    await session.commit()
+    await session.refresh(token_row)
+
+    return KaspiFeedPublicTokenOut(
+        id=token_row.id,
+        merchant_uid=token_row.merchant_uid,
+        token=token_value if env == "development" else None,
+        created_at=token_row.created_at,
+        revoked_at=token_row.revoked_at,
+        last_used_at=token_row.last_used_at,
+        comment=token_row.comment,
+    )
+
+
+@router.get(
+    "/feed/public-tokens",
+    summary="List public feed tokens",
+    response_model=KaspiFeedPublicTokenListOut,
+)
+async def kaspi_feed_public_tokens_list(
+    current_user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_async_db),
+):
+    _require_admin(current_user)
+    company_id = _resolve_company_id(current_user)
+
+    result = await session.execute(
+        sa.select(KaspiFeedPublicToken)
+        .where(KaspiFeedPublicToken.company_id == company_id)
+        .order_by(KaspiFeedPublicToken.created_at.desc())
+    )
+    tokens = result.scalars().all()
+    return KaspiFeedPublicTokenListOut(
+        items=[
+            KaspiFeedPublicTokenOut(
+                id=row.id,
+                merchant_uid=row.merchant_uid,
+                token=None,
+                created_at=row.created_at,
+                revoked_at=row.revoked_at,
+                last_used_at=row.last_used_at,
+                comment=row.comment,
+            )
+            for row in tokens
+        ]
+    )
+
+
+@router.post(
+    "/feed/public-tokens/{token_id}/revoke",
+    summary="Revoke public feed token",
+    response_model=KaspiFeedPublicTokenOut,
+)
+async def kaspi_feed_public_token_revoke(
+    token_id: int,
+    current_user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_async_db),
+):
+    _require_admin(current_user)
+    company_id = _resolve_company_id(current_user)
+
+    token_row = (
+        (
+            await session.execute(
+                sa.select(KaspiFeedPublicToken).where(
+                    KaspiFeedPublicToken.company_id == company_id,
+                    KaspiFeedPublicToken.id == token_id,
+                )
+            )
+        )
+        .scalars()
+        .first()
+    )
+    if not token_row:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="token_not_found")
+
+    token_row.revoked_at = datetime.utcnow()
+    await session.commit()
+    await session.refresh(token_row)
+
+    return KaspiFeedPublicTokenOut(
+        id=token_row.id,
+        merchant_uid=token_row.merchant_uid,
+        token=None,
+        created_at=token_row.created_at,
+        revoked_at=token_row.revoked_at,
+        last_used_at=token_row.last_used_at,
+        comment=token_row.comment,
+    )
+
+
+@router.get(
+    "/feed/public/offers.xml",
+    summary="Public Kaspi offers feed",
+    response_class=Response,
+)
+async def kaspi_public_offers_feed(
+    token: str | None = None,
+    merchant_uid: str | None = Query(None, alias="merchantUid"),
+    session: AsyncSession = Depends(get_async_db),
+):
+    if not token or not merchant_uid:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="not_found")
+
+    token_hash = sha256(token.encode("utf-8")).hexdigest()
+    token_row = (
+        (
+            await session.execute(
+                sa.select(KaspiFeedPublicToken).where(
+                    KaspiFeedPublicToken.token_hash == token_hash,
+                    KaspiFeedPublicToken.revoked_at.is_(None),
+                )
+            )
+        )
+        .scalars()
+        .first()
+    )
+    if not token_row:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="not_found")
+
+    if token_row.merchant_uid and token_row.merchant_uid != merchant_uid:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="not_found")
+
+    export = (
+        (
+            await session.execute(
+                sa.select(KaspiFeedExport)
+                .where(
+                    KaspiFeedExport.company_id == token_row.company_id,
+                    KaspiFeedExport.status == "DONE",
+                    KaspiFeedExport.stats_json["merchant_uid"].astext == merchant_uid,
+                )
+                .order_by(KaspiFeedExport.created_at.desc())
+                .limit(1)
+            )
+        )
+        .scalars()
+        .first()
+    )
+    if not export or not export.payload_text:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="not_found")
+
+    token_row.last_used_at = datetime.utcnow()
+    await session.commit()
+
+    return Response(
+        content=export.payload_text,
+        media_type="application/xml",
+        headers={"Cache-Control": "no-store"},
     )
 
 
