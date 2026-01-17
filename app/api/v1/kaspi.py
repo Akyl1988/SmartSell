@@ -28,9 +28,10 @@ app/api/v1/kaspi.py — Полный, боевой роутер интеграц
 
 import inspect
 import json
-import logging
+from datetime import datetime, timedelta
 from typing import Any
 
+import httpx
 import sqlalchemy as sa
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from pydantic import BaseModel, Field
@@ -47,12 +48,10 @@ from app.models import Product
 from app.models.company import Company
 from app.models.kaspi_catalog_product import KaspiCatalogProduct
 from app.models.kaspi_feed_export import KaspiFeedExport
+from app.models.kaspi_goods_import import KaspiGoodsImport
 from app.models.kaspi_order_sync_state import KaspiOrderSyncState
 from app.models.marketplace import KaspiStoreToken
 from app.models.user import User
-
-logger = get_logger(__name__)
-
 from app.schemas.kaspi import (
     ImportRequest,
     ImportStatusQuery,
@@ -62,9 +61,10 @@ from app.schemas.kaspi import (
     KaspiTokenOut,
     OrdersQuery,
 )
+from app.services.kaspi_goods_client import KaspiGoodsClient, KaspiNotAuthenticated
 from app.services.kaspi_service import KaspiService, KaspiSyncAlreadyRunning
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 router = APIRouter(prefix="/api/v1/kaspi", tags=["kaspi"])
 
 
@@ -91,6 +91,34 @@ async def _auth_user(current_user: User = Depends(get_current_user)) -> User:
 
 def _resolve_company_id(current_user: User) -> int:
     return resolve_tenant_company_id(current_user, not_found_detail="Company not set")
+
+
+async def _resolve_kaspi_token(session: AsyncSession, company_id: int) -> tuple[str, str]:
+    company = (await session.execute(sa.select(Company).where(Company.id == company_id))).scalars().first()
+    if not company:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Company not found")
+    store_name = (company.kaspi_store_id or "").strip()
+    if not store_name:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="kaspi_store_not_configured")
+    token = await KaspiStoreToken.get_token(session, store_name)
+    if not token:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="kaspi_token_not_found")
+    return store_name, token
+
+
+def _extract_import_code(payload: dict) -> str | None:
+    return payload.get("importCode") or payload.get("import_code") or payload.get("code") or payload.get("id")
+
+
+def _product_to_goods_payload(product: Product) -> dict[str, Any]:
+    sku = product.sku or f"PID-{product.id}"
+    return {
+        "sku": sku,
+        "name": product.name or sku,
+        "price": float(product.price) if product.price is not None else None,
+        "quantity": int(product.stock_quantity or 0),
+        "isActive": bool(product.is_active),
+    }
 
 
 # ------------------------------- Локальные схемы (deprecated - use app/schemas/kaspi.py) ------
@@ -862,6 +890,45 @@ class KaspiProductListOut(BaseModel):
     offset: int
 
 
+class KaspiGoodsImportIn(BaseModel):
+    product_ids: list[int] | None = None
+    payload: list[dict[str, Any]] | None = None
+    content_type: str | None = None
+
+
+class KaspiGoodsImportOut(BaseModel):
+    ok: bool
+    import_code: str
+    status: str
+
+
+class KaspiGoodsStatusOut(BaseModel):
+    import_code: str
+    status: str
+    payload: dict[str, Any] | None = None
+
+
+class KaspiGoodsResultOut(BaseModel):
+    import_code: str
+    status: str
+    payload: dict[str, Any] | None = None
+
+
+class KaspiTokenHealthOut(BaseModel):
+    ok: bool
+    orders_http: int
+    goods_http: int
+    cause: str | None = None
+
+
+class KaspiTokenSelftestOut(BaseModel):
+    orders_http: int
+    goods_schema_http: int
+    goods_categories_http: int
+    goods_access: str | None = None
+    orders_error: str | None = None
+
+
 @router.post(
     "/products/sync",
     summary="Синхронизировать каталог Kaspi в локальную БД",
@@ -895,6 +962,319 @@ async def kaspi_products_sync(
             status_code=status.HTTP_502_BAD_GATEWAY,
             detail="Failed to sync products from Kaspi",
         )
+
+
+# ============================= GOODS API ==============================
+
+
+@router.get(
+    "/goods/schema",
+    summary="Kaspi goods import schema",
+)
+async def kaspi_goods_schema(
+    current_user: User = Depends(_auth_user),
+    session: AsyncSession = Depends(get_async_db),
+):
+    company_id = _resolve_company_id(current_user)
+    _, token = await _resolve_kaspi_token(session, company_id)
+    client = KaspiGoodsClient(token=token, base_url="https://kaspi.kz")
+    try:
+        return await client.get_schema()
+    except KaspiNotAuthenticated as exc:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="NOT_AUTHENTICATED") from exc
+
+
+@router.get(
+    "/goods/categories",
+    summary="Kaspi goods categories",
+)
+async def kaspi_goods_categories(
+    current_user: User = Depends(_auth_user),
+    session: AsyncSession = Depends(get_async_db),
+):
+    company_id = _resolve_company_id(current_user)
+    _, token = await _resolve_kaspi_token(session, company_id)
+    client = KaspiGoodsClient(token=token, base_url="https://kaspi.kz")
+    try:
+        return await client.get_categories()
+    except KaspiNotAuthenticated as exc:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="NOT_AUTHENTICATED") from exc
+
+
+@router.get(
+    "/goods/attributes",
+    summary="Kaspi goods attributes for category",
+)
+async def kaspi_goods_attributes(
+    category: str,
+    current_user: User = Depends(_auth_user),
+    session: AsyncSession = Depends(get_async_db),
+):
+    company_id = _resolve_company_id(current_user)
+    _, token = await _resolve_kaspi_token(session, company_id)
+    client = KaspiGoodsClient(token=token, base_url="https://kaspi.kz")
+    try:
+        return await client.get_attributes(category_code=category)
+    except KaspiNotAuthenticated as exc:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="NOT_AUTHENTICATED") from exc
+
+
+@router.get(
+    "/goods/attribute-values",
+    summary="Kaspi goods attribute values",
+)
+async def kaspi_goods_attribute_values(
+    category: str,
+    attribute: str,
+    current_user: User = Depends(_auth_user),
+    session: AsyncSession = Depends(get_async_db),
+):
+    company_id = _resolve_company_id(current_user)
+    _, token = await _resolve_kaspi_token(session, company_id)
+    client = KaspiGoodsClient(token=token, base_url="https://kaspi.kz")
+    try:
+        return await client.get_attribute_values(category_code=category, attribute_code=attribute)
+    except KaspiNotAuthenticated as exc:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="NOT_AUTHENTICATED") from exc
+
+
+@router.post(
+    "/goods/import",
+    summary="Kaspi goods import",
+    response_model=KaspiGoodsImportOut,
+)
+async def kaspi_goods_import(
+    body: KaspiGoodsImportIn,
+    current_user: User = Depends(_auth_user),
+    session: AsyncSession = Depends(get_async_db),
+):
+    company_id = _resolve_company_id(current_user)
+    _, token = await _resolve_kaspi_token(session, company_id)
+
+    payload: list[dict[str, Any]]
+    if body.payload:
+        payload = body.payload
+    elif body.product_ids:
+        res = await session.execute(
+            sa.select(Product).where(sa.and_(Product.company_id == company_id, Product.id.in_(body.product_ids)))
+        )
+        products = res.scalars().all()
+        if not products:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="products_not_found")
+        payload = [_product_to_goods_payload(p) for p in products]
+    else:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="payload_or_product_ids_required")
+
+    client = KaspiGoodsClient(token=token, base_url="https://kaspi.kz")
+    try:
+        response = await client.post_import(payload, content_type=body.content_type)
+    except KaspiNotAuthenticated as exc:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="NOT_AUTHENTICATED") from exc
+
+    import_code = _extract_import_code(response)
+    if not import_code:
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail="kaspi_import_code_missing")
+
+    status_value = response.get("status") or "submitted"
+
+    record = KaspiGoodsImport(
+        company_id=company_id,
+        created_by_user_id=current_user.id,
+        import_code=str(import_code),
+        status=str(status_value),
+        request_payload=payload,
+        result_payload=None,
+        last_error=None,
+    )
+    session.add(record)
+    await session.commit()
+
+    return KaspiGoodsImportOut(ok=True, import_code=str(import_code), status=str(status_value))
+
+
+@router.get(
+    "/goods/import/{code}",
+    summary="Kaspi goods import status",
+    response_model=KaspiGoodsStatusOut,
+)
+async def kaspi_goods_import_status(
+    code: str,
+    current_user: User = Depends(_auth_user),
+    session: AsyncSession = Depends(get_async_db),
+):
+    company_id = _resolve_company_id(current_user)
+    _, token = await _resolve_kaspi_token(session, company_id)
+    client = KaspiGoodsClient(token=token, base_url="https://kaspi.kz")
+    try:
+        response = await client.get_import_status(import_code=code)
+    except KaspiNotAuthenticated as exc:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="NOT_AUTHENTICATED") from exc
+
+    status_value = response.get("status") or "unknown"
+
+    res = await session.execute(
+        sa.select(KaspiGoodsImport).where(
+            sa.and_(KaspiGoodsImport.company_id == company_id, KaspiGoodsImport.import_code == code)
+        )
+    )
+    record = res.scalars().first()
+    if record:
+        record.status = str(status_value)
+        record.result_payload = response
+        await session.commit()
+
+    return KaspiGoodsStatusOut(import_code=code, status=str(status_value), payload=response)
+
+
+@router.get(
+    "/goods/import/{code}/result",
+    summary="Kaspi goods import result",
+    response_model=KaspiGoodsResultOut,
+)
+async def kaspi_goods_import_result(
+    code: str,
+    current_user: User = Depends(_auth_user),
+    session: AsyncSession = Depends(get_async_db),
+):
+    company_id = _resolve_company_id(current_user)
+    _, token = await _resolve_kaspi_token(session, company_id)
+    client = KaspiGoodsClient(token=token, base_url="https://kaspi.kz")
+    try:
+        response = await client.get_import_result(import_code=code)
+    except KaspiNotAuthenticated as exc:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="NOT_AUTHENTICATED") from exc
+
+    status_value = response.get("status") or "unknown"
+
+    res = await session.execute(
+        sa.select(KaspiGoodsImport).where(
+            sa.and_(KaspiGoodsImport.company_id == company_id, KaspiGoodsImport.import_code == code)
+        )
+    )
+    record = res.scalars().first()
+    if record:
+        record.status = str(status_value)
+        record.result_payload = response
+        await session.commit()
+
+    return KaspiGoodsResultOut(import_code=code, status=str(status_value), payload=response)
+
+
+@router.get(
+    "/token/health",
+    summary="Kaspi token health",
+    response_model=KaspiTokenHealthOut,
+)
+async def kaspi_token_health(
+    current_user: User = Depends(_auth_user),
+    session: AsyncSession = Depends(get_async_db),
+):
+    company_id = _resolve_company_id(current_user)
+    _, token = await _resolve_kaspi_token(session, company_id)
+
+    now = datetime.utcnow()
+    ge_ms = int((now - timedelta(days=14)).timestamp() * 1000)
+    le_ms = int(now.timestamp() * 1000)
+
+    orders_url = "https://kaspi.kz/shop/api/v2/orders"
+    orders_params = {
+        "page[number]": 0,
+        "page[size]": 1,
+        "filter[orders][creationDate][$ge]": ge_ms,
+        "filter[orders][creationDate][$le]": le_ms,
+    }
+
+    orders_headers = {
+        "X-Auth-Token": token,
+        "Accept": "application/vnd.api+json",
+    }
+
+    goods_headers = {
+        "X-Auth-Token": token,
+        "Accept": "application/json",
+    }
+
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        orders_resp = await client.get(orders_url, headers=orders_headers, params=orders_params)
+        goods_resp = await client.get("https://kaspi.kz/shop/api/products/import/schema", headers=goods_headers)
+
+    cause = None
+    if orders_resp.status_code == 401 or goods_resp.status_code == 401:
+        cause = "NOT_AUTHENTICATED"
+
+    return KaspiTokenHealthOut(
+        ok=cause is None,
+        orders_http=orders_resp.status_code,
+        goods_http=goods_resp.status_code,
+        cause=cause,
+    )
+
+
+@router.get(
+    "/token/selftest",
+    summary="Kaspi token self-test",
+    response_model=KaspiTokenSelftestOut,
+)
+async def kaspi_token_selftest(
+    current_user: User = Depends(_auth_user),
+    session: AsyncSession = Depends(get_async_db),
+):
+    company_id = _resolve_company_id(current_user)
+    _, token = await _resolve_kaspi_token(session, company_id)
+
+    now = datetime.utcnow()
+    ge_ms = int((now - timedelta(days=14)).timestamp() * 1000)
+    le_ms = int(now.timestamp() * 1000)
+
+    orders_url = "https://kaspi.kz/shop/api/v2/orders"
+    orders_params = {
+        "page[size]": 1,
+        "filter[orders][state]": "NEW",
+        "filter[orders][creationDate][$ge]": ge_ms,
+        "filter[orders][creationDate][$le]": le_ms,
+    }
+    orders_headers = {
+        "X-Auth-Token": token,
+        "Accept": "application/vnd.api+json",
+        "Content-Type": "application/vnd.api+json",
+    }
+
+    goods_headers = {
+        "X-Auth-Token": token,
+        "Accept": "application/json",
+    }
+
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        orders_resp = await client.get(orders_url, headers=orders_headers, params=orders_params)
+        goods_schema_resp = await client.get(
+            "https://kaspi.kz/shop/api/products/import/schema",
+            headers=goods_headers,
+        )
+        goods_categories_resp = await client.get(
+            "https://kaspi.kz/shop/api/products/classification/categories",
+            headers=goods_headers,
+        )
+
+    if orders_resp.status_code == 401:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="NOT_AUTHENTICATED")
+
+    orders_error = None
+    if orders_resp.status_code >= 400:
+        orders_error = "orders_request_failed"
+
+    goods_access = None
+    if orders_resp.status_code == 200 and (
+        goods_schema_resp.status_code == 401 or goods_categories_resp.status_code == 401
+    ):
+        goods_access = "missing_or_not_enabled"
+
+    return KaspiTokenSelftestOut(
+        orders_http=orders_resp.status_code,
+        goods_schema_http=goods_schema_resp.status_code,
+        goods_categories_http=goods_categories_resp.status_code,
+        goods_access=goods_access,
+        orders_error=orders_error,
+    )
 
 
 @router.get(
