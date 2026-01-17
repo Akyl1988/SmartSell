@@ -30,9 +30,11 @@ import csv
 import inspect
 import io
 import json
+import time
 from datetime import datetime, timedelta
 from hashlib import sha256
 from typing import Any
+from xml.sax.saxutils import escape, quoteattr
 
 import httpx
 import sqlalchemy as sa
@@ -199,6 +201,51 @@ def _truncate_raw(raw: Any, max_len: int = 2000) -> str | None:
     if len(text_value) <= max_len:
         return text_value
     return f"{text_value[:max_len]}..."
+
+
+def _format_price(value: Any) -> str:
+    return f"{float(value):.2f}"
+
+
+def _build_kaspi_offers_xml(offers: list[KaspiOffer]) -> str:
+    now = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
+    lines = [f"<yml_catalog date={quoteattr(now)}>", "<shop>", "<offers>"]
+
+    for offer in offers:
+        sku = offer.sku
+        name = offer.title or sku
+        lines.append(f"<offer id={quoteattr(str(sku))}>")
+        lines.append(f"<name>{escape(str(name))}</name>")
+        if offer.price is not None:
+            lines.append(f"<price>{_format_price(offer.price)}</price>")
+        if offer.old_price is not None:
+            lines.append(f"<oldprice>{_format_price(offer.old_price)}</oldprice>")
+        if offer.stock_count is not None:
+            lines.append(f"<stock_quantity>{offer.stock_count}</stock_quantity>")
+        if offer.pre_order is not None:
+            lines.append(f"<preorder>{str(bool(offer.pre_order)).lower()}</preorder>")
+        lines.append("</offer>")
+
+    lines.extend(["</offers>", "</shop>", "</yml_catalog>"])
+    return "\n".join(lines)
+
+
+def _feed_export_to_out(export: KaspiFeedExport) -> KaspiFeedExportOut:
+    return KaspiFeedExportOut(
+        id=export.id,
+        kind=export.kind,
+        format=export.format,
+        status=export.status,
+        checksum=export.checksum,
+        stats_json=export.stats_json,
+        last_error=export.last_error,
+        attempts=export.attempts or 0,
+        last_attempt_at=export.last_attempt_at.isoformat() if export.last_attempt_at else None,
+        uploaded_at=export.uploaded_at.isoformat() if export.uploaded_at else None,
+        duration_ms=export.duration_ms,
+        created_at=export.created_at.isoformat() if export.created_at else None,
+        updated_at=export.updated_at.isoformat() if export.updated_at else None,
+    )
 
 
 # ------------------------------- Локальные схемы (deprecated - use app/schemas/kaspi.py) ------
@@ -1933,6 +1980,178 @@ class KaspiFeedListOut(BaseModel):
     total: int
     limit: int
     offset: int
+
+
+# ============================= FEED EXPORTS (MVP) =============================
+
+
+@router.post(
+    "/feed/exports",
+    summary="Generate Kaspi offers feed export",
+    response_model=KaspiFeedExportOut,
+)
+async def kaspi_feed_export_create(
+    merchant_uid: str | None = Query(None, alias="merchantUid"),
+    store_id: str | None = Query(None, alias="storeId"),
+    current_user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_async_db),
+):
+    _require_admin(current_user)
+    if not merchant_uid or not merchant_uid.strip():
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="missing_merchant_uid")
+
+    company_id = _resolve_company_id(current_user)
+    merchant_uid = merchant_uid.strip()
+
+    started_at = datetime.utcnow()
+    started_perf = time.perf_counter()
+
+    export = KaspiFeedExport(
+        company_id=company_id,
+        kind="offers",
+        format="xml",
+        status="RUNNING",
+        checksum="",
+        payload_text="",
+        stats_json=None,
+        last_error=None,
+        attempts=0,
+        last_attempt_at=started_at,
+    )
+    session.add(export)
+    try:
+        await session.commit()
+        await session.refresh(export)
+
+        result = await session.execute(
+            sa.select(KaspiOffer)
+            .where(KaspiOffer.company_id == company_id, KaspiOffer.merchant_uid == merchant_uid)
+            .order_by(KaspiOffer.updated_at.desc())
+        )
+        offers = result.scalars().all()
+        xml_body = _build_kaspi_offers_xml(offers)
+        checksum = sha256(xml_body.encode("utf-8")).hexdigest()
+        duration_ms = int((time.perf_counter() - started_perf) * 1000)
+
+        export.checksum = checksum
+        export.payload_text = xml_body
+        export.stats_json = {"total": len(offers), "merchant_uid": merchant_uid, "store_id": store_id}
+        export.duration_ms = duration_ms
+        export.status = "DONE"
+        await session.commit()
+        await session.refresh(export)
+        return _feed_export_to_out(export)
+    except Exception as exc:
+        await session.rollback()
+        export = await session.get(KaspiFeedExport, export.id)
+        if export:
+            export.status = "FAILED"
+            export.last_error = str(exc)[:500]
+            export.duration_ms = int((time.perf_counter() - started_perf) * 1000)
+            await session.commit()
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="feed_export_failed")
+
+
+@router.get(
+    "/feed/exports",
+    summary="List Kaspi feed exports",
+    response_model=list[KaspiFeedExportOut],
+)
+async def kaspi_feed_exports_list(
+    limit: int = 50,
+    offset: int = 0,
+    current_user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_async_db),
+):
+    _require_admin(current_user)
+    company_id = _resolve_company_id(current_user)
+
+    limit = max(1, min(limit, 200))
+    offset = max(0, offset)
+
+    result = await session.execute(
+        sa.select(KaspiFeedExport)
+        .where(KaspiFeedExport.company_id == company_id)
+        .order_by(KaspiFeedExport.created_at.desc())
+        .limit(limit)
+        .offset(offset)
+    )
+    exports = result.scalars().all()
+    return [_feed_export_to_out(export) for export in exports]
+
+
+@router.get(
+    "/feed/exports/{export_id}",
+    summary="Get Kaspi feed export details",
+    response_model=KaspiFeedExportOut,
+)
+async def kaspi_feed_export_detail(
+    export_id: int,
+    current_user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_async_db),
+):
+    _require_admin(current_user)
+    company_id = _resolve_company_id(current_user)
+
+    export = (
+        (
+            await session.execute(
+                sa.select(KaspiFeedExport).where(
+                    KaspiFeedExport.company_id == company_id,
+                    KaspiFeedExport.id == export_id,
+                )
+            )
+        )
+        .scalars()
+        .first()
+    )
+    if not export:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="export_not_found")
+    return _feed_export_to_out(export)
+
+
+@router.get(
+    "/feed/exports/{export_id}/download",
+    summary="Download Kaspi feed export XML",
+    response_class=Response,
+)
+async def kaspi_feed_export_download(
+    export_id: int,
+    current_user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_async_db),
+):
+    _require_admin(current_user)
+    company_id = _resolve_company_id(current_user)
+
+    export = (
+        (
+            await session.execute(
+                sa.select(KaspiFeedExport).where(
+                    KaspiFeedExport.company_id == company_id,
+                    KaspiFeedExport.id == export_id,
+                )
+            )
+        )
+        .scalars()
+        .first()
+    )
+    if not export:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="export_not_found")
+
+    if export.status != "DONE" or not export.payload_text:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="export_not_ready")
+
+    merchant_uid = None
+    if isinstance(export.stats_json, dict):
+        merchant_uid = export.stats_json.get("merchant_uid")
+    safe_merchant = merchant_uid or "unknown"
+    filename = f"kaspi_offers_{safe_merchant}_{export.id}.xml"
+
+    return Response(
+        content=export.payload_text,
+        media_type="application/xml",
+        headers={"Content-Disposition": f"attachment; filename={filename}"},
+    )
 
 
 class KaspiStatusFeedOut(BaseModel):
