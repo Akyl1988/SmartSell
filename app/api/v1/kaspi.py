@@ -1692,13 +1692,17 @@ async def kaspi_catalog_import_batch_errors(
     company_id = _resolve_company_id(current_user)
 
     batch = (
-        await session.execute(
-            sa.select(CatalogImportBatch).where(
-                CatalogImportBatch.company_id == company_id,
-                CatalogImportBatch.id == batch_id,
+        (
+            await session.execute(
+                sa.select(CatalogImportBatch).where(
+                    CatalogImportBatch.company_id == company_id,
+                    CatalogImportBatch.id == batch_id,
+                )
             )
         )
-    ).scalars().first()
+        .scalars()
+        .first()
+    )
     if not batch:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="batch_not_found")
 
@@ -1751,16 +1755,10 @@ async def kaspi_offers_list(
         like = f"%{q}%"
         conditions.append(sa.or_(KaspiOffer.sku.ilike(like), KaspiOffer.title.ilike(like)))
 
-    total = (
-        await session.execute(sa.select(sa.func.count()).select_from(KaspiOffer).where(*conditions))
-    ).scalar_one()
+    total = (await session.execute(sa.select(sa.func.count()).select_from(KaspiOffer).where(*conditions))).scalar_one()
 
     result = await session.execute(
-        sa.select(KaspiOffer)
-        .where(*conditions)
-        .order_by(KaspiOffer.updated_at.desc())
-        .limit(limit)
-        .offset(offset)
+        sa.select(KaspiOffer).where(*conditions).order_by(KaspiOffer.updated_at.desc()).limit(limit).offset(offset)
     )
     offers = result.scalars().all()
 
