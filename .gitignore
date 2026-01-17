@@ -328,3 +328,7 @@ _hook_test.txt
 # local state snapshots (do not commit)
 /docs/STATE_SNAPSHOT_*.md
 
+
+# local dumps
+.local/
+
