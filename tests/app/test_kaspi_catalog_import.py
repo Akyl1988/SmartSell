@@ -83,10 +83,14 @@ async def test_kaspi_catalog_import_idempotent(async_client, async_db_session, c
 
     await async_db_session.rollback()
     offers = (
-        await async_db_session.execute(
-            select(KaspiOffer).where(KaspiOffer.sku == "S1", KaspiOffer.merchant_uid == "M1")
+        (
+            await async_db_session.execute(
+                select(KaspiOffer).where(KaspiOffer.sku == "S1", KaspiOffer.merchant_uid == "M1")
+            )
         )
-    ).scalars().all()
+        .scalars()
+        .all()
+    )
     assert len(offers) == 1
     offer = offers[0]
     assert float(offer.price or 0) == 1200.0
@@ -121,10 +125,14 @@ async def test_kaspi_catalog_import_numeric_parsing(async_client, async_db_sessi
 
     await async_db_session.rollback()
     offer = (
-        await async_db_session.execute(
-            select(KaspiOffer).where(KaspiOffer.sku == "S2", KaspiOffer.merchant_uid == "M1")
+        (
+            await async_db_session.execute(
+                select(KaspiOffer).where(KaspiOffer.sku == "S2", KaspiOffer.merchant_uid == "M1")
+            )
         )
-    ).scalars().first()
+        .scalars()
+        .first()
+    )
     assert offer is not None
     assert float(offer.price or 0) == 12.0
     assert offer.stock_count == 7
@@ -247,12 +255,7 @@ async def test_kaspi_catalog_import_errors_endpoint(async_client, company_a_admi
 
 @pytest.mark.asyncio
 async def test_kaspi_offers_list_pagination_and_filters(async_client, company_a_admin_headers):
-    csv_data = (
-        "SKU,Title,Price\n"
-        "S1,Alpha Item,1000\n"
-        "S2,Beta Item,1100\n"
-        "S3,Alpha Extra,1200\n"
-    )
+    csv_data = "SKU,Title,Price\n" "S1,Alpha Item,1000\n" "S2,Beta Item,1100\n" "S3,Alpha Extra,1200\n"
     resp = await async_client.post(
         "/api/v1/kaspi/catalog/import",
         headers=company_a_admin_headers,
@@ -279,3 +282,39 @@ async def test_kaspi_offers_list_pagination_and_filters(async_client, company_a_
     assert filter_resp.status_code == 200
     filter_data = filter_resp.json()
     assert filter_data["total"] == 2
+
+
+@pytest.mark.asyncio
+async def test_kaspi_catalog_import_master_sku_not_overwritten(
+    async_client,
+    async_db_session,
+    company_a_admin_headers,
+):
+    csv_data = (
+        "sku,master_sku,merchant_uid,title,price,old_price,stock_count,pre_order,stock_specified\n"
+        "S10,MS10,MERCH-CSV,Item 10,1000,1100,5,true,false\n"
+    )
+    resp = await async_client.post(
+        "/api/v1/kaspi/catalog/import",
+        headers=company_a_admin_headers,
+        params={"merchantUid": "M1"},
+        files={"file": ("catalog.csv", _csv_bytes(csv_data), "text/csv")},
+    )
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["rows_ok"] == 1
+
+    await async_db_session.rollback()
+    offer = (
+        (
+            await async_db_session.execute(
+                select(KaspiOffer).where(KaspiOffer.sku == "S10", KaspiOffer.merchant_uid == "M1")
+            )
+        )
+        .scalars()
+        .first()
+    )
+    assert offer is not None
+    assert offer.master_sku == "MS10"
+    assert offer.merchant_uid == "M1"
+    assert offer.master_sku != offer.merchant_uid
