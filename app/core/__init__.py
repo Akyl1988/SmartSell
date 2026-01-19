@@ -23,6 +23,8 @@ SmartSell3 Core Package Initializer (enterprise-grade)
 import os
 import time
 import uuid
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from typing import Any
 
 from fastapi import FastAPI, Request, Response
@@ -437,6 +439,41 @@ def _register_health_endpoints(app: FastAPI) -> None:
 
 
 # ------------------------------------------------------------------------------
+# Lifespan
+# ------------------------------------------------------------------------------
+@asynccontextmanager
+async def lifespan(app: FastAPI) -> AsyncIterator[None]:  # type: ignore[override]
+    log = get_logger("startup")
+
+    # tests/CI short-circuit
+    if should_disable_startup_hooks():
+        log.info("Core startup hook skipped (tests/CI)")
+    else:
+        role = getattr(settings, "PROCESS_ROLE", os.getenv("PROCESS_ROLE", "web")) or "web"
+        if role not in ("web", "migrator"):
+            log.info("Core startup hook skipped for role", extra={"role": role})
+        else:
+            # предупреждения по критичным ENV
+            issues = _critical_env_warnings()
+            if issues:
+                log.warning("Critical ENV issues", issues=issues)
+            # alembic
+            _run_alembic_migrations_if_needed()
+            # готовность ядра для /readyz прометheus-метрики
+            try:
+                if _HAS_PROM and _READY_GAUGE is not None:
+                    # после старта ещё не проверяли DB — консервативно 0; поднимется при первом /readyz
+                    _READY_GAUGE.set(0)
+            except Exception:
+                pass
+
+    try:
+        yield
+    finally:
+        pass
+
+
+# ------------------------------------------------------------------------------
 # Unified initializer
 # ------------------------------------------------------------------------------
 def init_core(app: FastAPI) -> None:
@@ -475,34 +512,8 @@ def init_core(app: FastAPI) -> None:
     # Health endpoints
     _register_health_endpoints(app)
 
-    # Startup hook: Alembic (best-effort)
-    @app.on_event("startup")
-    async def _on_startup() -> None:
-        log = get_logger("startup")
-
-        # tests/CI short-circuit
-        if should_disable_startup_hooks():
-            log.info("Core startup hook skipped (tests/CI)")
-            return
-
-        role = getattr(settings, "PROCESS_ROLE", os.getenv("PROCESS_ROLE", "web")) or "web"
-        if role not in ("web", "migrator"):
-            log.info("Core startup hook skipped for role", extra={"role": role})
-            return
-
-        # предупреждения по критичным ENV
-        issues = _critical_env_warnings()
-        if issues:
-            log.warning("Critical ENV issues", issues=issues)
-        # alembic
-        _run_alembic_migrations_if_needed()
-        # готовность ядра для /readyz прометheus-метрики
-        try:
-            if _HAS_PROM and _READY_GAUGE is not None:
-                # после старта ещё не проверяли DB — консервативно 0; поднимется при первом /readyz
-                _READY_GAUGE.set(0)
-        except Exception:
-            pass
+    # Lifespan hook: Alembic (best-effort)
+    app.router.lifespan_context = lifespan
 
     # Стартовый лог
     log = get_logger("startup")
