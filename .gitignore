@@ -332,3 +332,10 @@ _hook_test.txt
 # local dumps
 .local/
 
+
+# local artifacts
+tmp/
+*.xml
+*.jsonl
+kaspi_*_response*.json
+kaspi_*_response*.csv
