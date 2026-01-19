@@ -206,7 +206,8 @@ async def _get_auth_db():
 _HAS_ADV_SECURITY = False
 try:
     from app.core.security import (  # type: ignore; noqa: F401 (may be unused here); -> dict payload {sub, scp, role, jti, exp, kid, ...}
-        decode_access_token,
+        decode_and_validate,
+        is_token_revoked,
     )
 
     _HAS_ADV_SECURITY = True
@@ -270,7 +271,7 @@ def _decode_token_soft(token: str) -> dict | None:
         return None
     if _HAS_ADV_SECURITY:
         try:
-            return decode_access_token(token)  # type: ignore
+            return decode_and_validate(token, expected_type="access")  # type: ignore
         except Exception:
             return None
     if _legacy_verify_token:
@@ -356,7 +357,20 @@ async def get_current_user(
     if not token:
         raise AuthenticationError("Authentication required", "AUTH_REQUIRED")
 
-    payload = _decode_token_soft(token)
+    payload = None
+    if _HAS_ADV_SECURITY:
+        try:
+            payload = decode_and_validate(token, expected_type="access")  # type: ignore
+            jti = payload.get("jti")
+            if jti and is_token_revoked(jti):
+                raise AuthenticationError("Invalid or expired token", "INVALID_TOKEN")
+        except ValueError as exc:
+            if str(exc) == "Token expired":
+                raise AuthenticationError("token_expired", "TOKEN_EXPIRED")
+            raise AuthenticationError("Invalid or expired token", "INVALID_TOKEN")
+    else:
+        payload = _decode_token_soft(token)
+
     if not payload:
         # аудит провала — без user_id
         info = get_client_info(request)
