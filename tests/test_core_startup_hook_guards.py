@@ -20,7 +20,8 @@ async def test_startup_hooks_disabled(monkeypatch):
     app = FastAPI()
     init_core(app)
 
-    await app.router.startup()  # Should not raise
+    async with app.router.lifespan_context(app):
+        pass
 
 
 @pytest.mark.asyncio
@@ -37,7 +38,8 @@ async def test_startup_skipped_for_non_web_role(monkeypatch):
     app = FastAPI()
     init_core(app)
 
-    await app.router.startup()  # Should not raise
+    async with app.router.lifespan_context(app):
+        pass
 
 
 @pytest.mark.asyncio
@@ -59,7 +61,8 @@ async def test_startup_web_role_respects_migration_flag(monkeypatch):
     app = FastAPI()
     init_core(app)
 
-    await app.router.startup()
+    async with app.router.lifespan_context(app):
+        pass
 
     # Since RUN_MIGRATIONS_ON_START is unset/false, migration callable should not increment
     assert calls["count"] == 0
