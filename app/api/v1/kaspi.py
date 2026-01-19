@@ -142,7 +142,7 @@ def _norm_header(name: str) -> str:
 
 _HEADER_ALIASES = {
     "sku": {"sku", "offer_id", "offersku", "merchant_sku"},
-    "master_sku": {"master_sku", "mastersku", "merchant_uid", "merchantuid", "parent_sku"},
+    "master_sku": {"master_sku", "mastersku", "parent_sku"},
     "title": {"title", "name", "product_name"},
     "price": {"price", "price_kzt", "price_kz"},
     "old_price": {"old_price", "oldprice", "price_old"},
