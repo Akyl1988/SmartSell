@@ -194,6 +194,86 @@ def _parse_bool(value: str | None) -> bool | None:
     return None
 
 
+def _get_json_value(normalized_raw: dict[str, Any], keys: list[str]) -> str | None:
+    for key in keys:
+        value = normalized_raw.get(_norm_header(key))
+        if value is None:
+            continue
+        if isinstance(value, str):
+            stripped = value.strip()
+            if stripped == "":
+                continue
+            return stripped
+        return value
+    return None
+
+
+def _iter_import_rows(
+    content: bytes, filename: str, content_type: str | None
+) -> tuple[list[tuple[dict[str, Any], dict[str, Any]]], dict[str, str] | None]:
+    name = (filename or "").lower()
+    content_type = (content_type or "").lower()
+
+    is_jsonl = name.endswith(".jsonl") or content_type in {
+        "application/x-ndjson",
+        "application/jsonl",
+        "application/x-jsonlines",
+    }
+    is_json = name.endswith(".json") or content_type == "application/json"
+
+    try:
+        text = content.decode("utf-8-sig", errors="replace")
+    except Exception:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="invalid_encoding")
+
+    if is_jsonl:
+        rows: list[tuple[dict[str, Any], dict[str, Any]]] = []
+        for line in text.splitlines():
+            if not line.strip():
+                continue
+            try:
+                obj = json.loads(line)
+            except Exception as exc:
+                raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="invalid_json") from exc
+            if not isinstance(obj, dict):
+                raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="invalid_json")
+            normalized = {_norm_header(k): (v.strip() if isinstance(v, str) else v) for k, v in obj.items()}
+            rows.append((obj, normalized))
+        return rows, None
+
+    if is_json:
+        try:
+            payload = json.loads(text)
+        except Exception as exc:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="invalid_json") from exc
+
+        if isinstance(payload, dict) and isinstance(payload.get("data"), list):
+            items = payload["data"]
+        elif isinstance(payload, list):
+            items = payload
+        else:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="invalid_json")
+
+        rows = []
+        for obj in items:
+            if not isinstance(obj, dict):
+                raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="invalid_json")
+            normalized = {_norm_header(k): (v.strip() if isinstance(v, str) else v) for k, v in obj.items()}
+            rows.append((obj, normalized))
+        return rows, None
+
+    reader = csv.DictReader(io.StringIO(text))
+    if not reader.fieldnames:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="missing_headers")
+
+    header_map = _normalize_headers(reader.fieldnames)
+    rows = []
+    for raw in reader:
+        normalized = {_norm_header(k): (v.strip() if isinstance(v, str) else v) for k, v in raw.items()}
+        rows.append((normalized, normalized))
+    return rows, header_map
+
+
 def _truncate_raw(raw: Any, max_len: int = 2000) -> str | None:
     if raw is None:
         return None
@@ -1491,16 +1571,7 @@ async def kaspi_catalog_import(
     content_hash = sha256(content).hexdigest()
     filename = file.filename or "catalog.csv"
 
-    try:
-        text = content.decode("utf-8-sig", errors="replace")
-    except Exception:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="invalid_encoding")
-
-    reader = csv.DictReader(io.StringIO(text))
-    if not reader.fieldnames:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="missing_headers")
-
-    header_map = _normalize_headers(reader.fieldnames)
+    rows, header_map = _iter_import_rows(content, filename, file.content_type)
 
     batch = CatalogImportBatch(
         company_id=company_id,
@@ -1522,19 +1593,29 @@ async def kaspi_catalog_import(
     row_records: list[dict[str, Any]] = []
     offer_records: list[dict[str, Any]] = []
 
-    for idx, raw in enumerate(reader, start=1):
+    for idx, (raw, normalized_raw) in enumerate(rows, start=1):
         rows_total += 1
-        normalized_raw = {_norm_header(k): (v.strip() if isinstance(v, str) else v) for k, v in raw.items()}
 
-        sku = _get_mapped_value(normalized_raw, header_map, "sku")
-        master_sku = _get_mapped_value(normalized_raw, header_map, "master_sku")
-        title = _get_mapped_value(normalized_raw, header_map, "title")
-        price = _parse_int(_get_mapped_value(normalized_raw, header_map, "price"))
-        old_price = _parse_int(_get_mapped_value(normalized_raw, header_map, "old_price"))
-        stock_count = _parse_int(_get_mapped_value(normalized_raw, header_map, "stock_count"))
-        pre_order = _parse_bool(_get_mapped_value(normalized_raw, header_map, "pre_order"))
-        stock_specified = _parse_bool(_get_mapped_value(normalized_raw, header_map, "stock_specified"))
-        updated_at_raw = _get_mapped_value(normalized_raw, header_map, "updated_at")
+        if header_map is not None:
+            sku = _get_mapped_value(normalized_raw, header_map, "sku")
+            master_sku = _get_mapped_value(normalized_raw, header_map, "master_sku")
+            title = _get_mapped_value(normalized_raw, header_map, "title")
+            price = _parse_int(_get_mapped_value(normalized_raw, header_map, "price"))
+            old_price = _parse_int(_get_mapped_value(normalized_raw, header_map, "old_price"))
+            stock_count = _parse_int(_get_mapped_value(normalized_raw, header_map, "stock_count"))
+            pre_order = _parse_bool(_get_mapped_value(normalized_raw, header_map, "pre_order"))
+            stock_specified = _parse_bool(_get_mapped_value(normalized_raw, header_map, "stock_specified"))
+            updated_at_raw = _get_mapped_value(normalized_raw, header_map, "updated_at")
+        else:
+            sku = _get_json_value(normalized_raw, ["offerId", "offer_id", "sku"])
+            master_sku = _get_json_value(normalized_raw, ["masterSku", "master_sku"])
+            title = _get_json_value(normalized_raw, ["name", "title"])
+            price = _parse_int(_get_json_value(normalized_raw, ["price", "minPrice", "maxPrice"]))
+            old_price = _parse_int(_get_json_value(normalized_raw, ["oldprice", "oldPrice", "old_price"]))
+            stock_count = _parse_int(_get_json_value(normalized_raw, ["stockCount", "stock_quantity", "stock"]))
+            pre_order = _parse_bool(_get_json_value(normalized_raw, ["preOrder", "preorder"]))
+            stock_specified = _parse_bool(_get_json_value(normalized_raw, ["stockSpecified"]))
+            updated_at_raw = _get_json_value(normalized_raw, ["updatedAt", "updated_at"])
         updated_at = None
         if updated_at_raw:
             try:
@@ -1551,7 +1632,7 @@ async def kaspi_catalog_import(
                 "batch_id": batch.id,
                 "company_id": company_id,
                 "row_num": idx,
-                "raw": normalized_raw,
+                "raw": raw,
                 "sku": sku,
                 "master_sku": master_sku,
                 "title": title,
@@ -1584,7 +1665,7 @@ async def kaspi_catalog_import(
                 "stock_count": stock_count,
                 "pre_order": pre_order,
                 "stock_specified": stock_specified,
-                "raw": normalized_raw,
+                "raw": raw,
                 "updated_at": datetime.utcnow(),
             }
         )

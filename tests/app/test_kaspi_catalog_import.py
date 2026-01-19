@@ -9,6 +9,10 @@ def _csv_bytes(text: str) -> bytes:
     return text.encode("utf-8")
 
 
+def _json_bytes(text: str) -> bytes:
+    return text.encode("utf-8")
+
+
 @pytest.mark.asyncio
 async def test_kaspi_catalog_import_rbac(async_client, company_a_manager_headers):
     csv_data = "SKU,Title,Price\nS1,Item 1,1000\n"
@@ -318,3 +322,67 @@ async def test_kaspi_catalog_import_master_sku_not_overwritten(
     assert offer.master_sku == "MS10"
     assert offer.merchant_uid == "M1"
     assert offer.master_sku != offer.merchant_uid
+
+
+@pytest.mark.asyncio
+async def test_kaspi_catalog_import_json_data_array_ok(async_client, async_db_session, company_a_admin_headers):
+    json_data = (
+        "{\n"
+        '  "data": [\n'
+        '    {"offerId": "", "sku": "S10", "masterSku": "MS10", '
+        '"name": "Item 10", "price": "1000"}\n'
+        "  ]\n"
+        "}\n"
+    )
+    resp = await async_client.post(
+        "/api/v1/kaspi/catalog/import",
+        headers=company_a_admin_headers,
+        params={"merchantUid": "M1"},
+        files={"file": ("catalog.json", _json_bytes(json_data), "application/json")},
+    )
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["rows_ok"] == 1
+
+    await async_db_session.rollback()
+    offer = (
+        (
+            await async_db_session.execute(
+                select(KaspiOffer).where(KaspiOffer.sku == "S10", KaspiOffer.merchant_uid == "M1")
+            )
+        )
+        .scalars()
+        .first()
+    )
+    assert offer is not None
+    assert offer.sku == "S10"
+    assert offer.master_sku == "MS10"
+    assert offer.raw.get("sku") == "S10"
+
+
+@pytest.mark.asyncio
+async def test_kaspi_catalog_import_jsonl_ok(async_client, async_db_session, company_a_admin_headers):
+    jsonl_data = '{"sku": "S11", "masterSku": "MS11", "name": "Item 11", "price": "1000"}\n'
+    resp = await async_client.post(
+        "/api/v1/kaspi/catalog/import",
+        headers=company_a_admin_headers,
+        params={"merchantUid": "M1"},
+        files={"file": ("catalog.jsonl", _json_bytes(jsonl_data), "application/x-ndjson")},
+    )
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["rows_ok"] == 1
+
+    await async_db_session.rollback()
+    offer = (
+        (
+            await async_db_session.execute(
+                select(KaspiOffer).where(KaspiOffer.sku == "S11", KaspiOffer.merchant_uid == "M1")
+            )
+        )
+        .scalars()
+        .first()
+    )
+    assert offer is not None
+    assert offer.sku == "S11"
+    assert offer.master_sku == "MS11"
