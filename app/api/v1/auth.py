@@ -32,6 +32,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import noload
 
 from app.core.config import settings
 from app.core.db import get_async_db
@@ -167,6 +168,10 @@ def _gen_otp_code(length: int = OTP_CODE_LEN) -> str:
 
 def _issue_tokens_for_user(user_id: int) -> tuple[str, str]:
     return create_access_token(subject=user_id), create_refresh_token(subject=user_id)
+
+
+def _hash_refresh_token(token: str) -> str:
+    return hashlib.sha256(token.encode()).hexdigest()
 
 
 def _sms_text_for_otp(code: str, purpose: str) -> str:
@@ -373,7 +378,7 @@ async def register(user_data: UserCreate, request: Request, db: AsyncSession = D
         access_token, refresh_token = _issue_tokens_for_user(user.id)
         session = UserSession(
             user_id=user.id,
-            refresh_token=hashlib.sha256(refresh_token.encode()).hexdigest(),
+            refresh_token=_hash_refresh_token(refresh_token),
             ip_address=client_info["ip_address"],
             user_agent=client_info["user_agent"],
             expires_at=_utcnow_naive() + timedelta(days=settings.REFRESH_TOKEN_EXPIRE_DAYS),
@@ -475,7 +480,7 @@ async def login(login_data: UserLogin, request: Request, db: AsyncSession = Depe
 
     session = UserSession(
         user_id=user.id,
-        refresh_token=hashlib.sha256(refresh_token.encode()).hexdigest(),
+        refresh_token=_hash_refresh_token(refresh_token),
         ip_address=client_info["ip_address"],
         user_agent=client_info["user_agent"],
         expires_at=_utcnow_naive() + timedelta(days=settings.REFRESH_TOKEN_EXPIRE_DAYS),
@@ -507,32 +512,59 @@ async def login(login_data: UserLogin, request: Request, db: AsyncSession = Depe
 async def refresh_token(refresh_data: RefreshTokenRequest, db: AsyncSession = Depends(get_async_db)):
     """
     Обновляет access-токен по действующему refresh-токену.
-    Refresh при этом НЕ меняется (скользящая сессия реализуется в другом флоу).
+    Refresh при этом ротируется (one-time use).
     """
-    token_hash = hashlib.sha256(refresh_data.refresh_token.encode()).hexdigest()
+    token_hash = _hash_refresh_token(refresh_data.refresh_token)
+    now = _utcnow_naive()
 
     res = await db.execute(
-        select(UserSession).where(
-            UserSession.refresh_token == token_hash,
-            UserSession.is_active.is_(True),
-            UserSession.expires_at > _utcnow_naive(),
-        )
+        select(UserSession)
+        .options(noload(UserSession.user))
+        .where(UserSession.refresh_token == token_hash)
+        .with_for_update()
     )
     session = res.scalars().first()
 
     if not session:
-        raise AuthenticationError("Invalid or expired refresh token", "INVALID_REFRESH_TOKEN")
+        raise AuthenticationError("refresh_invalid", "INVALID_REFRESH_TOKEN")
+
+    if not session.is_active:
+        await db.execute(
+            update(UserSession)
+            .where(UserSession.user_id == session.user_id, UserSession.is_active.is_(True))
+            .values(is_active=False, terminated_at=now)
+        )
+        await db.commit()
+        raise AuthenticationError("session_terminated", "SESSION_TERMINATED")
+
+    if session.expires_at <= now:
+        session.is_active = False
+        session.terminated_at = now
+        await db.commit()
+        raise AuthenticationError("refresh_invalid", "INVALID_REFRESH_TOKEN")
 
     res_u = await db.execute(select(User).where(User.id == session.user_id, User.is_active.is_(True)))
     user = res_u.scalars().first()
     if not user:
-        raise AuthenticationError("User not found or inactive", "USER_NOT_FOUND")
+        raise AuthenticationError("refresh_invalid", "INVALID_REFRESH_TOKEN")
 
-    access_token, _ = _issue_tokens_for_user(user.id)
+    access_token, new_refresh_token = _issue_tokens_for_user(user.id)
+    new_session = UserSession(
+        user_id=user.id,
+        refresh_token=_hash_refresh_token(new_refresh_token),
+        ip_address=session.ip_address,
+        user_agent=session.user_agent,
+        expires_at=now + timedelta(days=settings.REFRESH_TOKEN_EXPIRE_DAYS),
+        is_active=True,
+    )
+    session.is_active = False
+    session.terminated_at = now
+    db.add(new_session)
+    await db.commit()
 
     return TokenResponse(
         access_token=access_token,
-        refresh_token=refresh_data.refresh_token,
+        refresh_token=new_refresh_token,
         token_type="bearer",
         expires_in=settings.ACCESS_TOKEN_EXPIRE_MINUTES * 60,
     )
@@ -549,7 +581,7 @@ async def logout(refresh_data: RefreshTokenRequest, db: AsyncSession = Depends(g
     """
     Выход из системы: деактивирует сессию по переданному refresh-токену.
     """
-    token_hash = hashlib.sha256(refresh_data.refresh_token.encode()).hexdigest()
+    token_hash = _hash_refresh_token(refresh_data.refresh_token)
 
     res = await db.execute(
         select(UserSession).where(
@@ -561,6 +593,7 @@ async def logout(refresh_data: RefreshTokenRequest, db: AsyncSession = Depends(g
 
     if session:
         session.is_active = False
+        session.terminated_at = _utcnow_naive()
         await db.commit()
 
     return SuccessResponse(message="Logged out successfully")

@@ -2,14 +2,16 @@
 Tests for authentication functionality (legacy /api/auth/* alias supported).
 """
 
+from datetime import timedelta
+
 import pytest
 from httpx import AsyncClient
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.v1 import auth as auth_mod
-from app.core.security import get_password_hash
-from app.models import Company, OtpAttempt, User
+from app.core.security import create_access_token, get_password_hash
+from app.models import Company, OtpAttempt, User, UserSession
 from app.utils.otp import hash_otp_code
 
 
@@ -443,6 +445,116 @@ class TestAuth:
         assert "refresh_token" in data
 
     @pytest.mark.asyncio
+    async def test_refresh_rotation_and_reuse_detection(
+        self, async_client: AsyncClient, async_db_session: AsyncSession
+    ):
+        company = Company(name="Test Company")
+        async_db_session.add(company)
+        await async_db_session.flush()
+
+        user = User(
+            company_id=company.id,
+            phone="+77001234567",
+            hashed_password=get_password_hash("password123"),
+            role="admin",
+        )
+        async_db_session.add(user)
+        await async_db_session.commit()
+
+        login_data = {"identifier": "+77001234567", "password": "password123"}
+        login_response = await async_client.post("/api/auth/login", json=login_data)
+        assert login_response.status_code == 200, login_response.text
+        tokens = login_response.json()
+        old_refresh = tokens["refresh_token"]
+
+        refresh_data = {"refresh_token": old_refresh}
+        refresh_response = await async_client.post("/api/auth/token/refresh", json=refresh_data)
+        assert refresh_response.status_code == 200
+        rotated = refresh_response.json()
+        assert rotated["refresh_token"] != old_refresh
+
+        reuse_response = await async_client.post("/api/auth/token/refresh", json=refresh_data)
+        assert reuse_response.status_code == 401
+        assert reuse_response.json().get("detail") == "session_terminated"
+
+        await async_db_session.rollback()
+        sessions = (
+            (
+                await async_db_session.execute(
+                    select(UserSession).where(UserSession.user_id == user.id, UserSession.is_active.is_(True))
+                )
+            )
+            .scalars()
+            .all()
+        )
+        assert sessions == []
+
+    @pytest.mark.asyncio
+    async def test_refresh_expired(self, async_client: AsyncClient, async_db_session: AsyncSession):
+        company = Company(name="Test Company")
+        async_db_session.add(company)
+        await async_db_session.flush()
+
+        user = User(
+            company_id=company.id,
+            phone="+77001234567",
+            hashed_password=get_password_hash("password123"),
+            role="admin",
+        )
+        async_db_session.add(user)
+        await async_db_session.commit()
+
+        login_data = {"identifier": "+77001234567", "password": "password123"}
+        login_response = await async_client.post("/api/auth/login", json=login_data)
+        assert login_response.status_code == 200, login_response.text
+        tokens = login_response.json()
+
+        await async_db_session.rollback()
+        session = (
+            (await async_db_session.execute(select(UserSession).where(UserSession.user_id == user.id)))
+            .scalars()
+            .first()
+        )
+        assert session is not None
+        session.expires_at = auth_mod._utcnow_naive() - timedelta(seconds=1)
+        await async_db_session.commit()
+
+        refresh_data = {"refresh_token": tokens["refresh_token"]}
+        response = await async_client.post("/api/auth/token/refresh", json=refresh_data)
+        assert response.status_code == 401
+        assert response.json().get("detail") == "refresh_invalid"
+
+    @pytest.mark.asyncio
+    async def test_logout_revokes_session(self, async_client: AsyncClient, async_db_session: AsyncSession):
+        company = Company(name="Test Company")
+        async_db_session.add(company)
+        await async_db_session.flush()
+
+        user = User(
+            company_id=company.id,
+            phone="+77001234567",
+            hashed_password=get_password_hash("password123"),
+            role="admin",
+        )
+        async_db_session.add(user)
+        await async_db_session.commit()
+
+        login_data = {"identifier": "+77001234567", "password": "password123"}
+        login_response = await async_client.post("/api/auth/login", json=login_data)
+        assert login_response.status_code == 200, login_response.text
+        tokens = login_response.json()
+
+        logout_resp = await async_client.post("/api/auth/logout", json={"refresh_token": tokens["refresh_token"]})
+        assert logout_resp.status_code == 200
+
+        refresh_resp = await async_client.post(
+            "/api/auth/token/refresh",
+            json={"refresh_token": tokens["refresh_token"]},
+        )
+        assert refresh_resp.status_code == 401
+        assert refresh_resp.json().get("detail") in {"refresh_invalid", "session_terminated"}
+
+    @pytest.mark.asyncio
     async def test_get_current_user(self, async_client: AsyncClient, async_db_session: AsyncSession):
         """Test getting current user info"""
 
@@ -480,6 +592,30 @@ class TestAuth:
         assert data.get("first_name") == "Test"
         assert data.get("last_name") == "User"
         assert data.get("role") == "admin"
+
+    @pytest.mark.asyncio
+    async def test_access_token_expired_returns_token_expired(
+        self, async_client: AsyncClient, async_db_session: AsyncSession
+    ):
+        company = Company(name="Test Company")
+        async_db_session.add(company)
+        await async_db_session.flush()
+
+        user = User(
+            company_id=company.id,
+            phone="+77001234567",
+            hashed_password=get_password_hash("password123"),
+            role="admin",
+        )
+        async_db_session.add(user)
+        await async_db_session.commit()
+
+        expired_token = create_access_token(subject=user.id, expires_delta=timedelta(seconds=-1))
+        headers = {"Authorization": f"Bearer {expired_token}"}
+        response = await async_client.get("/api/auth/me", headers=headers)
+
+        assert response.status_code == 401
+        assert response.json().get("detail") == "token_expired"
 
     @pytest.mark.asyncio
     async def test_change_password(self, async_client: AsyncClient, async_db_session: AsyncSession):

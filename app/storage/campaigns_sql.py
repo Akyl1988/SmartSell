@@ -34,28 +34,18 @@ logger = logging.getLogger(__name__)
 # ============================================================================
 # Настройки / подключение
 # ============================================================================
-def _load_db_url() -> str:
+def _load_db_url(db_url: str | None = None) -> str:
     """
-    Источник приоритетов: app.core.config.settings -> ENV -> дефолт.
-    В settings учитываем разные имена полей.
+    Источник приоритетов: аргумент -> ENV.
     """
-    try:
-        from app.core.config import settings  # type: ignore
+    if db_url and db_url.strip():
+        return db_url.strip()
 
-        for key in ("db_url", "DATABASE_URL", "database_url"):
-            if hasattr(settings, key):
-                val = getattr(settings, key)
-                if isinstance(val, str) and val.strip():
-                    return val
-    except Exception:
-        pass
+    env = os.getenv("DATABASE_URL") or os.getenv("DB_URL")
+    if env and env.strip():
+        return env.strip()
 
-    env = (
-        os.getenv("DATABASE_URL")
-        or os.getenv("DB_URL")
-        or "postgresql+psycopg2://postgres:admin123@localhost:5432/smartsell2"
-    )
-    return env
+    raise RuntimeError("DATABASE_URL or DB_URL is required for campaigns storage")
 
 
 _DB_URL = _load_db_url()
@@ -73,16 +63,21 @@ _DB_POOL_SIZE = _pool_int("DB_POOL_SIZE", 5)
 _DB_MAX_OVERFLOW = _pool_int("DB_MAX_OVERFLOW", 10)
 _DB_POOL_TIMEOUT = _pool_int("DB_POOL_TIMEOUT", 10)
 
+
+def _create_engine(db_url: str) -> Engine:
+    return create_engine(
+        db_url,
+        future=True,
+        pool_pre_ping=True,
+        pool_size=_DB_POOL_SIZE,
+        max_overflow=_DB_MAX_OVERFLOW,
+        pool_timeout=_DB_POOL_TIMEOUT,
+        echo=os.getenv("SQL_ECHO", "0") in ("1", "true", "True"),
+    )
+
+
 # production-friendly engine
-_ENGINE: Engine = create_engine(
-    _DB_URL,
-    future=True,
-    pool_pre_ping=True,
-    pool_size=_DB_POOL_SIZE,
-    max_overflow=_DB_MAX_OVERFLOW,
-    pool_timeout=_DB_POOL_TIMEOUT,
-    echo=os.getenv("SQL_ECHO", "0") in ("1", "true", "True"),
-)
+_ENGINE: Engine = _create_engine(_DB_URL)
 
 _SessionLocal = sessionmaker(bind=_ENGINE, autoflush=False, autocommit=False, future=True)
 
@@ -379,7 +374,12 @@ def _coerce_int(val: Any) -> Optional[int]:
 class CampaignsStorageSQL:
     """Production SQL storage for campaigns/messages (sync)."""
 
-    def __init__(self) -> None:
+    def __init__(self, *, db_url: str | None = None) -> None:
+        global _DB_URL, _ENGINE, _SessionLocal
+        if db_url and db_url.strip() and db_url.strip() != _DB_URL:
+            _DB_URL = _load_db_url(db_url)
+            _ENGINE = _create_engine(_DB_URL)
+            _SessionLocal = sessionmaker(bind=_ENGINE, autoflush=False, autocommit=False, future=True)
         logger.info("CampaignsStorageSQL active (DB): %s (dialect=%s)", _DB_URL, _ENGINE.dialect.name)
 
     # ---- генерация ID (как в InMemory), с fallback для non-Postgres
