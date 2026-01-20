@@ -40,7 +40,7 @@ async def test_public_feed_ok(async_client, async_db_session, company_a_admin_he
 
     resp = await async_client.get(
         "/api/v1/kaspi/feed/public/offers.xml",
-        params={"merchantUid": "M1", "token": token},
+        params={"token": token},
     )
     assert resp.status_code == 200
     assert resp.headers.get("content-type", "").startswith("application/xml")
@@ -60,14 +60,97 @@ async def test_public_feed_not_found(async_client, async_db_session, company_a_a
     )
     token = token_resp.json()["token"]
 
-    missing = await async_client.get(
+    missing_token = await async_client.get(
+        "/api/v1/kaspi/feed/public/offers.xml",
+        params={"merchantUid": "M1"},
+    )
+    assert missing_token.status_code == 404
+
+    invalid = await async_client.get(
         "/api/v1/kaspi/feed/public/offers.xml",
         params={"merchantUid": "M1", "token": "invalid"},
     )
-    assert missing.status_code == 404
+    assert invalid.status_code == 404
 
     no_offers = await async_client.get(
         "/api/v1/kaspi/feed/public/offers.xml",
-        params={"merchantUid": "M1", "token": token},
+        params={"token": token},
     )
     assert no_offers.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_public_feed_revoked_token(async_client, async_db_session, company_a_admin_headers, monkeypatch):
+    monkeypatch.setenv("ENVIRONMENT", "development")
+    await _create_company(async_db_session, 1001)
+    await _create_offer(async_db_session, 1001, "M1", "S1")
+
+    token_resp = await async_client.post(
+        "/api/v1/kaspi/feed/public-tokens",
+        headers=company_a_admin_headers,
+        params={"merchantUid": "M1"},
+        json={"comment": "test"},
+    )
+    token_id = token_resp.json()["id"]
+    token = token_resp.json()["token"]
+
+    revoke_resp = await async_client.post(
+        f"/api/v1/kaspi/feed/public-tokens/{token_id}/revoke",
+        headers=company_a_admin_headers,
+    )
+    assert revoke_resp.status_code == 200
+
+    resp = await async_client.get(
+        "/api/v1/kaspi/feed/public/offers.xml",
+        params={"token": token},
+    )
+    assert resp.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_public_feed_wrong_merchant_uid(async_client, async_db_session, company_a_admin_headers, monkeypatch):
+    monkeypatch.setenv("ENVIRONMENT", "development")
+    await _create_company(async_db_session, 1001)
+    await _create_offer(async_db_session, 1001, "M1", "S1")
+
+    token_resp = await async_client.post(
+        "/api/v1/kaspi/feed/public-tokens",
+        headers=company_a_admin_headers,
+        params={"merchantUid": "M1"},
+        json={"comment": "test"},
+    )
+    token = token_resp.json()["token"]
+
+    resp = await async_client.get(
+        "/api/v1/kaspi/feed/public/offers.xml",
+        params={"merchantUid": "M2", "token": token},
+    )
+    assert resp.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_public_feed_tenant_isolation(
+    async_client,
+    async_db_session,
+    company_a_admin_headers,
+    company_b_admin_headers,
+    monkeypatch,
+):
+    monkeypatch.setenv("ENVIRONMENT", "development")
+    await _create_company(async_db_session, 1001)
+    await _create_company(async_db_session, 2001)
+    await _create_offer(async_db_session, 2001, "M1", "S1")
+
+    token_resp = await async_client.post(
+        "/api/v1/kaspi/feed/public-tokens",
+        headers=company_a_admin_headers,
+        params={"merchantUid": "M1"},
+        json={"comment": "test"},
+    )
+    token = token_resp.json()["token"]
+
+    resp = await async_client.get(
+        "/api/v1/kaspi/feed/public/offers.xml",
+        params={"token": token},
+    )
+    assert resp.status_code == 404

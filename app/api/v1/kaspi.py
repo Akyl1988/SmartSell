@@ -125,6 +125,17 @@ def _extract_import_code(payload: dict) -> str | None:
     return payload.get("importCode") or payload.get("import_code") or payload.get("code") or payload.get("id")
 
 
+def _normalize_goods_payload(payload: list[dict[str, Any]] | dict[str, Any]) -> list[dict[str, Any]]:
+    if isinstance(payload, list):
+        return payload
+    if isinstance(payload, dict):
+        data = payload.get("data")
+        if isinstance(data, list):
+            return data
+        return [payload]
+    raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="payload_required")
+
+
 def _product_to_goods_payload(product: Product) -> dict[str, Any]:
     sku = product.sku or f"PID-{product.id}"
     return {
@@ -311,6 +322,24 @@ def _build_kaspi_offers_xml(offers: list[KaspiOffer]) -> str:
 
     lines.extend(["</offers>", "</shop>", "</yml_catalog>"])
     return "\n".join(lines)
+
+
+def _goods_import_to_out(record: KaspiGoodsImport) -> KaspiGoodsImportRecordOut:
+    return KaspiGoodsImportRecordOut(
+        id=str(record.id),
+        merchant_uid=record.merchant_uid,
+        import_code=record.import_code,
+        status=record.status,
+        request_json=record.request_json,
+        status_json=record.status_json,
+        result_json=record.result_json,
+        error_code=record.error_code,
+        error_message=record.error_message,
+        created_at=record.created_at,
+        updated_at=record.updated_at,
+        last_checked_at=record.last_checked_at,
+        revoked_at=record.revoked_at,
+    )
 
 
 def _feed_export_to_out(export: KaspiFeedExport) -> KaspiFeedExportOut:
@@ -1106,6 +1135,11 @@ class KaspiGoodsImportIn(BaseModel):
     content_type: str | None = None
 
 
+class KaspiGoodsImportCreateIn(BaseModel):
+    payload: list[dict[str, Any]] | dict[str, Any]
+    content_type: str | None = None
+
+
 class KaspiGoodsImportOut(BaseModel):
     ok: bool
     import_code: str
@@ -1122,6 +1156,22 @@ class KaspiGoodsResultOut(BaseModel):
     import_code: str
     status: str
     payload: dict[str, Any] | None = None
+
+
+class KaspiGoodsImportRecordOut(BaseModel):
+    id: str
+    merchant_uid: str | None = None
+    import_code: str
+    status: str
+    request_json: list[dict[str, Any]] | dict[str, Any]
+    status_json: dict[str, Any] | None = None
+    result_json: dict[str, Any] | None = None
+    error_code: str | None = None
+    error_message: str | None = None
+    created_at: datetime
+    updated_at: datetime
+    last_checked_at: datetime | None = None
+    revoked_at: datetime | None = None
 
 
 class KaspiTokenHealthOut(BaseModel):
@@ -1425,6 +1475,149 @@ async def kaspi_goods_import_result(
         await session.commit()
 
     return KaspiGoodsResultOut(import_code=code, status=str(status_value), payload=response)
+
+
+@router.post(
+    "/goods/imports",
+    summary="Kaspi goods import (stored)",
+    response_model=KaspiGoodsImportRecordOut,
+)
+async def kaspi_goods_import_create(
+    body: KaspiGoodsImportCreateIn,
+    merchant_uid: str | None = Query(None, alias="merchantUid"),
+    current_user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_async_db),
+):
+    _require_admin(current_user)
+    if not merchant_uid or not merchant_uid.strip():
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="missing_merchant_uid")
+
+    company_id = _resolve_company_id(current_user)
+    _, token = await _resolve_kaspi_token(session, company_id)
+    payload = _normalize_goods_payload(body.payload)
+
+    client = KaspiGoodsClient(token=token, base_url="https://kaspi.kz")
+    try:
+        response = await client.post_import(payload, content_type=body.content_type or "text/plain")
+    except KaspiNotAuthenticated as exc:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="NOT_AUTHENTICATED") from exc
+    except httpx.HTTPStatusError:
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail="kaspi_upstream_error")
+
+    import_code = _extract_import_code(response)
+    if not import_code:
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail="kaspi_import_code_missing")
+
+    status_value = response.get("status") or "submitted"
+    now = datetime.utcnow()
+
+    record = KaspiGoodsImport(
+        company_id=company_id,
+        created_by_user_id=current_user.id,
+        merchant_uid=merchant_uid.strip(),
+        import_code=str(import_code),
+        status=str(status_value),
+        request_json=payload,
+        status_json=response,
+        result_json=None,
+        error_code=None,
+        error_message=None,
+        last_checked_at=now,
+        request_payload=payload,
+        result_payload=None,
+        last_error=None,
+    )
+    session.add(record)
+    await session.commit()
+    await session.refresh(record)
+
+    return _goods_import_to_out(record)
+
+
+@router.get(
+    "/goods/imports/{import_id}",
+    summary="Get Kaspi goods import",
+    response_model=KaspiGoodsImportRecordOut,
+)
+async def kaspi_goods_import_get(
+    import_id: str,
+    current_user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_async_db),
+):
+    _require_admin(current_user)
+    company_id = _resolve_company_id(current_user)
+
+    record = (
+        (
+            await session.execute(
+                sa.select(KaspiGoodsImport).where(
+                    KaspiGoodsImport.company_id == company_id,
+                    KaspiGoodsImport.id == import_id,
+                )
+            )
+        )
+        .scalars()
+        .first()
+    )
+    if not record:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="import_not_found")
+    return _goods_import_to_out(record)
+
+
+@router.post(
+    "/goods/imports/{import_id}/refresh",
+    summary="Refresh Kaspi goods import",
+    response_model=KaspiGoodsImportRecordOut,
+)
+async def kaspi_goods_import_refresh(
+    import_id: str,
+    current_user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_async_db),
+):
+    _require_admin(current_user)
+    company_id = _resolve_company_id(current_user)
+
+    record = (
+        (
+            await session.execute(
+                sa.select(KaspiGoodsImport).where(
+                    KaspiGoodsImport.company_id == company_id,
+                    KaspiGoodsImport.id == import_id,
+                )
+            )
+        )
+        .scalars()
+        .first()
+    )
+    if not record:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="import_not_found")
+
+    _, token = await _resolve_kaspi_token(session, company_id)
+    client = KaspiGoodsClient(token=token, base_url="https://kaspi.kz")
+    now = datetime.utcnow()
+    try:
+        status_response = await client.get_import_status(import_code=record.import_code)
+        result_response = await client.get_import_result(import_code=record.import_code)
+    except KaspiNotAuthenticated as exc:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="NOT_AUTHENTICATED") from exc
+    except httpx.HTTPStatusError as exc:
+        record.error_code = str(getattr(exc.response, "status_code", "")) or "kaspi_http_error"
+        record.error_message = "kaspi_upstream_error"
+        record.last_checked_at = now
+        await session.commit()
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail="kaspi_upstream_error")
+
+    status_value = status_response.get("status") or record.status
+    record.status = str(status_value)
+    record.status_json = status_response
+    record.result_json = result_response
+    record.error_code = None
+    record.error_message = None
+    record.last_checked_at = now
+    await session.commit()
+    await session.refresh(record)
+
+    return _goods_import_to_out(record)
 
 
 @router.get(
@@ -2402,7 +2595,7 @@ async def kaspi_public_offers_feed(
     merchant_uid: str | None = Query(None, alias="merchantUid"),
     session: AsyncSession = Depends(get_async_db),
 ):
-    if not token or not merchant_uid or not merchant_uid.strip():
+    if not token:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="not_found")
 
     token_hash = sha256(token.encode("utf-8")).hexdigest()
@@ -2421,8 +2614,14 @@ async def kaspi_public_offers_feed(
     if not token_row:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="not_found")
 
-    if token_row.merchant_uid and token_row.merchant_uid != merchant_uid:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="not_found")
+    effective_merchant_uid = (merchant_uid or "").strip()
+    if effective_merchant_uid:
+        if not token_row.merchant_uid or token_row.merchant_uid != effective_merchant_uid:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="not_found")
+    else:
+        effective_merchant_uid = (token_row.merchant_uid or "").strip()
+        if not effective_merchant_uid:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="not_found")
 
     offers = (
         (
@@ -2430,7 +2629,7 @@ async def kaspi_public_offers_feed(
                 sa.select(KaspiOffer)
                 .where(
                     KaspiOffer.company_id == token_row.company_id,
-                    KaspiOffer.merchant_uid == merchant_uid,
+                    KaspiOffer.merchant_uid == effective_merchant_uid,
                 )
                 .order_by(KaspiOffer.updated_at.desc())
             )
