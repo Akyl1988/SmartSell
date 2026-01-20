@@ -2402,7 +2402,7 @@ async def kaspi_public_offers_feed(
     merchant_uid: str | None = Query(None, alias="merchantUid"),
     session: AsyncSession = Depends(get_async_db),
 ):
-    if not token or not merchant_uid:
+    if not token or not merchant_uid or not merchant_uid.strip():
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="not_found")
 
     token_hash = sha256(token.encode("utf-8")).hexdigest()
@@ -2424,30 +2424,30 @@ async def kaspi_public_offers_feed(
     if token_row.merchant_uid and token_row.merchant_uid != merchant_uid:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="not_found")
 
-    export = (
+    offers = (
         (
             await session.execute(
-                sa.select(KaspiFeedExport)
+                sa.select(KaspiOffer)
                 .where(
-                    KaspiFeedExport.company_id == token_row.company_id,
-                    KaspiFeedExport.status == "DONE",
-                    KaspiFeedExport.stats_json["merchant_uid"].astext == merchant_uid,
+                    KaspiOffer.company_id == token_row.company_id,
+                    KaspiOffer.merchant_uid == merchant_uid,
                 )
-                .order_by(KaspiFeedExport.created_at.desc())
-                .limit(1)
+                .order_by(KaspiOffer.updated_at.desc())
             )
         )
         .scalars()
-        .first()
+        .all()
     )
-    if not export or not export.payload_text:
+    if not offers:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="not_found")
+
+    xml_body = _build_kaspi_offers_xml(offers)
 
     token_row.last_used_at = datetime.utcnow()
     await session.commit()
 
     return Response(
-        content=export.payload_text,
+        content=xml_body,
         media_type="application/xml",
         headers={"Cache-Control": "no-store"},
     )
