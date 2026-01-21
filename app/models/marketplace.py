@@ -91,7 +91,7 @@ class KaspiStoreToken(Base):
         if not row:
             return None
         token = row[0]
-        if isinstance(token, (bytes, bytearray)):
+        if isinstance(token, bytes | bytearray):
             return token.decode("utf-8")
         return str(token)
 

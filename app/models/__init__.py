@@ -189,6 +189,7 @@ _LAZY_MODELS: dict[str, tuple[str, str]] = {
     "KaspiCatalogProduct": ("app.models.kaspi_catalog_product", "KaspiCatalogProduct"),
     "KaspiFeedExport": ("app.models.kaspi_feed_export", "KaspiFeedExport"),
     "KaspiFeedPublicToken": ("app.models.kaspi_feed_public_token", "KaspiFeedPublicToken"),
+    "KaspiMcSession": ("app.models.kaspi_mc_session", "KaspiMcSession"),
     "KaspiGoodsImport": ("app.models.kaspi_goods_import", "KaspiGoodsImport"),
     "CatalogImportBatch": ("app.models.catalog_import", "CatalogImportBatch"),
     "CatalogImportRow": ("app.models.catalog_import", "CatalogImportRow"),
