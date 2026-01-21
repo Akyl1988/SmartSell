@@ -45,6 +45,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import bindparam, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.config import settings
 from app.core.db import get_async_db  # noqa — для совместимости импорт-алиас
 from app.core.logging import get_logger
 from app.core.security import get_current_user, resolve_tenant_company_id
@@ -1503,6 +1504,8 @@ async def kaspi_goods_import_create(
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="NOT_AUTHENTICATED") from exc
     except httpx.HTTPStatusError:
         raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail="kaspi_upstream_error")
+    except httpx.RequestError:
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail="kaspi_upstream_unavailable")
 
     import_code = _extract_import_code(response)
     if not import_code:
@@ -1606,6 +1609,12 @@ async def kaspi_goods_import_refresh(
         record.last_checked_at = now
         await session.commit()
         raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail="kaspi_upstream_error")
+    except httpx.RequestError:
+        record.error_code = "kaspi_request_error"
+        record.error_message = "kaspi_upstream_unavailable"
+        record.last_checked_at = now
+        await session.commit()
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail="kaspi_upstream_unavailable")
 
     status_value = status_response.get("status") or record.status
     record.status = str(status_value)
@@ -1654,9 +1663,17 @@ async def kaspi_token_health(
         "Accept": "application/json",
     }
 
-    async with httpx.AsyncClient(timeout=30.0) as client:
-        orders_resp = await client.get(orders_url, headers=orders_headers, params=orders_params)
-        goods_resp = await client.get("https://kaspi.kz/shop/api/products/import/schema", headers=goods_headers)
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            orders_resp = await client.get(orders_url, headers=orders_headers, params=orders_params)
+            goods_resp = await client.get("https://kaspi.kz/shop/api/products/import/schema", headers=goods_headers)
+    except httpx.RequestError:
+        return KaspiTokenHealthOut(
+            ok=False,
+            orders_http=0,
+            goods_http=0,
+            cause="upstream_unavailable",
+        )
 
     cause = None
     if orders_resp.status_code == 401 or goods_resp.status_code == 401:
@@ -1704,15 +1721,24 @@ async def kaspi_token_selftest(
         "Accept": "application/json",
     }
 
-    async with httpx.AsyncClient(timeout=30.0) as client:
-        orders_resp = await client.get(orders_url, headers=orders_headers, params=orders_params)
-        goods_schema_resp = await client.get(
-            "https://kaspi.kz/shop/api/products/import/schema",
-            headers=goods_headers,
-        )
-        goods_categories_resp = await client.get(
-            "https://kaspi.kz/shop/api/products/classification/categories",
-            headers=goods_headers,
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            orders_resp = await client.get(orders_url, headers=orders_headers, params=orders_params)
+            goods_schema_resp = await client.get(
+                "https://kaspi.kz/shop/api/products/import/schema",
+                headers=goods_headers,
+            )
+            goods_categories_resp = await client.get(
+                "https://kaspi.kz/shop/api/products/classification/categories",
+                headers=goods_headers,
+            )
+    except httpx.RequestError:
+        return KaspiTokenSelftestOut(
+            orders_http=0,
+            goods_schema_http=0,
+            goods_categories_http=0,
+            goods_access=None,
+            orders_error="upstream_unavailable",
         )
 
     if orders_resp.status_code == 401:
@@ -2465,7 +2491,7 @@ async def kaspi_feed_public_token_create(
 ):
     _require_admin(current_user)
     company_id = _resolve_company_id(current_user)
-    env = os.getenv("ENVIRONMENT", "").lower()
+    env_is_dev = settings.is_development
 
     token_value = None
     token_hash = None
@@ -2500,7 +2526,7 @@ async def kaspi_feed_public_token_create(
     return KaspiFeedPublicTokenOut(
         id=token_row.id,
         merchant_uid=token_row.merchant_uid,
-        token=token_value if env == "development" else None,
+        token=token_value if env_is_dev else None,
         created_at=token_row.created_at,
         revoked_at=token_row.revoked_at,
         last_used_at=token_row.last_used_at,

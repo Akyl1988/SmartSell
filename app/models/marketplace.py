@@ -80,7 +80,7 @@ class KaspiStoreToken(Base):
         enc_key = settings.get_kaspi_enc_key()
         sql = sa.text(
             """
-            SELECT convert_from(pgp_sym_decrypt(token_ciphertext, :k), 'UTF8') AS token
+            SELECT pgp_sym_decrypt(token_ciphertext, :k) AS token
             FROM kaspi_store_tokens
             WHERE lower(trim(store_name)) = lower(trim(:store))
             LIMIT 1
@@ -88,7 +88,12 @@ class KaspiStoreToken(Base):
         )
         res = await session.execute(sql, {"store": store_name, "k": enc_key})
         row = res.fetchone()
-        return row[0] if row else None
+        if not row:
+            return None
+        token = row[0]
+        if isinstance(token, (bytes, bytearray)):
+            return token.decode("utf-8")
+        return str(token)
 
     @classmethod
     async def list_stores(cls, session: AsyncSession) -> list[str]:

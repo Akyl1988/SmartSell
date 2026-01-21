@@ -48,6 +48,26 @@ async def test_public_feed_ok(async_client, async_db_session, company_a_admin_he
 
 
 @pytest.mark.asyncio
+async def test_public_feed_token_returns_in_default_dev_env(
+    async_client,
+    async_db_session,
+    company_a_admin_headers,
+    monkeypatch,
+):
+    monkeypatch.delenv("ENVIRONMENT", raising=False)
+    await _create_company(async_db_session, 1001)
+
+    token_resp = await async_client.post(
+        "/api/v1/kaspi/feed/public-tokens",
+        headers=company_a_admin_headers,
+        params={"merchantUid": "M1"},
+        json={"comment": "test"},
+    )
+    assert token_resp.status_code == 200
+    assert token_resp.json().get("token")
+
+
+@pytest.mark.asyncio
 async def test_public_feed_not_found(async_client, async_db_session, company_a_admin_headers, monkeypatch):
     monkeypatch.setenv("ENVIRONMENT", "development")
     await _create_company(async_db_session, 1001)
