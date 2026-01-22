@@ -36,7 +36,7 @@ import time
 from datetime import datetime, timedelta
 from hashlib import sha256
 from typing import Any
-from xml.sax.saxutils import escape, quoteattr
+from xml.etree import ElementTree as ET
 
 import httpx
 import sqlalchemy as sa
@@ -308,31 +308,96 @@ def _truncate_raw(raw: Any, max_len: int = 2000) -> str | None:
     return f"{text_value[:max_len]}..."
 
 
-def _format_price(value: Any) -> str:
-    return f"{float(value):.2f}"
+_KASPI_NS = "kaspiShopping"
+ET.register_namespace("", _KASPI_NS)
 
 
-def _build_kaspi_offers_xml(offers: list[KaspiOffer]) -> str:
-    now = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
-    lines = [f"<yml_catalog date={quoteattr(now)}>", "<shop>", "<offers>"]
+def _to_unsigned_int(value: Any) -> int | None:
+    if value is None:
+        return None
+    try:
+        num = int(float(value))
+    except Exception:
+        return None
+    return max(num, 0)
+
+
+def _extract_city_prices(raw: Any) -> list[dict[str, str]]:
+    if not isinstance(raw, dict):
+        return []
+    city_prices = raw.get("cityPrices") or raw.get("cityprices")
+    items: list[dict[str, str]] = []
+    if isinstance(city_prices, list):
+        for entry in city_prices:
+            if not isinstance(entry, dict):
+                continue
+            city_id = entry.get("cityId") or entry.get("city_id")
+            price = _to_unsigned_int(entry.get("value") or entry.get("price"))
+            if city_id is None or price is None:
+                continue
+            oldprice = _to_unsigned_int(entry.get("oldprice") or entry.get("oldPrice"))
+            item = {"cityId": str(city_id), "value": str(price)}
+            if oldprice is not None:
+                item["oldprice"] = str(oldprice)
+            items.append(item)
+    elif isinstance(city_prices, dict):
+        if "cityId" in city_prices:
+            city_id = city_prices.get("cityId")
+            price = _to_unsigned_int(city_prices.get("value") or city_prices.get("price"))
+            if city_id is not None and price is not None:
+                oldprice = _to_unsigned_int(city_prices.get("oldprice") or city_prices.get("oldPrice"))
+                item = {"cityId": str(city_id), "value": str(price)}
+                if oldprice is not None:
+                    item["oldprice"] = str(oldprice)
+                items.append(item)
+        else:
+            for city_id, price_val in city_prices.items():
+                price = _to_unsigned_int(price_val)
+                if city_id is None or price is None:
+                    continue
+                items.append({"cityId": str(city_id), "value": str(price)})
+    return items
+
+
+def _build_kaspi_offers_xml(offers: list[KaspiOffer], *, company: str, merchant_id: str) -> str:
+    date_str = datetime.now().strftime("%Y-%m-%d %H:%M")
+    root = ET.Element(f"{{{_KASPI_NS}}}kaspi_catalog", {"date": date_str})
+    company_el = ET.SubElement(root, f"{{{_KASPI_NS}}}company")
+    company_el.text = str(company)
+    merchant_el = ET.SubElement(root, f"{{{_KASPI_NS}}}merchantid")
+    merchant_el.text = str(merchant_id)
+    offers_el = ET.SubElement(root, f"{{{_KASPI_NS}}}offers")
 
     for offer in offers:
-        sku = offer.sku
-        name = offer.title or sku
-        lines.append(f"<offer id={quoteattr(str(sku))}>")
-        lines.append(f"<name>{escape(str(name))}</name>")
-        if offer.price is not None:
-            lines.append(f"<price>{_format_price(offer.price)}</price>")
-        if offer.old_price is not None:
-            lines.append(f"<oldprice>{_format_price(offer.old_price)}</oldprice>")
-        if offer.stock_count is not None:
-            lines.append(f"<stock_quantity>{offer.stock_count}</stock_quantity>")
-        if offer.pre_order is not None:
-            lines.append(f"<preorder>{str(bool(offer.pre_order)).lower()}</preorder>")
-        lines.append("</offer>")
+        sku = (offer.sku or "").strip()
+        if not sku:
+            continue
+        model_text = (offer.title or offer.master_sku or sku).strip() or sku
+        offer_el = ET.SubElement(offers_el, f"{{{_KASPI_NS}}}offer", {"sku": sku})
+        model_el = ET.SubElement(offer_el, f"{{{_KASPI_NS}}}model")
+        model_el.text = model_text
 
-    lines.extend(["</offers>", "</shop>", "</yml_catalog>"])
-    return "\n".join(lines)
+        raw = offer.raw or {}
+        city_prices = _extract_city_prices(raw)
+        if city_prices:
+            cityprices_el = ET.SubElement(offer_el, f"{{{_KASPI_NS}}}cityprices")
+            for entry in city_prices:
+                attrs = {"cityId": entry["cityId"]}
+                if "oldprice" in entry:
+                    attrs["oldprice"] = entry["oldprice"]
+                city_el = ET.SubElement(cityprices_el, f"{{{_KASPI_NS}}}cityprice", attrs)
+                city_el.text = entry["value"]
+        else:
+            price_value = _to_unsigned_int(offer.price) or 0
+            attrs: dict[str, str] = {}
+            oldprice_value = _to_unsigned_int(offer.old_price)
+            if oldprice_value is not None:
+                attrs["oldprice"] = str(oldprice_value)
+            price_el = ET.SubElement(offer_el, f"{{{_KASPI_NS}}}price", attrs)
+            price_el.text = str(price_value)
+
+    xml_bytes = ET.tostring(root, encoding="utf-8", xml_declaration=True)
+    return xml_bytes.decode("utf-8")
 
 
 def _goods_import_to_out(record: KaspiGoodsImport) -> KaspiGoodsImportRecordOut:
@@ -2539,7 +2604,9 @@ async def kaspi_feed_export_create(
             .order_by(KaspiOffer.updated_at.desc())
         )
         offers = result.scalars().all()
-        xml_body = _build_kaspi_offers_xml(offers)
+        company = await session.get(Company, company_id)
+        company_name = (company.name if company else None) or f"Company {company_id}"
+        xml_body = _build_kaspi_offers_xml(offers, company=company_name, merchant_id=merchant_uid)
         checksum = sha256(xml_body.encode("utf-8")).hexdigest()
         duration_ms = int((time.perf_counter() - started_perf) * 1000)
 
@@ -2855,7 +2922,9 @@ async def kaspi_public_offers_feed(
     if not offers:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="not_found")
 
-    xml_body = _build_kaspi_offers_xml(offers)
+    company = await session.get(Company, token_row.company_id)
+    company_name = (company.name if company else None) or f"Company {token_row.company_id}"
+    xml_body = _build_kaspi_offers_xml(offers, company=company_name, merchant_id=effective_merchant_uid)
 
     token_row.last_used_at = datetime.utcnow()
     await session.commit()

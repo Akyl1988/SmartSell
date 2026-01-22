@@ -1,3 +1,5 @@
+import xml.etree.ElementTree as ET
+
 import pytest
 
 from app.models.company import Company
@@ -24,6 +26,24 @@ async def _create_offer(async_db_session, company_id: int, merchant_uid: str, sk
     await async_db_session.commit()
 
 
+async def _create_offer_with_city_prices(async_db_session, company_id: int, merchant_uid: str, sku: str) -> None:
+    async_db_session.add(
+        KaspiOffer(
+            company_id=company_id,
+            merchant_uid=merchant_uid,
+            sku=sku,
+            title="City Item",
+            price=1500,
+            raw={"cityPrices": [{"cityId": 750000000, "value": 1200, "oldprice": 1500}]},
+        )
+    )
+    await async_db_session.commit()
+
+
+def _find_child(root: ET.Element, tag: str) -> ET.Element | None:
+    return root.find(f"{{kaspiShopping}}{tag}")
+
+
 @pytest.mark.asyncio
 async def test_public_feed_ok(async_client, async_db_session, company_a_admin_headers, monkeypatch):
     monkeypatch.setenv("ENVIRONMENT", "development")
@@ -45,6 +65,49 @@ async def test_public_feed_ok(async_client, async_db_session, company_a_admin_he
     assert resp.status_code == 200
     assert resp.headers.get("content-type", "").startswith("application/xml")
     assert "S1" in resp.text
+
+
+@pytest.mark.asyncio
+async def test_public_feed_schema_minimal(async_client, async_db_session, company_a_admin_headers, monkeypatch):
+    monkeypatch.setenv("ENVIRONMENT", "development")
+    await _create_company(async_db_session, 1001)
+    await _create_offer_with_city_prices(async_db_session, 1001, "M1", "S-CITY")
+
+    token_resp = await async_client.post(
+        "/api/v1/kaspi/feed/public-tokens",
+        headers=company_a_admin_headers,
+        params={"merchantUid": "M1"},
+        json={"comment": "test"},
+    )
+    token = token_resp.json()["token"]
+
+    resp = await async_client.get(
+        "/api/v1/kaspi/feed/public/offers.xml",
+        params={"token": token},
+    )
+    assert resp.status_code == 200
+
+    root = ET.fromstring(resp.text)
+    assert root.tag == "{kaspiShopping}kaspi_catalog"
+    assert root.attrib.get("date")
+
+    company_el = _find_child(root, "company")
+    merchant_el = _find_child(root, "merchantid")
+    offers_el = _find_child(root, "offers")
+    assert company_el is not None
+    assert merchant_el is not None
+    assert offers_el is not None
+
+    offer_el = offers_el.find("{kaspiShopping}offer")
+    assert offer_el is not None
+    assert offer_el.attrib.get("sku")
+
+    model_el = offer_el.find("{kaspiShopping}model")
+    assert model_el is not None and (model_el.text or "").strip()
+
+    price_el = offer_el.find("{kaspiShopping}price")
+    cityprices_el = offer_el.find("{kaspiShopping}cityprices")
+    assert (price_el is not None) or (cityprices_el is not None)
 
 
 @pytest.mark.asyncio
