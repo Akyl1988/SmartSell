@@ -17,13 +17,18 @@ class KaspiGoodsImport(Base):
     merchant_uid = Column(String(128), nullable=True, index=True)
     import_code = Column(String(128), nullable=False, index=True)
     status = Column(String(64), nullable=False, server_default=text("'created'"))
+    source = Column(String(32), nullable=True, index=True)
+    comment = Column(Text, nullable=True)
     request_json = Column(JSONB, nullable=False, server_default=text("'[]'::jsonb"))
     status_json = Column(JSONB, nullable=True)
     result_json = Column(JSONB, nullable=True)
     error_code = Column(String(64), nullable=True)
     error_message = Column(Text, nullable=True)
+    last_error_at = Column(DateTime, nullable=True)
     last_checked_at = Column(DateTime, nullable=True)
     revoked_at = Column(DateTime, nullable=True)
+
+    raw_response = Column(Text, nullable=True)
 
     request_payload = Column(JSONB, nullable=False, server_default=text("'[]'::jsonb"))
     result_payload = Column(JSONB, nullable=True)

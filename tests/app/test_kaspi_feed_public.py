@@ -70,19 +70,18 @@ async def test_public_feed_ok(async_client, async_db_session, company_a_admin_he
 async def test_public_feed_schema_minimal(async_client, async_db_session, company_a_admin_headers, monkeypatch):
     monkeypatch.setenv("ENVIRONMENT", "development")
     await _create_company(async_db_session, 1001)
-    await _create_offer_with_city_prices(async_db_session, 1001, "M1", "S-CITY")
+    await _create_offer_with_city_prices(async_db_session, 1001, "17319385", "S-CITY")
 
     token_resp = await async_client.post(
         "/api/v1/kaspi/feed/public-tokens",
         headers=company_a_admin_headers,
-        params={"merchantUid": "M1"},
-        json={"comment": "test"},
+        json={"merchant_uid": "17319385", "comment": "test"},
     )
     token = token_resp.json()["token"]
 
     resp = await async_client.get(
         "/api/v1/kaspi/feed/public/offers.xml",
-        params={"token": token},
+        params={"token": token, "merchantUid": "17319385"},
     )
     assert resp.status_code == 200
 

@@ -85,6 +85,19 @@ class KaspiAdapter:
         )
         return self._run_json(cmd)
 
+    def feed_upload(self, store: str, xml_path: str, comment: Optional[str] = None) -> Any:
+        comment_part = f"-Comment {shlex.quote(comment)}" if comment else ""
+        cmd = (
+            f". '{self.script_path}'; "
+            f"ks:feedUpload -Store {shlex.quote(store)} -XmlPath {shlex.quote(xml_path)} {comment_part}"
+        )
+        return self._run_json(cmd)
+
+    def feed_import_status(self, store: str, import_id: Optional[str] = None) -> Any:
+        import_part = f"-ImportId {shlex.quote(import_id)}" if import_id else ""
+        cmd = f". '{self.script_path}'; ks:feedStatus -Store {shlex.quote(store)} {import_part}"
+        return self._run_json(cmd)
+
     def import_status(self, store: str, import_id: Optional[str] = None) -> Any:
         import_part = f"-ImportId {shlex.quote(import_id)}" if import_id else ""
         cmd = f". '{self.script_path}'; ks:import -Store {shlex.quote(store)} {import_part} -StatusOnly"
