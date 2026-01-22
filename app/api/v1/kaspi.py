@@ -41,7 +41,7 @@ from xml.sax.saxutils import escape, quoteattr
 import httpx
 import sqlalchemy as sa
 from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, Response, UploadFile, status
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import bindparam, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -2442,6 +2442,9 @@ class KaspiFeedExportOut(BaseModel):
 
 
 class KaspiFeedPublicTokenIn(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
+    merchant_uid: str = Field(..., min_length=1, alias="merchantUid")
     comment: str | None = None
 
 
@@ -2539,7 +2542,9 @@ async def kaspi_feed_export_create(
             .order_by(KaspiOffer.updated_at.desc())
         )
         offers = result.scalars().all()
-        xml_body = _build_kaspi_offers_xml(offers)
+        company = await session.get(Company, company_id)
+        company_name = (company.name if company else None) or f"Company {company_id}"
+        xml_body = _build_kaspi_offers_xml(offers, company=company_name, merchant_id=merchant_uid)
         checksum = sha256(xml_body.encode("utf-8")).hexdigest()
         duration_ms = int((time.perf_counter() - started_perf) * 1000)
 
@@ -2674,13 +2679,16 @@ async def kaspi_feed_export_download(
 )
 async def kaspi_feed_public_token_create(
     payload: KaspiFeedPublicTokenIn,
-    merchant_uid: str | None = Query(None, alias="merchantUid"),
     current_user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_async_db),
 ):
     _require_admin(current_user)
     company_id = _resolve_company_id(current_user)
     env_is_dev = settings.is_development
+
+    merchant_uid = (payload.merchant_uid or "").strip()
+    if not merchant_uid:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="missing_merchant_uid")
 
     token_value = None
     token_hash = None
@@ -2704,7 +2712,7 @@ async def kaspi_feed_public_token_create(
 
     token_row = KaspiFeedPublicToken(
         company_id=company_id,
-        merchant_uid=merchant_uid.strip() if merchant_uid else None,
+        merchant_uid=merchant_uid,
         token_hash=token_hash,
         comment=payload.comment,
     )
