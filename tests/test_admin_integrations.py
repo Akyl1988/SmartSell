@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import secrets
 import time
 
 import pytest
@@ -11,7 +12,7 @@ from app.core.crypto import decrypt_json, encrypt_json, reset_crypto_key_cache
 from app.core.provider_registry import CachedProvider, ProviderRegistry
 from app.core.security import create_access_token, get_password_hash
 from app.models.integration_provider import IntegrationProvider, IntegrationProviderEvent
-from app.models.user import User
+from app.models.user import User, UserSession
 from app.services.otp_providers import OtpProviderResolver
 
 
@@ -58,7 +59,15 @@ async def _make_admin(async_db_session):
     async_db_session.add(user)
     await async_db_session.commit()
     await async_db_session.refresh(user)
-    token = create_access_token(subject=user.id)
+    session = UserSession(
+        user_id=user.id,
+        refresh_token=f"rt-{user.id}-{secrets.token_urlsafe(8)}",
+        is_active=True,
+    )
+    async_db_session.add(session)
+    await async_db_session.commit()
+    await async_db_session.refresh(session)
+    token = create_access_token(subject=user.id, extra={"role": user.role, "sid": session.id})
     return user, token
 
 
@@ -196,7 +205,15 @@ async def test_access_control_admin_only(async_client, async_db_session):
     async_db_session.add(user)
     await async_db_session.commit()
     await async_db_session.refresh(user)
-    token = create_access_token(subject=user.id)
+    session = UserSession(
+        user_id=user.id,
+        refresh_token=f"rt-{user.id}-{secrets.token_urlsafe(8)}",
+        is_active=True,
+    )
+    async_db_session.add(session)
+    await async_db_session.commit()
+    await async_db_session.refresh(session)
+    token = create_access_token(subject=user.id, extra={"role": user.role, "sid": session.id})
 
     resp = await async_client.get("/api/admin/integrations/providers", headers={"Authorization": f"Bearer {token}"})
     assert resp.status_code == 403
@@ -216,7 +233,15 @@ async def test_non_admin_cannot_manage_configs(async_client, async_db_session):
     async_db_session.add(user)
     await async_db_session.commit()
     await async_db_session.refresh(user)
-    token = create_access_token(subject=user.id)
+    session = UserSession(
+        user_id=user.id,
+        refresh_token=f"rt-{user.id}-{secrets.token_urlsafe(8)}",
+        is_active=True,
+    )
+    async_db_session.add(session)
+    await async_db_session.commit()
+    await async_db_session.refresh(session)
+    token = create_access_token(subject=user.id, extra={"role": user.role, "sid": session.id})
     headers = {"Authorization": f"Bearer {token}"}
 
     resp_get = await async_client.get(

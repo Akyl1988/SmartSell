@@ -24,6 +24,7 @@ import os
 import sys
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Any
 
 from fastapi import Depends, HTTPException, Request, Response
@@ -325,6 +326,24 @@ async def _fetch_user(db, user_id: int):
         raise
 
 
+async def _fetch_session(db, *, session_id: int, user_id: int):
+    try:
+        from app.models.user import UserSession  # type: ignore
+    except Exception as exc:  # pragma: no cover - import failure should surface
+        log.error("Failed to import UserSession model", exc_info=exc)
+        raise
+
+    from sqlalchemy.ext.asyncio import AsyncSession as _AsyncSession  # type: ignore
+
+    if isinstance(db, _AsyncSession):
+        res = await db.execute(select(UserSession).where(UserSession.id == session_id, UserSession.user_id == user_id))
+        return res.scalars().first()
+    if hasattr(db, "execute"):
+        res = db.execute(select(UserSession).where(UserSession.id == session_id, UserSession.user_id == user_id))
+        return res.scalars().first() if hasattr(res, "scalars") else None
+    raise TypeError(f"Unsupported db type for _fetch_session: {type(db)!r}")
+
+
 async def get_current_user_optional(
     request: Request,
     credentials: HTTPAuthorizationCredentials | None = Depends(security),
@@ -340,6 +359,18 @@ async def get_current_user_optional(
         return None
     ctx = _auth_context_from_payload(token, payload)
     if ctx.user_id <= 0:
+        return None
+    sid = payload.get("sid")
+    if not sid:
+        return None
+    try:
+        sid_int = int(sid)
+    except Exception:
+        return None
+    session = await _fetch_session(db, session_id=sid_int, user_id=ctx.user_id)
+    if not session or not session.is_active or session.terminated_at:
+        return None
+    if getattr(session, "expires_at", None) and session.expires_at <= datetime.utcnow():
         return None
     user = await _fetch_user(db, ctx.user_id)
     return user
@@ -384,6 +415,22 @@ async def get_current_user(
     ctx = _auth_context_from_payload(token, payload)
     if ctx.user_id <= 0:
         raise AuthenticationError("Invalid token subject", "INVALID_SUBJECT")
+
+    sid = payload.get("sid")
+    if not sid:
+        raise AuthenticationError("token_revoked", "TOKEN_REVOKED")
+    try:
+        sid_int = int(sid)
+    except Exception:
+        raise AuthenticationError("token_revoked", "TOKEN_REVOKED")
+
+    session = await _fetch_session(db, session_id=sid_int, user_id=ctx.user_id)
+    if not session:
+        raise AuthenticationError("token_revoked", "TOKEN_REVOKED")
+    if not session.is_active or session.terminated_at:
+        raise AuthenticationError("session_terminated", "SESSION_TERMINATED")
+    if getattr(session, "expires_at", None) and session.expires_at <= datetime.utcnow():
+        raise AuthenticationError("session_terminated", "SESSION_TERMINATED")
 
     user = await _fetch_user(db, ctx.user_id)
     if not user:

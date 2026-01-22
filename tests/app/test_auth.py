@@ -610,7 +610,16 @@ class TestAuth:
         async_db_session.add(user)
         await async_db_session.commit()
 
-        expired_token = create_access_token(subject=user.id, expires_delta=timedelta(seconds=-1))
+        session = UserSession(user_id=user.id, refresh_token="rt-expired", is_active=True)
+        async_db_session.add(session)
+        await async_db_session.commit()
+        await async_db_session.refresh(session)
+
+        expired_token = create_access_token(
+            subject=user.id,
+            expires_delta=timedelta(seconds=-1),
+            extra={"company_id": user.company_id, "role": user.role, "sid": session.id},
+        )
         headers = {"Authorization": f"Bearer {expired_token}"}
         response = await async_client.get("/api/auth/me", headers=headers)
 
@@ -677,6 +686,41 @@ class TestAuth:
         response = await async_client.get("/api/auth/me", headers=headers)
 
         assert response.status_code == 401
+
+    @pytest.mark.asyncio
+    async def test_logout_revokes_access(self, async_client: AsyncClient, async_db_session: AsyncSession):
+        company = Company(name="Logout Company")
+        async_db_session.add(company)
+        await async_db_session.flush()
+
+        user = User(
+            company_id=company.id,
+            phone="+77001230001",
+            hashed_password=get_password_hash("password123"),
+            role="admin",
+        )
+        async_db_session.add(user)
+        await async_db_session.commit()
+
+        login_data = {"identifier": "+77001230001", "password": "password123"}
+        login_response = await async_client.post("/api/auth/login", json=login_data)
+        assert login_response.status_code == 200, login_response.text
+        tokens = login_response.json()
+
+        headers = {"Authorization": f"Bearer {tokens['access_token']}"}
+        me_response = await async_client.get("/api/auth/me", headers=headers)
+        assert me_response.status_code == 200
+
+        logout_response = await async_client.post(
+            "/api/auth/logout",
+            json={"refresh_token": tokens["refresh_token"]},
+            headers=headers,
+        )
+        assert logout_response.status_code == 200
+
+        me_after = await async_client.get("/api/auth/me", headers=headers)
+        assert me_after.status_code == 401
+        assert me_after.json().get("detail") in {"session_terminated", "token_revoked"}
 
 
 # --------------------------------------------------------------------------------------

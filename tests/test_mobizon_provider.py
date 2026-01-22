@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import secrets
 from secrets import randbelow
 
 import httpx
@@ -11,7 +12,7 @@ from app.core.provider_registry import ProviderRegistry
 from app.core.security import create_access_token, get_password_hash
 from app.integrations.providers.mobizon.otp import MobizonOtpProvider
 from app.models.integration_provider import IntegrationProviderEvent
-from app.models.user import User
+from app.models.user import User, UserSession
 from app.services.otp_providers import OtpProviderResolver
 from app.services.provider_configs import ProviderConfigService
 
@@ -37,7 +38,15 @@ async def _make_admin(async_db_session):
     async_db_session.add(user)
     await async_db_session.commit()
     await async_db_session.refresh(user)
-    token = create_access_token(subject=user.id)
+    session = UserSession(
+        user_id=user.id,
+        refresh_token=f"rt-{user.id}-{secrets.token_urlsafe(8)}",
+        is_active=True,
+    )
+    async_db_session.add(session)
+    await async_db_session.commit()
+    await async_db_session.refresh(session)
+    token = create_access_token(subject=user.id, extra={"role": user.role, "sid": session.id})
     return user, token
 
 

@@ -120,6 +120,7 @@ async def sync_kaspi_mc_offers(
     company_id: int,
     merchant_uid: str,
     cookies: str,
+    x_auth_version: int = 3,
     page_limit: int = 100,
     max_pages: int = 500,
 ) -> dict[str, Any]:
@@ -132,7 +133,7 @@ async def sync_kaspi_mc_offers(
 
     headers = {
         "Accept": "application/json",
-        "X-Auth-Version": "3",
+        "X-Auth-Version": str(x_auth_version or 3),
         "Cookie": cookies,
     }
 
@@ -219,6 +220,8 @@ async def sync_kaspi_mc_offers(
     if mc_row:
         mc_row.last_used_at = now
         mc_row.last_error = None
+        mc_row.last_error_code = None
+        mc_row.last_error_at = None
         await session.commit()
 
     return {
@@ -234,7 +237,8 @@ async def mark_mc_session_error(
     *,
     company_id: int,
     merchant_uid: str,
-    error: str,
+    error_code: str,
+    error: str | None = None,
 ) -> None:
     row = (
         (
@@ -249,5 +253,7 @@ async def mark_mc_session_error(
         .first()
     )
     if row:
-        row.last_error = error
+        row.last_error = error or error_code
+        row.last_error_code = error_code
+        row.last_error_at = datetime.utcnow()
         await session.commit()

@@ -788,10 +788,11 @@ def verify_token(token: str) -> str | None:
 try:
     from fastapi import Depends, HTTPException, status
     from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+    from sqlalchemy import select
     from sqlalchemy.ext.asyncio import AsyncSession
 
     from app.core.db import get_async_db
-    from app.models.user import User
+    from app.models.user import User, UserSession
 
     _HAS_FASTAPI = True
 except Exception:
@@ -835,6 +836,25 @@ if _HAS_FASTAPI:
             user_id = int(payload.get("sub"))
         except Exception:
             raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Not authenticated")
+
+        sid = payload.get("sid")
+        if not sid:
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="token_revoked")
+        try:
+            sid_int = int(sid)
+        except Exception:
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="token_revoked")
+
+        res_s = await db.execute(select(UserSession).where(UserSession.id == sid_int))
+        session_row = res_s.scalars().first()
+        if not session_row or session_row.user_id is None:
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="token_revoked")
+        if session_row.user_id != user_id:
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="token_revoked")
+        if not session_row.is_active or session_row.terminated_at:
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="session_terminated")
+        if getattr(session_row, "expires_at", None) and session_row.expires_at <= datetime.utcnow():
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="session_terminated")
 
         user = await db.get(User, user_id)
         if not user:

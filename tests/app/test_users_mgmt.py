@@ -1,3 +1,5 @@
+import secrets
+
 import pytest
 from httpx import AsyncClient
 from sqlalchemy import select
@@ -31,8 +33,19 @@ async def _make_user(
     return user
 
 
-def _auth_headers(user: User) -> dict[str, str]:
-    token = create_access_token(subject=user.id, extra={"company_id": user.company_id, "role": user.role})
+async def _auth_headers(async_db_session: AsyncSession, user: User) -> dict[str, str]:
+    session = UserSession(
+        user_id=user.id,
+        refresh_token=f"rt-{user.id}-{secrets.token_urlsafe(8)}",
+        is_active=True,
+    )
+    async_db_session.add(session)
+    await async_db_session.commit()
+    await async_db_session.refresh(session)
+    token = create_access_token(
+        subject=user.id,
+        extra={"company_id": user.company_id, "role": user.role, "sid": session.id},
+    )
     return {"Authorization": f"Bearer {token}"}
 
 
@@ -51,14 +64,14 @@ async def test_list_users_owner_and_admin_allowed_employee_forbidden(
     admin = await _make_user(async_db_session, company=company, phone="77000011112", role="admin")
     employee = await _make_user(async_db_session, company=company, phone="77000011113", role="employee")
 
-    resp_owner = await async_client.get("/api/v1/users", headers=_auth_headers(owner))
+    resp_owner = await async_client.get("/api/v1/users", headers=await _auth_headers(async_db_session, owner))
     assert resp_owner.status_code == 200
     assert len(resp_owner.json().get("items") or []) >= 3
 
-    resp_admin = await async_client.get("/api/v1/users", headers=_auth_headers(admin))
+    resp_admin = await async_client.get("/api/v1/users", headers=await _auth_headers(async_db_session, admin))
     assert resp_admin.status_code == 200
 
-    resp_emp = await async_client.get("/api/v1/users", headers=_auth_headers(employee))
+    resp_emp = await async_client.get("/api/v1/users", headers=await _auth_headers(async_db_session, employee))
     assert resp_emp.status_code == 403
 
 
@@ -79,8 +92,8 @@ async def test_deactivate_rules_and_session_invalidation(async_client: AsyncClie
     employee_id = employee.id
     admin_peer_id = admin_peer.id
     owner_id = owner.id
-    admin_headers = _auth_headers(admin)
-    owner_headers = _auth_headers(owner)
+    admin_headers = await _auth_headers(async_db_session, admin)
+    owner_headers = await _auth_headers(async_db_session, owner)
 
     session = UserSession(user_id=employee_id, refresh_token="x", is_active=True)
     async_db_session.add(session)
@@ -94,6 +107,8 @@ async def test_deactivate_rules_and_session_invalidation(async_client: AsyncClie
 
     resp_activate = await async_client.post(f"/api/v1/users/{admin_id}/activate", headers=owner_headers)
     assert resp_activate.status_code == 200
+
+    admin_headers = await _auth_headers(async_db_session, admin)
 
     await async_db_session.rollback()
     res_admin = await async_db_session.execute(select(User).where(User.id == admin_id))
@@ -130,28 +145,28 @@ async def test_role_change_rules_and_tenant_isolation(async_client: AsyncClient,
 
     resp_owner = await async_client.post(
         f"/api/v1/users/{employee.id}/role",
-        headers=_auth_headers(owner),
+        headers=await _auth_headers(async_db_session, owner),
         json={"role": "admin"},
     )
     assert resp_owner.status_code == 200
 
     resp_admin = await async_client.post(
         f"/api/v1/users/{employee.id}/role",
-        headers=_auth_headers(admin),
+        headers=await _auth_headers(async_db_session, admin),
         json={"role": "admin"},
     )
     assert resp_admin.status_code == 403
 
     resp_self = await async_client.post(
         f"/api/v1/users/{admin.id}/role",
-        headers=_auth_headers(admin),
+        headers=await _auth_headers(async_db_session, admin),
         json={"role": "manager"},
     )
     assert resp_self.status_code == 422
 
     resp_other = await async_client.post(
         f"/api/v1/users/{other_company_user.id}/role",
-        headers=_auth_headers(owner),
+        headers=await _auth_headers(async_db_session, owner),
         json={"role": "employee"},
     )
     assert resp_other.status_code == 404

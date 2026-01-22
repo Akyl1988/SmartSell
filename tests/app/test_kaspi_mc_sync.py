@@ -126,14 +126,14 @@ async def test_mc_sync_upserts_offers(async_client, async_db_session, company_a_
     monkeypatch.setattr(KaspiMcSession, "get_cookies", _fake_get_cookies)
 
     resp = await async_client.post(
-        "/api/v1/kaspi/catalog/sync/mc",
+        "/api/v1/kaspi/mc/sync",
         headers=company_a_admin_headers,
         params={"merchantUid": "17319385"},
     )
     assert resp.status_code == 200
     data = resp.json()
-    assert data["rows_ok"] == 5
-    assert data["rows_failed"] == 0
+    assert data["status"] == "DONE"
+    assert data["upserted"] == 5
 
     # update price for S1
     responses = [_FakeResponse(200, {"items": [{"sku": "S1", "title": "Item 1", "minPrice": 1500}]})]
@@ -144,7 +144,7 @@ async def test_mc_sync_upserts_offers(async_client, async_db_session, company_a_
     )
 
     resp2 = await async_client.post(
-        "/api/v1/kaspi/catalog/sync/mc",
+        "/api/v1/kaspi/mc/sync",
         headers=company_a_admin_headers,
         params={"merchantUid": "17319385"},
     )

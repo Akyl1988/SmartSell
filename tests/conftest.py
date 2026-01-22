@@ -25,6 +25,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import secrets
 from collections.abc import AsyncIterator, Awaitable, Callable, Iterator
 from typing import Any
 from urllib.parse import quote
@@ -925,7 +926,7 @@ def sample_product_data() -> dict[str, object]:
 async def factory(async_db_session: AsyncSession) -> dict[str, Callable[..., Awaitable[object]]]:
     from app.models.company import Company  # type: ignore
     from app.models.product import Category, Product, ProductVariant  # type: ignore
-    from app.models.user import User  # type: ignore
+    from app.models.user import User, UserSession  # type: ignore
     from app.models.warehouse import ProductStock, Warehouse  # type: ignore
 
     async def create_company(name: str = "Acme Inc.") -> Company:
@@ -1085,7 +1086,7 @@ def auth_headers(test_db: None):
     """Seed a platform admin user and return its bearer token."""
     from app.core.security import create_access_token, get_password_hash  # type: ignore
     from app.models.company import Company  # type: ignore
-    from app.models.user import User  # type: ignore
+    from app.models.user import User, UserSession  # type: ignore
 
     phone = "77000000001"
     password = "Secret123!"
@@ -1120,7 +1121,18 @@ def auth_headers(test_db: None):
             user.is_verified = True
         s.commit()
         s.refresh(user)
-        token = create_access_token(subject=user.id, extra={"company_id": user.company_id, "role": user.role})
+        session = UserSession(
+            user_id=user.id,
+            refresh_token=f"rt-{user.id}-platform-{secrets.token_urlsafe(8)}",
+            is_active=True,
+        )
+        s.add(session)
+        s.commit()
+        s.refresh(session)
+        token = create_access_token(
+            subject=user.id,
+            extra={"company_id": user.company_id, "role": user.role, "sid": session.id},
+        )
 
     return {"Authorization": f"Bearer {token}"}
 
@@ -1129,7 +1141,7 @@ def _make_company_headers(*, company_id: int, role: str, phone: str) -> dict[str
     """Seed user with a specific role/company and return bearer headers."""
     from app.core.security import create_access_token, get_password_hash  # type: ignore
     from app.models.company import Company  # type: ignore
-    from app.models.user import User  # type: ignore
+    from app.models.user import User, UserSession  # type: ignore
 
     SessionLocal = sessionmaker(bind=sync_engine, expire_on_commit=False, autoflush=False)
     with SessionLocal() as s:
@@ -1157,7 +1169,18 @@ def _make_company_headers(*, company_id: int, role: str, phone: str) -> dict[str
             user.is_verified = True
         s.commit()
         s.refresh(user)
-        token = create_access_token(subject=user.id, extra={"company_id": user.company_id, "role": user.role})
+        session = UserSession(
+            user_id=user.id,
+            refresh_token=f"rt-{user.id}-{role}-{secrets.token_urlsafe(8)}",
+            is_active=True,
+        )
+        s.add(session)
+        s.commit()
+        s.refresh(session)
+        token = create_access_token(
+            subject=user.id,
+            extra={"company_id": user.company_id, "role": user.role, "sid": session.id},
+        )
 
     return {"Authorization": f"Bearer {token}"}
 

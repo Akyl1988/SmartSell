@@ -100,6 +100,12 @@ def _mask_secret(value: str | None, *, head: int = 6, tail: int = 4) -> str | No
     return f"{value[:head]}...{value[-tail:]}"
 
 
+def _mask_cookie_preview(value: str | None, *, head: int = 12) -> str | None:
+    if not value:
+        return None
+    return f"{value[:head]}..."
+
+
 async def _maybe_await(value):
     if inspect.isawaitable(value):
         return await value
@@ -382,29 +388,33 @@ class AvailabilityBulkIn(BaseModel):
     limit: int = Field(500, ge=1, le=5000, description="Максимум товаров за одну операцию")
 
 
-class KaspiMcSessionIn(BaseModel):
-    merchant_uid: str = Field(..., min_length=3, max_length=128)
-    cookies: str = Field(..., min_length=3)
+class KaspiMcSessionUpsertIn(BaseModel):
+    cookie: str = Field(..., min_length=1, max_length=32768)
+    x_auth_version: int = Field(3, ge=1)
+    comment: str | None = None
 
 
 class KaspiMcSessionOut(BaseModel):
     merchant_uid: str
     is_active: bool
+    x_auth_version: int
+    comment: str | None = None
     created_at: datetime
     updated_at: datetime
     last_used_at: datetime | None = None
+    revoked_at: datetime | None = None
     last_error: str | None = None
+    last_error_code: str | None = None
+    last_error_at: datetime | None = None
     cookies_masked: str | None = None
 
 
-class KaspiMcSessionListOut(BaseModel):
-    items: list[KaspiMcSessionOut]
-
-
 class KaspiMcSyncOut(BaseModel):
-    rows_total: int
-    rows_ok: int
-    rows_failed: int
+    status: str
+    merchant_uid: str
+    fetched: int
+    upserted: int
+    updated: int
     errors: list[dict[str, Any]] = []
 
 
@@ -1985,17 +1995,22 @@ async def kaspi_catalog_import(
     response_model=KaspiMcSessionOut,
 )
 async def kaspi_mc_session_upsert(
-    payload: KaspiMcSessionIn,
+    payload: KaspiMcSessionUpsertIn,
+    merchant_uid: str | None = Query(None, alias="merchantUid"),
     current_user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_async_db),
 ):
     _require_admin(current_user)
     company_id = _resolve_company_id(current_user)
 
-    merchant_uid = (payload.merchant_uid or "").strip()
-    cookies = (payload.cookies or "").strip()
-    if not merchant_uid or not cookies:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="missing_merchant_uid_or_cookies")
+    merchant_uid = (merchant_uid or "").strip()
+    cookies = (payload.cookie or "").strip()
+    if not merchant_uid:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="missing_merchant_uid")
+    if not cookies:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="missing_cookie")
+    if len(cookies) > 32768:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="cookie_too_large")
 
     row = await KaspiMcSession.upsert_session(
         session,
@@ -2003,23 +2018,31 @@ async def kaspi_mc_session_upsert(
         merchant_uid=merchant_uid,
         cookies=cookies,
         is_active=True,
+        x_auth_version=payload.x_auth_version,
+        comment=payload.comment,
     )
 
+    cookies_masked = _mask_cookie_preview(cookies) if settings.is_development else None
     return KaspiMcSessionOut(
         merchant_uid=row.merchant_uid,
         is_active=row.is_active,
+        x_auth_version=row.x_auth_version,
+        comment=row.comment,
         created_at=row.created_at,
         updated_at=row.updated_at,
         last_used_at=row.last_used_at,
+        revoked_at=row.revoked_at,
         last_error=row.last_error,
-        cookies_masked=_mask_secret(cookies),
+        last_error_code=row.last_error_code,
+        last_error_at=row.last_error_at,
+        cookies_masked=cookies_masked,
     )
 
 
 @router.get(
     "/mc/session",
     summary="Kaspi MC session status",
-    response_model=KaspiMcSessionListOut,
+    response_model=KaspiMcSessionOut,
 )
 async def kaspi_mc_session_status(
     merchant_uid: str | None = Query(None, alias="merchantUid"),
@@ -2029,55 +2052,80 @@ async def kaspi_mc_session_status(
     _require_admin(current_user)
     company_id = _resolve_company_id(current_user)
 
-    q = sa.select(KaspiMcSession).where(KaspiMcSession.company_id == company_id)
-    if merchant_uid:
-        q = q.where(KaspiMcSession.merchant_uid == merchant_uid.strip())
+    merchant_uid = (merchant_uid or "").strip()
+    if not merchant_uid:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="missing_merchant_uid")
 
-    rows = (await session.execute(q)).scalars().all()
-    if merchant_uid and not rows:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="mc_session_not_found")
-
-    items: list[KaspiMcSessionOut] = []
-    for row in rows:
-        masked = None
-        if row.is_active:
-            cookies = await KaspiMcSession.get_cookies(
-                session,
-                company_id=company_id,
-                merchant_uid=row.merchant_uid,
-            )
-            masked = _mask_secret(cookies)
-        items.append(
-            KaspiMcSessionOut(
-                merchant_uid=row.merchant_uid,
-                is_active=row.is_active,
-                created_at=row.created_at,
-                updated_at=row.updated_at,
-                last_used_at=row.last_used_at,
-                last_error=row.last_error,
-                cookies_masked=masked,
+    row = (
+        (
+            await session.execute(
+                sa.select(KaspiMcSession).where(
+                    KaspiMcSession.company_id == company_id,
+                    KaspiMcSession.merchant_uid == merchant_uid,
+                )
             )
         )
+        .scalars()
+        .first()
+    )
+    if not row:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="mc_session_not_found")
 
-    return KaspiMcSessionListOut(items=items)
+    merchant_uid_value = row.merchant_uid
+    is_active = row.is_active
+    x_auth_version = row.x_auth_version
+    comment = row.comment
+    created_at = row.created_at
+    updated_at = row.updated_at
+    last_used_at = row.last_used_at
+    revoked_at = row.revoked_at
+    last_error = row.last_error
+    last_error_code = row.last_error_code
+    last_error_at = row.last_error_at
+
+    cookies_masked = None
+    if is_active and settings.is_development:
+        cookies = await KaspiMcSession.get_cookies(
+            session,
+            company_id=company_id,
+            merchant_uid=merchant_uid_value,
+        )
+        cookies_masked = _mask_cookie_preview(cookies)
+
+    return KaspiMcSessionOut(
+        merchant_uid=merchant_uid_value,
+        is_active=is_active,
+        x_auth_version=x_auth_version,
+        comment=comment,
+        created_at=created_at,
+        updated_at=updated_at,
+        last_used_at=last_used_at,
+        revoked_at=revoked_at,
+        last_error=last_error,
+        last_error_code=last_error_code,
+        last_error_at=last_error_at,
+        cookies_masked=cookies_masked,
+    )
 
 
 @router.post(
-    "/catalog/sync/mc",
+    "/mc/sync",
     summary="Kaspi MC catalog sync",
     response_model=KaspiMcSyncOut,
 )
-async def kaspi_catalog_sync_mc(
+async def kaspi_mc_sync(
     merchant_uid: str | None = Query(None, alias="merchantUid"),
+    limit: int = Query(50, ge=1, le=200, alias="limit"),
+    max_pages: int = Query(10, ge=1, le=1000, alias="max_pages"),
     current_user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_async_db),
 ):
     _require_admin(current_user)
     company_id = _resolve_company_id(current_user)
 
-    if not merchant_uid or not merchant_uid.strip():
+    merchant_uid = (merchant_uid or "").strip()
+    if not merchant_uid:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="missing_merchant_uid")
-    merchant_uid = merchant_uid.strip()
 
     row = (
         (
@@ -2110,25 +2158,69 @@ async def kaspi_catalog_sync_mc(
             company_id=company_id,
             merchant_uid=merchant_uid,
             cookies=cookies,
+            x_auth_version=row.x_auth_version or 3,
+            page_limit=limit,
+            max_pages=max_pages,
+        )
+        return KaspiMcSyncOut(
+            status="DONE",
+            merchant_uid=merchant_uid,
+            fetched=summary.get("rows_total", 0) or 0,
+            upserted=summary.get("rows_ok", 0) or 0,
+            updated=0,
+            errors=summary.get("errors", []),
         )
     except httpx.HTTPStatusError:
         await mark_mc_session_error(
             session,
             company_id=company_id,
             merchant_uid=merchant_uid,
-            error="kaspi_mc_upstream_error",
+            error_code="kaspi_mc_upstream_error",
         )
-        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail="kaspi_mc_upstream_error")
+        return KaspiMcSyncOut(
+            status="FAILED",
+            merchant_uid=merchant_uid,
+            fetched=0,
+            upserted=0,
+            updated=0,
+            errors=[{"error": "kaspi_mc_upstream_error"}],
+        )
     except httpx.RequestError:
         await mark_mc_session_error(
             session,
             company_id=company_id,
             merchant_uid=merchant_uid,
-            error="kaspi_mc_upstream_unavailable",
+            error_code="kaspi_mc_upstream_unavailable",
         )
-        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail="kaspi_mc_upstream_unavailable")
+        return KaspiMcSyncOut(
+            status="FAILED",
+            merchant_uid=merchant_uid,
+            fetched=0,
+            upserted=0,
+            updated=0,
+            errors=[{"error": "kaspi_mc_upstream_unavailable"}],
+        )
 
-    return KaspiMcSyncOut(**summary)
+
+@router.post(
+    "/catalog/sync/mc",
+    summary="Kaspi MC catalog sync (legacy)",
+    response_model=KaspiMcSyncOut,
+)
+async def kaspi_catalog_sync_mc(
+    merchant_uid: str | None = Query(None, alias="merchantUid"),
+    limit: int = Query(50, ge=1, le=200, alias="limit"),
+    max_pages: int = Query(10, ge=1, le=1000, alias="max_pages"),
+    current_user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_async_db),
+):
+    return await kaspi_mc_sync(
+        merchant_uid=merchant_uid,
+        limit=limit,
+        max_pages=max_pages,
+        current_user=current_user,
+        session=session,
+    )
 
 
 @router.get(

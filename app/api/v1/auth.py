@@ -54,6 +54,7 @@ from app.core.logging import audit_logger, get_logger
 from app.core.security import (
     create_access_token,
     create_refresh_token,
+    decode_and_validate,
     get_password_hash,
     require_company_admin,
     resolve_tenant_company_id,
@@ -166,8 +167,15 @@ def _gen_otp_code(length: int = OTP_CODE_LEN) -> str:
     return "".join(str(secrets.randbelow(10)) for _ in range(max(4, min(10, length))))
 
 
-def _issue_tokens_for_user(user_id: int) -> tuple[str, str]:
-    return create_access_token(subject=user_id), create_refresh_token(subject=user_id)
+def _issue_access_token_for_session(user: User, *, session_id: int) -> str:
+    return create_access_token(
+        subject=user.id,
+        extra={
+            "company_id": user.company_id,
+            "role": user.role,
+            "sid": session_id,
+        },
+    )
 
 
 def _hash_refresh_token(token: str) -> str:
@@ -375,7 +383,7 @@ async def register(user_data: UserCreate, request: Request, db: AsyncSession = D
                 data={"user_id": user.id, "company_id": company.id},
             )
 
-        access_token, refresh_token = _issue_tokens_for_user(user.id)
+        refresh_token = create_refresh_token(subject=user.id)
         session = UserSession(
             user_id=user.id,
             refresh_token=_hash_refresh_token(refresh_token),
@@ -385,6 +393,8 @@ async def register(user_data: UserCreate, request: Request, db: AsyncSession = D
             is_active=True,
         )
         db.add(session)
+        await db.flush()
+        access_token = _issue_access_token_for_session(user, session_id=session.id)
         user.last_login_at = _utcnow_naive()
         await db.commit()
 
@@ -476,7 +486,7 @@ async def login(login_data: UserLogin, request: Request, db: AsyncSession = Depe
         raise AuthenticationError("Account is inactive", "INACTIVE_ACCOUNT")
 
     # Success
-    access_token, refresh_token = _issue_tokens_for_user(user.id)
+    refresh_token = create_refresh_token(subject=user.id)
 
     session = UserSession(
         user_id=user.id,
@@ -487,6 +497,8 @@ async def login(login_data: UserLogin, request: Request, db: AsyncSession = Depe
         is_active=True,
     )
     db.add(session)
+    await db.flush()
+    access_token = _issue_access_token_for_session(user, session_id=session.id)
 
     user.last_login_at = _utcnow_naive()
     user.failed_login_attempts = 0
@@ -548,7 +560,7 @@ async def refresh_token(refresh_data: RefreshTokenRequest, db: AsyncSession = De
     if not user:
         raise AuthenticationError("refresh_invalid", "INVALID_REFRESH_TOKEN")
 
-    access_token, new_refresh_token = _issue_tokens_for_user(user.id)
+    new_refresh_token = create_refresh_token(subject=user.id)
     new_session = UserSession(
         user_id=user.id,
         refresh_token=_hash_refresh_token(new_refresh_token),
@@ -560,6 +572,8 @@ async def refresh_token(refresh_data: RefreshTokenRequest, db: AsyncSession = De
     session.is_active = False
     session.terminated_at = now
     db.add(new_session)
+    await db.flush()
+    access_token = _issue_access_token_for_session(user, session_id=new_session.id)
     await db.commit()
 
     return TokenResponse(
@@ -577,10 +591,40 @@ async def refresh_token_alias(refresh_data: RefreshTokenRequest, db: AsyncSessio
 
 
 @router.post("/logout", response_model=SuccessResponse)
-async def logout(refresh_data: RefreshTokenRequest, db: AsyncSession = Depends(get_async_db)):
+async def logout(refresh_data: RefreshTokenRequest, request: Request, db: AsyncSession = Depends(get_async_db)):
     """
     Выход из системы: деактивирует сессию по переданному refresh-токену.
     """
+    now = _utcnow_naive()
+
+    access_token = None
+    auth_header = request.headers.get("Authorization") or ""
+    if auth_header.lower().startswith("bearer "):
+        access_token = auth_header.split(" ", 1)[1].strip()
+    if not access_token:
+        access_token = request.cookies.get("access_token")
+
+    if access_token:
+        try:
+            payload = decode_and_validate(access_token, expected_type="access")
+        except Exception:
+            payload = None
+        if payload:
+            sid = payload.get("sid")
+            try:
+                sid_int = int(sid) if sid is not None else None
+            except Exception:
+                sid_int = None
+            if sid_int:
+                res = await db.execute(
+                    select(UserSession).where(UserSession.id == sid_int, UserSession.is_active.is_(True))
+                )
+                session = res.scalars().first()
+                if session:
+                    session.is_active = False
+                    session.terminated_at = now
+                    await db.commit()
+
     token_hash = _hash_refresh_token(refresh_data.refresh_token)
 
     res = await db.execute(
@@ -593,7 +637,7 @@ async def logout(refresh_data: RefreshTokenRequest, db: AsyncSession = Depends(g
 
     if session:
         session.is_active = False
-        session.terminated_at = _utcnow_naive()
+        session.terminated_at = now
         await db.commit()
 
     return SuccessResponse(message="Logged out successfully")
@@ -924,7 +968,7 @@ async def accept_invitation(payload: InvitationAccept, db: AsyncSession = Depend
 
     await db.refresh(user)
 
-    access_token, refresh_token = _issue_tokens_for_user(user.id)
+    refresh_token = create_refresh_token(subject=user.id)
     session = UserSession(
         user_id=user.id,
         refresh_token=hashlib.sha256(refresh_token.encode()).hexdigest(),
@@ -934,6 +978,8 @@ async def accept_invitation(payload: InvitationAccept, db: AsyncSession = Depend
         is_active=True,
     )
     db.add(session)
+    await db.flush()
+    access_token = _issue_access_token_for_session(user, session_id=session.id)
     await db.commit()
 
     return TokenResponse(

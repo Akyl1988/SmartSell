@@ -1,3 +1,5 @@
+import secrets
+
 import pytest
 from httpx import AsyncClient
 from sqlalchemy import select
@@ -42,8 +44,20 @@ async def test_invitation_owner_can_invite_admin(
     await async_db_session.commit()
 
     from app.core.security import create_access_token
+    from app.models.user import UserSession
 
-    token = create_access_token(subject=owner.id, extra={"company_id": company.id, "role": owner.role})
+    session = UserSession(
+        user_id=owner.id,
+        refresh_token=f"rt-{owner.id}-{secrets.token_urlsafe(8)}",
+        is_active=True,
+    )
+    async_db_session.add(session)
+    await async_db_session.commit()
+    await async_db_session.refresh(session)
+    token = create_access_token(
+        subject=owner.id,
+        extra={"company_id": company.id, "role": owner.role, "sid": session.id},
+    )
     headers = {"Authorization": f"Bearer {token}"}
 
     resp = await async_client.post(
@@ -98,8 +112,20 @@ async def test_invitation_employee_cannot_invite(
     await async_db_session.commit()
 
     from app.core.security import create_access_token
+    from app.models.user import UserSession
 
-    token = create_access_token(subject=employee.id, extra={"company_id": company.id, "role": employee.role})
+    session = UserSession(
+        user_id=employee.id,
+        refresh_token=f"rt-{employee.id}-{secrets.token_urlsafe(8)}",
+        is_active=True,
+    )
+    async_db_session.add(session)
+    await async_db_session.commit()
+    await async_db_session.refresh(session)
+    token = create_access_token(
+        subject=employee.id,
+        extra={"company_id": company.id, "role": employee.role, "sid": session.id},
+    )
     headers = {"Authorization": f"Bearer {token}"}
 
     resp = await async_client.post(

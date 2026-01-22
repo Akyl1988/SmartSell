@@ -1,10 +1,12 @@
+import secrets
+
 import pytest
 from sqlalchemy.orm import sessionmaker
 
 import tests.conftest as base_conftest
 from app.api.v1 import kaspi as kaspi_module
 from app.core.security import create_access_token, get_password_hash
-from app.models.user import User
+from app.models.user import User, UserSession
 
 TENANT_ENDPOINTS = [
     ("/api/v1/invoices", "get"),
@@ -41,7 +43,15 @@ def _platform_admin_headers_without_company() -> dict[str, str]:
             user.is_verified = True
         s.commit()
         s.refresh(user)
-        token = create_access_token(subject=user.id, extra={"role": "platform_admin"})
+        session = UserSession(
+            user_id=user.id,
+            refresh_token=f"rt-{user.id}-{secrets.token_urlsafe(8)}",
+            is_active=True,
+        )
+        s.add(session)
+        s.commit()
+        s.refresh(session)
+        token = create_access_token(subject=user.id, extra={"role": "platform_admin", "sid": session.id})
     return {"Authorization": f"Bearer {token}"}
 
 

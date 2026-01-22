@@ -33,10 +33,15 @@ def upgrade() -> None:
         sa.Column("merchant_uid", sa.String(length=128), nullable=False, index=True),
         sa.Column("cookies_ciphertext", postgresql.BYTEA(), nullable=False),
         sa.Column("is_active", sa.Boolean(), nullable=False, server_default=sa.text("true")),
+        sa.Column("x_auth_version", sa.Integer(), nullable=False, server_default=sa.text("3")),
+        sa.Column("comment", sa.Text(), nullable=True),
         sa.Column("created_at", sa.DateTime(), nullable=False),
         sa.Column("updated_at", sa.DateTime(), nullable=False),
         sa.Column("last_used_at", sa.DateTime(), nullable=True),
         sa.Column("last_error", sa.Text(), nullable=True),
+        sa.Column("last_error_code", sa.String(length=64), nullable=True),
+        sa.Column("last_error_at", sa.DateTime(), nullable=True),
+        sa.Column("revoked_at", sa.DateTime(), nullable=True),
         sa.UniqueConstraint("company_id", "merchant_uid", name="uq_kaspi_mc_sessions_company_merchant"),
     )
     op.create_index("ix_kaspi_mc_sessions_company_id", "kaspi_mc_sessions", ["company_id"])

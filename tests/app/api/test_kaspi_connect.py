@@ -12,6 +12,7 @@ Covers:
 """
 
 import json
+import secrets
 from unittest.mock import AsyncMock, patch
 
 import httpx
@@ -48,16 +49,29 @@ class TestKaspiConnect:
         await async_db_session.commit()
         return user, company
 
-    def _get_auth_header(self, user: User) -> dict:
+    async def _get_auth_header(self, async_db_session: AsyncSession, user: User) -> dict:
         """Helper to create auth header with valid JWT token."""
-        token = create_access_token(subject=user.id, extra={"company_id": user.company_id, "role": user.role})
+        from app.models.user import UserSession
+
+        session = UserSession(
+            user_id=user.id,
+            refresh_token=f"rt-{user.id}-{secrets.token_urlsafe(8)}",
+            is_active=True,
+        )
+        async_db_session.add(session)
+        await async_db_session.commit()
+        await async_db_session.refresh(session)
+        token = create_access_token(
+            subject=user.id,
+            extra={"company_id": user.company_id, "role": user.role, "sid": session.id},
+        )
         return {"Authorization": f"Bearer {token}"}
 
     @pytest.mark.asyncio
     async def test_connect_requires_company_name(self, async_client: AsyncClient, async_db_session: AsyncSession):
         """Test: missing company_name returns 422."""
         user, company = await self._create_user_and_company(async_db_session, "77001234567")
-        headers = self._get_auth_header(user)
+        headers = await self._get_auth_header(async_db_session, user)
 
         response = await async_client.post(
             "/api/v1/kaspi/connect",
@@ -76,7 +90,7 @@ class TestKaspiConnect:
     async def test_connect_rejects_blank_company_name(self, async_client: AsyncClient, async_db_session: AsyncSession):
         """Test: empty/whitespace company_name returns 422."""
         user, company = await self._create_user_and_company(async_db_session, "77001234568")
-        headers = self._get_auth_header(user)
+        headers = await self._get_auth_header(async_db_session, user)
 
         response = await async_client.post(
             "/api/v1/kaspi/connect",
@@ -95,7 +109,7 @@ class TestKaspiConnect:
     async def test_connect_updates_company_name(self, async_client: AsyncClient, async_db_session: AsyncSession):
         """Test: connect updates companies.name and companies.kaspi_store_id."""
         user, company = await self._create_user_and_company(async_db_session, "77001234569")
-        headers = self._get_auth_header(user)
+        headers = await self._get_auth_header(async_db_session, user)
 
         # Mock KaspiService.verify_token and KaspiStoreToken.upsert_token
         with patch("app.api.v1.kaspi.KaspiService") as mock_service_class, patch(
@@ -136,7 +150,7 @@ class TestKaspiConnect:
     async def test_connect_verify_false_skips_adapter(self, async_client: AsyncClient, async_db_session: AsyncSession):
         """Test: verify=false should save token without calling HTTP verification."""
         user, company = await self._create_user_and_company(async_db_session, "77001234570")
-        headers = self._get_auth_header(user)
+        headers = await self._get_auth_header(async_db_session, user)
 
         with patch("app.api.v1.kaspi.KaspiService") as mock_service_class, patch(
             "app.api.v1.kaspi.KaspiStoreToken.upsert_token"
@@ -165,7 +179,7 @@ class TestKaspiConnect:
     async def test_connect_stores_private_metadata(self, async_client: AsyncClient, async_db_session: AsyncSession):
         """Test: optional meta dict is stored in Company.settings (not exposed)."""
         user, company = await self._create_user_and_company(async_db_session, "77001234571")
-        headers = self._get_auth_header(user)
+        headers = await self._get_auth_header(async_db_session, user)
 
         meta = {"shop_title": "My Shop", "shop_url": "https://myshop.kz"}
 
@@ -201,7 +215,7 @@ class TestKaspiConnect:
     async def test_connect_response_safe_fields_only(self, async_client: AsyncClient, async_db_session: AsyncSession):
         """Test: response only includes safe fields (store_name, company_id, connected)."""
         user, company = await self._create_user_and_company(async_db_session, "77001234572")
-        headers = self._get_auth_header(user)
+        headers = await self._get_auth_header(async_db_session, user)
 
         with patch("app.api.v1.kaspi.KaspiStoreToken.upsert_token"):
             response = await async_client.post(
@@ -232,7 +246,7 @@ class TestKaspiConnect:
     async def test_connect_token_not_readable_from_api(self, async_client: AsyncClient, async_db_session: AsyncSession):
         """Test: token stored via KaspiStoreToken is encrypted and not readable."""
         user, company = await self._create_user_and_company(async_db_session, "77001234573")
-        headers = self._get_auth_header(user)
+        headers = await self._get_auth_header(async_db_session, user)
 
         with patch("app.api.v1.kaspi.KaspiStoreToken.upsert_token"):
             response = await async_client.post(
@@ -257,7 +271,7 @@ class TestKaspiConnect:
     async def test_connect_verify_true_calls_adapter(self, async_client: AsyncClient, async_db_session: AsyncSession):
         """Test: verify=true uses HTTP API and fails on 401 with 400 response."""
         user, company = await self._create_user_and_company(async_db_session, "77001234574")
-        headers = self._get_auth_header(user)
+        headers = await self._get_auth_header(async_db_session, user)
 
         # Mock service to raise HTTPStatusError with 401
         with patch("app.api.v1.kaspi.KaspiService") as mock_service_class, patch(
@@ -292,7 +306,7 @@ class TestKaspiConnect:
     async def test_connect_verify_403_returns_400(self, async_client: AsyncClient, async_db_session: AsyncSession):
         """Test: verify=true with 403 Forbidden returns 400 kaspi_invalid_token."""
         user, company = await self._create_user_and_company(async_db_session, "77001234575")
-        headers = self._get_auth_header(user)
+        headers = await self._get_auth_header(async_db_session, user)
 
         with patch("app.api.v1.kaspi.KaspiService") as mock_service_class, patch(
             "app.api.v1.kaspi.KaspiStoreToken.upsert_token"
@@ -326,7 +340,7 @@ class TestKaspiConnect:
     ):
         """Test: verify=true with network error returns 502 kaspi_upstream_error."""
         user, company = await self._create_user_and_company(async_db_session, "77001234576")
-        headers = self._get_auth_header(user)
+        headers = await self._get_auth_header(async_db_session, user)
 
         with patch("app.api.v1.kaspi.KaspiService") as mock_service_class, patch(
             "app.api.v1.kaspi.KaspiStoreToken.upsert_token"
@@ -354,7 +368,7 @@ class TestKaspiConnect:
     async def test_connect_verify_timeout_returns_502(self, async_client: AsyncClient, async_db_session: AsyncSession):
         """Test: verify=true with timeout returns 502 kaspi_upstream_error."""
         user, company = await self._create_user_and_company(async_db_session, "77001234577")
-        headers = self._get_auth_header(user)
+        headers = await self._get_auth_header(async_db_session, user)
 
         with patch("app.api.v1.kaspi.KaspiService") as mock_service_class, patch(
             "app.api.v1.kaspi.KaspiStoreToken.upsert_token"
@@ -407,7 +421,7 @@ class TestKaspiConnect:
         await async_db_session.commit()
 
         # User1 should only be able to connect to their own company
-        headers1 = self._get_auth_header(user1)
+        headers1 = await self._get_auth_header(async_db_session, user1)
 
         with patch("app.api.v1.kaspi.KaspiStoreToken.upsert_token"):
             response = await async_client.post(
