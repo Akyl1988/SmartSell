@@ -2771,7 +2771,19 @@ async def kaspi_feed_upload_create(
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="local_file_path_required")
 
     company_id = _resolve_company_id(current_user)
-    store_name, _ = await _resolve_kaspi_token(session, company_id)
+    store_name, token = await _resolve_kaspi_token(session, company_id)
+
+    base_url = os.getenv("KASPI_FEED_BASE_URL", "https://kaspi.kz")
+    upload_url = os.getenv("KASPI_FEED_UPLOAD_URL", f"{base_url.rstrip('/')}/shop/api/feeds/import")
+    status_url = os.getenv("KASPI_FEED_STATUS_URL", f"{base_url.rstrip('/')}/shop/api/feeds/import/status")
+    result_url = os.getenv("KASPI_FEED_RESULT_URL", f"{base_url.rstrip('/')}/shop/api/feeds/import/result")
+    extra_env = {
+        "KASPI_FEED_UPLOAD_URL": upload_url,
+        "KASPI_FEED_STATUS_URL": status_url,
+        "KASPI_FEED_RESULT_URL": result_url,
+        "KASPI_FEED_TOKEN": token,
+        "KASPI_TOKEN": token,
+    }
 
     xml_body: str
     if source == "export_id":
@@ -2813,7 +2825,12 @@ async def kaspi_feed_upload_create(
 
     try:
         tmp_path.write_text(xml_body, encoding="utf-8")
-        response = KaspiAdapter().feed_upload(store_name, str(tmp_path), comment=body.comment)
+        response = KaspiAdapter().feed_upload(
+            store_name,
+            str(tmp_path),
+            comment=body.comment,
+            extra_env=extra_env,
+        )
     except KaspiAdapterError as exc:
         raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc)) from exc
     except Exception as exc:
@@ -2954,10 +2971,25 @@ async def kaspi_feed_upload_refresh(
     if not record:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="upload_not_found")
 
-    store_name, _ = await _resolve_kaspi_token(session, company_id)
+    store_name, token = await _resolve_kaspi_token(session, company_id)
+    base_url = os.getenv("KASPI_FEED_BASE_URL", "https://kaspi.kz")
+    upload_url = os.getenv("KASPI_FEED_UPLOAD_URL", f"{base_url.rstrip('/')}/shop/api/feeds/import")
+    status_url = os.getenv("KASPI_FEED_STATUS_URL", f"{base_url.rstrip('/')}/shop/api/feeds/import/status")
+    result_url = os.getenv("KASPI_FEED_RESULT_URL", f"{base_url.rstrip('/')}/shop/api/feeds/import/result")
+    extra_env = {
+        "KASPI_FEED_UPLOAD_URL": upload_url,
+        "KASPI_FEED_STATUS_URL": status_url,
+        "KASPI_FEED_RESULT_URL": result_url,
+        "KASPI_FEED_TOKEN": token,
+        "KASPI_TOKEN": token,
+    }
     now = datetime.utcnow()
     try:
-        response = KaspiAdapter().feed_import_status(store_name, import_id=record.import_code)
+        response = KaspiAdapter().feed_import_status(
+            store_name,
+            import_id=record.import_code,
+            extra_env=extra_env,
+        )
     except KaspiAdapterError as exc:
         raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc)) from exc
     except Exception as exc:
