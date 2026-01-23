@@ -7,6 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.crypto import decrypt_json, encrypt_json
 from app.core.logging import get_logger
+from app.core.provider_registry import ProviderRegistry
 from app.models.integration_provider import IntegrationProviderEvent
 from app.models.integration_provider_config import IntegrationProviderConfig
 
@@ -160,6 +161,8 @@ class ProviderConfigService:
         await _commit(db)
         await _refresh(db, item)
         await _refresh(db, event)
+
+        await ProviderRegistry.notify_change(domain_key, None)
         return item
 
     @classmethod
