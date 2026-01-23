@@ -74,6 +74,9 @@ os.environ.setdefault("PYTHONIOENCODING", "UTF-8")
 
 # Disable rate limiting in tests by default (can be overridden explicitly)
 os.environ.setdefault("RATE_LIMIT_ENABLED", "0")
+os.environ.setdefault("TESTING", "1")
+os.environ.setdefault("FORCE_INMEMORY_BACKENDS", "1")
+os.environ.setdefault("TEST_REDIS_DISABLED", "1")
 
 # РЇРІРЅРѕ СѓРєР°Р¶РµРј "СЃРѕРІСЂРµРјРµРЅРЅС‹Р№" strict-СЂРµР¶РёРј asyncio, РµСЃР»Рё РїР»Р°РіРёРЅ РЅРµ РґРµР»Р°РµС‚ СЌС‚РѕРіРѕ СЃР°Рј.
 os.environ.setdefault("PYTEST_ASYNCIO_MODE", "strict")

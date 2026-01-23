@@ -34,17 +34,21 @@ import os
 import secrets
 import time
 from datetime import datetime, timedelta
+from decimal import Decimal
 from hashlib import sha256
+from pathlib import Path
 from typing import Any
-from xml.sax.saxutils import escape, quoteattr
+from uuid import uuid4
+from xml.etree import ElementTree as ET
 
 import httpx
 import sqlalchemy as sa
 from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, Response, UploadFile, status
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import bindparam, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.config import settings
 from app.core.db import get_async_db  # noqa — для совместимости импорт-алиас
 from app.core.logging import get_logger
 from app.core.security import get_current_user, resolve_tenant_company_id
@@ -58,6 +62,7 @@ from app.models.kaspi_catalog_product import KaspiCatalogProduct
 from app.models.kaspi_feed_export import KaspiFeedExport
 from app.models.kaspi_feed_public_token import KaspiFeedPublicToken
 from app.models.kaspi_goods_import import KaspiGoodsImport
+from app.models.kaspi_mc_session import KaspiMcSession
 from app.models.kaspi_offer import KaspiOffer
 from app.models.kaspi_order_sync_state import KaspiOrderSyncState
 from app.models.marketplace import KaspiStoreToken
@@ -72,6 +77,7 @@ from app.schemas.kaspi import (
     OrdersQuery,
 )
 from app.services.kaspi_goods_client import KaspiGoodsClient, KaspiNotAuthenticated
+from app.services.kaspi_mc_sync import mark_mc_session_error, sync_kaspi_mc_offers
 from app.services.kaspi_service import KaspiService, KaspiSyncAlreadyRunning
 
 logger = get_logger(__name__)
@@ -87,6 +93,14 @@ STATUS_LAST_ERROR_MAX_LEN = 500
 
 def normalize_name(name: str) -> str:
     return name.strip().lower()
+
+
+def _mask_secret(value: str | None, *, head: int = 6, tail: int = 4) -> str | None:
+    if not value:
+        return None
+    if len(value) <= head + tail:
+        return value
+    return f"{value[:head]}...{value[-tail:]}"
 
 
 async def _maybe_await(value):
@@ -297,31 +311,136 @@ def _truncate_raw(raw: Any, max_len: int = 2000) -> str | None:
     return f"{text_value[:max_len]}..."
 
 
+def _normalize_kaspi_response(payload: Any) -> dict[str, Any]:
+    if isinstance(payload, dict):
+        return payload
+    if isinstance(payload, list):
+        return {"data": payload}
+    if payload is None:
+        return {}
+    return {"raw": payload}
+
+
+def _extract_error_info(payload: Any) -> tuple[str | None, str | None]:
+    if not isinstance(payload, dict):
+        return None, None
+    code = payload.get("errorCode") or payload.get("error_code") or payload.get("code") or payload.get("error")
+    message = payload.get("errorMessage") or payload.get("error_message") or payload.get("message")
+    return (str(code) if code else None), (str(message) if message else None)
+
+
+def _serialize_raw_response(payload: Any) -> str | None:
+    if payload is None:
+        return None
+    if isinstance(payload, dict | list):
+        try:
+            return json.dumps(payload, ensure_ascii=False, default=str)
+        except Exception:
+            return str(payload)
+    return str(payload)
+
+
+_KASPI_NS = "kaspiShopping"
+ET.register_namespace("", _KASPI_NS)
+
+
+def _to_unsigned_int(value: Any) -> int | None:
+    if value is None:
+        return None
+    try:
+        num = int(float(value))
+    except Exception:
+        return None
+    return max(num, 0)
+
+
 def _format_price(value: Any) -> str:
-    return f"{float(value):.2f}"
+    try:
+        dec = Decimal(str(value if value is not None else 0))
+    except Exception:
+        dec = Decimal("0")
+    try:
+        dec = dec.quantize(Decimal("0.01"))
+    except Exception:
+        dec = Decimal("0.00")
+    return str(dec)
 
 
-def _build_kaspi_offers_xml(offers: list[KaspiOffer]) -> str:
-    now = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
-    lines = [f"<yml_catalog date={quoteattr(now)}>", "<shop>", "<offers>"]
+def _extract_city_prices(raw: Any) -> list[dict[str, str]]:
+    if not isinstance(raw, dict):
+        return []
+    city_prices = raw.get("cityPrices") or raw.get("cityprices")
+    items: list[dict[str, str]] = []
+    if isinstance(city_prices, list):
+        for entry in city_prices:
+            if not isinstance(entry, dict):
+                continue
+            city_id = entry.get("cityId") or entry.get("city_id")
+            price = _to_unsigned_int(entry.get("value") or entry.get("price"))
+            if city_id is None or price is None:
+                continue
+            oldprice = _to_unsigned_int(entry.get("oldprice") or entry.get("oldPrice"))
+            item = {"cityId": str(city_id), "value": str(price)}
+            if oldprice is not None:
+                item["oldprice"] = str(oldprice)
+            items.append(item)
+    elif isinstance(city_prices, dict):
+        if "cityId" in city_prices:
+            city_id = city_prices.get("cityId")
+            price = _to_unsigned_int(city_prices.get("value") or city_prices.get("price"))
+            if city_id is not None and price is not None:
+                oldprice = _to_unsigned_int(city_prices.get("oldprice") or city_prices.get("oldPrice"))
+                item = {"cityId": str(city_id), "value": str(price)}
+                if oldprice is not None:
+                    item["oldprice"] = str(oldprice)
+                items.append(item)
+        else:
+            for city_id, price_val in city_prices.items():
+                price = _to_unsigned_int(price_val)
+                if city_id is None or price is None:
+                    continue
+                items.append({"cityId": str(city_id), "value": str(price)})
+    return items
+
+
+def _build_kaspi_offers_xml(offers: list[KaspiOffer], *, company: str, merchant_id: str) -> str:
+    date_str = datetime.now().strftime("%Y-%m-%d %H:%M")
+    root = ET.Element(f"{{{_KASPI_NS}}}kaspi_catalog", {"date": date_str})
+    company_el = ET.SubElement(root, f"{{{_KASPI_NS}}}company")
+    company_el.text = str(company)
+    merchant_el = ET.SubElement(root, f"{{{_KASPI_NS}}}merchantid")
+    merchant_el.text = str(merchant_id)
+    offers_el = ET.SubElement(root, f"{{{_KASPI_NS}}}offers")
 
     for offer in offers:
-        sku = offer.sku
-        name = offer.title or sku
-        lines.append(f"<offer id={quoteattr(str(sku))}>")
-        lines.append(f"<name>{escape(str(name))}</name>")
-        if offer.price is not None:
-            lines.append(f"<price>{_format_price(offer.price)}</price>")
-        if offer.old_price is not None:
-            lines.append(f"<oldprice>{_format_price(offer.old_price)}</oldprice>")
-        if offer.stock_count is not None:
-            lines.append(f"<stock_quantity>{offer.stock_count}</stock_quantity>")
-        if offer.pre_order is not None:
-            lines.append(f"<preorder>{str(bool(offer.pre_order)).lower()}</preorder>")
-        lines.append("</offer>")
+        sku = (offer.sku or "").strip()
+        if not sku:
+            continue
+        model_text = (offer.title or offer.master_sku or sku).strip() or sku
+        offer_el = ET.SubElement(offers_el, f"{{{_KASPI_NS}}}offer", {"sku": sku})
+        model_el = ET.SubElement(offer_el, f"{{{_KASPI_NS}}}model")
+        model_el.text = model_text
 
-    lines.extend(["</offers>", "</shop>", "</yml_catalog>"])
-    return "\n".join(lines)
+        raw = offer.raw or {}
+        city_prices = _extract_city_prices(raw)
+        if city_prices:
+            cityprices_el = ET.SubElement(offer_el, f"{{{_KASPI_NS}}}cityprices")
+            for entry in city_prices:
+                attrs = {"cityId": entry["cityId"]}
+                if "oldprice" in entry:
+                    attrs["oldprice"] = entry["oldprice"]
+                city_el = ET.SubElement(cityprices_el, f"{{{_KASPI_NS}}}cityprice", attrs)
+                city_el.text = entry["value"]
+        else:
+            price_value = _format_price(offer.price)
+            attrs: dict[str, str] = {}
+            if offer.old_price is not None:
+                attrs["oldprice"] = _format_price(offer.old_price)
+            price_el = ET.SubElement(offer_el, f"{{{_KASPI_NS}}}price", attrs)
+            price_el.text = price_value
+
+    xml_bytes = ET.tostring(root, encoding="utf-8", xml_declaration=True)
+    return xml_bytes.decode("utf-8")
 
 
 def _goods_import_to_out(record: KaspiGoodsImport) -> KaspiGoodsImportRecordOut:
@@ -339,6 +458,27 @@ def _goods_import_to_out(record: KaspiGoodsImport) -> KaspiGoodsImportRecordOut:
         updated_at=record.updated_at,
         last_checked_at=record.last_checked_at,
         revoked_at=record.revoked_at,
+    )
+
+
+def _feed_upload_to_out(record: KaspiGoodsImport) -> KaspiFeedUploadRecordOut:
+    return KaspiFeedUploadRecordOut(
+        id=str(record.id),
+        merchant_uid=record.merchant_uid or "",
+        import_code=record.import_code,
+        status=record.status,
+        source=record.source,
+        comment=record.comment,
+        request_json=record.request_json,
+        status_json=record.status_json,
+        result_json=record.result_json,
+        raw_response=record.raw_response,
+        error_code=record.error_code,
+        error_message=record.error_message,
+        last_error_at=record.last_error_at,
+        last_checked_at=record.last_checked_at,
+        created_at=record.created_at,
+        updated_at=record.updated_at,
     )
 
 
@@ -369,6 +509,32 @@ class AvailabilitySyncIn(BaseModel):
 
 class AvailabilityBulkIn(BaseModel):
     limit: int = Field(500, ge=1, le=5000, description="Максимум товаров за одну операцию")
+
+
+class KaspiMcSessionIn(BaseModel):
+    merchant_uid: str = Field(..., min_length=3, max_length=128)
+    cookies: str = Field(..., min_length=3)
+
+
+class KaspiMcSessionOut(BaseModel):
+    merchant_uid: str
+    is_active: bool
+    created_at: datetime
+    updated_at: datetime
+    last_used_at: datetime | None = None
+    last_error: str | None = None
+    cookies_masked: str | None = None
+
+
+class KaspiMcSessionListOut(BaseModel):
+    items: list[KaspiMcSessionOut]
+
+
+class KaspiMcSyncOut(BaseModel):
+    rows_total: int
+    rows_ok: int
+    rows_failed: int
+    errors: list[dict[str, Any]] = []
 
 
 class KaspiTokenMaskedOut(BaseModel):
@@ -948,8 +1114,6 @@ async def kaspi_autosync_status(
     с конфигурацией и видимостью scheduler.
     Не требует админских прав, но показывает глобальную статистику по всем компаниям.
     """
-    import os
-
     from app.core.config import settings
 
     # Получаем configuration
@@ -1130,8 +1294,8 @@ class KaspiProductListOut(BaseModel):
 
 
 class KaspiGoodsImportIn(BaseModel):
-    product_ids: list[int] | None = None
     payload: list[dict[str, Any]] | None = None
+    product_ids: list[int] | None = None
     content_type: str | None = None
 
 
@@ -1172,6 +1336,33 @@ class KaspiGoodsImportRecordOut(BaseModel):
     updated_at: datetime
     last_checked_at: datetime | None = None
     revoked_at: datetime | None = None
+
+
+class KaspiFeedUploadIn(BaseModel):
+    merchant_uid: str = Field(..., min_length=3, max_length=128)
+    source: str = Field(..., description="public_token | export_id | local_file_path")
+    comment: str | None = Field(None, max_length=500)
+    export_id: str | None = None
+    local_file_path: str | None = None
+
+
+class KaspiFeedUploadRecordOut(BaseModel):
+    id: str
+    merchant_uid: str
+    import_code: str
+    status: str
+    source: str | None = None
+    comment: str | None = None
+    request_json: dict[str, Any] | list[dict[str, Any]]
+    status_json: dict[str, Any] | None = None
+    result_json: dict[str, Any] | None = None
+    raw_response: str | None = None
+    error_code: str | None = None
+    error_message: str | None = None
+    last_error_at: datetime | None = None
+    last_checked_at: datetime | None = None
+    created_at: datetime
+    updated_at: datetime
 
 
 class KaspiTokenHealthOut(BaseModel):
@@ -1503,6 +1694,8 @@ async def kaspi_goods_import_create(
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="NOT_AUTHENTICATED") from exc
     except httpx.HTTPStatusError:
         raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail="kaspi_upstream_error")
+    except httpx.RequestError:
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail="kaspi_upstream_unavailable")
 
     import_code = _extract_import_code(response)
     if not import_code:
@@ -1606,6 +1799,12 @@ async def kaspi_goods_import_refresh(
         record.last_checked_at = now
         await session.commit()
         raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail="kaspi_upstream_error")
+    except httpx.RequestError:
+        record.error_code = "kaspi_request_error"
+        record.error_message = "kaspi_upstream_unavailable"
+        record.last_checked_at = now
+        await session.commit()
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail="kaspi_upstream_unavailable")
 
     status_value = status_response.get("status") or record.status
     record.status = str(status_value)
@@ -1654,9 +1853,17 @@ async def kaspi_token_health(
         "Accept": "application/json",
     }
 
-    async with httpx.AsyncClient(timeout=30.0) as client:
-        orders_resp = await client.get(orders_url, headers=orders_headers, params=orders_params)
-        goods_resp = await client.get("https://kaspi.kz/shop/api/products/import/schema", headers=goods_headers)
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            orders_resp = await client.get(orders_url, headers=orders_headers, params=orders_params)
+            goods_resp = await client.get("https://kaspi.kz/shop/api/products/import/schema", headers=goods_headers)
+    except httpx.RequestError:
+        return KaspiTokenHealthOut(
+            ok=False,
+            orders_http=0,
+            goods_http=0,
+            cause="upstream_unavailable",
+        )
 
     cause = None
     if orders_resp.status_code == 401 or goods_resp.status_code == 401:
@@ -1704,15 +1911,24 @@ async def kaspi_token_selftest(
         "Accept": "application/json",
     }
 
-    async with httpx.AsyncClient(timeout=30.0) as client:
-        orders_resp = await client.get(orders_url, headers=orders_headers, params=orders_params)
-        goods_schema_resp = await client.get(
-            "https://kaspi.kz/shop/api/products/import/schema",
-            headers=goods_headers,
-        )
-        goods_categories_resp = await client.get(
-            "https://kaspi.kz/shop/api/products/classification/categories",
-            headers=goods_headers,
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            orders_resp = await client.get(orders_url, headers=orders_headers, params=orders_params)
+            goods_schema_resp = await client.get(
+                "https://kaspi.kz/shop/api/products/import/schema",
+                headers=goods_headers,
+            )
+            goods_categories_resp = await client.get(
+                "https://kaspi.kz/shop/api/products/classification/categories",
+                headers=goods_headers,
+            )
+    except httpx.RequestError:
+        return KaspiTokenSelftestOut(
+            orders_http=0,
+            goods_schema_http=0,
+            goods_categories_http=0,
+            goods_access=None,
+            orders_error="upstream_unavailable",
         )
 
     if orders_resp.status_code == 401:
@@ -1914,6 +2130,166 @@ async def kaspi_catalog_import(
         rows_failed=rows_failed,
         errors=row_errors,
     )
+
+
+# ============================= MC SESSION + SYNC =============================
+#
+# TODO(MVP-DEFERRED): Kaspi Merchant Cabinet (MC) cookie-based automation is
+# experimental and deferred. MVP uses official flows only: Orders API, XML
+# feed generation/public link, and goods import/export. MC automation would
+# require browser automation (e.g., Playwright) and is out of scope for now.
+
+
+@router.post(
+    "/mc/session",
+    summary="Upsert Kaspi MC session cookies",
+    response_model=KaspiMcSessionOut,
+)
+async def kaspi_mc_session_upsert(
+    payload: KaspiMcSessionIn,
+    current_user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_async_db),
+):
+    _require_admin(current_user)
+    company_id = _resolve_company_id(current_user)
+
+    merchant_uid = (payload.merchant_uid or "").strip()
+    cookies = (payload.cookies or "").strip()
+    if not merchant_uid or not cookies:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="missing_merchant_uid_or_cookies")
+
+    row = await KaspiMcSession.upsert_session(
+        session,
+        company_id=company_id,
+        merchant_uid=merchant_uid,
+        cookies=cookies,
+        is_active=True,
+    )
+
+    return KaspiMcSessionOut(
+        merchant_uid=row.merchant_uid,
+        is_active=row.is_active,
+        created_at=row.created_at,
+        updated_at=row.updated_at,
+        last_used_at=row.last_used_at,
+        last_error=row.last_error,
+        cookies_masked=_mask_secret(cookies),
+    )
+
+
+@router.get(
+    "/mc/session",
+    summary="Kaspi MC session status",
+    response_model=KaspiMcSessionListOut,
+)
+async def kaspi_mc_session_status(
+    merchant_uid: str | None = Query(None, alias="merchantUid"),
+    current_user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_async_db),
+):
+    _require_admin(current_user)
+    company_id = _resolve_company_id(current_user)
+
+    q = sa.select(KaspiMcSession).where(KaspiMcSession.company_id == company_id)
+    if merchant_uid:
+        q = q.where(KaspiMcSession.merchant_uid == merchant_uid.strip())
+
+    rows = (await session.execute(q)).scalars().all()
+    if merchant_uid and not rows:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="mc_session_not_found")
+
+    items: list[KaspiMcSessionOut] = []
+    for row in rows:
+        masked = None
+        if row.is_active:
+            cookies = await KaspiMcSession.get_cookies(
+                session,
+                company_id=company_id,
+                merchant_uid=row.merchant_uid,
+            )
+            masked = _mask_secret(cookies)
+        items.append(
+            KaspiMcSessionOut(
+                merchant_uid=row.merchant_uid,
+                is_active=row.is_active,
+                created_at=row.created_at,
+                updated_at=row.updated_at,
+                last_used_at=row.last_used_at,
+                last_error=row.last_error,
+                cookies_masked=masked,
+            )
+        )
+
+    return KaspiMcSessionListOut(items=items)
+
+
+@router.post(
+    "/catalog/sync/mc",
+    summary="Kaspi MC catalog sync",
+    response_model=KaspiMcSyncOut,
+)
+async def kaspi_catalog_sync_mc(
+    merchant_uid: str | None = Query(None, alias="merchantUid"),
+    current_user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_async_db),
+):
+    _require_admin(current_user)
+    company_id = _resolve_company_id(current_user)
+
+    if not merchant_uid or not merchant_uid.strip():
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="missing_merchant_uid")
+    merchant_uid = merchant_uid.strip()
+
+    row = (
+        (
+            await session.execute(
+                sa.select(KaspiMcSession).where(
+                    KaspiMcSession.company_id == company_id,
+                    KaspiMcSession.merchant_uid == merchant_uid,
+                )
+            )
+        )
+        .scalars()
+        .first()
+    )
+    if not row:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="mc_session_not_found")
+    if not row.is_active:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="mc_session_inactive")
+
+    cookies = await KaspiMcSession.get_cookies(
+        session,
+        company_id=company_id,
+        merchant_uid=merchant_uid,
+    )
+    if not cookies:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="mc_session_not_configured")
+
+    try:
+        summary = await sync_kaspi_mc_offers(
+            session,
+            company_id=company_id,
+            merchant_uid=merchant_uid,
+            cookies=cookies,
+        )
+    except httpx.HTTPStatusError:
+        await mark_mc_session_error(
+            session,
+            company_id=company_id,
+            merchant_uid=merchant_uid,
+            error="kaspi_mc_upstream_error",
+        )
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail="kaspi_mc_upstream_error")
+    except httpx.RequestError:
+        await mark_mc_session_error(
+            session,
+            company_id=company_id,
+            merchant_uid=merchant_uid,
+            error="kaspi_mc_upstream_unavailable",
+        )
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail="kaspi_mc_upstream_unavailable")
+
+    return KaspiMcSyncOut(**summary)
 
 
 @router.get(
@@ -2227,6 +2603,9 @@ class KaspiFeedExportOut(BaseModel):
 
 
 class KaspiFeedPublicTokenIn(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
+    merchant_uid: str = Field(..., min_length=1, alias="merchantUid")
     comment: str | None = None
 
 
@@ -2324,7 +2703,9 @@ async def kaspi_feed_export_create(
             .order_by(KaspiOffer.updated_at.desc())
         )
         offers = result.scalars().all()
-        xml_body = _build_kaspi_offers_xml(offers)
+        company = await session.get(Company, company_id)
+        company_name = (company.name if company else None) or f"Company {company_id}"
+        xml_body = _build_kaspi_offers_xml(offers, company=company_name, merchant_id=merchant_uid)
         checksum = sha256(xml_body.encode("utf-8")).hexdigest()
         duration_ms = int((time.perf_counter() - started_perf) * 1000)
 
@@ -2373,6 +2754,277 @@ async def kaspi_feed_exports_list(
     )
     exports = result.scalars().all()
     return [_feed_export_to_out(export) for export in exports]
+
+
+@router.post(
+    "/feed/uploads",
+    summary="Upload Kaspi offers feed",
+    response_model=KaspiFeedUploadRecordOut,
+)
+async def kaspi_feed_upload_create(
+    body: KaspiFeedUploadIn,
+    current_user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_async_db),
+):
+    _require_admin(current_user)
+
+    merchant_uid = (body.merchant_uid or "").strip()
+    if not merchant_uid:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="missing_merchant_uid")
+
+    source = (body.source or "").strip()
+    allowed_sources = {"public_token", "export_id", "local_file_path"}
+    if source not in allowed_sources:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="invalid_source")
+
+    if source == "export_id" and not body.export_id:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="export_id_required")
+    if source == "local_file_path" and not body.local_file_path:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="local_file_path_required")
+
+    company_id = _resolve_company_id(current_user)
+    store_name, token = await _resolve_kaspi_token(session, company_id)
+
+    base_url = os.getenv("KASPI_FEED_BASE_URL", "https://kaspi.kz")
+    upload_url = os.getenv("KASPI_FEED_UPLOAD_URL", f"{base_url.rstrip('/')}/shop/api/feeds/import")
+    status_url = os.getenv("KASPI_FEED_STATUS_URL", f"{base_url.rstrip('/')}/shop/api/feeds/import/status")
+    result_url = os.getenv("KASPI_FEED_RESULT_URL", f"{base_url.rstrip('/')}/shop/api/feeds/import/result")
+    extra_env = {
+        "KASPI_FEED_UPLOAD_URL": upload_url,
+        "KASPI_FEED_STATUS_URL": status_url,
+        "KASPI_FEED_RESULT_URL": result_url,
+        "KASPI_FEED_TOKEN": token,
+        "KASPI_TOKEN": token,
+    }
+
+    xml_body: str
+    if source == "export_id":
+        export = await session.get(KaspiFeedExport, body.export_id)
+        if not export or export.company_id != company_id:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="export_not_found")
+        if not export.payload_text:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="export_payload_missing")
+        xml_body = export.payload_text
+    elif source == "local_file_path":
+        file_path = Path(body.local_file_path)
+        if not file_path.is_file():
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="local_file_not_found")
+        xml_body = file_path.read_text(encoding="utf-8", errors="replace")
+    else:
+        offers = (
+            (
+                await session.execute(
+                    sa.select(KaspiOffer)
+                    .where(
+                        KaspiOffer.company_id == company_id,
+                        KaspiOffer.merchant_uid == merchant_uid,
+                    )
+                    .order_by(KaspiOffer.updated_at.desc())
+                )
+            )
+            .scalars()
+            .all()
+        )
+        if not offers:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="offers_not_found")
+        company = await session.get(Company, company_id)
+        company_name = (company.name if company else None) or f"Company {company_id}"
+        xml_body = _build_kaspi_offers_xml(offers, company=company_name, merchant_id=merchant_uid)
+
+    tmp_dir = settings.tmp_dir()
+    tmp_dir.mkdir(parents=True, exist_ok=True)
+    tmp_path = tmp_dir / f"kaspi_feed_{company_id}_{uuid4().hex}.xml"
+
+    try:
+        tmp_path.write_text(xml_body, encoding="utf-8")
+        response = KaspiAdapter().feed_upload(
+            store_name,
+            str(tmp_path),
+            comment=body.comment,
+            extra_env=extra_env,
+        )
+    except KaspiAdapterError as exc:
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc)) from exc
+    except Exception as exc:
+        logger.error("Kaspi feed upload failed: company_id=%s error=%s", company_id, exc)
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail="kaspi_feed_upload_failed") from exc
+    finally:
+        try:
+            if tmp_path.exists():
+                tmp_path.unlink()
+        except Exception:
+            logger.warning("Kaspi feed upload temp cleanup failed: path=%s", tmp_path)
+
+    normalized = _normalize_kaspi_response(response)
+    import_code = _extract_import_code(normalized)
+    if not import_code:
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail="kaspi_import_code_missing")
+
+    now = datetime.utcnow()
+    error_code, error_message = _extract_error_info(normalized)
+
+    record = KaspiGoodsImport(
+        company_id=company_id,
+        created_by_user_id=current_user.id,
+        merchant_uid=merchant_uid,
+        import_code=str(import_code),
+        status="PENDING",
+        source=source,
+        comment=(body.comment or None),
+        request_json={
+            "source": source,
+            "export_id": body.export_id,
+            "local_file_path": body.local_file_path,
+            "comment": body.comment,
+        },
+        status_json=normalized,
+        result_json=None,
+        error_code=error_code,
+        error_message=error_message,
+        last_error_at=now if error_code or error_message else None,
+        last_checked_at=now,
+        raw_response=_serialize_raw_response(response),
+    )
+    session.add(record)
+    await session.commit()
+    await session.refresh(record)
+
+    return _feed_upload_to_out(record)
+
+
+@router.get(
+    "/feed/uploads",
+    summary="List Kaspi feed uploads",
+    response_model=list[KaspiFeedUploadRecordOut],
+)
+async def kaspi_feed_uploads_list(
+    limit: int = 50,
+    offset: int = 0,
+    current_user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_async_db),
+):
+    _require_admin(current_user)
+    company_id = _resolve_company_id(current_user)
+
+    limit = max(1, min(limit, 200))
+    offset = max(0, offset)
+
+    result = await session.execute(
+        sa.select(KaspiGoodsImport)
+        .where(
+            KaspiGoodsImport.company_id == company_id,
+            KaspiGoodsImport.source.in_(["public_token", "export_id", "local_file_path"]),
+        )
+        .order_by(KaspiGoodsImport.created_at.desc())
+        .limit(limit)
+        .offset(offset)
+    )
+    uploads = result.scalars().all()
+    return [_feed_upload_to_out(record) for record in uploads]
+
+
+@router.get(
+    "/feed/uploads/{upload_id}",
+    summary="Get Kaspi feed upload",
+    response_model=KaspiFeedUploadRecordOut,
+)
+async def kaspi_feed_upload_get(
+    upload_id: str,
+    current_user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_async_db),
+):
+    _require_admin(current_user)
+    company_id = _resolve_company_id(current_user)
+
+    record = (
+        (
+            await session.execute(
+                sa.select(KaspiGoodsImport).where(
+                    KaspiGoodsImport.company_id == company_id,
+                    KaspiGoodsImport.id == upload_id,
+                    KaspiGoodsImport.source.in_(["public_token", "export_id", "local_file_path"]),
+                )
+            )
+        )
+        .scalars()
+        .first()
+    )
+    if not record:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="upload_not_found")
+    return _feed_upload_to_out(record)
+
+
+@router.post(
+    "/feed/uploads/{upload_id}/refresh-status",
+    summary="Refresh Kaspi feed upload status",
+    response_model=KaspiFeedUploadRecordOut,
+)
+async def kaspi_feed_upload_refresh(
+    upload_id: str,
+    current_user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_async_db),
+):
+    _require_admin(current_user)
+    company_id = _resolve_company_id(current_user)
+
+    record = (
+        (
+            await session.execute(
+                sa.select(KaspiGoodsImport).where(
+                    KaspiGoodsImport.company_id == company_id,
+                    KaspiGoodsImport.id == upload_id,
+                    KaspiGoodsImport.source.in_(["public_token", "export_id", "local_file_path"]),
+                )
+            )
+        )
+        .scalars()
+        .first()
+    )
+    if not record:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="upload_not_found")
+
+    store_name, token = await _resolve_kaspi_token(session, company_id)
+    base_url = os.getenv("KASPI_FEED_BASE_URL", "https://kaspi.kz")
+    upload_url = os.getenv("KASPI_FEED_UPLOAD_URL", f"{base_url.rstrip('/')}/shop/api/feeds/import")
+    status_url = os.getenv("KASPI_FEED_STATUS_URL", f"{base_url.rstrip('/')}/shop/api/feeds/import/status")
+    result_url = os.getenv("KASPI_FEED_RESULT_URL", f"{base_url.rstrip('/')}/shop/api/feeds/import/result")
+    extra_env = {
+        "KASPI_FEED_UPLOAD_URL": upload_url,
+        "KASPI_FEED_STATUS_URL": status_url,
+        "KASPI_FEED_RESULT_URL": result_url,
+        "KASPI_FEED_TOKEN": token,
+        "KASPI_TOKEN": token,
+    }
+    now = datetime.utcnow()
+    try:
+        response = KaspiAdapter().feed_import_status(
+            store_name,
+            import_id=record.import_code,
+            extra_env=extra_env,
+        )
+    except KaspiAdapterError as exc:
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc)) from exc
+    except Exception as exc:
+        logger.error("Kaspi feed status failed: company_id=%s error=%s", company_id, exc)
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail="kaspi_feed_status_failed") from exc
+
+    normalized = _normalize_kaspi_response(response)
+    status_value = normalized.get("status") or record.status
+    error_code, error_message = _extract_error_info(normalized)
+
+    record.status = str(status_value)
+    record.status_json = normalized
+    record.result_json = normalized
+    record.raw_response = _serialize_raw_response(response)
+    record.last_checked_at = now
+    if error_code or error_message:
+        record.error_code = error_code
+        record.error_message = error_message
+        record.last_error_at = now
+
+    await session.commit()
+    await session.refresh(record)
+    return _feed_upload_to_out(record)
 
 
 @router.get(
@@ -2459,13 +3111,16 @@ async def kaspi_feed_export_download(
 )
 async def kaspi_feed_public_token_create(
     payload: KaspiFeedPublicTokenIn,
-    merchant_uid: str | None = Query(None, alias="merchantUid"),
     current_user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_async_db),
 ):
     _require_admin(current_user)
     company_id = _resolve_company_id(current_user)
-    env = os.getenv("ENVIRONMENT", "").lower()
+    env_is_dev = settings.is_development
+
+    merchant_uid = (payload.merchant_uid or "").strip()
+    if not merchant_uid:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="missing_merchant_uid")
 
     token_value = None
     token_hash = None
@@ -2489,7 +3144,7 @@ async def kaspi_feed_public_token_create(
 
     token_row = KaspiFeedPublicToken(
         company_id=company_id,
-        merchant_uid=merchant_uid.strip() if merchant_uid else None,
+        merchant_uid=merchant_uid,
         token_hash=token_hash,
         comment=payload.comment,
     )
@@ -2500,7 +3155,7 @@ async def kaspi_feed_public_token_create(
     return KaspiFeedPublicTokenOut(
         id=token_row.id,
         merchant_uid=token_row.merchant_uid,
-        token=token_value if env == "development" else None,
+        token=token_value if env_is_dev else None,
         created_at=token_row.created_at,
         revoked_at=token_row.revoked_at,
         last_used_at=token_row.last_used_at,
@@ -2640,7 +3295,9 @@ async def kaspi_public_offers_feed(
     if not offers:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="not_found")
 
-    xml_body = _build_kaspi_offers_xml(offers)
+    company = await session.get(Company, token_row.company_id)
+    company_name = (company.name if company else None) or f"Company {token_row.company_id}"
+    xml_body = _build_kaspi_offers_xml(offers, company=company_name, merchant_id=effective_merchant_uid)
 
     token_row.last_used_at = datetime.utcnow()
     await session.commit()

@@ -464,6 +464,8 @@ async def _pg_probe(sync_url: str, timeout: float = 3.0) -> tuple[bool, str, dic
 # Redis / SMTP / Celery checks
 # ======================================================================================
 async def _check_redis(timeout: float = 2.0) -> tuple[bool, str]:
+    if getattr(settings, "is_testing", False) or os.getenv("PYTEST_CURRENT_TEST") or os.getenv("TESTING"):
+        return True, "skipped_testing"
     url = settings.REDIS_URL
     if not url:
         return True, "skipped"

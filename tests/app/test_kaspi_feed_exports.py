@@ -1,7 +1,11 @@
+from decimal import Decimal
+
 import pytest
 from sqlalchemy import select
 
+from app.api.v1.kaspi import _build_kaspi_offers_xml
 from app.models.kaspi_feed_export import KaspiFeedExport
+from app.models.kaspi_offer import KaspiOffer
 
 
 def _csv_bytes(text: str) -> bytes:
@@ -123,3 +127,28 @@ async def test_kaspi_feed_export_download_requires_done(
         headers=company_a_admin_headers,
     )
     assert resp.status_code == 409
+
+
+def test_kaspi_feed_export_price_formatting():
+    offers = [
+        KaspiOffer(
+            company_id=1,
+            merchant_uid="M1",
+            sku="S1",
+            title="Item 1",
+            price=Decimal("1000"),
+            raw={},
+        ),
+        KaspiOffer(
+            company_id=1,
+            merchant_uid="M1",
+            sku="S2",
+            title="Item 2",
+            price=Decimal("1000.1"),
+            raw={},
+        ),
+    ]
+
+    xml_body = _build_kaspi_offers_xml(offers, company="Company", merchant_id="M1")
+    assert "1000.00" in xml_body
+    assert "1000.10" in xml_body
