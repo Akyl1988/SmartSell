@@ -21,7 +21,10 @@ _HAS_REDIS = False
 log = logging.getLogger(__name__)
 
 _CHANNEL = getattr(settings, "SYSTEM_CONFIG_CHANNEL", "smartsell.config_changed")
-_TTL = max(1, int(getattr(settings, "SYSTEM_INTEGRATIONS_CACHE_TTL", 30) or 30))
+
+
+def _cache_ttl() -> int:
+    return max(1, int(getattr(settings, "SYSTEM_INTEGRATIONS_CACHE_TTL", 30) or 30))
 
 
 def _redis_disabled() -> bool:
@@ -162,6 +165,8 @@ class ProviderRegistry:
 
     @classmethod
     async def publish_change(cls, domain: str, version: int | None = None) -> None:
+        if _redis_disabled():
+            return
         client = await cls._redis_client()
         if not client or not hasattr(client, "publish"):
             return
@@ -206,11 +211,11 @@ class ProviderRegistry:
     @classmethod
     async def get_active_provider(cls, db: Any, domain: str) -> Optional[CachedProvider]:
         domain_key = cls._normalize_domain(domain)
-        await cls._ensure_listener()
+        if not _redis_disabled():
+            await cls._ensure_listener()
         entry = cls._cache.get(domain_key)
-        if entry and (time.monotonic() - entry.cached_at) < _TTL:
+        if entry and (time.monotonic() - entry.cached_at) < _cache_ttl():
             return entry
-
         entry = await cls._load_active(db, domain_key)
         if entry:
             cls._cache[domain_key] = entry
@@ -227,6 +232,8 @@ class ProviderRegistry:
     async def notify_change(cls, domain: str, version: int | None = None) -> None:
         domain_key = cls._normalize_domain(domain)
         cls.invalidate(domain_key)
+        if _redis_disabled():
+            return
         await cls.publish_change(domain_key, version)
         await cls._ensure_listener()
 

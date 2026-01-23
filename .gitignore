@@ -339,3 +339,6 @@ tmp/
 *.jsonl
 kaspi_*_response*.json
 kaspi_*_response*.csv
+
+*.pstats
+
