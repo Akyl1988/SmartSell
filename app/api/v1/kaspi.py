@@ -34,6 +34,7 @@ import os
 import secrets
 import time
 from datetime import datetime, timedelta
+from decimal import Decimal
 from hashlib import sha256
 from pathlib import Path
 from typing import Any
@@ -353,6 +354,18 @@ def _to_unsigned_int(value: Any) -> int | None:
     return max(num, 0)
 
 
+def _format_price(value: Any) -> str:
+    try:
+        dec = Decimal(str(value if value is not None else 0))
+    except Exception:
+        dec = Decimal("0")
+    try:
+        dec = dec.quantize(Decimal("0.01"))
+    except Exception:
+        dec = Decimal("0.00")
+    return str(dec)
+
+
 def _extract_city_prices(raw: Any) -> list[dict[str, str]]:
     if not isinstance(raw, dict):
         return []
@@ -419,13 +432,12 @@ def _build_kaspi_offers_xml(offers: list[KaspiOffer], *, company: str, merchant_
                 city_el = ET.SubElement(cityprices_el, f"{{{_KASPI_NS}}}cityprice", attrs)
                 city_el.text = entry["value"]
         else:
-            price_value = _to_unsigned_int(offer.price) or 0
+            price_value = _format_price(offer.price)
             attrs: dict[str, str] = {}
-            oldprice_value = _to_unsigned_int(offer.old_price)
-            if oldprice_value is not None:
-                attrs["oldprice"] = str(oldprice_value)
+            if offer.old_price is not None:
+                attrs["oldprice"] = _format_price(offer.old_price)
             price_el = ET.SubElement(offer_el, f"{{{_KASPI_NS}}}price", attrs)
-            price_el.text = str(price_value)
+            price_el.text = price_value
 
     xml_bytes = ET.tostring(root, encoding="utf-8", xml_declaration=True)
     return xml_bytes.decode("utf-8")
