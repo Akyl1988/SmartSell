@@ -17,44 +17,23 @@ from contextlib import asynccontextmanager
 from contextvars import ContextVar
 from typing import Any
 
-from fastapi import (
-    APIRouter,
-    Body,
-    FastAPI,
-    HTTPException,
-    Path,
-    Request,
-    Response,
-)
+from fastapi import APIRouter, Body, FastAPI, HTTPException, Path, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import JSONResponse, PlainTextResponse, RedirectResponse
+from starlette.middleware.gzip import GZipMiddleware
+from starlette.middleware.httpsredirect import HTTPSRedirectMiddleware
+from starlette.middleware.trustedhost import TrustedHostMiddleware
+from starlette.staticfiles import StaticFiles
 
-# ✅ агрегатор v1-роутеров (wallet/payments/campaigns/users/auth/products)
 from app.api.routes import mount_v1
 from app.core import config as core_config
 from app.core.config import settings, should_disable_startup_hooks
 from app.core.exceptions import register_exception_handlers
 
 try:
-    from starlette.staticfiles import StaticFiles
-except Exception:  # pragma: no cover
-    StaticFiles = None  # type: ignore[assignment]
-
-try:
-    from starlette.middleware.trustedhost import TrustedHostMiddleware
-except Exception:  # pragma: no cover
-    TrustedHostMiddleware = None  # type: ignore[assignment]
-
-try:
     from starlette.middleware.sessions import SessionMiddleware
 except Exception:  # pragma: no cover
     SessionMiddleware = None  # type: ignore[assignment]
-
-try:
-    from starlette.middleware.httpsredirect import HTTPSRedirectMiddleware
-except Exception:  # pragma: no cover
-    HTTPSRedirectMiddleware = None  # type: ignore[assignment]
 
 
 # ======================================================================================
@@ -713,6 +692,131 @@ def _p99_ms() -> int:
 
 
 # ======================================================================================
+# ASGI timing middleware (TTFB + total)
+# ======================================================================================
+class TimingASGIMiddleware:
+    def __init__(self, app: Callable):
+        self.app = app
+
+    async def __call__(self, scope: dict, receive: Callable, send: Callable) -> None:
+        if scope.get("type") != "http":
+            await self.app(scope, receive, send)
+            return
+
+        scope.setdefault("state", {})
+        start = time.perf_counter()
+        ttfb_ms: int | None = None
+        start_message: dict | None = None
+        body_messages: list[dict] = []
+
+        async def send_wrapper(message: dict) -> None:
+            nonlocal ttfb_ms, start_message, body_messages
+
+            msg_type = message.get("type")
+            if msg_type == "http.response.start":
+                if ttfb_ms is None:
+                    ttfb_ms = int((time.perf_counter() - start) * 1000)
+                start_message = message
+                return
+
+            if msg_type == "http.response.body":
+                body_messages.append(message)
+                if not message.get("more_body", False):
+                    total_ms = int((time.perf_counter() - start) * 1000)
+                    if start_message is not None:
+                        headers = list(start_message.get("headers") or [])
+                        headers.append((b"x-ttfb-ms", str(ttfb_ms or total_ms).encode()))
+                        headers.append((b"x-total-ms", str(total_ms).encode()))
+                        db_close_ms = scope.get("state", {}).get("db_close_ms")
+                        if db_close_ms is not None:
+                            headers.append((b"x-db-close-ms", str(int(db_close_ms)).encode()))
+                        start_message["headers"] = headers
+                        await send(start_message)
+                        for body_msg in body_messages:
+                            await send(body_msg)
+                    else:
+                        await send(message)
+                return
+
+            await send(message)
+
+        await self.app(scope, receive, send_wrapper)
+
+
+class ExternalDiagMiddleware:
+    def __init__(self, app: Callable):
+        self.app = app
+
+    async def __call__(self, scope: dict, receive: Callable, send: Callable) -> None:
+        if scope.get("type") != "http":
+            await self.app(scope, receive, send)
+            return
+
+        scope.setdefault("state", {})
+        t0 = time.perf_counter()
+        t_before_endpoint = time.perf_counter()
+        t_after_endpoint: float | None = None
+        t_before_send: float | None = None
+        t_total: float | None = None
+        start_message: dict | None = None
+        body_messages: list[dict] = []
+
+        async def send_wrapper(message: dict) -> None:
+            nonlocal t_after_endpoint, t_before_send, t_total, start_message, body_messages
+
+            msg_type = message.get("type")
+            if msg_type == "http.response.start":
+                if t_after_endpoint is None:
+                    t_after_endpoint = time.perf_counter()
+                t_before_send = time.perf_counter()
+                start_message = message
+                return
+
+            if msg_type == "http.response.body":
+                body_messages.append(message)
+                if not message.get("more_body", False):
+                    t_total = time.perf_counter()
+                    if start_message is not None:
+                        headers = list(start_message.get("headers") or [])
+                        start_ms = 0
+                        before_endpoint_ms = int((t_before_endpoint - t0) * 1000)
+                        after_endpoint_ms = int(((t_after_endpoint or t_total) - t0) * 1000)
+                        before_send_ms = int(((t_before_send or t_total) - t0) * 1000)
+                        total_ms = int(((t_total or t_before_send or t_after_endpoint or t0) - t0) * 1000)
+                        headers.append((b"x-mw-start", str(start_ms).encode()))
+                        headers.append((b"x-mw-before-endpoint", str(before_endpoint_ms).encode()))
+                        headers.append((b"x-mw-after-endpoint", str(after_endpoint_ms).encode()))
+                        headers.append((b"x-mw-before-send", str(before_send_ms).encode()))
+                        headers.append((b"x-mw-total", str(total_ms).encode()))
+                        headers.append(
+                            (
+                                b"x-mw-ms",
+                                json.dumps(
+                                    {
+                                        "start": start_ms,
+                                        "before_endpoint": before_endpoint_ms,
+                                        "after_endpoint": after_endpoint_ms,
+                                        "before_send": before_send_ms,
+                                        "total": total_ms,
+                                    },
+                                    separators=(",", ":"),
+                                ).encode(),
+                            )
+                        )
+                        start_message["headers"] = headers
+                        await send(start_message)
+                        for body_msg in body_messages:
+                            await send(body_msg)
+                    else:
+                        await send(message)
+                return
+
+            await send(message)
+
+        await self.app(scope, receive, send_wrapper)
+
+
+# ======================================================================================
 # Async profiling middleware (устойчив к исключениям)
 # ======================================================================================
 async def _profiled_call(request: Request, call_next: Callable[[Request], Awaitable[Response]]) -> Response:
@@ -1001,6 +1105,8 @@ def create_app() -> FastAPI:
     if _env_truthy(os.getenv("FORCE_HTTPS", "0")) and HTTPSRedirectMiddleware:
         app.add_middleware(HTTPSRedirectMiddleware)
 
+    app.add_middleware(TimingASGIMiddleware)
+
     # CORS
     cors_origins = getattr(settings, "CORS_ORIGINS", None) or getattr(settings, "BACKEND_CORS_ORIGINS", None)
     if isinstance(cors_origins, str):
@@ -1027,20 +1133,44 @@ def create_app() -> FastAPI:
     )
     app.add_middleware(GZipMiddleware, minimum_size=1024)
 
+    _test_env = (
+        settings.is_testing
+        or settings.ENVIRONMENT.lower() == "test"
+        or os.getenv("PYTEST_CURRENT_TEST")
+        or os.getenv("TESTING", "").lower() in {"1", "true", "yes", "on"}
+    )
+
     _max_body = _env_int("MAX_REQUEST_SIZE_BYTES", 0)
 
-    @app.middleware("http")
-    async def content_length_guard(  # type: ignore[return-value]
-        request: Request, call_next: Callable[[Request], Awaitable[Response]]
-    ) -> Response:
-        try:
-            if _max_body > 0:
-                cl = request.headers.get("content-length")
-                if cl and cl.isdigit() and int(cl) > _max_body:
-                    return JSONResponse(status_code=413, content={"detail": "request_entity_too_large"})
-        except Exception:
-            pass
-        return await call_next(request)
+    if _test_env:
+
+        @app.middleware("http")
+        async def response_time_middleware(  # type: ignore[return-value]
+            request: Request, call_next: Callable[[Request], Awaitable[Response]]
+        ) -> Response:
+            start = time.perf_counter()
+            response = await call_next(request)
+            try:
+                ms = int((time.perf_counter() - start) * 1000)
+                response.headers.setdefault("X-Response-Time-ms", str(ms))
+            except Exception:
+                pass
+            return response
+
+    if not _test_env:
+
+        @app.middleware("http")
+        async def content_length_guard(  # type: ignore[return-value]
+            request: Request, call_next: Callable[[Request], Awaitable[Response]]
+        ) -> Response:
+            try:
+                if _max_body > 0:
+                    cl = request.headers.get("content-length")
+                    if cl and cl.isdigit() and int(cl) > _max_body:
+                        return JSONResponse(status_code=413, content={"detail": "request_entity_too_large"})
+            except Exception:
+                pass
+            return await call_next(request)
 
     trusted = _parse_trusted_hosts()
     if trusted and TrustedHostMiddleware:
@@ -1100,34 +1230,58 @@ def create_app() -> FastAPI:
         except Exception as e:
             logger.info("OpenTelemetry instrumentation skipped: %s", e)
 
-    @app.middleware("http")
-    async def request_id_middleware(  # type: ignore[return-value]
-        request: Request, call_next: Callable[[Request], Awaitable[Response]]
-    ) -> Response:
-        req_id = request.headers.get("X-Request-ID") or str(uuid.uuid4())
-        token = _request_id_var.set(req_id)
-        try:
-            try:
-                response = await call_next(request)
-            except Exception as e:
-                logger.exception("Unhandled error (rid=%s): %s", req_id, e)
-                return JSONResponse(status_code=500, content={"detail": "internal_error", "request_id": req_id})
-            response.headers["X-Request-ID"] = req_id
-            # полезные заголовки на каждом ответе
-            response.headers.setdefault("X-Process-Id", str(os.getpid()))
-            response.headers.setdefault("X-Hostname", _hostname)
-            return response
-        finally:
-            try:
-                _request_id_var.reset(token)
-            except Exception:
-                pass
+    if not _test_env:
 
-    @app.middleware("http")
-    async def profiling_middleware(  # type: ignore[return-value]
-        request: Request, call_next: Callable[[Request], Awaitable[Response]]
-    ) -> Response:
-        return await _profiled_call(request, call_next)
+        @app.middleware("http")
+        async def request_id_middleware(  # type: ignore[return-value]
+            request: Request, call_next: Callable[[Request], Awaitable[Response]]
+        ) -> Response:
+            req_id = request.headers.get("X-Request-ID") or str(uuid.uuid4())
+            token = _request_id_var.set(req_id)
+            try:
+                try:
+                    response = await call_next(request)
+                except Exception as e:
+                    logger.exception("Unhandled error (rid=%s): %s", req_id, e)
+                    return JSONResponse(status_code=500, content={"detail": "internal_error", "request_id": req_id})
+                response.headers["X-Request-ID"] = req_id
+                # полезные заголовки на каждом ответе
+                response.headers.setdefault("X-Process-Id", str(os.getpid()))
+                response.headers.setdefault("X-Hostname", _hostname)
+                return response
+            finally:
+                try:
+                    _request_id_var.reset(token)
+                except Exception:
+                    pass
+
+    if not _test_env:
+
+        @app.middleware("http")
+        async def profiling_middleware(  # type: ignore[return-value]
+            request: Request, call_next: Callable[[Request], Awaitable[Response]]
+        ) -> Response:
+            return await _profiled_call(request, call_next)
+
+    if settings.is_development:
+        if not _test_env:
+
+            @app.middleware("http")
+            async def external_diag_timing_mw(  # type: ignore[return-value]
+                request: Request, call_next: Callable[[Request], Awaitable[Response]]
+            ) -> Response:
+                if request.url.path != "/api/v1/_debug/external":
+                    return await call_next(request)
+                t0 = time.perf_counter()
+                t_pre_end = time.perf_counter()
+                response = await call_next(request)
+                t_call_end = time.perf_counter()
+                t_post_end = time.perf_counter()
+                response.headers["x-mw-pre-ms"] = str(int((t_pre_end - t0) * 1000))
+                response.headers["x-mw-callnext-ms"] = str(int((t_call_end - t_pre_end) * 1000))
+                response.headers["x-mw-post-ms"] = str(int((t_post_end - t_call_end) * 1000))
+                response.headers["x-total-ms"] = str(int((t_post_end - t0) * 1000))
+                return response
 
     # ✅ единый обработчик HTTPException, чтобы в ответе всегда был request_id
     @app.exception_handler(HTTPException)
