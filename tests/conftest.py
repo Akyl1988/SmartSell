@@ -26,6 +26,7 @@ import asyncio
 import logging
 import os
 from collections.abc import AsyncIterator, Awaitable, Callable, Iterator
+from datetime import timedelta
 from typing import Any
 from urllib.parse import quote
 
@@ -1128,7 +1129,9 @@ def auth_headers(test_db: None):
     return {"Authorization": f"Bearer {token}"}
 
 
-def _make_company_headers(*, company_id: int, role: str, phone: str) -> dict[str, str]:
+def _make_company_headers(
+    *, company_id: int, role: str, phone: str, expires_delta: timedelta | None = None
+) -> dict[str, str]:
     """Seed user with a specific role/company and return bearer headers."""
     from app.core.security import create_access_token, get_password_hash  # type: ignore
     from app.models.company import Company  # type: ignore
@@ -1160,19 +1163,33 @@ def _make_company_headers(*, company_id: int, role: str, phone: str) -> dict[str
             user.is_verified = True
         s.commit()
         s.refresh(user)
-        token = create_access_token(subject=user.id, extra={"company_id": user.company_id, "role": user.role})
+        token = create_access_token(
+            subject=user.id,
+            extra={"company_id": user.company_id, "role": user.role},
+            expires_delta=expires_delta,
+        )
 
     return {"Authorization": f"Bearer {token}"}
 
 
 @pytest.fixture
 def company_a_admin_headers() -> dict[str, str]:
-    return _make_company_headers(company_id=1001, role="admin", phone="+70000010001")
+    return _make_company_headers(
+        company_id=1001,
+        role="admin",
+        phone="+70000010001",
+        expires_delta=timedelta(days=7),
+    )
 
 
 @pytest.fixture
 def company_b_admin_headers() -> dict[str, str]:
-    return _make_company_headers(company_id=2001, role="admin", phone="+70000020001")
+    return _make_company_headers(
+        company_id=2001,
+        role="admin",
+        phone="+70000020001",
+        expires_delta=timedelta(days=7),
+    )
 
 
 @pytest.fixture
