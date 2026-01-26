@@ -1,9 +1,10 @@
 ﻿line-length = 120
 target-version = "py311"
 
-[lint]
 select = ["E","F","I","B","UP","C4","T20"]
 ignore = ["B904","E402","C401","C408","C416","B009","B010","UP007","E501"]  # временно, E501 handled by formatter
+
+extend-exclude = ["migrations/**"]
 
 exclude = [
 	"migrations/versions/_quarantine",
@@ -15,10 +16,10 @@ exclude = [
 	"_alembic_backup",
 	"_alembic_backup/**",
 	"**/_backup/**",
-	"**/_quarantine/**",
+"**/_quarantine/**",
 ]
 
-[lint.per-file-ignores]
+[per-file-ignores]
 "alembic/versions/*.py" = ["UP","B","E402","C408","C416","B009","B010"]
 "tests/**/*.py"          = ["B904","E402","F401"]
 "app/api/**/*.py"        = ["B904","UP007","B009","B010","E402","B008"]
@@ -27,4 +28,13 @@ exclude = [
 "app/main.py"            = ["B008"]
 "app/core/dependencies.py" = ["B008"]
 "app/core/security.py"     = ["B008"]
-"tools/**/*.py"          = ["T201"]
+"**/tools/inspect_models.py" = ["T201"]
+"**/_create_tables_direct.py" = ["T201"]
+"**/_dbcheck_asyncpg.py" = ["T201"]
+"**/_patch_conftest.py" = ["T201"]
+"**/bootstrap_schema.py" = ["T201"]
+"**/check_migration_order.py" = ["T201"]
+"**/fix_migration_order.py" = ["T201"]
+"**/reset_testdb.py" = ["T201"]
+"**/tools_create_smart_sell_test_db.py" = ["T201"]
+"**/tools_create_test_db.py" = ["T201"]
