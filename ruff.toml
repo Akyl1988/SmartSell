@@ -28,7 +28,6 @@ exclude = [
 "app/core/dependencies.py" = ["B008"]
 "app/core/security.py"     = ["B008"]
 "tools/**/*.py"          = ["T201"]
-force-exclude = true
 extend-exclude = ["migrations/**"]
 
 "**/_create_tables_direct.py" = ["T201"]
