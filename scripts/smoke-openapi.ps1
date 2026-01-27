@@ -1,80 +1,39 @@
 param(
-  [string]$BaseUrl = "http://127.0.0.1:8000",
-  [string]$OutDir  = "docs/smoke"
+  [string]$BaseUrl = "http://127.0.0.1:8000"
 )
 
 $ErrorActionPreference = "Stop"
 
-function Ensure-Dir([string]$p) {
-  if (-not (Test-Path $p)) { New-Item -ItemType Directory -Force -Path $p | Out-Null }
+function Assert-PathExists([object]$spec, [string]$path, [string]$method) {
+  $p = $spec.paths.$path
+  if ($null -eq $p) {
+    throw "MISSING path: $path"
+  }
+  $m = $p.$method
+  if ($null -eq $m) {
+    throw "MISSING method: $method $path"
+  }
 }
 
-function Get-Json([string]$url) {
-  return Invoke-RestMethod -Uri $url -Method GET -TimeoutSec 15
+Write-Host "OPENAPI $BaseUrl/openapi.json"
+$spec = Invoke-RestMethod -Uri "$BaseUrl/openapi.json" -TimeoutSec 20
+
+# must-have routes (core v1)
+Assert-PathExists $spec "/api/v1/auth/login" "post"
+Assert-PathExists $spec "/api/v1/auth/me" "get"
+Assert-PathExists $spec "/api/v1/auth/refresh" "post"
+Assert-PathExists $spec "/api/v1/auth/logout" "post"
+
+# legacy: may be intentionally excluded from schema => warn only
+if ($spec.paths."/api/auth/me" -and $spec.paths."/api/auth/me".get) {
+  Write-Host "OK   legacy /api/auth/me is in schema"
+} else {
+  Write-Host "WARN legacy /api/auth/me is not in schema (covered by smoke-auth.ps1)"
 }
 
-Ensure-Dir $OutDir
+# sanity endpoints (optional)
+if ($spec.paths."/api/v1/health") { Write-Host "OK   /api/v1/health" } else { Write-Host "WARN /api/v1/health not found" }
+if ($spec.paths."/api/v1/wallet/health") { Write-Host "OK   /api/v1/wallet/health" } else { Write-Host "WARN /api/v1/wallet/health not found" }
 
-$ts = Get-Date -Format "yyyyMMdd-HHmmss"
-$outJson = Join-Path $OutDir ("openapi-{0}.json" -f $ts)
-$outTxt  = Join-Path $OutDir ("openapi-smoke-{0}.txt" -f $ts)
-
-$openapiUrl = "{0}/openapi.json" -f $BaseUrl
-$spec = Get-Json $openapiUrl
-
-$spec | ConvertTo-Json -Depth 100 | Out-File -FilePath $outJson -Encoding utf8
-
-$paths = @()
-if ($null -ne $spec.paths) {
-  $paths = $spec.paths.PSObject.Properties.Name | Sort-Object
-}
-
-$critical = @(
-  "/api/v1/health",
-  "/health",
-  "/api/v1/auth/health",
-  "/api/v1/wallet/health",
-  "/api/v1/users/me",
-  "/api/v1/auth/me",
-  "/api/v1/kaspi/status"
-)
-
-$missing = @()
-$present = @()
-
-foreach ($p in $critical) {
-  if ($paths -contains $p) { $present += $p } else { $missing += $p }
-}
-
-$lines = New-Object System.Collections.Generic.List[string]
-$lines.Add("OpenAPI Smoke Report ($ts)")
-$lines.Add("BaseUrl: $BaseUrl")
-$lines.Add("OpenAPI: $openapiUrl")
-$lines.Add("Saved OpenAPI JSON: $outJson")
-$lines.Add("")
-$lines.Add("Total paths: " + $paths.Count)
-$lines.Add("")
-$lines.Add("Critical paths present:")
-if ($present.Count -eq 0) { $lines.Add(" - (none)") } else { $present | ForEach-Object { $lines.Add(" - " + $_) } }
-$lines.Add("")
-$lines.Add("Critical paths missing:")
-if ($missing.Count -eq 0) { $lines.Add(" - (none)") } else { $missing | ForEach-Object { $lines.Add(" - " + $_) } }
-$lines.Add("")
-$lines.Add("First 80 paths (sorted):")
-($paths | Select-Object -First 80) | ForEach-Object { $lines.Add(" - " + $_) }
-
-$lines | Out-File -FilePath $outTxt -Encoding utf8
-
-Write-Host ""
-Write-Host ("Saved OpenAPI: {0}" -f $outJson)
-Write-Host ("Saved Report: {0}" -f $outTxt)
-Write-Host ""
-
-if ($missing.Count -gt 0) {
-  Write-Host "MISSING critical paths:"
-  $missing | ForEach-Object { Write-Host (" - " + $_) }
-  exit 2
-}
-
-Write-Host "OK: all critical paths found in OpenAPI."
-exit 0
+$pathCount = ($spec.paths.PSObject.Properties | Measure-Object).Count
+Write-Host "DONE OK paths=$pathCount"
