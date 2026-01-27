@@ -343,3 +343,8 @@ kaspi_*_response*.csv
 .secrets/
 *.pstats
 docs/smoke/
+
+# Allow tracked smoke scripts
+!scripts/
+!scripts/smoke-auth.ps1
+!scripts/smoke-openapi.ps1
