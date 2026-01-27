@@ -342,3 +342,4 @@ kaspi_*_response*.csv
 
 .secrets/
 *.pstats
+docs/smoke/
