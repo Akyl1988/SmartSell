@@ -41,7 +41,7 @@ $h = @{ Authorization = "Bearer $access" }
 
 Write-Host "ME     $meUrl"
 $me1 = Get-Json $meUrl $h
-Write-Host ("ME OK user_id={0} company_id={1}" -f $me1.id, $me1.company_id)
+Write-Host ("ME OK user_id={0} role={1} company_name={2} phone={3} email={4}" -f $me1.id, $me1.role, $me1.company_name, $me1.phone, $me1.email)
 
 Write-Host "REFRESH $refreshUrl"
 $r = Post-Json $refreshUrl @{ refresh_token = $refresh }
@@ -60,7 +60,7 @@ $h2 = @{ Authorization = "Bearer $access2" }
 
 Write-Host "ME2    $meUrl"
 $me2 = Get-Json $meUrl $h2
-Write-Host ("ME2 OK user_id={0} company_id={1}" -f $me2.id, $me2.company_id)
+Write-Host ("ME2 OK user_id={0} role={1} company_name={2} phone={3} email={4}" -f $me2.id, $me2.role, $me2.company_name, $me2.phone, $me2.email)
 
 Write-Host "LOGOUT $logoutUrl"
 try {
@@ -73,3 +73,4 @@ try {
 }
 
 Write-Host "DONE OK"
+
