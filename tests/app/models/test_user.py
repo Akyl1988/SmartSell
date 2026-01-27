@@ -61,6 +61,20 @@ class TestUser:
         assert user.full_name is None
         assert user.is_active is True  # Default value
 
+    def test_user_hashed_password_allows_long_value(self, db_session):
+        """Ensure hashed_password supports values longer than 255 chars."""
+        user = User(username="longpass", email="longpass@example.com", hashed_password="")
+        db_session.add(user)
+        db_session.commit()
+        db_session.refresh(user)
+
+        long_hash = "x" * 300
+        user.hashed_password = long_hash
+        db_session.commit()
+        db_session.refresh(user)
+
+        assert len(user.hashed_password) == len(long_hash)
+
     def test_user_session(self, db_session):
         """Test UserSession creation and relationship."""
         user = User(username="sessionuser", email="session@example.com", hashed_password="hashed")

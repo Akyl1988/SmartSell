@@ -19,9 +19,18 @@ def upgrade() -> None:
     op.alter_column(
         "users",
         "hashed_password",
-        existing_type=sa.VARCHAR(length=255),
+        existing_type=sa.String(length=255),
         type_=sa.Text(),
         existing_nullable=False,
+        schema="public",
+    )
+    op.alter_column(
+        "user_sessions",
+        "refresh_token",
+        existing_type=sa.String(length=255),
+        type_=sa.Text(),
+        existing_nullable=False,
+        schema="public",
     )
 
 
@@ -31,6 +40,16 @@ def downgrade() -> None:
         "users",
         "hashed_password",
         existing_type=sa.Text(),
-        type_=sa.VARCHAR(length=255),
+        type_=sa.String(length=255),
         existing_nullable=False,
+        schema="public",
+    )
+    # NOTE: downgrade may fail if any values exceed 255 chars.
+    op.alter_column(
+        "user_sessions",
+        "refresh_token",
+        existing_type=sa.Text(),
+        type_=sa.String(length=255),
+        existing_nullable=False,
+        schema="public",
     )

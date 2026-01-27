@@ -925,7 +925,7 @@ class UserSession(LenientInitMixin, BaseModel, SoftDeleteMixin):
 
     id = Column(Integer, primary_key=True, index=True)
     user_id = Column(ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
-    refresh_token = Column(String(255), unique=True, nullable=False)
+    refresh_token = Column(Text(), unique=True, nullable=False)
     ip_address = Column(String(45), nullable=True)
     user_agent = Column(String(500), nullable=True)
 
