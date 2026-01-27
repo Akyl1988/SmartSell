@@ -50,6 +50,7 @@ from sqlalchemy import (
     Index,
     Integer,
     String,
+    Text,
     and_,
     event,
     func,
@@ -203,7 +204,7 @@ class User(
 
     # Password (allow empty by tests – safe default)
     hashed_password = Column(
-        String(255),
+        Text(),
         nullable=False,
         default="",
         server_default=text("''"),
