@@ -11,23 +11,29 @@ Returns a singleton client or None (when strict is False and Redis is unavailabl
 """
 
 import logging
+import os
 from typing import Optional
 
 from app.core.config import settings
 
-try:  # pragma: no cover - optional dependency guard
-    import redis.asyncio as aioredis  # type: ignore
-
-    _HAS_REDIS_LIB = True
-except Exception:  # pragma: no cover
-    aioredis = None  # type: ignore
-    _HAS_REDIS_LIB = False
-
 log = logging.getLogger(__name__)
-_client: Optional[aioredis.Redis] = None  # type: ignore[name-defined]
+_client = None
 
 
-def get_redis() -> Optional[aioredis.Redis]:  # type: ignore[name-defined]
+def _redis_disabled() -> bool:
+    return bool(
+        getattr(settings, "is_testing", False)
+        or os.getenv("PYTEST_CURRENT_TEST")
+        or os.getenv("TESTING", "").lower() in {"1", "true", "yes", "on"}
+        or os.getenv("TEST_REDIS_DISABLED", "").lower() in {"1", "true", "yes", "on"}
+        or os.getenv("FORCE_INMEMORY_BACKENDS", "").lower() in {"1", "true", "yes", "on"}
+    )
+
+
+def get_redis() -> Optional[object]:
+    if _redis_disabled():
+        return None
+
     cfg = getattr(settings, "redis_settings", {}) or {}
     url = cfg.get("url", getattr(settings, "REDIS_URL", "redis://localhost:6379"))
     password = cfg.get("password")
@@ -35,7 +41,10 @@ def get_redis() -> Optional[aioredis.Redis]:  # type: ignore[name-defined]
     strict = bool(cfg.get("strict", False))
     socket_timeout = float(cfg.get("socket_timeout", 1.0))
 
-    if not _HAS_REDIS_LIB:
+    try:  # pragma: no cover - optional dependency guard
+        import redis.asyncio as aioredis  # type: ignore
+    except Exception:  # pragma: no cover
+        aioredis = None  # type: ignore
         if strict:
             raise RuntimeError("Redis client required but redis library is missing")
         return None

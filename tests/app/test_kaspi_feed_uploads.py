@@ -13,16 +13,32 @@ from app.models.marketplace import KaspiStoreToken
 class _FakeKaspiAdapter:
     def __init__(self):
         self.last_upload_path: Path | None = None
+        self.last_extra_env: dict[str, str] | None = None
 
-    def feed_upload(self, store: str, xml_path: str, comment: str | None = None):
+    def feed_upload(
+        self,
+        store: str,
+        xml_path: str,
+        comment: str | None = None,
+        *,
+        extra_env: dict[str, str] | None = None,
+    ):
         self.last_upload_path = Path(xml_path)
+        self.last_extra_env = extra_env
         assert store == "store-a"
         assert self.last_upload_path.is_file()
         content = self.last_upload_path.read_text(encoding="utf-8")
         assert "kaspi_catalog" in content
         return {"importCode": "IC-FEED-1", "status": "received"}
 
-    def feed_import_status(self, store: str, import_id: str | None = None):
+    def feed_import_status(
+        self,
+        store: str,
+        import_id: str | None = None,
+        *,
+        extra_env: dict[str, str] | None = None,
+    ):
+        self.last_extra_env = extra_env
         assert store == "store-a"
         return {"importCode": import_id, "status": "done"}
 
@@ -76,6 +92,11 @@ async def test_kaspi_feed_upload_create_and_refresh(
     assert data["status"] == "PENDING"
     assert data["source"] == "public_token"
     assert data["merchant_uid"] == "M123"
+    assert fake_adapter.last_extra_env
+    assert fake_adapter.last_extra_env.get("KASPI_FEED_TOKEN") == "token-a"
+    assert "KASPI_FEED_UPLOAD_URL" in fake_adapter.last_extra_env
+    assert "KASPI_FEED_STATUS_URL" in fake_adapter.last_extra_env
+    assert "KASPI_FEED_RESULT_URL" in fake_adapter.last_extra_env
 
     upload_id = data["id"]
 
@@ -87,6 +108,9 @@ async def test_kaspi_feed_upload_create_and_refresh(
     refresh_data = refresh_resp.json()
     assert refresh_data["status"] == "done"
     assert refresh_data["status_json"]["status"] == "done"
+    assert fake_adapter.last_extra_env
+    assert fake_adapter.last_extra_env.get("KASPI_FEED_TOKEN") == "token-a"
+    assert "KASPI_FEED_STATUS_URL" in fake_adapter.last_extra_env
 
 
 @pytest.mark.asyncio

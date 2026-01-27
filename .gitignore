@@ -341,4 +341,4 @@ kaspi_*_response*.json
 kaspi_*_response*.csv
 
 .secrets/
-
+*.pstats

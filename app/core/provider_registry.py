@@ -4,6 +4,7 @@ import asyncio
 import contextlib
 import json
 import logging
+import os
 import time
 from dataclasses import dataclass
 from typing import Any, Optional
@@ -14,18 +15,26 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.config import settings, should_disable_startup_hooks
 from app.models.integration_provider import IntegrationProvider
 
-try:  # optional redis
-    import redis.asyncio as aioredis  # type: ignore
-
-    _HAS_REDIS = True
-except Exception:  # pragma: no cover - optional dependency
-    aioredis = None  # type: ignore
-    _HAS_REDIS = False
+aioredis = None  # type: ignore
+_HAS_REDIS = False
 
 log = logging.getLogger(__name__)
 
 _CHANNEL = getattr(settings, "SYSTEM_CONFIG_CHANNEL", "smartsell.config_changed")
-_TTL = max(1, int(getattr(settings, "SYSTEM_INTEGRATIONS_CACHE_TTL", 30) or 30))
+
+
+def _cache_ttl() -> int:
+    return max(1, int(getattr(settings, "SYSTEM_INTEGRATIONS_CACHE_TTL", 30) or 30))
+
+
+def _redis_disabled() -> bool:
+    return bool(
+        getattr(settings, "is_testing", False)
+        or os.getenv("PYTEST_CURRENT_TEST")
+        or os.getenv("TESTING", "").lower() in {"1", "true", "yes", "on"}
+        or os.getenv("TEST_REDIS_DISABLED", "").lower() in {"1", "true", "yes", "on"}
+        or os.getenv("FORCE_INMEMORY_BACKENDS", "").lower() in {"1", "true", "yes", "on"}
+    )
 
 
 @dataclass
@@ -60,6 +69,20 @@ class ProviderRegistry:
 
     @classmethod
     async def _redis_client(cls):
+        if _redis_disabled():
+            return None
+
+        global _HAS_REDIS, aioredis
+        if not _HAS_REDIS:
+            try:  # optional redis
+                import redis.asyncio as aioredis  # type: ignore
+
+                _HAS_REDIS = True
+            except Exception:  # pragma: no cover - optional dependency
+                aioredis = None  # type: ignore
+                _HAS_REDIS = False
+                return None
+
         if not _HAS_REDIS:
             return None
         client = cls._redis_conn
@@ -88,7 +111,7 @@ class ProviderRegistry:
 
     @classmethod
     async def _ensure_listener(cls) -> None:
-        if cls._listener_task or not _HAS_REDIS:
+        if cls._listener_task or _redis_disabled() or not _HAS_REDIS:
             return
         if should_disable_startup_hooks():
             return
@@ -142,6 +165,8 @@ class ProviderRegistry:
 
     @classmethod
     async def publish_change(cls, domain: str, version: int | None = None) -> None:
+        if _redis_disabled():
+            return
         client = await cls._redis_client()
         if not client or not hasattr(client, "publish"):
             return
@@ -186,11 +211,11 @@ class ProviderRegistry:
     @classmethod
     async def get_active_provider(cls, db: Any, domain: str) -> Optional[CachedProvider]:
         domain_key = cls._normalize_domain(domain)
-        await cls._ensure_listener()
+        if not _redis_disabled():
+            await cls._ensure_listener()
         entry = cls._cache.get(domain_key)
-        if entry and (time.monotonic() - entry.cached_at) < _TTL:
+        if entry and (time.monotonic() - entry.cached_at) < _cache_ttl():
             return entry
-
         entry = await cls._load_active(db, domain_key)
         if entry:
             cls._cache[domain_key] = entry
@@ -208,7 +233,8 @@ class ProviderRegistry:
         domain_key = cls._normalize_domain(domain)
         cls.invalidate(domain_key)
         await cls.publish_change(domain_key, version)
-        await cls._ensure_listener()
+        if not _redis_disabled():
+            await cls._ensure_listener()
 
 
 __all__ = ["ProviderRegistry", "CachedProvider"]

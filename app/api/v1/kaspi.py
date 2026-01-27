@@ -34,6 +34,7 @@ import os
 import secrets
 import time
 from datetime import datetime, timedelta
+from decimal import Decimal
 from hashlib import sha256
 from pathlib import Path
 from typing import Any
@@ -353,6 +354,18 @@ def _to_unsigned_int(value: Any) -> int | None:
     return max(num, 0)
 
 
+def _format_price(value: Any) -> str:
+    try:
+        dec = Decimal(str(value if value is not None else 0))
+    except Exception:
+        dec = Decimal("0")
+    try:
+        dec = dec.quantize(Decimal("0.01"))
+    except Exception:
+        dec = Decimal("0.00")
+    return str(dec)
+
+
 def _extract_city_prices(raw: Any) -> list[dict[str, str]]:
     if not isinstance(raw, dict):
         return []
@@ -419,13 +432,12 @@ def _build_kaspi_offers_xml(offers: list[KaspiOffer], *, company: str, merchant_
                 city_el = ET.SubElement(cityprices_el, f"{{{_KASPI_NS}}}cityprice", attrs)
                 city_el.text = entry["value"]
         else:
-            price_value = _to_unsigned_int(offer.price) or 0
+            price_value = _format_price(offer.price)
             attrs: dict[str, str] = {}
-            oldprice_value = _to_unsigned_int(offer.old_price)
-            if oldprice_value is not None:
-                attrs["oldprice"] = str(oldprice_value)
+            if offer.old_price is not None:
+                attrs["oldprice"] = _format_price(offer.old_price)
             price_el = ET.SubElement(offer_el, f"{{{_KASPI_NS}}}price", attrs)
-            price_el.text = str(price_value)
+            price_el.text = price_value
 
     xml_bytes = ET.tostring(root, encoding="utf-8", xml_declaration=True)
     return xml_bytes.decode("utf-8")
@@ -2771,7 +2783,19 @@ async def kaspi_feed_upload_create(
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="local_file_path_required")
 
     company_id = _resolve_company_id(current_user)
-    store_name, _ = await _resolve_kaspi_token(session, company_id)
+    store_name, token = await _resolve_kaspi_token(session, company_id)
+
+    base_url = os.getenv("KASPI_FEED_BASE_URL", "https://kaspi.kz")
+    upload_url = os.getenv("KASPI_FEED_UPLOAD_URL", f"{base_url.rstrip('/')}/shop/api/feeds/import")
+    status_url = os.getenv("KASPI_FEED_STATUS_URL", f"{base_url.rstrip('/')}/shop/api/feeds/import/status")
+    result_url = os.getenv("KASPI_FEED_RESULT_URL", f"{base_url.rstrip('/')}/shop/api/feeds/import/result")
+    extra_env = {
+        "KASPI_FEED_UPLOAD_URL": upload_url,
+        "KASPI_FEED_STATUS_URL": status_url,
+        "KASPI_FEED_RESULT_URL": result_url,
+        "KASPI_FEED_TOKEN": token,
+        "KASPI_TOKEN": token,
+    }
 
     xml_body: str
     if source == "export_id":
@@ -2813,7 +2837,12 @@ async def kaspi_feed_upload_create(
 
     try:
         tmp_path.write_text(xml_body, encoding="utf-8")
-        response = KaspiAdapter().feed_upload(store_name, str(tmp_path), comment=body.comment)
+        response = KaspiAdapter().feed_upload(
+            store_name,
+            str(tmp_path),
+            comment=body.comment,
+            extra_env=extra_env,
+        )
     except KaspiAdapterError as exc:
         raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc)) from exc
     except Exception as exc:
@@ -2954,10 +2983,25 @@ async def kaspi_feed_upload_refresh(
     if not record:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="upload_not_found")
 
-    store_name, _ = await _resolve_kaspi_token(session, company_id)
+    store_name, token = await _resolve_kaspi_token(session, company_id)
+    base_url = os.getenv("KASPI_FEED_BASE_URL", "https://kaspi.kz")
+    upload_url = os.getenv("KASPI_FEED_UPLOAD_URL", f"{base_url.rstrip('/')}/shop/api/feeds/import")
+    status_url = os.getenv("KASPI_FEED_STATUS_URL", f"{base_url.rstrip('/')}/shop/api/feeds/import/status")
+    result_url = os.getenv("KASPI_FEED_RESULT_URL", f"{base_url.rstrip('/')}/shop/api/feeds/import/result")
+    extra_env = {
+        "KASPI_FEED_UPLOAD_URL": upload_url,
+        "KASPI_FEED_STATUS_URL": status_url,
+        "KASPI_FEED_RESULT_URL": result_url,
+        "KASPI_FEED_TOKEN": token,
+        "KASPI_TOKEN": token,
+    }
     now = datetime.utcnow()
     try:
-        response = KaspiAdapter().feed_import_status(store_name, import_id=record.import_code)
+        response = KaspiAdapter().feed_import_status(
+            store_name,
+            import_id=record.import_code,
+            extra_env=extra_env,
+        )
     except KaspiAdapterError as exc:
         raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc)) from exc
     except Exception as exc:
