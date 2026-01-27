@@ -6,8 +6,16 @@ param(
 
 $ErrorActionPreference = "Stop"
 
-function Post-Json($url, $obj) {
-  return Invoke-RestMethod -Uri $url -Method POST -TimeoutSec 20 -ContentType "application/json" -Body ($obj | ConvertTo-Json -Depth 10)
+function Post-Json($url, $obj, $headers = $null) {
+  $params = @{
+    Uri = $url
+    Method = "POST"
+    TimeoutSec = 20
+    ContentType = "application/json"
+    Body = ($obj | ConvertTo-Json -Depth 10)
+  }
+  if ($headers) { $params.Headers = $headers }
+  return Invoke-RestMethod @params
 }
 
 function Get-Json($url, $headers) {
@@ -65,7 +73,7 @@ Write-Host ("ME2 OK user_id={0} role={1} company_name={2} phone={3} email={4}" -
 Write-Host "LOGOUT $logoutUrl"
 try {
   # если logout ожидает refresh_token
-  $out = Post-Json $logoutUrl @{ refresh_token = $refresh2 }
+  $out = Post-Json $logoutUrl @{ refresh_token = $refresh2 } $h2
   Write-Host "Logout OK"
 } catch {
   Write-Host "Logout call failed (maybe different contract)."
@@ -83,8 +91,7 @@ try {
 Write-Host "ME_AFTER_LOGOUT"
 try {
   $null = Get-Json $meUrl $h2
-  Write-Host "ERROR: access token still valid after logout"
-  exit 1
+  throw "ERROR: access token still valid after logout"
 } catch {
   Write-Host "OK: /me blocked after logout"
 }
