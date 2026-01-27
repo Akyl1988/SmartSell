@@ -344,7 +344,10 @@ kaspi_*_response*.csv
 *.pstats
 docs/smoke/
 
-# Allow tracked smoke scripts
+
+
+# Allow only smoke scripts in /scripts (ignore everything else)
 !scripts/
+scripts/*
 !scripts/smoke-auth.ps1
 !scripts/smoke-openapi.ps1
