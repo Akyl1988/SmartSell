@@ -1367,6 +1367,8 @@ def create_app() -> FastAPI:
         return RedirectResponse(url="/live", status_code=307)
 
     # основной health
+    @app.get("/api/v1/health")
+    @app.get("/api/health")
     @app.get("/health")
     async def health() -> dict[str, Any]:
         # In testing we want a deterministic healthy response for sync TestClient
