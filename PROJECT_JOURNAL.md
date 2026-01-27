@@ -1810,3 +1810,81 @@ Timeout could cancel/rollback the main sync transaction, causing `kaspi_order_sy
 
 ### Notes
 - GitHub Actions may fail to start due to billing/spending limits; local gates (ruff + full pytest + alembic smoke) are the source of truth.
+
+## 2026-01-27 — Monthly catch-up (last 30 days)
+
+### A) Executive summary
+- Существенно расширен Kaspi-контур: синхронизация заказов, статусы, ошибки, метрики, публичные фиды, импорт товаров/каталога, выгрузки и загрузки фидов. Основная активность — PR #50–#121 (см. merge-лог).
+- Введены tenant-scope guardrails по API v1 (исключение company_id из внешних вводов, тесты на запрет override и утечки).
+- В биллинге добавлены wallet/payments/subscriptions API и миграции; далее стабилизированы транзакции и тесты tenant isolation.
+- Auth/Security: приглашения и сброс пароля, OTP TTL/anti-reuse, усиление refresh rotation; RBAC регрессионные тесты.
+- Инфраструктура/CI: alembic smoke job, корректировка CD workflow, LF/CRLF стандартизация, строгий gate ruff+pytest.
+- Миграции расширяли Kaspi-схемы и билинг; добавлены guards для alembic autогенерации.
+- Присутствуют журнальные правки (append-only) по Kaspi и tenant-scope изменениям.
+
+### B) Major features shipped
+
+**Kaspi**
+- Orders sync MVP и hardening: idempotent items, status history, pagination, advisory locks, sync state/metrics/last_error, Retry-After handling. Коммиты: 70bd03c, d6ac38a, b56f06f, 5986d7a, d8e4aaf, 25462e3, 8b36cc5, 8159aa3, bc1da71, 7031dd5, d5ad818.
+- Kaspi public feed и tokens: публичные URL, токен-менеджмент, XSD alignment, требование merchant_uid. Коммиты: c37ef07, e6541c8, 1809e34.
+- Catalog import UX и JSON/JSONL: batches/errors/offers/template, JSON/JSONL MC import. Коммиты: 4815c83, d03fa91, c20b47a.
+- Goods import MVP и расширение: сервис, публичный feed, расширенные импорты. Коммиты: 6a28839, 20260120_* миграция.
+- Feed export/upload: модель, сервис, API, hardening, retry/diagnostics, upload MVP + import status. Коммиты: cca8e80, ccb1df6, 6b6a089, 3d54f41, 2cc20b0, 7f9f81d.
+- MC sessions + cookie-based sync. Коммит: d9c0b55.
+
+**Billing/Wallet/Payments**
+- Добавлены tenant-scoped wallet/payments/subscriptions API + миграции. Коммит: ca7e08b.
+- Стабилизация tenant isolation: транзакции, request-scoped storage, tenant-aware listing. Коммиты: 69a5e40, 32b6e1b.
+
+**Auth/Security**
+- Invitation + password reset tokens, employee role, OTP TTL, anti-reuse locks. Коммит: 5168ce9.
+- Tenant claims/RBAC regression coverage и запрет platform override в v1. Коммиты: efe6353, 01cdebc, 3106213.
+
+**Infra/CI/Quality**
+- FastAPI lifespan миграция для startup hooks. Коммит: e6db51a.
+- Alembic autogen guards и smoke job в CI. Коммиты: 5fa9cc9, 0b36cdf.
+- LF/CRLF стандартизация (gitattributes/editorconfig). Коммиты: fddda97, 2ccf9a0, 09a5ade.
+
+### C) Bug fixes / Root-cause fixes
+- Kaspi orders sync: двойная кодировка JSON от PowerShell адаптера → нормализация скалярного JSON → регрессионный тест (c206925, 8a83507).
+- Kaspi public feed: общий XML генератор, защита от перезаписи master_sku, merchant_uid обязателен (1a1df59, 7fbe1d7, e6541c8).
+- DB URL: строгая приоритезация runtime/test, запрет DEFAULT вне local (3dd3e0e, d11b72b, 5d34f8f).
+- Alembic autogen: исключение отражённых удалений и стабилизация offline миграций (5fa9cc9, 7689ad0).
+- Auth refresh rotation: повторное использование, token_expired errors (a050411).
+
+### D) API surface changes (high-level)
+- Kaspi: добавлены/расширены endpoints для sync state/metrics/errors, feed export/upload, catalog import, goods import, public feed tokens/URL, MC sync. **Needs verification**: точные пути для всех endpoints в OpenAPI.
+- Billing: wallet/payments/subscriptions tenant-scoped API. **Needs verification**: полный список путей.
+- Auth: endpoints для invitation/reset tokens. **Needs verification**: точные маршруты.
+
+### E) DB/Migrations
+- Новые миграции Kaspi:
+  - 20260114_kaspi_catalog_products.py
+  - 20260114_kaspi_feed_exports.py
+  - 20260114_kaspi_feed_hardening.py
+  - 20260117_kaspi_catalog_import_mvp.py
+  - 20260117_kaspi_feed_pub_tokens.py
+  - 20260117_kaspi_goods_imports.py
+  - 20260120_kaspi_goods_imports_ext.py
+  - 20260121_kaspi_mc_sessions.py
+  - 20260122_kaspi_goods_imports_feed_uploads.py
+- Billing/Wallet migrations: 20260102_wallet_and_payments.py.
+- Alembic version id length укорочен для version_num(32) (ac8f3c7, caeb38e).
+
+### F) Tests & quality
+- Добавлены тесты для Kaspi sync (идемпотентность, статусы, метрики, ошибки), feed export/upload, catalog/goods import, public feed tokens, MC sync.
+- Добавлены tenant isolation тесты для billing/wallet/payments/subscriptions/invoices/campaigns.
+- CI gate: ruff+pytest, alembic smoke; xdist guard в conftest.
+
+### G) Operational notes
+- Флаги: PROCESS_ROLE + ENABLE_SCHEDULER/ENABLE_KASPI_SYNC_RUNNER для каспи-автосинхронизации (aeaba0d, bc1da71).
+- DB URL режимы: строгое разделение runtime/test, запрет DEFAULT вне local (3dd3e0e, d11b72b).
+- Alembic: защитные фильтры autогенерации, smoke job.
+
+### H) Open risks / TODO next
+- Уточнить полный список новых/изменённых API маршрутов Kaspi/Billing/Auth в OpenAPI (Needs verification).
+- Проверить совместимость новых Kaspi загрузок/импортов с продовой схемой и лимитами (Needs verification).
+- Отдельно закрепить operational runbook по Kaspi feed upload/import (если ещё не документировано).
+
+**References (commits/merges):**
+- PR merges: #121 (479fc75), #120 (6dbfac0), #119 (0a992e6), #118 (e46a2fd), #117 (fe60b33), #116 (d28476a), #115 (de93e16), #114 (75cd28b), #113 (adecd98), #112 (ff0e7ce), #111 (c04da0a), #110 (5513e59), #109 (b989027), #108 (6809ad3), #107 (9a52af1), #106 (65da776), #105 (6d7b1de), #104 (fe0352d), #103 (68740eb), #102 (941a962), #101 (36bf657), #100 (fc3d7cb), #99 (0618794), #97 (17f9c45), #96 (661e47d), #95 (27f5f11), #93 (06c5f7b), #91 (e838bda), #90 (aba2d22), #89 (b038d70), #88 (2dd5dce), #87 (f4390d6).
