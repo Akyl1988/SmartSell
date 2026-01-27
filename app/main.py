@@ -1368,7 +1368,7 @@ def create_app() -> FastAPI:
 
     # основной health
     @app.get("/api/v1/health")
-    @app.get("/api/health")
+    @app.get("/api/health", include_in_schema=False)
     @app.get("/health")
     async def health() -> dict[str, Any]:
         # In testing we want a deterministic healthy response for sync TestClient
@@ -1745,7 +1745,7 @@ def create_app() -> FastAPI:
         auth_router = getattr(auth_module, "router", None)
         if auth_router:
             # Mount under /api so router.prefix ("/auth") results in /api/auth/*
-            app.include_router(auth_router, prefix="/api", tags=["auth-compat"])
+            app.include_router(auth_router, prefix="/api", tags=["auth-compat"], include_in_schema=False)
     except Exception as e:
         logger.warning("Auth compat router not mounted: %s", e)
 

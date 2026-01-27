@@ -305,14 +305,23 @@ def _mount_v1_diagnostics(target: Target, base_prefix: str) -> None:
     """
     diag_router = APIRouter(prefix=base_prefix, tags=["diagnostics"])
 
-    @diag_router.get("/_debug/routers", response_class=JSONResponse, summary="List loaded v1 routers")
+    @diag_router.get(
+        "/_debug/routers",
+        response_class=JSONResponse,
+        summary="List loaded v1 routers",
+        include_in_schema=False,
+    )
     def _list_loaded_v1_routers():
         return {
             "registered": get_v1_registry(),
             "time": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         }
 
-    @diag_router.get("/health-v1", summary="API v1 health (routers registry)")
+    @diag_router.get(
+        "/health-v1",
+        summary="API v1 health (routers registry)",
+        include_in_schema=False,
+    )
     def _health_v1():
         return {
             "status": "ok",
