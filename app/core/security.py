@@ -504,8 +504,17 @@ class DenylistBackend:
 # --- Redis backend ---
 class RedisDenylist(DenylistBackend):
     def __init__(self, url: str, prefix: str = "jwt:deny:"):
-        self.client = redis.Redis.from_url(url, decode_responses=True)  # type: ignore
+        socket_connect_timeout = float(os.getenv("REDIS_CONNECT_TIMEOUT", "0.3"))
+        socket_timeout = float(os.getenv("REDIS_SOCKET_TIMEOUT", "0.3"))
+        self.client = redis.Redis.from_url(  # type: ignore
+            url,
+            decode_responses=True,
+            socket_connect_timeout=socket_connect_timeout,
+            socket_timeout=socket_timeout,
+            retry_on_timeout=False,
+        )
         self.prefix = prefix
+        self.client.ping()
 
     def _key(self, jti: str) -> str:
         return f"{self.prefix}{jti}"
@@ -627,17 +636,20 @@ class InMemoryDenylist(DenylistBackend):
 
 # --- Backend chooser ---
 def _build_denylist_backend() -> DenylistBackend:
-    if _HAS_REDIS:
-        url = os.getenv("REDIS_URL") or getattr(settings, "REDIS_URL", "")
-        if url:
-            prefix = os.getenv("JWT_DENYLIST_PREFIX", "jwt:deny:")
-            try:
-                return RedisDenylist(url, prefix=prefix)
-            except Exception:
-                pass
     if _HAS_SQLA and _SYNC_ENGINE_AVAILABLE:
         try:
             return PostgresDenylist(_SYNC_ENGINE)
+        except Exception:
+            pass
+    redis_disabled = os.getenv("REDIS_DISABLED", "").lower() in ("1", "true", "yes") or bool(
+        getattr(settings, "REDIS_DISABLED", False)
+    )
+    url = (os.getenv("REDIS_URL") or getattr(settings, "REDIS_URL", "") or "").strip()
+    redis_url_ok = url and url.lower() != "disabled" and url.startswith(("redis://", "rediss://"))
+    if _HAS_REDIS and not redis_disabled and redis_url_ok:
+        prefix = os.getenv("JWT_DENYLIST_PREFIX", "jwt:deny:")
+        try:
+            return RedisDenylist(url, prefix=prefix)
         except Exception:
             pass
     return InMemoryDenylist()

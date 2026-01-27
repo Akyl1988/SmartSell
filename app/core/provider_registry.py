@@ -232,10 +232,9 @@ class ProviderRegistry:
     async def notify_change(cls, domain: str, version: int | None = None) -> None:
         domain_key = cls._normalize_domain(domain)
         cls.invalidate(domain_key)
-        if _redis_disabled():
-            return
         await cls.publish_change(domain_key, version)
-        await cls._ensure_listener()
+        if not _redis_disabled():
+            await cls._ensure_listener()
 
 
 __all__ = ["ProviderRegistry", "CachedProvider"]
