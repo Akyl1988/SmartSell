@@ -91,7 +91,7 @@ from app.utils.tokens import generate_token, hash_token
 
 router = APIRouter(prefix="/auth", tags=["Authentication"])
 logger = get_logger(__name__)
-http_bearer = HTTPBearer(auto_error=False)
+bearer_optional = HTTPBearer(auto_error=False)
 
 # =============================================================================
 # Конфигурация/политики (с дефолтами)
@@ -585,20 +585,18 @@ async def refresh_token_alias(refresh_data: RefreshTokenRequest, db: AsyncSessio
 @router.post("/logout", response_model=SuccessResponse)
 async def logout(
     request: Request,
-    credentials: HTTPAuthorizationCredentials | None = Depends(http_bearer),
+    creds: HTTPAuthorizationCredentials | None = Depends(bearer_optional),
     refresh_data: RefreshTokenRequest | None = None,
     db: AsyncSession = Depends(get_async_db),
 ):
     """
     Выход из системы: деактивирует сессию по refresh-токену или отзывает текущий access-токен.
     """
-    token = credentials.credentials if credentials else None
+    token = creds.credentials if creds else None
     if not token:
-        token = request.headers.get("Authorization", "")
-        if token.lower().startswith("bearer "):
-            token = token.split(" ", 1)[1].strip()
-        else:
-            token = None
+        header_val = request.headers.get("Authorization", "")
+        if header_val.lower().startswith("bearer "):
+            token = header_val.split(" ", 1)[1].strip()
     if not token:
         token = request.cookies.get("access_token")
     payload = None
