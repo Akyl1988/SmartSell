@@ -207,6 +207,7 @@ _HAS_ADV_SECURITY = False
 try:
     from app.core.security import (  # type: ignore; noqa: F401 (may be unused here); -> dict payload {sub, scp, role, jti, exp, kid, ...}
         decode_and_validate,
+        denylist_key_for_token,
         is_token_revoked,
     )
 
@@ -361,8 +362,8 @@ async def get_current_user(
     if _HAS_ADV_SECURITY:
         try:
             payload = decode_and_validate(token, expected_type="access")  # type: ignore
-            jti = payload.get("jti")
-            if jti and is_token_revoked(jti):
+            key = denylist_key_for_token(token, payload)
+            if key and is_token_revoked(key):
                 raise AuthenticationError("Invalid or expired token", "INVALID_TOKEN")
         except ValueError as exc:
             if str(exc) == "Token expired":

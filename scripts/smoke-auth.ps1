@@ -72,5 +72,22 @@ try {
   throw
 }
 
+Write-Host "REFRESH_AFTER_LOGOUT"
+try {
+  Post-Json $refreshUrl @{ refresh_token = $refresh2 } | Out-Null
+  Write-Host "UNEXPECTED: refresh still works"
+} catch {
+  Write-Host "OK: refresh blocked"
+}
+
+Write-Host "ME_AFTER_LOGOUT"
+try {
+  $null = Get-Json $meUrl $h2
+  Write-Host "ERROR: access token still valid after logout"
+  exit 1
+} catch {
+  Write-Host "OK: /me blocked after logout"
+}
+
 Write-Host "DONE OK"
 

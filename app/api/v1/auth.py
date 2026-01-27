@@ -24,6 +24,7 @@ import hashlib
 import os
 import re
 import secrets
+import time
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
@@ -54,9 +55,12 @@ from app.core.logging import audit_logger, get_logger
 from app.core.security import (
     create_access_token,
     create_refresh_token,
+    decode_and_validate,
+    denylist_key_for_token,
     get_password_hash,
     require_company_admin,
     resolve_tenant_company_id,
+    revoke_token,
     verify_password,
 )
 from app.integrations.ports.otp import OtpProvider
@@ -577,23 +581,63 @@ async def refresh_token_alias(refresh_data: RefreshTokenRequest, db: AsyncSessio
 
 
 @router.post("/logout", response_model=SuccessResponse)
-async def logout(refresh_data: RefreshTokenRequest, db: AsyncSession = Depends(get_async_db)):
+async def logout(
+    request: Request,
+    refresh_data: RefreshTokenRequest | None = None,
+    db: AsyncSession = Depends(get_async_db),
+):
     """
-    Выход из системы: деактивирует сессию по переданному refresh-токену.
+    Выход из системы: деактивирует сессию по refresh-токену или отзывает текущий access-токен.
     """
-    token_hash = _hash_refresh_token(refresh_data.refresh_token)
-
-    res = await db.execute(
-        select(UserSession).where(
-            UserSession.refresh_token == token_hash,
-            UserSession.is_active.is_(True),
+    if refresh_data and refresh_data.refresh_token:
+        token_hash = _hash_refresh_token(refresh_data.refresh_token)
+        res = await db.execute(
+            select(UserSession).where(
+                UserSession.refresh_token == token_hash,
+                UserSession.is_active.is_(True),
+            )
         )
-    )
-    session = res.scalars().first()
+        session = res.scalars().first()
 
-    if session:
-        session.is_active = False
-        session.terminated_at = _utcnow_naive()
+        if session:
+            session.is_active = False
+            session.terminated_at = _utcnow_naive()
+            await db.commit()
+
+        return SuccessResponse(message="Logged out successfully")
+
+    auth_header = request.headers.get("Authorization", "")
+    token = None
+    if auth_header.lower().startswith("bearer "):
+        token = auth_header.split(" ", 1)[1].strip()
+    if not token:
+        token = request.cookies.get("access_token")
+    if not token:
+        raise AuthenticationError("Authentication required", "AUTH_REQUIRED")
+
+    payload = decode_and_validate(token, expected_type="access")
+    key = denylist_key_for_token(token, payload)
+    exp = payload.get("exp")
+    if key:
+        ttl_seconds = None
+        if exp is not None:
+            try:
+                ttl_seconds = max(1, int(float(exp) - time.time()))
+            except Exception:
+                ttl_seconds = None
+        revoke_token(key, ttl_seconds=ttl_seconds)
+
+    try:
+        user_id = int(payload.get("sub", 0))
+    except Exception:
+        user_id = 0
+
+    if user_id > 0:
+        await db.execute(
+            update(UserSession)
+            .where(UserSession.user_id == user_id, UserSession.is_active.is_(True))
+            .values(is_active=False, terminated_at=_utcnow_naive())
+        )
         await db.commit()
 
     return SuccessResponse(message="Logged out successfully")

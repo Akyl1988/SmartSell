@@ -52,6 +52,7 @@ ENV (опционально):
 from __future__ import annotations
 
 import base64
+import hashlib
 import hmac
 import os
 import re
@@ -671,6 +672,17 @@ def revoke_token(jti: str, ttl_seconds: int | None = None) -> None:
 
 def list_revoked_jtis(limit: int = 100) -> list[str]:
     return _DENYLIST.list_jtis(limit=limit)
+
+
+def denylist_key_for_token(token: str, payload: dict | None = None) -> str | None:
+    if payload:
+        for key in ("jti", "sid", "session_id"):
+            val = payload.get(key)
+            if val:
+                return str(val)
+    if token:
+        return hashlib.sha256(token.encode()).hexdigest()
+    return None
 
 
 # =============================================================================

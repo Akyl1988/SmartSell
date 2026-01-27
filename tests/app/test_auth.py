@@ -555,6 +555,33 @@ class TestAuth:
         assert refresh_resp.json().get("detail") in {"refresh_invalid", "session_terminated"}
 
     @pytest.mark.asyncio
+    async def test_logout_without_body_revokes_access(self, async_client: AsyncClient, async_db_session: AsyncSession):
+        company = Company(name="Test Company")
+        async_db_session.add(company)
+        await async_db_session.flush()
+
+        user = User(
+            company_id=company.id,
+            phone="+77001234567",
+            hashed_password=get_password_hash("password123"),
+            role="admin",
+        )
+        async_db_session.add(user)
+        await async_db_session.commit()
+
+        login_data = {"identifier": "+77001234567", "password": "password123"}
+        login_response = await async_client.post("/api/v1/auth/login", json=login_data)
+        assert login_response.status_code == 200, login_response.text
+        tokens = login_response.json()
+
+        headers = {"Authorization": f"Bearer {tokens['access_token']}"}
+        logout_resp = await async_client.post("/api/v1/auth/logout", headers=headers)
+        assert logout_resp.status_code == 200, logout_resp.text
+
+        me_resp = await async_client.get("/api/v1/auth/me", headers=headers)
+        assert me_resp.status_code == 401
+
+    @pytest.mark.asyncio
     async def test_get_current_user(self, async_client: AsyncClient, async_db_session: AsyncSession):
         """Test getting current user info"""
 
