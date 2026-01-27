@@ -29,6 +29,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from fastapi import APIRouter, Depends, Query, Request
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel, Field
 from sqlalchemy import select, update
 from sqlalchemy.exc import IntegrityError
@@ -90,6 +91,7 @@ from app.utils.tokens import generate_token, hash_token
 
 router = APIRouter(prefix="/auth", tags=["Authentication"])
 logger = get_logger(__name__)
+http_bearer = HTTPBearer(auto_error=False)
 
 # =============================================================================
 # Конфигурация/политики (с дефолтами)
@@ -583,12 +585,42 @@ async def refresh_token_alias(refresh_data: RefreshTokenRequest, db: AsyncSessio
 @router.post("/logout", response_model=SuccessResponse)
 async def logout(
     request: Request,
+    credentials: HTTPAuthorizationCredentials | None = Depends(http_bearer),
     refresh_data: RefreshTokenRequest | None = None,
     db: AsyncSession = Depends(get_async_db),
 ):
     """
     Выход из системы: деактивирует сессию по refresh-токену или отзывает текущий access-токен.
     """
+    token = credentials.credentials if credentials else None
+    if not token:
+        token = request.headers.get("Authorization", "")
+        if token.lower().startswith("bearer "):
+            token = token.split(" ", 1)[1].strip()
+        else:
+            token = None
+    if not token:
+        token = request.cookies.get("access_token")
+    payload = None
+    user_id = 0
+    if token:
+        payload = decode_and_validate(token, expected_type="access")
+        key = denylist_key_for_token(token, payload)
+        exp = payload.get("exp")
+        if key:
+            ttl_seconds = None
+            if exp is not None:
+                try:
+                    ttl_seconds = max(1, int(float(exp) - time.time()))
+                except Exception:
+                    ttl_seconds = None
+            revoke_token(key, ttl_seconds=ttl_seconds)
+
+        try:
+            user_id = int(payload.get("sub", 0))
+        except Exception:
+            user_id = 0
+
     if refresh_data and refresh_data.refresh_token:
         token_hash = _hash_refresh_token(refresh_data.refresh_token)
         res = await db.execute(
@@ -606,31 +638,8 @@ async def logout(
 
         return SuccessResponse(message="Logged out successfully")
 
-    auth_header = request.headers.get("Authorization", "")
-    token = None
-    if auth_header.lower().startswith("bearer "):
-        token = auth_header.split(" ", 1)[1].strip()
-    if not token:
-        token = request.cookies.get("access_token")
     if not token:
         raise AuthenticationError("Authentication required", "AUTH_REQUIRED")
-
-    payload = decode_and_validate(token, expected_type="access")
-    key = denylist_key_for_token(token, payload)
-    exp = payload.get("exp")
-    if key:
-        ttl_seconds = None
-        if exp is not None:
-            try:
-                ttl_seconds = max(1, int(float(exp) - time.time()))
-            except Exception:
-                ttl_seconds = None
-        revoke_token(key, ttl_seconds=ttl_seconds)
-
-    try:
-        user_id = int(payload.get("sub", 0))
-    except Exception:
-        user_id = 0
 
     if user_id > 0:
         await db.execute(
