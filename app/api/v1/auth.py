@@ -1262,8 +1262,20 @@ async def verify_otp_alias(otp_verify: OTPVerify, db: AsyncSession = Depends(get
 
 
 @router.get("/me")
-async def get_me(current_user: User = Depends(get_current_user)) -> dict:
+async def get_me(
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_async_db),
+) -> dict:
     """Lightweight current-user profile with basic fields expected by tests."""
+    company_id = getattr(current_user, "company_id", None)
+    company_name = None
+    bin_iin = None
+    if company_id:
+        row = await db.execute(select(Company).where(Company.id == company_id))
+        company = row.scalar_one_or_none()
+        if company is not None:
+            company_name = getattr(company, "name", None)
+            bin_iin = getattr(company, "bin_iin", None)
     return {
         "id": current_user.id,
         "phone": current_user.phone,
@@ -1271,8 +1283,9 @@ async def get_me(current_user: User = Depends(get_current_user)) -> dict:
         "first_name": getattr(current_user, "first_name", None),
         "last_name": getattr(current_user, "last_name", None),
         "full_name": getattr(current_user, "full_name", None),
-        "company_name": getattr(current_user, "company_name", None),
-        "bin_iin": getattr(current_user, "bin_iin", None),
+        "company_id": company_id,
+        "company_name": company_name,
+        "bin_iin": bin_iin,
         "role": getattr(current_user, "role", None),
         "is_active": getattr(current_user, "is_active", True),
         "is_verified": getattr(current_user, "is_verified", False),

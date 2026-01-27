@@ -38,13 +38,15 @@ from typing import Any
 from fastapi import APIRouter, Depends, Header, Request, Response, status
 from fastapi.responses import RedirectResponse
 from pydantic import BaseModel, Field
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.v1.auth import ChangePasswordPayload as V1ChangePasswordPayload  # reuse schema
 from app.api.v1.auth import change_password as v1_change_password
+from app.core.db import get_async_db
 from app.core.dependencies import get_current_user, get_db
 from app.core.schemas import SuccessResponse
-from app.models import User
+from app.models import Company, User
 
 logger = logging.getLogger(__name__)
 
@@ -249,6 +251,41 @@ async def change_password_alias(
     db: AsyncSession = Depends(get_db),
 ):
     return await v1_change_password(payload=payload, current_user=current_user, db=db)
+
+
+@router.get("/me")
+async def get_me(
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_async_db),
+) -> dict[str, Any]:
+    company_id = getattr(current_user, "company_id", None)
+    company_name = None
+    bin_iin = None
+    if company_id:
+        row = await db.execute(select(Company).where(Company.id == company_id))
+        company = row.scalar_one_or_none()
+        if company is not None:
+            company_name = getattr(company, "name", None)
+            bin_iin = getattr(company, "bin_iin", None)
+
+    return {
+        "id": current_user.id,
+        "phone": current_user.phone,
+        "email": current_user.email,
+        "first_name": getattr(current_user, "first_name", None),
+        "last_name": getattr(current_user, "last_name", None),
+        "full_name": getattr(current_user, "full_name", None),
+        "company_id": company_id,
+        "company_name": company_name,
+        "bin_iin": bin_iin,
+        "role": getattr(current_user, "role", None),
+        "is_active": getattr(current_user, "is_active", True),
+        "is_verified": getattr(current_user, "is_verified", False),
+        "is_superuser": getattr(current_user, "is_superuser", False),
+        "last_login_at": getattr(current_user, "last_login_at", None),
+        "created_at": getattr(current_user, "created_at", None),
+        "updated_at": getattr(current_user, "updated_at", None),
+    }
 
 
 __all__ = ["router", "RegisterAccepted"]

@@ -592,6 +592,8 @@ class TestAuth:
         assert data.get("first_name") == "Test"
         assert data.get("last_name") == "User"
         assert data.get("role") == "admin"
+        assert data.get("company_id") == company.id
+        assert data.get("company_name") == "Test Company"
 
     @pytest.mark.asyncio
     async def test_access_token_expired_returns_token_expired(
