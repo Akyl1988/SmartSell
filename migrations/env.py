@@ -646,6 +646,28 @@ def _session_set_search_path(conn: Connection, default_schema: str = "public") -
         _debug(f"Не удалось выставить search_path: {e!r}")
 
 
+def _ensure_alembic_version_text(conn: Connection) -> None:
+    """Ensure public.alembic_version exists and version_num is TEXT."""
+    try:
+        conn.execute(
+            text(
+                """
+                CREATE TABLE IF NOT EXISTS public.alembic_version (
+                    version_num text NOT NULL,
+                    CONSTRAINT alembic_version_pkc PRIMARY KEY (version_num)
+                );
+                """
+            )
+        )
+    except Exception as e:
+        _debug(f"Ensure alembic_version table skipped: {e!r}")
+
+    try:
+        conn.execute(text("ALTER TABLE public.alembic_version ALTER COLUMN version_num TYPE text;"))
+    except Exception as e:
+        _debug(f"Ensure alembic_version.version_num TYPE text skipped: {e!r}")
+
+
 def run_migrations_offline() -> None:
     """
     Offline — эмитим SQL в stdout/файл без подключения к БД.
@@ -692,6 +714,9 @@ def run_migrations_online() -> None:
 
             # Критично: зафиксировать search_path в сессии на public,"$user"
             _session_set_search_path(connection, DEFAULT_SCHEMA)
+
+            if _is_postgres_url(url):
+                _ensure_alembic_version_text(connection)
 
             # Базовая конфигурация контекста
             version_table_schema = ALEMBIC_VERSION_TABLE_SCHEMA
