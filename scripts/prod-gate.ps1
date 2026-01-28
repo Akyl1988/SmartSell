@@ -41,6 +41,23 @@ try {
     python -m ruff check .
   }
 
+  $oldDbUrl = $env:DATABASE_URL
+  $hadDbUrl = -not [string]::IsNullOrWhiteSpace($oldDbUrl)
+  try {
+    Run-Step "ALEMBIC SMOKE" {
+      $env:DATABASE_URL = "postgresql+asyncpg://postgres:admin123@127.0.0.1:5432/smartsell_test"
+      alembic upgrade head
+      alembic downgrade -1
+      alembic upgrade head
+    }
+  } finally {
+    if ($hadDbUrl) {
+      $env:DATABASE_URL = $oldDbUrl
+    } else {
+      Remove-Item Env:DATABASE_URL -ErrorAction SilentlyContinue
+    }
+  }
+
   Run-Step "PYTEST" {
     python -m pytest -q
   }
