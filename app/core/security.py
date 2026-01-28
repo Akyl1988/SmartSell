@@ -105,10 +105,24 @@ from app.core.config import settings
 _pwd_schemes = ["argon2"] if _HAS_ARGON2 else []
 _pwd_schemes.append("bcrypt")
 
-pwd_context = CryptContext(
-    schemes=_pwd_schemes,
-    deprecated="auto",
-)
+_TEST_ARGON2_PARAMS: dict[str, Any] = {
+    "argon2__time_cost": 1,
+    "argon2__memory_cost": 1024,
+    "argon2__parallelism": 1,
+}
+
+
+def _password_context_options(testing: bool) -> dict[str, Any]:
+    options: dict[str, Any] = {
+        "schemes": _pwd_schemes,
+        "deprecated": "auto",
+    }
+    if testing and _HAS_ARGON2:
+        options.update(_TEST_ARGON2_PARAMS)
+    return options
+
+
+pwd_context = CryptContext(**_password_context_options(settings.is_testing))
 
 _PASSWORD_PEPPER = os.getenv("PASSWORD_PEPPER", "")
 
