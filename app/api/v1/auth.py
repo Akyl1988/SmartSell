@@ -59,7 +59,6 @@ from app.core.security import (
     decode_and_validate,
     denylist_key_for_token,
     get_password_hash,
-    require_company_admin,
     resolve_tenant_company_id,
     revoke_token,
     verify_password,
@@ -86,6 +85,7 @@ from app.schemas.user import (
     UserLogin,
 )
 from app.services.messaging import MessagingConfigError, send_email
+from app.services.otp_providers import is_otp_active
 from app.utils.otp import create_otp_attempt, verify_otp_code
 from app.utils.tokens import generate_token, hash_token
 
@@ -311,6 +311,9 @@ async def register(user_data: UserCreate, request: Request, db: AsyncSession = D
     По умолчанию сразу возвращаем токены (для UX/тестов). Можно отключить через AUTH_REGISTER_ISSUE_TOKENS=0.
     """
     client_info = get_client_info(request)
+
+    if not is_otp_active():
+        raise AuthorizationError("OTP provider is not active", "OTP_REQUIRED")
 
     phone = _normalize_phone(user_data.phone)
     email = _normalize_email(user_data.email)
@@ -888,13 +891,27 @@ async def verify_otp(otp_verify: OTPVerify, db: AsyncSession = Depends(get_async
 )
 async def create_invitation(
     payload: InvitationCreate,
-    current_user: User = Depends(require_company_admin),
+    current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_async_db),
 ):
     company_id = resolve_tenant_company_id(current_user)
     res_company = await db.execute(select(Company).where(Company.id == company_id))
     company = res_company.scalars().first()
     is_owner = bool(company and company.owner_id and company.owner_id == current_user.id)
+    is_admin = False
+    try:
+        is_admin = current_user.is_admin()
+    except Exception:
+        role = (getattr(current_user, "role", "") or "").lower()
+        is_admin = role == "admin"
+
+    otp_active = is_otp_active()
+    if otp_active:
+        if not is_admin:
+            raise AuthorizationError("Insufficient permissions", "FORBIDDEN")
+    else:
+        if not (is_admin or is_owner):
+            raise AuthorizationError("OTP provider is not active", "OTP_REQUIRED")
     email = (payload.email or "").strip().lower()
     phone = _normalize_phone(payload.phone)
     variants = _phone_variants(phone)

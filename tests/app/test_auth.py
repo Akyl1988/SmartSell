@@ -12,7 +12,14 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.api.v1 import auth as auth_mod
 from app.core.security import create_access_token, get_password_hash
 from app.models import Company, OtpAttempt, User, UserSession
+from app.services.otp_providers import is_otp_active
 from app.utils.otp import hash_otp_code
+
+
+def _enable_otp_provider(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("OTP_PROVIDER", "mobizon")
+    monkeypatch.setenv("OTP_ENABLED", "1")
+    is_otp_active.cache_clear()
 
 
 @pytest.mark.asyncio
@@ -20,8 +27,11 @@ class TestAuth:
     """Test authentication endpoints"""
 
     @pytest.mark.asyncio
-    async def test_register_user(self, async_client: AsyncClient):
+    async def test_register_user(
+        self, async_client: AsyncClient, async_db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+    ):
         """Test user registration"""
+        _enable_otp_provider(monkeypatch)
 
         user_data = {
             "phone": "+77001234567",
@@ -44,9 +54,10 @@ class TestAuth:
 
     @pytest.mark.asyncio
     async def test_register_creates_draft_company_tenant(
-        self, async_client: AsyncClient, async_db_session: AsyncSession
+        self, async_client: AsyncClient, async_db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
     ):
         """Regression test: Registration should create a draft Company tenant bound to the user."""
+        _enable_otp_provider(monkeypatch)
         user_data = {
             "phone": "+77009876543",
             "password": "securepassword123",
@@ -81,9 +92,10 @@ class TestAuth:
 
     @pytest.mark.asyncio
     async def test_register_creates_company_with_default_name(
-        self, async_client: AsyncClient, async_db_session: AsyncSession
+        self, async_client: AsyncClient, async_db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
     ):
         """Regression test: When no company_name is provided, use 'Draft {phone}' format."""
+        _enable_otp_provider(monkeypatch)
         user_data = {
             "phone": "+77008765432",
             "password": "securepassword456",
@@ -110,8 +122,11 @@ class TestAuth:
         assert company.owner_id == user.id
 
     @pytest.mark.asyncio
-    async def test_register_duplicate_phone(self, async_client: AsyncClient, async_db_session: AsyncSession):
+    async def test_register_duplicate_phone(
+        self, async_client: AsyncClient, async_db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+    ):
         """Test registration with duplicate phone"""
+        _enable_otp_provider(monkeypatch)
 
         # Create existing user
         company = Company(name="Existing Company")

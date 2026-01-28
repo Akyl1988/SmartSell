@@ -24,11 +24,18 @@ from app.core.security import create_access_token, get_password_hash
 from app.models.company import Company
 from app.models.marketplace import KaspiStoreToken
 from app.models.user import User
+from app.services.otp_providers import is_otp_active
 
 
 @pytest.mark.asyncio
 class TestKaspiConnect:
     """Test suite for Kaspi store connection (onboarding) endpoint."""
+
+    @pytest.fixture(autouse=True)
+    async def _enable_otp_provider(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("OTP_PROVIDER", "mobizon")
+        monkeypatch.setenv("OTP_ENABLED", "1")
+        is_otp_active.cache_clear()
 
     async def _create_user_and_company(self, async_db_session: AsyncSession, phone: str):
         """Helper to create a test user with a company."""

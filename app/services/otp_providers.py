@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import asyncio
+import os
+from functools import lru_cache
 from typing import Any
 
+from app.core.config import settings
 from app.core.logging import get_logger
 from app.core.provider_registry import ProviderRegistry
 from app.integrations.ports.otp import OtpProvider
@@ -117,4 +120,25 @@ class OtpProviderResolver:
         return instance
 
 
-__all__ = ["OtpProviderResolver"]
+@lru_cache
+def is_otp_active() -> bool:
+    env_enabled = os.getenv("OTP_ENABLED") or os.getenv("OTP_ACTIVE")
+    if env_enabled is not None:
+        enabled = str(env_enabled).strip().lower() in {"1", "true", "yes", "on"}
+    else:
+        enabled = bool(getattr(settings, "OTP_ENABLED", True))
+
+    env_provider = os.getenv("OTP_PROVIDER") or os.getenv("OTP_PROVIDER_NAME")
+    if env_provider is not None:
+        provider = str(env_provider).strip().lower()
+    else:
+        provider = str(getattr(settings, "OTP_PROVIDER", "noop") or "noop").strip().lower()
+
+    if not enabled:
+        return False
+    if not provider or provider in {"noop", "none", "disabled", "off"}:
+        return False
+    return True
+
+
+__all__ = ["OtpProviderResolver", "is_otp_active"]
