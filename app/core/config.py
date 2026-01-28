@@ -414,6 +414,16 @@ class Settings(BaseSettings):
     DEBUG_OTP_LOGGING: bool = Field(
         default=False, description="Allow masked OTP debug logging in development", validation_alias="DEBUG_OTP_LOGGING"
     )
+    OTP_PROVIDER: str = Field(
+        default="noop",
+        description="OTP provider name (noop disables OTP)",
+        validation_alias=AliasChoices("OTP_PROVIDER", "OTP_PROVIDER_NAME"),
+    )
+    OTP_ENABLED: bool = Field(
+        default=True,
+        description="Master switch for OTP usage",
+        validation_alias=AliasChoices("OTP_ENABLED", "OTP_ACTIVE"),
+    )
     DEBUG_CONFIG_DUMP: bool = Field(
         default=False, description="Allow masked config dumps", validation_alias="DEBUG_CONFIG_DUMP"
     )
