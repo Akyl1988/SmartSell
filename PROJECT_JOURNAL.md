@@ -1,3 +1,18 @@
+## [2026-01-28] Auth negative smoke gate + tests
+
+### Added
+- prod gate now validates auth error propagation: `/api/v1/auth/me` and `/api/v1/users/me` return 401/403 for missing/invalid tokens (never 500).
+- login/refresh precheck wired into prod gate using a shared HTTP helper to capture status/body without exceptions.
+- new tests ensure 401/403 for missing/invalid token on both endpoints and explicitly assert not-500.
+
+### Verified
+- python -m ruff format .
+- python -m ruff check .
+- python -m pytest -q
+
+### Next
+- Keep expanding negative auth gates for other protected endpoints as needed.
+
 ## [2026-01-10] Strict runtime/pytest DB URL resolution
 
 ### Fixed

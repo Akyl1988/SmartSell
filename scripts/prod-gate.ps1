@@ -36,6 +36,31 @@ function Run-Step([string]$title, [scriptblock]$action) {
   }
 }
 
+function Invoke-Http {
+  param(
+    [Parameter(Mandatory = $true)][string]$Method,
+    [Parameter(Mandatory = $true)][string]$Url,
+    [object]$Body = $null,
+    [hashtable]$Headers = $null
+  )
+
+  $params = @{
+    Uri = $Url
+    Method = $Method
+    TimeoutSec = 20
+    SkipHttpErrorCheck = $true
+  }
+  if ($Headers) { $params.Headers = $Headers }
+  if ($Body -ne $null) {
+    $params.ContentType = "application/json"
+    $params.Body = ($Body | ConvertTo-Json -Depth 10)
+  }
+
+  $resp = Invoke-WebRequest @params
+  Write-Host ("{0} {1} => {2}" -f $Method, $Url, $resp.StatusCode)
+  return $resp
+}
+
 try {
   Run-Step "RUFF" {
     python -m ruff check .
@@ -64,15 +89,65 @@ try {
 
   _Require-Creds
 
-  Run-Step "LOGIN CHECK" {
+  Run-Step "LOGIN/REFRESH CHECK" {
     $loginUrl = "$BaseUrl/api/v1/auth/login"
+    $refreshUrl = "$BaseUrl/api/v1/auth/refresh"
     $payload = @{ identifier = $Identifier; password = $Password }
-    $resp = Invoke-WebRequest -Uri $loginUrl -Method POST -TimeoutSec 20 -ContentType "application/json" -Body ($payload | ConvertTo-Json -Depth 10) -SkipHttpErrorCheck
+    $resp = Invoke-Http -Method "POST" -Url $loginUrl -Body $payload
     if ($resp.StatusCode -lt 200 -or $resp.StatusCode -ge 300) {
       if ($resp.Content) {
         Write-Host $resp.Content
       }
       exit 1
+    }
+
+    $json = $null
+    try {
+      $json = $resp.Content | ConvertFrom-Json
+    } catch {
+      Write-Error "Login response is not valid JSON"
+      if ($resp.Content) {
+        Write-Host $resp.Content
+      }
+      exit 1
+    }
+
+    $refreshToken = $json.refresh_token
+    if (-not $refreshToken) { $refreshToken = $json.refreshToken }
+    if (-not $refreshToken) {
+      Write-Error "Login response missing refresh_token"
+      exit 1
+    }
+
+    $refreshResp = Invoke-Http -Method "POST" -Url $refreshUrl -Body @{ refresh_token = $refreshToken }
+    if ($refreshResp.StatusCode -lt 200 -or $refreshResp.StatusCode -ge 300) {
+      if ($refreshResp.Content) {
+        Write-Host $refreshResp.Content
+      }
+      exit 1
+    }
+  }
+
+  Run-Step "AUTH NEGATIVE SMOKE" {
+    $endpoints = @(
+      "$BaseUrl/api/v1/auth/me",
+      "$BaseUrl/api/v1/users/me"
+    )
+
+    foreach ($url in $endpoints) {
+      $noAuth = Invoke-Http -Method "GET" -Url $url
+      if ($noAuth.StatusCode -notin 401, 403) {
+        Write-Error ("Unexpected status for {0} without auth: {1}" -f $url, $noAuth.StatusCode)
+        if ($noAuth.Content) { Write-Error $noAuth.Content }
+        exit 1
+      }
+
+      $badAuth = Invoke-Http -Method "GET" -Url $url -Headers @{ Authorization = "Bearer invalid.token.value" }
+      if ($badAuth.StatusCode -notin 401, 403) {
+        Write-Error ("Unexpected status for {0} with invalid token: {1}" -f $url, $badAuth.StatusCode)
+        if ($badAuth.Content) { Write-Error $badAuth.Content }
+        exit 1
+      }
     }
   }
 
