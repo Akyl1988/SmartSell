@@ -352,3 +352,7 @@ scripts/*
 !scripts/smoke-auth.ps1
 !scripts/smoke-openapi.ps1
 !scripts/smoke-core.ps1
+
+# allow PowerShell runners in scripts/
+!scripts/*.ps1
+
