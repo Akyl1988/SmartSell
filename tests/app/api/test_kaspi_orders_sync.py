@@ -723,6 +723,11 @@ async def test_sync_state_clears_last_error_after_success(monkeypatch, async_cli
 
 @pytest.mark.asyncio
 async def test_sync_returns_429_with_retry_after(monkeypatch, async_client, company_a_admin_headers):
+    async def fast_sleep(_delay):  # noqa: ANN001
+        return None
+
+    monkeypatch.setattr(asyncio, "sleep", fast_sleep)
+
     async def fake_get_orders(self, *, date_from=None, date_to=None, status=None, page=1, page_size=100):  # noqa: ARG001
         req = httpx.Request("GET", "http://kaspi.test/orders")
         resp = httpx.Response(429, headers={"Retry-After": "7"}, request=req)
