@@ -351,3 +351,4 @@ docs/smoke/
 scripts/*
 !scripts/smoke-auth.ps1
 !scripts/smoke-openapi.ps1
+!scripts/smoke-core.ps1
