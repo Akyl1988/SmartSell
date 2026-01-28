@@ -29,11 +29,15 @@ from fastapi.responses import JSONResponse
 from app.core import config
 
 logger = logging.getLogger(__name__)
-if not logger.handlers:
+if not logger.handlers and os.getenv("APP_IMPORT_SILENT") != "1":
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s %(levelname)s [%(name)s] %(message)s",
     )
+
+
+def _router_logging_enabled() -> bool:
+    return os.getenv("APP_IMPORT_SILENT") != "1"
 
 
 # ------------------------------------------------------------------------------
@@ -68,9 +72,11 @@ def _try_import(path: str) -> Any | None:
         return __import__(path, fromlist=["router"])
     except Exception as e:
         if _is_test_or_ci_mode() and path in _STRICT_IMPORTS_IN_TESTS:
-            logger.exception("Failed to import %s in test/CI mode", path)
+            if _router_logging_enabled():
+                logger.exception("Failed to import %s in test/CI mode", path)
             raise
-        logger.warning("module not available: %s (%s)", path, e)
+        if _router_logging_enabled():
+            logger.warning("module not available: %s (%s)", path, e)
         return None
 
 
@@ -174,11 +180,13 @@ def register_v1_router(name: str, router: APIRouter, is_absolute: bool = False) 
     for i, (n, _, _) in enumerate(V1_ROUTERS):
         if n == name:
             V1_ROUTERS[i] = (name, router, is_absolute)
-            logger.info("Updated v1 router registration: %s (absolute=%s)", name, is_absolute)
+            if _router_logging_enabled():
+                logger.info("Updated v1 router registration: %s (absolute=%s)", name, is_absolute)
             break
     else:
         V1_ROUTERS.append((name, router, is_absolute))
-        logger.info("Registered v1 router: %s (absolute=%s)", name, is_absolute)
+        if _router_logging_enabled():
+            logger.info("Registered v1 router: %s (absolute=%s)", name, is_absolute)
 
 
 def register_optional_v1_router(name: str, import_path: str, is_absolute_hint: bool | None = None) -> bool:
@@ -193,7 +201,8 @@ def register_optional_v1_router(name: str, import_path: str, is_absolute_hint: b
 
     abs_flag = bool(is_absolute_hint) or _router_prefix_startswith(r, "/api/v1")
     register_v1_router(name, r, abs_flag)
-    logger.info("Optional v1 router registered: %s from %s (absolute=%s)", name, import_path, abs_flag)
+    if _router_logging_enabled():
+        logger.info("Optional v1 router registered: %s from %s (absolute=%s)", name, import_path, abs_flag)
     return True
 
 
@@ -270,7 +279,8 @@ def _mount_once(target: Target, router: APIRouter, base_prefix: str, is_absolute
     if rid in mounted:
         fp = _router_first_path(router) or (_router_prefix(router) or "<unknown>")
         note = f"Skipped duplicate include for router ({fp})"
-        logger.debug(note)
+        if _router_logging_enabled():
+            logger.debug(note)
         return note
 
     # Определяем абсолютность
@@ -285,7 +295,8 @@ def _mount_once(target: Target, router: APIRouter, base_prefix: str, is_absolute
         note = f"Included router with base prefix '{base_prefix}': {fp}"
 
     mounted.add(rid)
-    logger.debug(note)
+    if _router_logging_enabled():
+        logger.debug(note)
     return note
 
 
@@ -349,23 +360,27 @@ def mount_v1(target: Target, base_prefix: str = "/api/v1") -> None:
             continue
         try:
             note = _mount_once(target, router, base_prefix, is_absolute_flag=is_absolute)
-            logger.debug("%s: %s", name, note)
+            if _router_logging_enabled():
+                logger.debug("%s: %s", name, note)
         except Exception as e:
-            logger.exception("Failed to include router '%s': %s", name, e)
+            if _router_logging_enabled():
+                logger.exception("Failed to include router '%s': %s", name, e)
 
     # Диагностика (/_debug/routers и /health-v1)
     if debug_enabled:
         try:
             _mount_v1_diagnostics(target, base_prefix)
         except Exception as e:
-            logger.debug("Mount v1 diagnostics skipped: %s", e)
+            if _router_logging_enabled():
+                logger.debug("Mount v1 diagnostics skipped: %s", e)
 
-    logger.info(
-        "API v1 routers mounted. Aliases: billing -> campaigns; wallet: %s; payments: %s; kaspi: %s",
-        "present" if wallet and _router_or_none(wallet) else "absent",
-        "present" if payments and _router_or_none(payments) else "absent",
-        "present" if kaspi_mod and _router_or_none(kaspi_mod) else "absent",
-    )
+    if _router_logging_enabled():
+        logger.info(
+            "API v1 routers mounted. Aliases: billing -> campaigns; wallet: %s; payments: %s; kaspi: %s",
+            "present" if wallet and _router_or_none(wallet) else "absent",
+            "present" if payments and _router_or_none(payments) else "absent",
+            "present" if kaspi_mod and _router_or_none(kaspi_mod) else "absent",
+        )
 
 
 def mount_all(target: Target, base_prefix: str = "/api/v1") -> None:

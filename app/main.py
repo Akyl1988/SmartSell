@@ -13,7 +13,7 @@ import time
 import uuid
 from collections import deque
 from collections.abc import AsyncIterator, Awaitable, Callable
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, contextmanager
 from contextvars import ContextVar
 from typing import Any
 
@@ -24,6 +24,9 @@ from starlette.middleware.gzip import GZipMiddleware
 from starlette.middleware.httpsredirect import HTTPSRedirectMiddleware
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 from starlette.staticfiles import StaticFiles
+
+# Prevent import-time router logging from emitting output.
+os.environ.setdefault("APP_IMPORT_SILENT", "1")
 
 from app.api.routes import mount_v1
 from app.core import config as core_config
@@ -40,13 +43,6 @@ except Exception:  # pragma: no cover
 # LOGGER
 # ======================================================================================
 logger = logging.getLogger(__name__)
-if not logger.handlers:
-    log_level = os.getenv("LOG_LEVEL", "INFO").upper()
-    logging.basicConfig(
-        level=log_level,
-        # добавили request_id, pid и host в формат по-современному
-        format="%(asctime)s %(levelname)s [%(name)s] pid=%(process)d host=%(hostname)s rid=%(request_id)s %(message)s",
-    )
 
 _request_id_var: ContextVar[str] = ContextVar("request_id", default="-")
 _hostname = socket.gethostname()
@@ -66,7 +62,39 @@ class _RequestIdFilter(logging.Filter):
         return True
 
 
-logging.getLogger().addFilter(_RequestIdFilter())
+_BASE_LOGGING_CONFIGURED = False
+
+
+def _configure_base_logging() -> None:
+    global _BASE_LOGGING_CONFIGURED
+    if _BASE_LOGGING_CONFIGURED:
+        return
+    root = logging.getLogger()
+    if not root.handlers:
+        log_level = os.getenv("LOG_LEVEL", "INFO").upper()
+        logging.basicConfig(
+            level=log_level,
+            # добавили request_id, pid и host в формат по-современному
+            format="%(asctime)s %(levelname)s [%(name)s] pid=%(process)d host=%(hostname)s rid=%(request_id)s %(message)s",
+        )
+    root.addFilter(_RequestIdFilter())
+    _BASE_LOGGING_CONFIGURED = True
+
+
+@contextmanager
+def _suppress_import_logging() -> Any:
+    previous_level = logging.root.manager.disable
+    previous_silent = os.environ.get("APP_IMPORT_SILENT")
+    os.environ["APP_IMPORT_SILENT"] = "1"
+    logging.disable(logging.CRITICAL)
+    try:
+        yield
+    finally:
+        logging.disable(previous_level)
+        if previous_silent is None:
+            os.environ.pop("APP_IMPORT_SILENT", None)
+        else:
+            os.environ["APP_IMPORT_SILENT"] = previous_silent
 
 
 # ======================================================================================
@@ -871,6 +899,7 @@ def get_feature_flag(key: str, default: bool | None = None) -> bool | None:
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:  # type: ignore[override]
     # ---- Startup
+    _configure_base_logging()
     logger.info("Application startup… env=%s version=%s", settings.ENVIRONMENT, settings.VERSION)
     disable_hooks = should_disable_startup_hooks()
     if disable_hooks:
@@ -1064,7 +1093,7 @@ async def _safe_settings_health_check() -> dict[str, Any]:
         return {"ok": False, "detail": f"settings_health_error:{e!s}"}
 
 
-def create_app() -> FastAPI:
+def _create_app() -> FastAPI:
     enable_docs = _env_truthy(os.getenv("ENABLE_DOCS", "1"), True)
     docs_url: str | None = "/docs" if enable_docs else None
     redoc_url: str | None = "/redoc" if enable_docs else None
@@ -1970,6 +1999,13 @@ def create_app() -> FastAPI:
         logger.warning("Static/media mount failed: %s", e)
 
     return app
+
+
+def create_app(*, suppress_import_logs: bool = True) -> FastAPI:
+    if suppress_import_logs:
+        with _suppress_import_logging():
+            return _create_app()
+    return _create_app()
 
 
 # Uvicorn/Gunicorn entrypoint
