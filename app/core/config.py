@@ -383,6 +383,33 @@ def should_disable_startup_hooks() -> bool:
         return _under_pytest()
 
 
+def run_startup_side_effects(s: Settings | None = None) -> None:
+    """Run startup checks/logging explicitly (no import-time side effects)."""
+    s = s or get_settings()
+    if should_disable_startup_hooks():
+        return
+
+    try:
+        if s.EAGER_SIDE_EFFECTS:
+            s.ensure_dirs()
+            s.check_secret_key()
+            s.check_database_url()
+            s.check_allowed_hosts()
+            s.check_cors_frontend()
+            s.check_smtp()
+            s.configure_logging()
+            s.init_sentry()
+            s.init_opentelemetry()
+    except Exception:
+        pass
+
+    if s.is_development and (s.STARTUP_LOG_SUMMARY or s.DEBUG_CONFIG_DUMP):
+        try:
+            s.log_startup_summary()
+        except Exception:
+            pass
+
+
 # ================================
 # НАСТРОЙКИ ПРИЛОЖЕНИЯ (Pydantic v2)
 # ================================
@@ -426,6 +453,11 @@ class Settings(BaseSettings):
     )
     DEBUG_CONFIG_DUMP: bool = Field(
         default=False, description="Allow masked config dumps", validation_alias="DEBUG_CONFIG_DUMP"
+    )
+    STARTUP_LOG_SUMMARY: bool = Field(
+        default=False,
+        description="Log masked config summary at startup (dev only)",
+        validation_alias="STARTUP_LOG_SUMMARY",
     )
     API_V1_STR: str = Field(default="/api/v1", description="API v1 prefix")
     HOST: str = Field(default="127.0.0.1", description="Server host", validation_alias="HOST")
@@ -1031,12 +1063,26 @@ class Settings(BaseSettings):
             uv_logger.propagate = True
             uv_logger.setLevel(level)
 
+        _LOGGING_CONFIGURED = True
+
+    def log_startup_summary(self) -> None:
+        if not self.is_development:
+            return
+        if not (self.STARTUP_LOG_SUMMARY or self.DEBUG_CONFIG_DUMP):
+            return
         try:
-            logger.info("build_info=%s", json.dumps(self.build_info, ensure_ascii=False))
+            logging.getLogger(__name__).info("build_info=%s", json.dumps(self.build_info, ensure_ascii=False))
         except Exception:
             pass
-
-        _LOGGING_CONFIGURED = True
+        try:
+            self._log_config_summary()
+        except Exception:
+            pass
+        if self.DEBUG_CONFIG_DUMP:
+            try:
+                self.dump_settings()
+            except Exception:
+                pass
 
     # -------------------- ДОБАВЛЕНО --------------------
     @property
@@ -1874,19 +1920,6 @@ def get_settings() -> Settings:
             smtp_test = 587
         object.__setattr__(s, "SMTP_PORT", smtp_test)
 
-    # One-time structured log for DB URL resolution (without secrets)
-    try:
-        logging.getLogger(__name__).info(
-            "db_url_resolved",
-            extra={
-                "event_name": "db_url_resolved",
-                "db_url_source": resolved_source,
-                "db_url_fingerprint": resolved_fp,
-            },
-        )
-    except Exception:
-        pass
-
     # Нормализация REDIS_URL с учётом REDIS_PASSWORD/DB
     if (s.REDIS_PASSWORD is not None) or (s.REDIS_DB is not None):
         try:
@@ -1925,20 +1958,6 @@ def get_settings() -> Settings:
     except Exception:
         object.__setattr__(s, "SMTP_PORT", 587)
 
-    # Флаг для отключения побочных эффектов на старте
-    disable_hooks = os.getenv("DISABLE_APP_STARTUP_HOOKS") == "1"
-
-    if s.EAGER_SIDE_EFFECTS and not _under_pytest() and not disable_hooks:
-        s.ensure_dirs()
-        s.check_secret_key()
-        s.check_database_url()
-        s.check_allowed_hosts()
-        s.check_cors_frontend()
-        s.check_smtp()
-        s.configure_logging()
-        s._log_config_summary()  # информативная сводка в лог
-        s.init_sentry()
-        s.init_opentelemetry()
     return s
 
 
@@ -1949,6 +1968,7 @@ __all__ = [
     "get_settings",
     "settings",
     "should_disable_startup_hooks",
+    "run_startup_side_effects",
     "db_url_fingerprint",
     "db_connection_fingerprint",
     "JSONAPI_MIME",

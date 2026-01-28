@@ -1,3 +1,15 @@
+## [2026-01-28] Eliminate import-time stdout/stderr side effects
+
+### Fixed
+- **Root cause**: module imports (notably `app/core/config.py` and `app/main.py`) emitted startup logs/config summaries at import time, leaking to stdout/stderr and corrupting downstream scripts.
+- **Solution**: removed import-time logging and moved startup checks/logging into an explicit `run_startup_side_effects()` call in FastAPI lifespan; startup summaries are now guarded by `STARTUP_LOG_SUMMARY`/`DEBUG_CONFIG_DUMP` and dev-only.
+- **Regression**: added a capsys test to assert imports are silent.
+
+### Verified
+- ruff format / ruff check
+- pytest -q
+- prod-gate.ps1
+
 ## [2026-01-28] Admin bootstrap without OTP (C3)
 
 ### Added

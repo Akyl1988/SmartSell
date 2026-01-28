@@ -13,7 +13,7 @@ import time
 import uuid
 from collections import deque
 from collections.abc import AsyncIterator, Awaitable, Callable
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, contextmanager
 from contextvars import ContextVar
 from typing import Any
 
@@ -25,9 +25,12 @@ from starlette.middleware.httpsredirect import HTTPSRedirectMiddleware
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 from starlette.staticfiles import StaticFiles
 
+# Prevent import-time router logging from emitting output.
+os.environ.setdefault("APP_IMPORT_SILENT", "1")
+
 from app.api.routes import mount_v1
 from app.core import config as core_config
-from app.core.config import settings, should_disable_startup_hooks
+from app.core.config import run_startup_side_effects, settings, should_disable_startup_hooks
 from app.core.exceptions import register_exception_handlers
 
 try:
@@ -40,13 +43,6 @@ except Exception:  # pragma: no cover
 # LOGGER
 # ======================================================================================
 logger = logging.getLogger(__name__)
-if not logger.handlers:
-    log_level = os.getenv("LOG_LEVEL", "INFO").upper()
-    logging.basicConfig(
-        level=log_level,
-        # добавили request_id, pid и host в формат по-современному
-        format="%(asctime)s %(levelname)s [%(name)s] pid=%(process)d host=%(hostname)s rid=%(request_id)s %(message)s",
-    )
 
 _request_id_var: ContextVar[str] = ContextVar("request_id", default="-")
 _hostname = socket.gethostname()
@@ -66,31 +62,40 @@ class _RequestIdFilter(logging.Filter):
         return True
 
 
-logging.getLogger().addFilter(_RequestIdFilter())
+_BASE_LOGGING_CONFIGURED = False
 
-# DB diagnostics at startup (no secrets)
-try:
-    logging.getLogger(__name__).info(
-        "db_url_runtime",
-        extra={
-            "event_name": "db_url_runtime",
-            "db_url_source": getattr(settings, "DB_URL_SOURCE", ""),
-            "db_url_fingerprint": getattr(settings, "DB_URL_FINGERPRINT", ""),
-        },
-    )
-except Exception:
-    logger.debug("db_url_runtime log skipped", exc_info=False)
 
-# Fail fast if DB URL fallback is used outside local (skip during pytest)
-try:
-    env_val = str(getattr(settings, "ENVIRONMENT", "") or "").lower()
-    if not core_config._under_pytest() and env_val != "local" and getattr(settings, "DB_URL_SOURCE", "") == "DEFAULT":
-        raise RuntimeError("DATABASE_URL is required for non-local environments")
-except Exception as e:
-    # re-raise runtime errors; ignore logging issues
-    if isinstance(e, RuntimeError):
-        raise
-    logger.debug("DB URL startup guard skipped: %s", e)
+def _configure_base_logging() -> None:
+    global _BASE_LOGGING_CONFIGURED
+    if _BASE_LOGGING_CONFIGURED:
+        return
+    root = logging.getLogger()
+    if not root.handlers:
+        log_level = os.getenv("LOG_LEVEL", "INFO").upper()
+        logging.basicConfig(
+            level=log_level,
+            # добавили request_id, pid и host в формат по-современному
+            format="%(asctime)s %(levelname)s [%(name)s] pid=%(process)d host=%(hostname)s rid=%(request_id)s %(message)s",
+        )
+    root.addFilter(_RequestIdFilter())
+    _BASE_LOGGING_CONFIGURED = True
+
+
+@contextmanager
+def _suppress_import_logging() -> Any:
+    previous_level = logging.root.manager.disable
+    previous_silent = os.environ.get("APP_IMPORT_SILENT")
+    os.environ["APP_IMPORT_SILENT"] = "1"
+    logging.disable(logging.CRITICAL)
+    try:
+        yield
+    finally:
+        logging.disable(previous_level)
+        if previous_silent is None:
+            os.environ.pop("APP_IMPORT_SILENT", None)
+        else:
+            os.environ["APP_IMPORT_SILENT"] = previous_silent
+
 
 # ======================================================================================
 # GLOBAL STATE
@@ -132,7 +137,6 @@ try:
     from starlette_exporter import PrometheusMiddleware, handle_metrics  # type: ignore
 
     STARLETTE_EXPORTER_AVAILABLE = True
-    logger.info("starlette_exporter is available — will attach Prometheus middleware")
 except Exception:
     try:
         from prometheus_client import CollectorRegistry, Counter, Gauge, Histogram  # type: ignore
@@ -199,9 +203,8 @@ except Exception:
             ["name"],
             registry=prom_objs["registry"],
         )
-        logger.info("prometheus_client is available — metrics will be exposed at /metrics")
     except Exception:
-        logger.info("Prometheus libs not installed — /metrics will return a basic text")
+        pass
 
 # ======================================================================================
 # OpenTelemetry (optional)
@@ -211,7 +214,6 @@ try:
     from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor  # type: ignore
 
     OTEL_AVAILABLE = True
-    logger.info("OpenTelemetry instrumentation is available — tracing can be enabled")
 except Exception:
     OTEL_AVAILABLE = False
 
@@ -897,14 +899,27 @@ def get_feature_flag(key: str, default: bool | None = None) -> bool | None:
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:  # type: ignore[override]
     # ---- Startup
+    _configure_base_logging()
     logger.info("Application startup… env=%s version=%s", settings.ENVIRONMENT, settings.VERSION)
     disable_hooks = should_disable_startup_hooks()
     if disable_hooks:
         logger.info("Startup hooks disabled (tests/CI flag)")
     try:
-        settings.ensure_dirs()
+        run_startup_side_effects(settings)
     except Exception as e:
-        logger.warning("ensure_dirs failed: %s", e)
+        logger.warning("startup side effects failed: %s", e)
+    try:
+        env_val = str(getattr(settings, "ENVIRONMENT", "") or "").lower()
+        if (
+            not core_config._under_pytest()
+            and env_val != "local"
+            and getattr(settings, "DB_URL_SOURCE", "") == "DEFAULT"
+        ):
+            raise RuntimeError("DATABASE_URL is required for non-local environments")
+    except Exception as e:
+        if isinstance(e, RuntimeError):
+            raise
+        logger.debug("DB URL startup guard skipped: %s", e)
 
     _import_models_once()
 
@@ -1078,7 +1093,7 @@ async def _safe_settings_health_check() -> dict[str, Any]:
         return {"ok": False, "detail": f"settings_health_error:{e!s}"}
 
 
-def create_app() -> FastAPI:
+def _create_app() -> FastAPI:
     enable_docs = _env_truthy(os.getenv("ENABLE_DOCS", "1"), True)
     docs_url: str | None = "/docs" if enable_docs else None
     redoc_url: str | None = "/redoc" if enable_docs else None
@@ -1984,6 +1999,13 @@ def create_app() -> FastAPI:
         logger.warning("Static/media mount failed: %s", e)
 
     return app
+
+
+def create_app(*, suppress_import_logs: bool = True) -> FastAPI:
+    if suppress_import_logs:
+        with _suppress_import_logging():
+            return _create_app()
+    return _create_app()
 
 
 # Uvicorn/Gunicorn entrypoint

@@ -130,4 +130,3 @@ async def test_wallet_idempotency(async_client: AsyncClient, async_db_session: A
     assert ledger_after_second == ledger_after_first
     assert await _get_balance(async_client, account_a_id, company_a_admin_headers) == src_after_first
     assert await _get_balance(async_client, account_b_id, company_a_admin_headers) == dst_after_first
-
