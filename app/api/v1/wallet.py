@@ -533,6 +533,7 @@ async def deposit(
             account_id,
             req.amount,
             getattr(req, "reference", None),
+            x_request_id,
             company_id=resolved_company_id,
         )
         await db.commit()
@@ -569,6 +570,7 @@ async def withdraw(
             account_id,
             req.amount,
             getattr(req, "reference", None),
+            x_request_id,
             company_id=resolved_company_id,
         )
         await db.commit()
@@ -617,6 +619,7 @@ async def transfer(
             req.destination_account_id,
             req.amount,
             getattr(req, "reference", None),
+            x_request_id,
             company_id=resolved_company_id,
         )
         await db.commit()
@@ -714,6 +717,7 @@ class AdjustIn(BaseModel):
 async def adjust_balance(
     account_id: int = Path(..., ge=1),
     payload: AdjustIn = ...,
+    x_request_id: str | None = Header(default=None, alias="X-Request-Id"),
     current_user: User = Depends(require_company_admin),
     db: AsyncSession = Depends(get_async_db),
 ):
@@ -731,6 +735,7 @@ async def adjust_balance(
             account_id,
             payload.new_balance,
             payload.reference,
+            x_request_id,
             company_id=resolved_company_id,
         )
         await db.commit()

@@ -20,6 +20,7 @@ from sqlalchemy import (
     select,
     text,
 )
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.sql import Select
 
@@ -83,11 +84,13 @@ wallet_ledger = Table(
     Column("amount", Numeric(18, _DECIMAL_PLACES), nullable=False),
     Column("currency", String(10), nullable=False),
     Column("reference", String(255), nullable=True),
+    Column("client_request_id", String(128), nullable=True, index=True),
     Column("created_at", String(40), nullable=False),
 )
 
 Index("ix_wallet_ledger_account_id", wallet_ledger.c.account_id)
 Index("ix_wallet_ledger_created_at", wallet_ledger.c.created_at)
+Index("ix_wallet_ledger_client_request_id", wallet_ledger.c.client_request_id)
 
 
 def _is_sqlite_engine(db: AsyncSession) -> bool:
@@ -98,6 +101,23 @@ def _is_sqlite_engine(db: AsyncSession) -> bool:
         return (bind.dialect.name or "").lower() == "sqlite"
     except Exception:
         return False
+
+
+def _is_postgres_engine(db: AsyncSession) -> bool:
+    try:
+        bind = db.get_bind()
+        if bind is None:
+            return False
+        return (bind.dialect.name or "").lower() == "postgresql"
+    except Exception:
+        return False
+
+
+def _normalize_client_request_id(value: Optional[str]) -> Optional[str]:
+    v = (value or "").strip()
+    if not v:
+        return None
+    return v[:128]
 
 
 def _with_for_update(db: AsyncSession, stmt: Select) -> Select:
@@ -305,7 +325,13 @@ class WalletStorageSQL:
         }
 
     async def deposit(
-        self, account_id: int, amount: Decimal, reference: Optional[str], *, company_id: Optional[int] = None
+        self,
+        account_id: int,
+        amount: Decimal,
+        reference: Optional[str],
+        client_request_id: str | None = None,
+        *,
+        company_id: Optional[int] = None,
     ) -> dict[str, Any]:
         amt = _to_decimal(amount)
         if amt <= 0:
@@ -314,6 +340,7 @@ class WalletStorageSQL:
         ref = (reference or "").strip() or None
         if ref:
             ref = ref[:255]
+        req_id = _normalize_client_request_id(client_request_id)
 
         await self._ensure_account_company(account_id, company_id)
         stmt = _with_for_update(self._db, select(wallet_accounts).where(wallet_accounts.c.id == account_id))
@@ -322,19 +349,58 @@ class WalletStorageSQL:
             raise NotFoundError("account not found")
 
         new_bal = _to_decimal(acc["balance"]) + amt
-        await self._db.execute(
-            wallet_accounts.update().where(wallet_accounts.c.id == account_id).values(balance=new_bal, updated_at=now)
-        )
-        await self._db.execute(
-            wallet_ledger.insert().values(
-                account_id=account_id,
-                entry_type="deposit",
-                amount=amt,
-                currency=acc["currency"],
-                reference=ref,
-                created_at=now,
+        if req_id and _is_postgres_engine(self._db):
+            ins = (
+                pg_insert(wallet_ledger)
+                .values(
+                    account_id=account_id,
+                    entry_type="deposit",
+                    amount=amt,
+                    currency=acc["currency"],
+                    reference=ref,
+                    client_request_id=req_id,
+                    created_at=now,
+                )
+                .on_conflict_do_nothing(
+                    index_elements=["account_id", "client_request_id"],
+                    index_where=text("client_request_id IS NOT NULL"),
+                )
             )
-        )
+            res = await self._db.execute(ins)
+            if not (res.rowcount or 0):
+                row = (
+                    await self._db.execute(select(wallet_accounts).where(wallet_accounts.c.id == account_id))
+                ).mappings().first()
+                if not row:
+                    raise NotFoundError("account not found")
+                return {
+                    "account_id": int(account_id),
+                    "balance": str(_to_decimal(row["balance"])),
+                    "currency": str(row["currency"]).upper(),
+                }
+
+            await self._db.execute(
+                wallet_accounts.update()
+                .where(wallet_accounts.c.id == account_id)
+                .values(balance=new_bal, updated_at=now)
+            )
+        else:
+            await self._db.execute(
+                wallet_accounts.update()
+                .where(wallet_accounts.c.id == account_id)
+                .values(balance=new_bal, updated_at=now)
+            )
+            await self._db.execute(
+                wallet_ledger.insert().values(
+                    account_id=account_id,
+                    entry_type="deposit",
+                    amount=amt,
+                    currency=acc["currency"],
+                    reference=ref,
+                    client_request_id=req_id,
+                    created_at=now,
+                )
+            )
         return {
             "account_id": int(account_id),
             "balance": str(new_bal),
@@ -342,7 +408,13 @@ class WalletStorageSQL:
         }
 
     async def withdraw(
-        self, account_id: int, amount: Decimal, reference: Optional[str], *, company_id: Optional[int] = None
+        self,
+        account_id: int,
+        amount: Decimal,
+        reference: Optional[str],
+        client_request_id: str | None = None,
+        *,
+        company_id: Optional[int] = None,
     ) -> dict[str, Any]:
         amt = _to_decimal(amount)
         if amt <= 0:
@@ -351,6 +423,7 @@ class WalletStorageSQL:
         ref = (reference or "").strip() or None
         if ref:
             ref = ref[:255]
+        req_id = _normalize_client_request_id(client_request_id)
 
         await self._ensure_account_company(account_id, company_id)
         stmt = _with_for_update(self._db, select(wallet_accounts).where(wallet_accounts.c.id == account_id))
@@ -363,19 +436,58 @@ class WalletStorageSQL:
             raise InsufficientFundsError("insufficient funds")
         new_bal = cur_bal - amt
 
-        await self._db.execute(
-            wallet_accounts.update().where(wallet_accounts.c.id == account_id).values(balance=new_bal, updated_at=now)
-        )
-        await self._db.execute(
-            wallet_ledger.insert().values(
-                account_id=account_id,
-                entry_type="withdraw",
-                amount=amt,
-                currency=acc["currency"],
-                reference=ref,
-                created_at=now,
+        if req_id and _is_postgres_engine(self._db):
+            ins = (
+                pg_insert(wallet_ledger)
+                .values(
+                    account_id=account_id,
+                    entry_type="withdraw",
+                    amount=amt,
+                    currency=acc["currency"],
+                    reference=ref,
+                    client_request_id=req_id,
+                    created_at=now,
+                )
+                .on_conflict_do_nothing(
+                    index_elements=["account_id", "client_request_id"],
+                    index_where=text("client_request_id IS NOT NULL"),
+                )
             )
-        )
+            res = await self._db.execute(ins)
+            if not (res.rowcount or 0):
+                row = (
+                    await self._db.execute(select(wallet_accounts).where(wallet_accounts.c.id == account_id))
+                ).mappings().first()
+                if not row:
+                    raise NotFoundError("account not found")
+                return {
+                    "account_id": int(account_id),
+                    "balance": str(_to_decimal(row["balance"])),
+                    "currency": str(row["currency"]).upper(),
+                }
+
+            await self._db.execute(
+                wallet_accounts.update()
+                .where(wallet_accounts.c.id == account_id)
+                .values(balance=new_bal, updated_at=now)
+            )
+        else:
+            await self._db.execute(
+                wallet_accounts.update()
+                .where(wallet_accounts.c.id == account_id)
+                .values(balance=new_bal, updated_at=now)
+            )
+            await self._db.execute(
+                wallet_ledger.insert().values(
+                    account_id=account_id,
+                    entry_type="withdraw",
+                    amount=amt,
+                    currency=acc["currency"],
+                    reference=ref,
+                    client_request_id=req_id,
+                    created_at=now,
+                )
+            )
         return {
             "account_id": int(account_id),
             "balance": str(new_bal),
@@ -388,6 +500,7 @@ class WalletStorageSQL:
         dst_account_id: int,
         amount: Decimal,
         reference: Optional[str],
+        client_request_id: str | None = None,
         *,
         company_id: Optional[int] = None,
     ) -> dict[str, Any]:
@@ -400,6 +513,7 @@ class WalletStorageSQL:
         ref = (reference or "").strip() or None
         if ref:
             ref = ref[:255]
+        req_id = _normalize_client_request_id(client_request_id)
 
         await self._ensure_account_company(src_account_id, company_id)
         await self._ensure_account_company(dst_account_id, company_id)
@@ -425,37 +539,113 @@ class WalletStorageSQL:
         src_bal_new = src_bal - amt
         dst_bal_new = _to_decimal(dst["balance"]) + amt
 
-        await self._db.execute(
-            wallet_accounts.update()
-            .where(wallet_accounts.c.id == src_account_id)
-            .values(balance=src_bal_new, updated_at=now)
-        )
-        await self._db.execute(
-            wallet_accounts.update()
-            .where(wallet_accounts.c.id == dst_account_id)
-            .values(balance=dst_bal_new, updated_at=now)
-        )
+        if req_id and _is_postgres_engine(self._db):
+            out_ins = (
+                pg_insert(wallet_ledger)
+                .values(
+                    account_id=src_account_id,
+                    entry_type="transfer_out",
+                    amount=amt,
+                    currency=src_cur,
+                    reference=ref,
+                    client_request_id=req_id,
+                    created_at=now,
+                )
+                .on_conflict_do_nothing(
+                    index_elements=["account_id", "client_request_id"],
+                    index_where=text("client_request_id IS NOT NULL"),
+                )
+            )
+            in_ins = (
+                pg_insert(wallet_ledger)
+                .values(
+                    account_id=dst_account_id,
+                    entry_type="transfer_in",
+                    amount=amt,
+                    currency=dst_cur,
+                    reference=ref,
+                    client_request_id=req_id,
+                    created_at=now,
+                )
+                .on_conflict_do_nothing(
+                    index_elements=["account_id", "client_request_id"],
+                    index_where=text("client_request_id IS NOT NULL"),
+                )
+            )
+            res_out = await self._db.execute(out_ins)
+            res_in = await self._db.execute(in_ins)
+            out_row = res_out.rowcount or 0
+            in_row = res_in.rowcount or 0
 
-        await self._db.execute(
-            wallet_ledger.insert().values(
-                account_id=src_account_id,
-                entry_type="transfer_out",
-                amount=amt,
-                currency=src_cur,
-                reference=ref,
-                created_at=now,
+            if out_row == 0 and in_row == 0:
+                src_row = (
+                    await self._db.execute(select(wallet_accounts).where(wallet_accounts.c.id == src_account_id))
+                ).mappings().first()
+                dst_row = (
+                    await self._db.execute(select(wallet_accounts).where(wallet_accounts.c.id == dst_account_id))
+                ).mappings().first()
+                if not src_row or not dst_row:
+                    raise NotFoundError("source or destination account not found")
+                return {
+                    "source": {
+                        "account_id": int(src_account_id),
+                        "balance": str(_to_decimal(src_row["balance"])),
+                        "currency": str(src_row["currency"]).upper(),
+                    },
+                    "destination": {
+                        "account_id": int(dst_account_id),
+                        "balance": str(_to_decimal(dst_row["balance"])),
+                        "currency": str(dst_row["currency"]).upper(),
+                    },
+                }
+
+            if out_row != in_row:
+                raise WalletError("transfer idempotency conflict")
+
+            await self._db.execute(
+                wallet_accounts.update()
+                .where(wallet_accounts.c.id == src_account_id)
+                .values(balance=src_bal_new, updated_at=now)
             )
-        )
-        await self._db.execute(
-            wallet_ledger.insert().values(
-                account_id=dst_account_id,
-                entry_type="transfer_in",
-                amount=amt,
-                currency=dst_cur,
-                reference=ref,
-                created_at=now,
+            await self._db.execute(
+                wallet_accounts.update()
+                .where(wallet_accounts.c.id == dst_account_id)
+                .values(balance=dst_bal_new, updated_at=now)
             )
-        )
+        else:
+            await self._db.execute(
+                wallet_accounts.update()
+                .where(wallet_accounts.c.id == src_account_id)
+                .values(balance=src_bal_new, updated_at=now)
+            )
+            await self._db.execute(
+                wallet_accounts.update()
+                .where(wallet_accounts.c.id == dst_account_id)
+                .values(balance=dst_bal_new, updated_at=now)
+            )
+
+            await self._db.execute(
+                wallet_ledger.insert().values(
+                    account_id=src_account_id,
+                    entry_type="transfer_out",
+                    amount=amt,
+                    currency=src_cur,
+                    reference=ref,
+                    client_request_id=req_id,
+                    created_at=now,
+                )
+            )
+            await self._db.execute(
+                wallet_ledger.insert().values(
+                    account_id=dst_account_id,
+                    entry_type="transfer_in",
+                    amount=amt,
+                    currency=dst_cur,
+                    reference=ref,
+                    client_request_id=req_id,
+                    created_at=now,
+                )
+            )
 
         return {
             "source": {"account_id": int(src_account_id), "balance": str(src_bal_new), "currency": src_cur},
@@ -463,13 +653,20 @@ class WalletStorageSQL:
         }
 
     async def adjust_balance(
-        self, account_id: int, new_balance: Decimal, reference: Optional[str], *, company_id: Optional[int] = None
+        self,
+        account_id: int,
+        new_balance: Decimal,
+        reference: Optional[str],
+        client_request_id: str | None = None,
+        *,
+        company_id: Optional[int] = None,
     ) -> dict[str, Any]:
         nb = _to_decimal(new_balance)
         now = _utcnow_iso()
         ref = (reference or "").strip() or None
         if ref:
             ref = ref[:255]
+        req_id = _normalize_client_request_id(client_request_id)
 
         await self._ensure_account_company(account_id, company_id)
         stmt = _with_for_update(self._db, select(wallet_accounts).where(wallet_accounts.c.id == account_id))
@@ -482,19 +679,58 @@ class WalletStorageSQL:
         if delta == 0:
             return {"account_id": int(account_id), "balance": str(old), "currency": str(acc["currency"]).upper()}
 
-        await self._db.execute(
-            wallet_accounts.update().where(wallet_accounts.c.id == account_id).values(balance=nb, updated_at=now)
-        )
-        await self._db.execute(
-            wallet_ledger.insert().values(
-                account_id=account_id,
-                entry_type="adjustment",
-                amount=_to_decimal(delta.copy_abs()),
-                currency=acc["currency"],
-                reference=(ref or f"adjust: {old} -> {nb}")[:255],
-                created_at=now,
+        if req_id and _is_postgres_engine(self._db):
+            ins = (
+                pg_insert(wallet_ledger)
+                .values(
+                    account_id=account_id,
+                    entry_type="adjustment",
+                    amount=_to_decimal(delta.copy_abs()),
+                    currency=acc["currency"],
+                    reference=(ref or f"adjust: {old} -> {nb}")[:255],
+                    client_request_id=req_id,
+                    created_at=now,
+                )
+                .on_conflict_do_nothing(
+                    index_elements=["account_id", "client_request_id"],
+                    index_where=text("client_request_id IS NOT NULL"),
+                )
             )
-        )
+            res = await self._db.execute(ins)
+            if not (res.rowcount or 0):
+                row = (
+                    await self._db.execute(select(wallet_accounts).where(wallet_accounts.c.id == account_id))
+                ).mappings().first()
+                if not row:
+                    raise NotFoundError("account not found")
+                return {
+                    "account_id": int(account_id),
+                    "balance": str(_to_decimal(row["balance"])),
+                    "currency": str(row["currency"]).upper(),
+                }
+
+            await self._db.execute(
+                wallet_accounts.update()
+                .where(wallet_accounts.c.id == account_id)
+                .values(balance=nb, updated_at=now)
+            )
+        else:
+            await self._db.execute(
+                wallet_accounts.update()
+                .where(wallet_accounts.c.id == account_id)
+                .values(balance=nb, updated_at=now)
+            )
+            await self._db.execute(
+                wallet_ledger.insert().values(
+                    account_id=account_id,
+                    entry_type="adjustment",
+                    amount=_to_decimal(delta.copy_abs()),
+                    currency=acc["currency"],
+                    reference=(ref or f"adjust: {old} -> {nb}")[:255],
+                    client_request_id=req_id,
+                    created_at=now,
+                )
+            )
         return {"account_id": int(account_id), "balance": str(nb), "currency": str(acc["currency"]).upper()}
 
     async def list_ledger(
