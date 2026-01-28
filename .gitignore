@@ -354,5 +354,8 @@ scripts/*
 !scripts/smoke-core.ps1
 
 # allow PowerShell runners in scripts/
-!scripts/*.ps1
+
+
+# scripts/ is ignored globally; allow only tracked runner(s)
+!scripts/prod-gate.ps1
 
