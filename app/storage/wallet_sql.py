@@ -369,8 +369,10 @@ class WalletStorageSQL:
             res = await self._db.execute(ins)
             if not (res.rowcount or 0):
                 row = (
-                    await self._db.execute(select(wallet_accounts).where(wallet_accounts.c.id == account_id))
-                ).mappings().first()
+                    (await self._db.execute(select(wallet_accounts).where(wallet_accounts.c.id == account_id)))
+                    .mappings()
+                    .first()
+                )
                 if not row:
                     raise NotFoundError("account not found")
                 return {
@@ -456,8 +458,10 @@ class WalletStorageSQL:
             res = await self._db.execute(ins)
             if not (res.rowcount or 0):
                 row = (
-                    await self._db.execute(select(wallet_accounts).where(wallet_accounts.c.id == account_id))
-                ).mappings().first()
+                    (await self._db.execute(select(wallet_accounts).where(wallet_accounts.c.id == account_id)))
+                    .mappings()
+                    .first()
+                )
                 if not row:
                     raise NotFoundError("account not found")
                 return {
@@ -579,11 +583,15 @@ class WalletStorageSQL:
 
             if out_row == 0 and in_row == 0:
                 src_row = (
-                    await self._db.execute(select(wallet_accounts).where(wallet_accounts.c.id == src_account_id))
-                ).mappings().first()
+                    (await self._db.execute(select(wallet_accounts).where(wallet_accounts.c.id == src_account_id)))
+                    .mappings()
+                    .first()
+                )
                 dst_row = (
-                    await self._db.execute(select(wallet_accounts).where(wallet_accounts.c.id == dst_account_id))
-                ).mappings().first()
+                    (await self._db.execute(select(wallet_accounts).where(wallet_accounts.c.id == dst_account_id)))
+                    .mappings()
+                    .first()
+                )
                 if not src_row or not dst_row:
                     raise NotFoundError("source or destination account not found")
                 return {
@@ -699,8 +707,10 @@ class WalletStorageSQL:
             res = await self._db.execute(ins)
             if not (res.rowcount or 0):
                 row = (
-                    await self._db.execute(select(wallet_accounts).where(wallet_accounts.c.id == account_id))
-                ).mappings().first()
+                    (await self._db.execute(select(wallet_accounts).where(wallet_accounts.c.id == account_id)))
+                    .mappings()
+                    .first()
+                )
                 if not row:
                     raise NotFoundError("account not found")
                 return {
@@ -710,15 +720,11 @@ class WalletStorageSQL:
                 }
 
             await self._db.execute(
-                wallet_accounts.update()
-                .where(wallet_accounts.c.id == account_id)
-                .values(balance=nb, updated_at=now)
+                wallet_accounts.update().where(wallet_accounts.c.id == account_id).values(balance=nb, updated_at=now)
             )
         else:
             await self._db.execute(
-                wallet_accounts.update()
-                .where(wallet_accounts.c.id == account_id)
-                .values(balance=nb, updated_at=now)
+                wallet_accounts.update().where(wallet_accounts.c.id == account_id).values(balance=nb, updated_at=now)
             )
             await self._db.execute(
                 wallet_ledger.insert().values(

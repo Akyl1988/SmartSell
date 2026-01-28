@@ -27,7 +27,7 @@ from starlette.staticfiles import StaticFiles
 
 from app.api.routes import mount_v1
 from app.core import config as core_config
-from app.core.config import settings, should_disable_startup_hooks
+from app.core.config import run_startup_side_effects, settings, should_disable_startup_hooks
 from app.core.exceptions import register_exception_handlers
 
 try:
@@ -68,29 +68,6 @@ class _RequestIdFilter(logging.Filter):
 
 logging.getLogger().addFilter(_RequestIdFilter())
 
-# DB diagnostics at startup (no secrets)
-try:
-    logging.getLogger(__name__).info(
-        "db_url_runtime",
-        extra={
-            "event_name": "db_url_runtime",
-            "db_url_source": getattr(settings, "DB_URL_SOURCE", ""),
-            "db_url_fingerprint": getattr(settings, "DB_URL_FINGERPRINT", ""),
-        },
-    )
-except Exception:
-    logger.debug("db_url_runtime log skipped", exc_info=False)
-
-# Fail fast if DB URL fallback is used outside local (skip during pytest)
-try:
-    env_val = str(getattr(settings, "ENVIRONMENT", "") or "").lower()
-    if not core_config._under_pytest() and env_val != "local" and getattr(settings, "DB_URL_SOURCE", "") == "DEFAULT":
-        raise RuntimeError("DATABASE_URL is required for non-local environments")
-except Exception as e:
-    # re-raise runtime errors; ignore logging issues
-    if isinstance(e, RuntimeError):
-        raise
-    logger.debug("DB URL startup guard skipped: %s", e)
 
 # ======================================================================================
 # GLOBAL STATE
@@ -132,7 +109,6 @@ try:
     from starlette_exporter import PrometheusMiddleware, handle_metrics  # type: ignore
 
     STARLETTE_EXPORTER_AVAILABLE = True
-    logger.info("starlette_exporter is available — will attach Prometheus middleware")
 except Exception:
     try:
         from prometheus_client import CollectorRegistry, Counter, Gauge, Histogram  # type: ignore
@@ -199,9 +175,8 @@ except Exception:
             ["name"],
             registry=prom_objs["registry"],
         )
-        logger.info("prometheus_client is available — metrics will be exposed at /metrics")
     except Exception:
-        logger.info("Prometheus libs not installed — /metrics will return a basic text")
+        pass
 
 # ======================================================================================
 # OpenTelemetry (optional)
@@ -211,7 +186,6 @@ try:
     from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor  # type: ignore
 
     OTEL_AVAILABLE = True
-    logger.info("OpenTelemetry instrumentation is available — tracing can be enabled")
 except Exception:
     OTEL_AVAILABLE = False
 
@@ -902,9 +876,21 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:  # type: ignore[overrid
     if disable_hooks:
         logger.info("Startup hooks disabled (tests/CI flag)")
     try:
-        settings.ensure_dirs()
+        run_startup_side_effects(settings)
     except Exception as e:
-        logger.warning("ensure_dirs failed: %s", e)
+        logger.warning("startup side effects failed: %s", e)
+    try:
+        env_val = str(getattr(settings, "ENVIRONMENT", "") or "").lower()
+        if (
+            not core_config._under_pytest()
+            and env_val != "local"
+            and getattr(settings, "DB_URL_SOURCE", "") == "DEFAULT"
+        ):
+            raise RuntimeError("DATABASE_URL is required for non-local environments")
+    except Exception as e:
+        if isinstance(e, RuntimeError):
+            raise
+        logger.debug("DB URL startup guard skipped: %s", e)
 
     _import_models_once()
 
