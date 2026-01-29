@@ -27,6 +27,7 @@ from app.core.dependencies import (
     api_rate_limit,
     get_current_verified_user,
     get_pagination,
+    require_active_subscription,
 )
 from app.core.exceptions import AuthorizationError, ConflictError, NotFoundError, SmartSellValidationError
 from app.core.logging import audit_logger
@@ -101,7 +102,11 @@ except Exception:
             )
 
 
-router = APIRouter(prefix="/products", tags=["Products"], dependencies=[Depends(api_rate_limit)])
+router = APIRouter(
+    prefix="/products",
+    tags=["Products"],
+    dependencies=[Depends(api_rate_limit), Depends(require_active_subscription)],
+)
 
 
 # ---------------------------------------------------------------------------

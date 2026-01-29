@@ -13,7 +13,7 @@ from sqlalchemy import and_, desc, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.db import get_async_db
-from app.core.dependencies import api_rate_limit_dep, ensure_idempotency
+from app.core.dependencies import api_rate_limit_dep, ensure_idempotency, require_active_subscription
 from app.core.exceptions import bad_request, server_error
 from app.core.security import get_current_user, resolve_tenant_company_id
 from app.models import Order, OrderItem, Product, User
@@ -28,7 +28,11 @@ from app.schemas.analytics import (
 from app.utils.excel import export_analytics_to_excel
 from app.utils.pdf import export_analytics_to_pdf
 
-router = APIRouter(prefix="/analytics", tags=["analytics"])
+router = APIRouter(
+    prefix="/analytics",
+    tags=["analytics"],
+    dependencies=[Depends(require_active_subscription)],
+)
 
 
 # ---------- helpers ----------

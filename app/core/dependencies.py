@@ -424,6 +424,34 @@ async def get_current_verified_user(current_user: Any = Depends(get_current_user
     return current_user
 
 
+async def require_active_subscription(
+    request: Request,
+    current_user: Any | None = Depends(get_current_user_optional),
+    db=Depends(_get_auth_db),
+) -> Any:
+    path = (request.url.path or "").lower()
+    if "/health" in path or "/_debug" in path:
+        return current_user
+    if path.startswith("/api/admin") or path.startswith("/api/v1/auth"):
+        return current_user
+    if path.startswith("/api/v1/wallet") or path.startswith("/api/v1/payments"):
+        return current_user
+    if path.startswith("/api/v1/invoices") or path.startswith("/api/v1/subscriptions"):
+        return current_user
+
+    if current_user is None:
+        return None
+
+    from app.core.security import resolve_tenant_company_id  # type: ignore
+    from app.services.subscriptions import get_company_subscription, is_subscription_active  # type: ignore
+
+    company_id = resolve_tenant_company_id(current_user, not_found_detail="Company not set")
+    subscription = await get_company_subscription(db, company_id)
+    if not is_subscription_active(subscription):
+        raise HTTPException(status_code=402, detail="subscription_required")
+    return current_user
+
+
 async def get_current_superuser(current_user: Any = Depends(get_current_user)) -> Any:
     if not getattr(current_user, "is_superuser", False):
         raise AuthorizationError("Insufficient permissions", "INSUFFICIENT_PERMISSIONS")
@@ -629,6 +657,7 @@ __all__ = [
     "get_current_user_optional",
     "get_current_active_user",
     "get_current_verified_user",
+    "require_active_subscription",
     "get_current_superuser",
     "require_platform_admin",
     "require_scopes",

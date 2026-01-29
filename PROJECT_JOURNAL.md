@@ -1,5 +1,18 @@
 ## [2026-01-28] Eliminate import-time stdout/stderr side effects
 
+## [2026-01-29] Subscriptions enforcement skeleton
+
+### Added
+- Subscription enforcement fields (period start/end, cancel-at-period-end, freeze/resume) and migration.
+- Async helpers for subscription resolution and enforcement dependency returning 402 subscription_required.
+- Subscription gate applied to core business routers with health/admin/billing exclusions.
+- Tests covering 402 on missing subscription, active subscription access, and cross-tenant isolation.
+
+### Verified
+- ruff format / ruff check
+- pytest -q
+- prod-gate.ps1
+
 ### Fixed
 - **Root cause**: module imports (notably `app/core/config.py` and `app/main.py`) emitted startup logs/config summaries at import time, leaking to stdout/stderr and corrupting downstream scripts.
 - **Solution**: removed import-time logging and moved startup checks/logging into an explicit `run_startup_side_effects()` call in FastAPI lifespan; startup summaries are now guarded by `STARTUP_LOG_SUMMARY`/`DEBUG_CONFIG_DUMP` and dev-only.
