@@ -13,6 +13,7 @@ from typing import Any, Literal
 from fastapi import APIRouter, Body, Depends, HTTPException, Path, Query, status
 from pydantic import BaseModel, Field, ValidationError, field_validator
 
+from app.core.dependencies import require_active_subscription
 from app.core.security import get_current_user
 from app.models.user import User
 
@@ -684,7 +685,11 @@ def _restore_campaign(campaign_id: int, reason: str | None = None, user: User | 
 # ------------------------------------------------------------------------------
 # ROUTER
 # ------------------------------------------------------------------------------
-router = APIRouter(prefix="/api/v1/campaigns", tags=["campaigns"])
+router = APIRouter(
+    prefix="/api/v1/campaigns",
+    tags=["campaigns"],
+    dependencies=[Depends(require_active_subscription)],
+)
 
 
 # ---- BASE CREATE/LIST (статические пути) -------------------------------------

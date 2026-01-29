@@ -33,9 +33,20 @@ http_bearer = HTTPBearer(auto_error=False)
 # ====== Константы/типы ======
 PlanName = constr(min_length=2, max_length=32)
 CurrencyCode = constr(min_length=3, max_length=8)
-AllowedStatus = Literal["active", "canceled", "overdue", "trial", "paused", "expired", "ended"]
+AllowedStatus = Literal[
+    "active",
+    "trialing",
+    "past_due",
+    "frozen",
+    "canceled",
+    "overdue",
+    "trial",
+    "paused",
+    "expired",
+    "ended",
+]
 Cycle = Literal["monthly", "yearly"]
-ACTIVE_STATES = {"active", "trial", "overdue", "paused"}  # «текущие» подписки
+ACTIVE_STATES = {"active", "trialing", "past_due", "frozen", "trial", "overdue", "paused"}  # «текущие» подписки
 FINAL_STATES = {"canceled", "expired", "ended"}
 
 
@@ -302,6 +313,7 @@ async def create_subscription(
         await forbid_multiple_active(db, resolved_company_id)
 
         now = utc_now()
+        period_end = next_billing_from(now, payload.billing_cycle)
         sub = Subscription(
             company_id=resolved_company_id,
             plan=payload.plan,
@@ -310,8 +322,10 @@ async def create_subscription(
             price=Decimal(payload.price),
             currency=payload.currency,
             started_at=now,
+            period_start=now,
+            period_end=period_end,
             expires_at=(now + timedelta(days=payload.trial_days)) if payload.trial_days else None,
-            next_billing_date=next_billing_from(now, payload.billing_cycle),
+            next_billing_date=period_end,
         )
         db.add(sub)
         await db.commit()

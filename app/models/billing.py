@@ -466,15 +466,22 @@ class Subscription(BaseModel, SoftDeleteMixin):
     company_id: Mapped[int] = mapped_column(ForeignKey("companies.id", ondelete="CASCADE"), nullable=False, index=True)
 
     plan: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
-    status: Mapped[str] = mapped_column(String(32), nullable=False, index=True)  # active|canceled|overdue|trial|paused
+    status: Mapped[str] = mapped_column(
+        String(32), nullable=False, index=True
+    )  # active|trialing|past_due|frozen|canceled
     billing_cycle: Mapped[str] = mapped_column(String(32), nullable=False, default="monthly")
 
     price: Mapped[Decimal] = mapped_column(Numeric(14, 2), nullable=False)
     currency: Mapped[str] = mapped_column(String(8), nullable=False, default="KZT")
 
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    period_start: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    period_end: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
     expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
+    cancel_at_period_end: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     canceled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    frozen_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    resumed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     ended_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
     last_payment_id: Mapped[int | None] = mapped_column(ForeignKey("billing_payments.id"))

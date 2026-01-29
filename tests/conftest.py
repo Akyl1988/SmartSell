@@ -1060,6 +1060,66 @@ async def factory(async_db_session: AsyncSession) -> dict[str, Callable[..., Awa
     }
 
 
+@pytest_asyncio.fixture(autouse=True)
+async def _ensure_active_subscription(async_db_session: AsyncSession, request):
+    path = str(getattr(request, "fspath", "") or "").lower()
+    if "subscription" in path or "tenant_isolation_billing" in path:
+        return
+    if request.node.get_closest_marker("no_subscription"):
+        return
+    if "company_a_admin_headers" not in request.fixturenames and "company_b_admin_headers" not in request.fixturenames:
+        return
+
+    from datetime import UTC, datetime, timedelta
+    from decimal import Decimal
+
+    from sqlalchemy import select
+
+    from app.models.billing import Subscription
+    from app.models.company import Company
+
+    now = datetime.now(UTC)
+    for company_id in (1001, 2001):
+        existing_company = (
+            (await async_db_session.execute(select(Company).where(Company.id == company_id)))
+            .scalars()
+            .first()
+        )
+        if existing_company is None:
+            async_db_session.add(Company(id=company_id, name=f"Company {company_id}"))
+            await async_db_session.flush()
+
+        existing = (
+            (
+                await async_db_session.execute(
+                    select(Subscription)
+                    .where(Subscription.company_id == company_id)
+                    .where(Subscription.deleted_at.is_(None))
+                )
+            )
+            .scalars()
+            .first()
+        )
+        if existing:
+            continue
+
+        sub = Subscription(
+            company_id=company_id,
+            plan="start",
+            status="active",
+            billing_cycle="monthly",
+            price=Decimal("0.00"),
+            currency="KZT",
+            started_at=now,
+            period_start=now,
+            period_end=now + timedelta(days=30),
+            next_billing_date=now + timedelta(days=31),
+        )
+        async_db_session.add(sub)
+
+    await async_db_session.commit()
+
+
 # ======================================================================================
 # 9) РЎРёРЅС…СЂРѕРЅРЅР°СЏ С„РёРєСЃС‚СѓСЂР° db_session (psycopg2) + auth_headers РґР»СЏ API
 # ======================================================================================
@@ -1088,6 +1148,7 @@ def db_session(test_db: None):
 def auth_headers(test_db: None):
     """Seed a platform admin user and return its bearer token."""
     from app.core.security import create_access_token, get_password_hash  # type: ignore
+    from app.models.billing import Subscription  # type: ignore
     from app.models.company import Company  # type: ignore
     from app.models.user import User  # type: ignore
 
@@ -1105,6 +1166,24 @@ def auth_headers(test_db: None):
         company = s.get(Company, 1)
         if company is None:
             raise RuntimeError("Failed to seed company with id=1")
+
+        existing_sub = (
+            s.query(Subscription)
+            .filter(Subscription.company_id == company.id)
+            .filter(Subscription.deleted_at.is_(None))
+            .first()
+        )
+        if existing_sub is None:
+            sub = Subscription(
+                company_id=company.id,
+                plan="start",
+                status="active",
+                billing_cycle="monthly",
+                price=0,
+                currency="KZT",
+            )
+            s.add(sub)
+            s.flush()
 
         user = s.query(User).filter(User.phone.in_([phone, f"+{phone}"])).first()
         if not user:
