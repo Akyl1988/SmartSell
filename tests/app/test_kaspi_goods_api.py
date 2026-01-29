@@ -72,9 +72,5 @@ async def test_kaspi_token_health_401(async_client, async_db_session, monkeypatc
     monkeypatch.setattr(kaspi_router.httpx, "AsyncClient", lambda *args, **kwargs: fake_client)
 
     resp = await async_client.get("/api/v1/kaspi/token/health", headers=company_a_admin_headers)
-    assert resp.status_code == 200
-    data = resp.json()
-    assert data["ok"] is False
-    assert data["cause"] == "NOT_AUTHENTICATED"
-    assert data["orders_http"] == 401
-    assert data["goods_http"] == 401
+    assert resp.status_code == 401
+    assert resp.json().get("detail") == "NOT_AUTHENTICATED"

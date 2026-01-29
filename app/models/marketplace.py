@@ -6,7 +6,7 @@ from datetime import datetime
 from typing import Any, Optional
 
 import sqlalchemy as sa
-from sqlalchemy import BigInteger, Boolean, Numeric, String, text
+from sqlalchemy import BigInteger, Boolean, DateTime, Numeric, String, text
 from sqlalchemy.dialects.postgresql import BYTEA, UUID
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import Mapped, mapped_column
@@ -35,6 +35,10 @@ class KaspiStoreToken(Base):
     updated_at: Mapped[datetime] = mapped_column(
         nullable=False, server_default=text("now()"), server_onupdate=text("now()")
     )
+    last_selftest_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_selftest_status: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    last_selftest_error_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    last_selftest_error_message: Mapped[str | None] = mapped_column(String(500), nullable=True)
 
     @classmethod
     async def upsert_token(
@@ -117,7 +121,11 @@ class KaspiStoreToken(Base):
                 store_name,
                 left(encode(token_ciphertext,'hex'), {mask_len}) || :mask AS token_hex_masked,
                 created_at,
-                updated_at
+                updated_at,
+                last_selftest_at,
+                last_selftest_status,
+                last_selftest_error_code,
+                last_selftest_error_message
             FROM kaspi_store_tokens
             WHERE lower(trim(store_name)) = lower(trim(:name))
             LIMIT 1
@@ -126,6 +134,55 @@ class KaspiStoreToken(Base):
         res = await session.execute(sql, {"name": store_name, "mask": mask_char})
         row = res.mappings().first()
         return dict(row) if row else None
+
+    @classmethod
+    async def update_selftest(
+        cls,
+        session: AsyncSession,
+        store_name: str,
+        status: str,
+        *,
+        error_code: str | None = None,
+        error_message: str | None = None,
+        occurred_at: datetime | None = None,
+        commit: bool = True,
+    ) -> None:
+        if not store_name:
+            return
+        when = occurred_at or datetime.utcnow()
+        msg = (error_message or "").strip()
+        if msg:
+            msg = msg[:500]
+
+        sql = sa.text(
+            """
+            UPDATE kaspi_store_tokens
+            SET
+                last_selftest_at = :when,
+                last_selftest_status = :status,
+                last_selftest_error_code = :error_code,
+                last_selftest_error_message = :error_message,
+                updated_at = now()
+            WHERE lower(trim(store_name)) = lower(trim(:name))
+            """
+        )
+        try:
+            await session.execute(
+                sql,
+                {
+                    "when": when,
+                    "status": status,
+                    "error_code": error_code,
+                    "error_message": msg or None,
+                    "name": store_name,
+                },
+            )
+            if commit:
+                await session.commit()
+        except Exception:
+            if commit:
+                await session.rollback()
+            raise
 
     @classmethod
     async def delete_by_store(cls, session: AsyncSession, store_name: str) -> bool:
