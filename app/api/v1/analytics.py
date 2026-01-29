@@ -5,7 +5,7 @@ from __future__ import annotations
 Analytics router for business intelligence and reporting.
 """
 
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -37,6 +37,9 @@ router = APIRouter(
 
 # ---------- helpers ----------
 
+DEFAULT_RANGE_DAYS = 30
+MAX_RANGE_DAYS = 366
+
 
 async def _auth_user(current_user: User = Depends(get_current_user)) -> User:
     return current_user
@@ -53,15 +56,43 @@ def _resolve_company_id(current_user: User) -> int:
     return resolve_tenant_company_id(current_user, not_found_detail="Company not set")
 
 
-def _parse_dt_or_default(value: str | None, default: datetime) -> datetime:
-    if not value:
-        return default
-    # допускаем ISO-строки без таймзоны
+def _clean_date_value(value: str | None) -> str | None:
+    if value is None:
+        return None
+    vv = (value or "").strip()
+    return vv or None
+
+
+def _parse_dt(value: str, field: str) -> datetime:
+    v = (value or "").strip()
+    if v.endswith("Z"):
+        v = v[:-1] + "+00:00"
     try:
-        return datetime.fromisoformat(value)
-    except Exception:
-        # мягкая деградация — если пришёл мусор, вернём дефолт
-        return default
+        dt = datetime.fromisoformat(v)
+    except Exception as exc:
+        raise HTTPException(status_code=422, detail=f"{field} must be ISO 8601") from exc
+    if dt.tzinfo is not None:
+        dt = dt.astimezone(UTC).replace(tzinfo=None)
+    return dt
+
+
+def _resolve_date_range(date_from: str | None, date_to: str | None) -> tuple[datetime, datetime]:
+    end_default = datetime.utcnow()
+    start_default = end_default - timedelta(days=DEFAULT_RANGE_DAYS)
+
+    df = _clean_date_value(date_from)
+    dt = _clean_date_value(date_to)
+
+    end_date = _parse_dt(dt, "date_to") if dt else end_default
+    start_date = _parse_dt(df, "date_from") if df else start_default
+
+    if start_date > end_date:
+        raise bad_request("date_from must be less than or equal to date_to")
+
+    if end_date - start_date > timedelta(days=MAX_RANGE_DAYS):
+        raise bad_request(f"date range must not exceed {MAX_RANGE_DAYS} days")
+
+    return start_date, end_date
 
 
 def _float_safe(x: Decimal | float | int | None) -> float:
@@ -75,7 +106,7 @@ def _float_safe(x: Decimal | float | int | None) -> float:
 def _normalize_interval(interval: str | None) -> str:
     if not interval:
         return "day"
-    val = interval.lower()
+    val = interval.strip().lower()
     if val in {"day", "week", "month"}:
         return val
     return "day"
@@ -227,13 +258,7 @@ async def get_sales_analytics(
     interval = _normalize_interval(filter_params.interval)
 
     # dates
-    end_dt_default = datetime.utcnow()
-    start_dt_default = end_dt_default - timedelta(days=30)
-    end_date = _parse_dt_or_default(filter_params.date_to, end_dt_default)
-    start_date = _parse_dt_or_default(filter_params.date_from, start_dt_default)
-
-    if start_date > end_date:
-        raise bad_request("date_from must be less than or equal to date_to")
+    start_date, end_date = _resolve_date_range(filter_params.date_from, filter_params.date_to)
 
     return await get_sales_data(
         db=db,
@@ -256,13 +281,7 @@ async def get_customer_analytics(
 ):
     """Get customer analytics data."""
     resolved_company_id = _resolve_company_id(current_user)
-    end_dt_default = datetime.utcnow()
-    start_dt_default = end_dt_default - timedelta(days=30)
-    end_date = _parse_dt_or_default(filter_params.date_to, end_dt_default)
-    start_date = _parse_dt_or_default(filter_params.date_from, start_dt_default)
-
-    if start_date > end_date:
-        raise bad_request("date_from must be less than or equal to date_to")
+    start_date, end_date = _resolve_date_range(filter_params.date_from, filter_params.date_to)
 
     # total unique customers
     total_customers = (
@@ -353,13 +372,7 @@ async def get_product_analytics(
 ):
     """Get product analytics data."""
     resolved_company_id = _resolve_company_id(current_user)
-    end_dt_default = datetime.utcnow()
-    start_dt_default = end_dt_default - timedelta(days=30)
-    end_date = _parse_dt_or_default(filter_params.date_to, end_dt_default)
-    start_date = _parse_dt_or_default(filter_params.date_from, start_dt_default)
-
-    if start_date > end_date:
-        raise bad_request("date_from must be less than or equal to date_to")
+    start_date, end_date = _resolve_date_range(filter_params.date_from, filter_params.date_to)
 
     # top selling products
     top_res = await db.execute(
@@ -468,6 +481,8 @@ async def export_analytics(
             raise bad_request("Unsupported export format")
 
         return {"download_url": file_path}
+    except HTTPException:
+        raise
     except Exception as e:
         raise server_error(f"Export failed: {e!s}")
 
