@@ -20,12 +20,11 @@ API v1 package with dynamic router loading (production-ready).
 from __future__ import annotations
 
 import importlib
-import os
 import pkgutil
 import time
 from collections.abc import Iterable
 from types import ModuleType
-from typing import Final
+from typing import Any, Final
 
 from fastapi import APIRouter
 from fastapi.responses import JSONResponse
@@ -50,15 +49,11 @@ except Exception:
     import logging as _logging
 
     logger = _logging.getLogger(__name__)
-    if not logger.handlers and os.getenv("APP_IMPORT_SILENT") != "1":
+    if not logger.handlers:
         _logging.basicConfig(
             level=_logging.INFO,
             format="%(asctime)s %(levelname)s [%(name)s] %(message)s",
         )
-
-
-def _router_logging_enabled() -> bool:
-    return os.getenv("APP_IMPORT_SILENT") != "1"
 
 # -----------------------------
 # Список модулей с роутерами
@@ -90,8 +85,7 @@ def register_extra_router_module(module_name: str) -> None:
         return
     if module_name not in EXTRA_ROUTER_MODULES:
         EXTRA_ROUTER_MODULES.append(module_name)
-        if _router_logging_enabled():
-            logger.info("Registered extra router module: %s", module_name)
+        logger.info("Registered extra router module: %s", module_name)
 
 
 # -----------------------------
@@ -110,21 +104,19 @@ def _include_router_safely(parent: APIRouter, child: APIRouter, api_prefix: str)
     # Абсолютный и уже v1 — монтируем как есть
     if child_prefix.startswith(normalized_api_prefix):
         parent.include_router(child, prefix="")
-        if _router_logging_enabled():
-            logger.debug("Included router as-is (absolute v1 prefix): %s", child_prefix)
         return
 
     # Абсолютный под /api, но не /api/v1 — не трогаем (legacy-совместимость)
     if child_prefix.startswith("/api"):
         parent.include_router(child, prefix="")
-        if _router_logging_enabled():
-            logger.debug("Included router as-is (absolute legacy prefix): %s", child_prefix)
         return
 
     # Относительный — подвешиваем под /api/v1
     parent.include_router(child, prefix=api_prefix)
-    if _router_logging_enabled():
-        logger.debug("Included router with base prefix '%s': %s", api_prefix, child_prefix)
+
+
+_MODULE_LOAD_TIMINGS_MS: dict[str, float] = {}
+_LAST_MOUNT_DIAGNOSTICS: dict[str, Any] | None = None
 
 
 def _load_module(module_name: str) -> ModuleType | None:
@@ -132,15 +124,12 @@ def _load_module(module_name: str) -> ModuleType | None:
         t0 = time.perf_counter()
         module = importlib.import_module(module_name)
         dt = (time.perf_counter() - t0) * 1000
-        if _router_logging_enabled():
-            logger.info("Loaded router module %s (%.1f ms)", module_name, dt)
+        _MODULE_LOAD_TIMINGS_MS[module_name] = float(dt)
         return module
-    except ImportError as e:
-        if _router_logging_enabled():
-            logger.error("Failed to import router module %s: %s", module_name, e)
-    except Exception as e:
-        if _router_logging_enabled():
-            logger.error("Error loading router from %s: %s", module_name, e)
+    except ImportError:
+        _MODULE_LOAD_TIMINGS_MS[module_name] = -1.0
+    except Exception:
+        _MODULE_LOAD_TIMINGS_MS[module_name] = -1.0
     return None
 
 
@@ -169,9 +158,8 @@ def _autodiscover_under(package_name: str) -> list[str]:
             return discovered
         for mod_info in pkgutil.iter_modules(pkg.__path__, prefix=f"{package_name}."):
             discovered.append(mod_info.name)
-    except Exception as e:
-        if _router_logging_enabled():
-            logger.debug("Autodiscover under %s failed: %s", package_name, e)
+    except Exception:
+        pass
     return discovered
 
 
@@ -212,8 +200,6 @@ def create_api_router() -> APIRouter:
 
         router = getattr(module, "router", None)
         if router is None or not isinstance(router, APIRouter):
-            if _router_logging_enabled():
-                logger.warning("No router found in %s", module_name)
             skipped.append(module_name)
             continue
 
@@ -244,17 +230,28 @@ def create_api_router() -> APIRouter:
     api_router.include_router(diag)  # эти пути всегда под /api/v1
 
     # Итоговый лог (удобно видеть при старте приложения)
-    if _router_logging_enabled():
-        logger.info(
-            "API v1 mounted. prefix=%s registered=%d skipped=%d",
-            _API_V1_PREFIX,
-            len(registered),
-            len(skipped),
-        )
-        if skipped:
-            logger.warning("Skipped v1 routers: %s", ", ".join(skipped))
+    global _LAST_MOUNT_DIAGNOSTICS
+    _LAST_MOUNT_DIAGNOSTICS = {
+        "prefix": _API_V1_PREFIX,
+        "registered": list(registered),
+        "skipped": list(skipped),
+        "counts": {"registered": len(registered), "skipped": len(skipped)},
+        "module_timings_ms": dict(_MODULE_LOAD_TIMINGS_MS),
+    }
 
     return api_router
+
+
+def get_mount_diagnostics() -> dict[str, Any]:
+    if _LAST_MOUNT_DIAGNOSTICS is None:
+        return {
+            "prefix": _API_V1_PREFIX,
+            "registered": [],
+            "skipped": [],
+            "counts": {"registered": 0, "skipped": 0},
+            "module_timings_ms": dict(_MODULE_LOAD_TIMINGS_MS),
+        }
+    return dict(_LAST_MOUNT_DIAGNOSTICS)
 
 
 # Экспорт готового роутера для main.py
@@ -263,6 +260,7 @@ api_v1: APIRouter = create_api_router()
 __all__ = [
     "create_api_router",
     "api_v1",
+    "get_mount_diagnostics",
     "DEFAULT_ROUTER_MODULES",
     "EXTRA_ROUTER_MODULES",
     "register_extra_router_module",
