@@ -1,6 +1,7 @@
 # app/storage/payments_sql.py
 from __future__ import annotations
 
+import json
 import logging
 from datetime import UTC, datetime
 from decimal import ROUND_HALF_UP, Decimal
@@ -10,6 +11,7 @@ from sqlalchemy import Column, Integer, MetaData, Numeric, String, Table, func, 
 from sqlalchemy import Text as SA_Text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.integrations.ports.payments import PaymentIntent
 from app.storage.wallet_sql import wallet_ledger
 
 logger = logging.getLogger(__name__)
@@ -25,6 +27,26 @@ def _to_dec(v: Any) -> Decimal:
     return Decimal(str(v)).quantize(Decimal("0.000001"), rounding=ROUND_HALF_UP)
 
 
+def _dump_meta(value: dict[str, Any] | None) -> str | None:
+    if value is None:
+        return None
+    try:
+        return json.dumps(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _load_meta(value: Any) -> dict[str, Any]:
+    if not value:
+        return {}
+    if isinstance(value, dict):
+        return value
+    try:
+        return json.loads(value)
+    except (TypeError, ValueError):
+        return {}
+
+
 metadata = MetaData()
 
 wallet_payments = Table(
@@ -38,6 +60,23 @@ wallet_payments = Table(
     Column("status", String(20), nullable=False, index=True),
     Column("refund_amount", Numeric(18, 6), nullable=False, server_default="0"),
     Column("reference", SA_Text, nullable=True),
+    Column("created_at", String(40), nullable=False),
+    Column("updated_at", String(40), nullable=False),
+)
+
+payment_intents = Table(
+    "payment_intents",
+    metadata,
+    Column("id", String(64), primary_key=True),
+    Column("company_id", Integer, nullable=False, index=True),
+    Column("provider", String(64), nullable=False),
+    Column("provider_version", Integer, nullable=False, server_default="0"),
+    Column("status", String(32), nullable=False, index=True),
+    Column("amount", Numeric(18, 6), nullable=False),
+    Column("currency", String(10), nullable=False, index=True),
+    Column("customer_id", String(128), nullable=False, index=True),
+    Column("provider_intent_id", String(128), nullable=False, index=True),
+    Column("metadata_json", SA_Text, nullable=True),
     Column("created_at", String(40), nullable=False),
     Column("updated_at", String(40), nullable=False),
 )
@@ -288,3 +327,72 @@ class PaymentsStorageSQL:
             "items": [dict(r) for r in rows],
             "meta": {"page": page, "size": size, "total": int(total or 0)},
         }
+
+
+class PaymentIntentsStorageSQL:
+    """Async storage for payment intents (minimal contract)."""
+
+    def __init__(self, db: AsyncSession) -> None:
+        if db is None:
+            raise RuntimeError("DB session is required for payment intents storage")
+        self._db = db
+
+    async def create_intent(
+        self,
+        intent: PaymentIntent,
+        *,
+        company_id: int,
+    ) -> dict[str, Any]:
+        now = _utcnow_iso()
+        await self._db.execute(
+            payment_intents.insert().values(
+                id=intent.id,
+                company_id=company_id,
+                provider=intent.provider,
+                provider_version=intent.provider_version,
+                status=intent.status,
+                amount=_to_dec(intent.amount),
+                currency=(intent.currency or "").upper(),
+                customer_id=str(intent.customer_id),
+                provider_intent_id=str(intent.provider_intent_id),
+                metadata_json=_dump_meta(intent.metadata),
+                created_at=now,
+                updated_at=now,
+            )
+        )
+        row = (
+            (await self._db.execute(select(payment_intents).where(payment_intents.c.id == intent.id)))
+            .mappings()
+            .first()
+        )
+        if not row:
+            raise ValueError("payment_intent_not_found")
+        data = dict(row)
+        data["metadata"] = _load_meta(data.pop("metadata_json", None))
+        return data
+
+    async def get_intent(self, intent_id: str, *, company_id: int) -> dict[str, Any] | None:
+        row = (
+            (
+                await self._db.execute(
+                    select(payment_intents)
+                    .where(payment_intents.c.id == intent_id)
+                    .where(payment_intents.c.company_id == company_id)
+                )
+            )
+            .mappings()
+            .first()
+        )
+        if not row:
+            return None
+        data = dict(row)
+        data["metadata"] = _load_meta(data.pop("metadata_json", None))
+        return data
+
+
+__all__ = [
+    "PaymentsStorageSQL",
+    "PaymentIntentsStorageSQL",
+    "payment_intents",
+    "wallet_payments",
+]

@@ -13,7 +13,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.db import get_async_db
 from app.core.security import get_current_user, require_manager, resolve_tenant_company_id
 from app.models.user import User
-from app.storage.payments_sql import PaymentsStorageSQL
+from app.services.payment_providers import PaymentProviderResolver
+from app.storage.payments_sql import PaymentIntentsStorageSQL, PaymentsStorageSQL
 from app.storage.wallet_sql import WalletStorageSQL
 
 logger = logging.getLogger(__name__)
@@ -40,6 +41,16 @@ async def _get_wallet_storage(db: AsyncSession) -> WalletStorageSQL:
         raise
     except Exception as e:
         logger.exception("wallet storage init failed: %s", e)
+        raise HTTPException(status_code=_pick_http_status(e), detail=str(e))
+
+
+async def _get_intents_storage(db: AsyncSession) -> PaymentIntentsStorageSQL:
+    try:
+        return PaymentIntentsStorageSQL(db)
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception("payment intents storage init failed: %s", e)
         raise HTTPException(status_code=_pick_http_status(e), detail=str(e))
 
 
@@ -121,6 +132,26 @@ class PageMeta(BaseModel):
 class PaymentList(BaseModel):
     items: list[Payment]
     meta: PageMeta
+
+
+class PaymentIntentCreate(BaseModel):
+    amount: Decimal = Field(..., gt=0)
+    currency: str = Field(..., min_length=3, max_length=10)
+    customer_id: str = Field(..., min_length=1, max_length=128)
+    metadata: dict[str, Any] | None = None
+
+
+class PaymentIntentOut(BaseModel):
+    id: str
+    provider: str
+    provider_version: int
+    status: str
+    amount: Decimal
+    currency: str
+    customer_id: str
+    provider_intent_id: str
+    metadata: dict[str, Any]
+    created_at: str
 
 
 async def _ensure_account_access(account_id: int, current_user: User, db: AsyncSession) -> dict:
@@ -306,3 +337,72 @@ async def list_payments(
     items = [Payment(**i) for i in out["items"]]
     meta = PageMeta(page=page, size=size, total=len(items))
     return PaymentList(items=items, meta=meta)
+
+
+@router.post(
+    "/intents",
+    response_model=PaymentIntentOut,
+    status_code=status.HTTP_201_CREATED,
+)
+async def create_payment_intent(
+    req: PaymentIntentCreate,
+    current_user: User = Depends(require_manager),
+    db: AsyncSession = Depends(get_async_db),
+):
+    try:
+        resolved_company_id = resolve_tenant_company_id(current_user, not_found_detail="Company not set")
+        gateway = await PaymentProviderResolver.resolve(db, domain="payments", company_id=resolved_company_id)
+        intent = await gateway.create_payment_intent(
+            amount=req.amount,
+            currency=req.currency,
+            customer_id=req.customer_id,
+            metadata=req.metadata or {},
+        )
+        storage = await _get_intents_storage(db)
+        row = await storage.create_intent(intent, company_id=resolved_company_id)
+        await db.commit()
+        return PaymentIntentOut(
+            id=row["id"],
+            provider=row["provider"],
+            provider_version=int(row.get("provider_version") or 0),
+            status=row["status"],
+            amount=Decimal(str(row["amount"])),
+            currency=row["currency"],
+            customer_id=row["customer_id"],
+            provider_intent_id=row["provider_intent_id"],
+            metadata=row.get("metadata", {}),
+            created_at=row["created_at"],
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        await db.rollback()
+        raise HTTPException(status_code=_pick_http_status(e), detail=str(e))
+
+
+@router.get(
+    "/intents/{intent_id}",
+    response_model=PaymentIntentOut,
+)
+async def get_payment_intent(
+    intent_id: str = Path(..., min_length=1),
+    current_user: User = Depends(_auth_user),
+    db: AsyncSession = Depends(get_async_db),
+):
+    resolved_company_id = resolve_tenant_company_id(current_user, not_found_detail="Company not set")
+    storage = await _get_intents_storage(db)
+    row = await storage.get_intent(intent_id, company_id=resolved_company_id)
+    if not row:
+        raise HTTPException(status_code=404, detail="payment_intent_not_found")
+    return PaymentIntentOut(
+        id=row["id"],
+        provider=row["provider"],
+        provider_version=int(row.get("provider_version") or 0),
+        status=row["status"],
+        amount=Decimal(str(row["amount"])),
+        currency=row["currency"],
+        customer_id=row["customer_id"],
+        provider_intent_id=row["provider_intent_id"],
+        metadata=row.get("metadata", {}),
+        created_at=row["created_at"],
+    )

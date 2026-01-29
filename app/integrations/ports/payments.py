@@ -1,6 +1,21 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
+from decimal import Decimal
 from typing import Any, Protocol
+
+
+@dataclass(frozen=True)
+class PaymentIntent:
+    id: str
+    status: str
+    amount: Decimal
+    currency: str
+    customer_id: str
+    provider: str
+    provider_intent_id: str
+    provider_version: int
+    metadata: dict[str, Any]
 
 
 class PaymentGateway(Protocol):
@@ -9,11 +24,11 @@ class PaymentGateway(Protocol):
 
     async def create_payment_intent(
         self,
-        amount: float,
+        amount: Decimal,
         currency: str,
         customer_id: str,
         metadata: dict[str, Any] | None = None,
-    ) -> dict[str, Any]:
+    ) -> PaymentIntent:
         ...
 
     async def refund(
@@ -28,7 +43,7 @@ class PaymentGateway(Protocol):
     # Backward-compat alias for older call sites
     async def charge(
         self,
-        amount: float,
+        amount: Decimal,
         currency: str,
         customer_id: str,
         metadata: dict[str, Any] | None = None,
@@ -44,4 +59,4 @@ class PaymentGateway(Protocol):
         ...
 
 
-__all__ = ["PaymentGateway"]
+__all__ = ["PaymentGateway", "PaymentIntent"]

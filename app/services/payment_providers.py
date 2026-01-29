@@ -41,11 +41,26 @@ class PaymentProviderResolver:
         return NoOpPaymentGateway(name=name, config=config, version=version)
 
     @classmethod
-    async def resolve(cls, db: Any, *, domain: str = "payments") -> PaymentGateway:
+    async def resolve(
+        cls,
+        db: Any,
+        *,
+        domain: str = "payments",
+        company_id: int | None = None,
+    ) -> PaymentGateway:
         domain_key = (domain or "payments").strip().lower() or "payments"
+        domain_candidates = [domain_key]
+        if company_id is not None:
+            domain_candidates = [f"{domain_key}:{company_id}", domain_key]
 
         try:
-            entry = await ProviderRegistry.get_active_provider(db, domain_key)
+            entry = None
+            resolved_domain = domain_key
+            for candidate in domain_candidates:
+                entry = await ProviderRegistry.get_active_provider(db, candidate)
+                if entry:
+                    resolved_domain = candidate
+                    break
         except Exception as exc:  # pragma: no cover - runtime guard
             log.warning("Payment provider resolution failed; using fallback noop", exc_info=exc)
             fallback = NoOpPaymentGateway(name="noop", config={}, version=0)
@@ -54,7 +69,9 @@ class PaymentProviderResolver:
             return fallback
 
         provider_name = getattr(entry, "provider", "noop") if entry else "noop"
-        cache_key = cls._cache_key(domain_key, entry.version if entry else 0, provider_name)
+        cache_key = cls._cache_key(
+            resolved_domain if entry else domain_key, entry.version if entry else 0, provider_name
+        )
         cached = cls._cache.get(cache_key)
         if cached:
             return cached
@@ -71,12 +88,12 @@ class PaymentProviderResolver:
         if not provider_name.lower().startswith("noop"):
             try:
                 provider_config = await ProviderConfigService.get_provider_config(
-                    db, domain=domain_key, provider=entry.provider
+                    db, domain=resolved_domain, provider=entry.provider
                 )
                 if not provider_config:
                     await ProviderConfigService.record_event(
                         db,
-                        domain=domain_key,
+                        domain=resolved_domain,
                         provider=entry.provider,
                         action="config_missing",
                         status="error",
@@ -93,7 +110,7 @@ class PaymentProviderResolver:
             log.warning("Payment provider build failed; using noop", exc_info=exc)
             await ProviderConfigService.record_event(
                 db,
-                domain=domain_key,
+                domain=resolved_domain,
                 provider=entry.provider,
                 action="provider_build_failed",
                 status="error",
