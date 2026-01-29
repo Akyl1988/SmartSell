@@ -16,12 +16,14 @@ Unified exceptions & handlers for SmartSell3 (enterprise-grade).
 
 import json
 import re
+import uuid
 from collections.abc import Mapping
 from typing import Any
 
 from fastapi import FastAPI, HTTPException, Request, status
 from fastapi.responses import JSONResponse
 from pydantic import ValidationError
+from starlette.exceptions import HTTPException as StarletteHTTPException
 
 try:
     # SQLAlchemy is optional at import time
@@ -180,34 +182,6 @@ def _redact(obj: Any) -> Any:
     return obj
 
 
-def _problem_json(
-    title: str,
-    detail: str,
-    status_code: int,
-    code: str | None = None,
-    instance: str | None = None,
-    extras: dict[str, Any] | None = None,
-) -> dict[str, Any]:
-    """
-    RFC 7807 inspired body (application/problem+json compatible).
-    Kept keys also compatible with former response shape.
-    """
-    body: dict[str, Any] = {
-        "type": f"https://httpstatuses.com/{status_code}",
-        "title": title,
-        "status": status_code,
-        "detail": detail,
-        "error": title,  # backward-compat field
-        "code": code,
-    }
-    if instance:
-        body["instance"] = instance
-    if extras:
-        body["extra"] = _redact(extras)
-    # remove None
-    return {k: v for k, v in body.items() if v is not None}
-
-
 def _extract_request_id(headers: Mapping[str, str]) -> str:
     for k in ("x-request-id", "x-correlation-id", "x-amzn-trace-id"):
         if k in headers:
@@ -215,18 +189,48 @@ def _extract_request_id(headers: Mapping[str, str]) -> str:
     return ""
 
 
-def _json_problem_response(
+def _ensure_request_id(request: Request) -> str:
+    rid = ""
+    try:
+        rid = getattr(request.state, "request_id", "")
+    except Exception:
+        rid = ""
+    if not rid:
+        rid = _extract_request_id(request.headers)
+    if not rid:
+        rid = str(uuid.uuid4())
+    try:
+        request.state.request_id = rid
+    except Exception:
+        pass
+    return rid
+
+
+def _stringify_detail(detail: Any) -> str:
+    if isinstance(detail, str):
+        return detail
+    try:
+        return json.dumps(detail, ensure_ascii=False)
+    except Exception:
+        return str(detail)
+
+
+def _json_error_response(
+    request: Request,
     status_code: int,
-    content: dict[str, Any],
+    detail: Any,
+    code: str,
     headers: dict[str, str] | None = None,
 ) -> JSONResponse:
-    # Явно выставляем media_type для совместимости с RFC7807
-    return JSONResponse(
-        status_code=status_code,
-        content=content,
-        headers=headers or {},
-        media_type="application/problem+json",
-    )
+    rid = _ensure_request_id(request)
+    payload = {
+        "detail": _stringify_detail(detail),
+        "code": code,
+        "request_id": rid,
+    }
+    response_headers = dict(headers or {})
+    response_headers.setdefault("X-Request-ID", rid)
+    return JSONResponse(status_code=status_code, content=payload, headers=response_headers)
 
 
 # -----------------------------------------------------------------------------
@@ -264,7 +268,7 @@ async def global_exception_handler(request: Request, exc: Exception) -> JSONResp
     """
     Fallback handler for uncaught exceptions.
     """
-    rid = _extract_request_id(request.headers)
+    rid = _ensure_request_id(request)
     with bound_context(request_id=rid):
         logger.error(
             "Unhandled exception",
@@ -273,14 +277,12 @@ async def global_exception_handler(request: Request, exc: Exception) -> JSONResp
             method=request.method,
         )
 
-    body = _problem_json(
-        title="Internal server error",
-        detail="An unexpected error occurred. Please try again later.",
+    return _json_error_response(
+        request=request,
         status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+        detail="internal_error",
         code="INTERNAL_ERROR",
-        instance=str(request.url),
     )
-    return _json_problem_response(status.HTTP_500_INTERNAL_SERVER_ERROR, body)
 
 
 async def smartsell_exception_handler(request: Request, exc: SmartSellException) -> JSONResponse:
@@ -289,38 +291,34 @@ async def smartsell_exception_handler(request: Request, exc: SmartSellException)
     """
     # Поддержка переопределения статуса через исключение
     sc = exc.http_status or status.HTTP_400_BAD_REQUEST
-    title = "Bad request"
+    code = exc.code or "BAD_REQUEST"
 
     if isinstance(exc, AuthenticationError):
         sc = exc.http_status or status.HTTP_401_UNAUTHORIZED
-        title = "Authentication error"
+        code = exc.code or "AUTHENTICATION_ERROR"
         # Если не задано, добавим WWW-Authenticate (полезно для клиентов)
         exc.headers.setdefault("WWW-Authenticate", 'Bearer realm="api"')
     elif isinstance(exc, AuthorizationError | ForbiddenError):
         sc = exc.http_status or status.HTTP_403_FORBIDDEN
-        title = (
-            "Authorization error"
-            if isinstance(exc, AuthorizationError) and not isinstance(exc, ForbiddenError)
-            else "Forbidden"
-        )
+        code = exc.code or ("AUTHORIZATION_ERROR" if isinstance(exc, AuthorizationError) else "FORBIDDEN")
     elif isinstance(exc, NotFoundError):
         sc = exc.http_status or status.HTTP_404_NOT_FOUND
-        title = "Resource not found"
+        code = exc.code or "NOT_FOUND"
     elif isinstance(exc, ConflictError):
         # Tests expect a 400 for duplicate phone; keep overrideable via http_status
         sc = exc.http_status or status.HTTP_400_BAD_REQUEST
-        title = "Conflict"
+        code = exc.code or "CONFLICT"
     elif isinstance(exc, RateLimitError):
         sc = exc.http_status or status.HTTP_429_TOO_MANY_REQUESTS
-        title = "Too Many Requests"
+        code = exc.code or "RATE_LIMITED"
     elif isinstance(exc, ExternalServiceError):
         sc = exc.http_status or status.HTTP_502_BAD_GATEWAY
-        title = "Upstream service error"
+        code = exc.code or "UPSTREAM_ERROR"
     elif isinstance(exc, SmartSellValidationError):
         sc = exc.http_status or status.HTTP_422_UNPROCESSABLE_ENTITY
-        title = "Validation error"
+        code = exc.code or "VALIDATION_ERROR"
 
-    rid = _extract_request_id(request.headers)
+    rid = _ensure_request_id(request)
     with bound_context(request_id=rid):
         logger.warning(
             "SmartSell exception",
@@ -332,22 +330,20 @@ async def smartsell_exception_handler(request: Request, exc: SmartSellException)
             extra=_redact(exc.extra),
         )
 
-    body = _problem_json(
-        title=title,
-        detail=exc.message,
+    return _json_error_response(
+        request=request,
         status_code=sc,
-        code=exc.code,
-        instance=str(request.url),
-        extras=exc.extra,
+        detail=exc.message,
+        code=code,
+        headers=exc.headers,
     )
-    return _json_problem_response(sc, body, headers=exc.headers)
 
 
 async def integrity_error_handler(request: Request, exc: IntegrityError) -> JSONResponse:
     """
     Handler for DB integrity errors (duplicate, FK, not null, check).
     """
-    rid = _extract_request_id(request.headers)
+    rid = _ensure_request_id(request)
     msg, code = _parse_integrity_error(exc)
 
     with bound_context(request_id=rid):
@@ -359,21 +355,19 @@ async def integrity_error_handler(request: Request, exc: IntegrityError) -> JSON
             code=code,
         )
 
-    body = _problem_json(
-        title="Integrity error",
-        detail=msg,
+    return _json_error_response(
+        request=request,
         status_code=status.HTTP_409_CONFLICT,
+        detail=msg,
         code=code,
-        instance=str(request.url),
     )
-    return _json_problem_response(status.HTTP_409_CONFLICT, body)
 
 
 async def validation_exception_handler(request: Request, exc: ValidationError) -> JSONResponse:
     """
     Handler for Pydantic validation errors.
     """
-    rid = _extract_request_id(request.headers)
+    rid = _ensure_request_id(request)
     errs = _json_safe_errors(exc.errors())
 
     with bound_context(request_id=rid):
@@ -384,15 +378,12 @@ async def validation_exception_handler(request: Request, exc: ValidationError) -
             method=request.method,
         )
 
-    body = _problem_json(
-        title="Validation error",
-        detail="One or more fields failed validation",
+    return _json_error_response(
+        request=request,
         status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+        detail="One or more fields failed validation",
         code="VALIDATION_ERROR",
-        instance=str(request.url),
-        extras={"errors": errs},
     )
-    return _json_problem_response(status.HTTP_422_UNPROCESSABLE_ENTITY, body)
 
 
 async def request_validation_exception_handler(request: Request, exc) -> JSONResponse:
@@ -411,7 +402,7 @@ async def request_validation_exception_handler(request: Request, exc) -> JSONRes
     else:
         errs = [{"msg": "Validation error"}]
 
-    rid = _extract_request_id(request.headers)
+    rid = _ensure_request_id(request)
     with bound_context(request_id=rid):
         logger.warning(
             "Request validation error",
@@ -420,22 +411,19 @@ async def request_validation_exception_handler(request: Request, exc) -> JSONRes
             method=request.method,
         )
 
-    body = _problem_json(
-        title="Validation error",
-        detail="Request validation failed",
+    return _json_error_response(
+        request=request,
         status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+        detail="Request validation failed",
         code="REQUEST_VALIDATION_ERROR",
-        instance=str(request.url),
-        extras={"errors": errs},
     )
-    return _json_problem_response(status.HTTP_422_UNPROCESSABLE_ENTITY, body)
 
 
 async def http_exception_handler(request: Request, exc: HTTPException) -> JSONResponse:
     """
     Handler for FastAPI HTTP exceptions (raised via http_error/shortcuts).
     """
-    rid = _extract_request_id(request.headers)
+    rid = _ensure_request_id(request)
     with bound_context(request_id=rid):
         logger.info(
             "HTTP exception",
@@ -447,21 +435,20 @@ async def http_exception_handler(request: Request, exc: HTTPException) -> JSONRe
 
     # Переносим заголовки (например, rate-limit/WWW-Authenticate)
     headers = exc.headers or {}
-    body = _problem_json(
-        title=f"HTTP {exc.status_code}",
-        detail=str(exc.detail),
+    return _json_error_response(
+        request=request,
         status_code=exc.status_code,
+        detail=exc.detail,
         code=f"HTTP_{exc.status_code}",
-        instance=str(request.url),
+        headers=headers,
     )
-    return _json_problem_response(exc.status_code, body, headers=headers)
 
 
 async def sqlalchemy_exception_handler(request: Request, exc: SQLAlchemyError) -> JSONResponse:
     """
     Generic SQLAlchemy errors (not integrity).
     """
-    rid = _extract_request_id(request.headers)
+    rid = _ensure_request_id(request)
     with bound_context(request_id=rid):
         logger.error(
             "SQLAlchemy error",
@@ -470,21 +457,19 @@ async def sqlalchemy_exception_handler(request: Request, exc: SQLAlchemyError) -
             method=request.method,
         )
 
-    body = _problem_json(
-        title="Database error",
-        detail="Database operation failed",
+    return _json_error_response(
+        request=request,
         status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+        detail="Database operation failed",
         code="DB_ERROR",
-        instance=str(request.url),
     )
-    return _json_problem_response(status.HTTP_500_INTERNAL_SERVER_ERROR, body)
 
 
 async def operational_error_handler(request: Request, exc: OperationalError) -> JSONResponse:
     """
     Operational DB errors (timeouts, connection issues).
     """
-    rid = _extract_request_id(request.headers)
+    rid = _ensure_request_id(request)
     with bound_context(request_id=rid):
         logger.error(
             "DB operational error",
@@ -493,14 +478,12 @@ async def operational_error_handler(request: Request, exc: OperationalError) -> 
             method=request.method,
         )
 
-    body = _problem_json(
-        title="Database unavailable",
-        detail="Database is temporarily unavailable. Please retry later.",
+    return _json_error_response(
+        request=request,
         status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+        detail="Database is temporarily unavailable. Please retry later.",
         code="DB_UNAVAILABLE",
-        instance=str(request.url),
     )
-    return _json_problem_response(status.HTTP_503_SERVICE_UNAVAILABLE, body)
 
 
 # -----------------------------------------------------------------------------
@@ -517,6 +500,7 @@ def register_exception_handlers(app: FastAPI) -> None:
 
     # HTTP / Pydantic / FastAPI request-level validation
     app.add_exception_handler(HTTPException, http_exception_handler)
+    app.add_exception_handler(StarletteHTTPException, http_exception_handler)
     app.add_exception_handler(ValidationError, validation_exception_handler)
     try:
         from fastapi.exceptions import RequestValidationError  # type: ignore
