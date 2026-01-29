@@ -1081,9 +1081,7 @@ async def _ensure_active_subscription(async_db_session: AsyncSession, request):
     now = datetime.now(UTC)
     for company_id in (1001, 2001):
         existing_company = (
-            (await async_db_session.execute(select(Company).where(Company.id == company_id)))
-            .scalars()
-            .first()
+            (await async_db_session.execute(select(Company).where(Company.id == company_id))).scalars().first()
         )
         if existing_company is None:
             async_db_session.add(Company(id=company_id, name=f"Company {company_id}"))

@@ -25,9 +25,18 @@ class CategoryBase(BaseSchema):
         """Validate slug format."""
         import re
 
-        if not re.match(r"^[a-z0-9-]+$", v):
+        if v is None:
             raise ValueError("Slug must contain only lowercase letters, numbers, and hyphens")
-        return v
+        vv = str(v).strip().lower()
+        if not re.match(r"^[a-z0-9-]+$", vv):
+            raise ValueError("Slug must contain only lowercase letters, numbers, and hyphens")
+        return vv
+
+    @field_validator("name", mode="before")
+    def _trim_name(cls, v):
+        if v is None:
+            return v
+        return str(v).strip()
 
 
 class CategoryCreate(CategoryBase):
@@ -52,9 +61,17 @@ class CategoryUpdate(BaseSchema):
         if v is not None:
             import re
 
-            if not re.match(r"^[a-z0-9-]+$", v):
+            vv = str(v).strip().lower()
+            if not re.match(r"^[a-z0-9-]+$", vv):
                 raise ValueError("Slug must contain only lowercase letters, numbers, and hyphens")
+            return vv
         return v
+
+    @field_validator("name", mode="before")
+    def _trim_name(cls, v):
+        if v is None:
+            return v
+        return str(v).strip()
 
 
 class CategoryResponse(CategoryBase, TimestampedSchema):
@@ -69,11 +86,11 @@ class ProductBase(BaseSchema):
     name: str = Field(..., min_length=1, max_length=255, description="Product name")
     slug: str = Field(..., min_length=1, max_length=255, description="URL-friendly slug")
     sku: str = Field(..., min_length=1, max_length=100, description="Stock Keeping Unit")
-    description: str | None = Field(None, description="Product description")
+    description: str | None = Field(None, max_length=2000, description="Product description")
     short_description: str | None = Field(None, max_length=500, description="Short description")
 
     # Pricing
-    price: Decimal = Field(..., gt=0, max_digits=10, decimal_places=2, description="Product price")
+    price: Decimal = Field(..., ge=0, max_digits=10, decimal_places=2, description="Product price")
     cost_price: Decimal | None = Field(None, ge=0, max_digits=10, decimal_places=2, description="Cost price")
     sale_price: Decimal | None = Field(None, ge=0, max_digits=10, decimal_places=2, description="Sale price")
 
@@ -110,18 +127,39 @@ class ProductBase(BaseSchema):
         """Validate slug format."""
         import re
 
-        if not re.match(r"^[a-z0-9-]+$", v):
+        if v is None:
             raise ValueError("Slug must contain only lowercase letters, numbers, and hyphens")
-        return v
+        vv = str(v).strip().lower()
+        if not re.match(r"^[a-z0-9-]+$", vv):
+            raise ValueError("Slug must contain only lowercase letters, numbers, and hyphens")
+        return vv
 
     @field_validator("sku", mode="before")
     def validate_sku(cls, v):
         """Validate SKU format."""
         import re
 
-        if not re.match(r"^[A-Z0-9-_]+$", v):
+        if v is None:
             raise ValueError("SKU must contain only uppercase letters, numbers, hyphens, and underscores")
-        return v
+        vv = str(v).strip().upper()
+        if not re.match(r"^[A-Z0-9-_]+$", vv):
+            raise ValueError("SKU must contain only uppercase letters, numbers, hyphens, and underscores")
+        return vv
+
+    @field_validator(
+        "name",
+        "description",
+        "short_description",
+        "meta_title",
+        "meta_description",
+        "meta_keywords",
+        "image_url",
+        mode="before",
+    )
+    def _trim_strings(cls, v):
+        if v is None:
+            return v
+        return str(v).strip()
 
     @field_validator("sale_price", mode="after")
     def validate_sale_price(cls, v, info: ValidationInfo):
@@ -160,10 +198,10 @@ class ProductUpdate(BaseSchema):
 
     name: str | None = Field(None, min_length=1, max_length=255)
     slug: str | None = Field(None, min_length=1, max_length=255)
-    description: str | None = None
+    description: str | None = Field(None, max_length=2000)
     short_description: str | None = Field(None, max_length=500)
 
-    price: Decimal | None = Field(None, gt=0, max_digits=10, decimal_places=2)
+    price: Decimal | None = Field(None, ge=0, max_digits=10, decimal_places=2)
     cost_price: Decimal | None = Field(None, ge=0, max_digits=10, decimal_places=2)
     sale_price: Decimal | None = Field(None, ge=0, max_digits=10, decimal_places=2)
 
@@ -194,9 +232,26 @@ class ProductUpdate(BaseSchema):
         if v is not None:
             import re
 
-            if not re.match(r"^[a-z0-9-]+$", v):
+            vv = str(v).strip().lower()
+            if not re.match(r"^[a-z0-9-]+$", vv):
                 raise ValueError("Slug must contain only lowercase letters, numbers, and hyphens")
+            return vv
         return v
+
+    @field_validator(
+        "name",
+        "description",
+        "short_description",
+        "meta_title",
+        "meta_description",
+        "meta_keywords",
+        "image_url",
+        mode="before",
+    )
+    def _trim_strings(cls, v):
+        if v is None:
+            return v
+        return str(v).strip()
 
     @field_validator("sale_price", mode="after")
     def validate_sale_price(cls, v, info: ValidationInfo):
