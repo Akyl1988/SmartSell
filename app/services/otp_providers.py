@@ -5,8 +5,10 @@ import os
 from functools import lru_cache
 from typing import Any
 
+from fastapi import HTTPException, status
+
 from app.core.config import settings
-from app.core.logging import get_logger
+from app.core.logging import audit_logger, get_logger
 from app.core.provider_registry import ProviderRegistry
 from app.integrations.ports.otp import OtpProvider
 from app.integrations.providers.noop.otp import NoOpOtpProvider
@@ -141,4 +143,34 @@ def is_otp_active() -> bool:
     return True
 
 
-__all__ = ["OtpProviderResolver", "is_otp_active"]
+def require_otp_provider_or_admin_bypass(
+    current_user: Any | None,
+    *,
+    action: str = "bootstrap",
+    company_id: int | None = None,
+    owner_id: int | None = None,
+) -> None:
+    if is_otp_active():
+        return
+
+    user = current_user
+    if user is not None:
+        role = (getattr(user, "role", "") or "").lower()
+        is_admin = bool(getattr(user, "is_superuser", False) or role == "admin")
+        is_owner = bool(owner_id and getattr(user, "id", None) == owner_id)
+        if is_admin or is_owner:
+            audit_logger.log_system_event(
+                event="bootstrap_otp_bypass_used",
+                message="OTP provider not configured; admin bootstrap bypass used",
+                meta={
+                    "actor_id": getattr(user, "id", None),
+                    "company_id": company_id or getattr(user, "company_id", None),
+                    "action": action,
+                },
+            )
+            return
+
+    raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="otp_provider_not_configured")
+
+
+__all__ = ["OtpProviderResolver", "is_otp_active", "require_otp_provider_or_admin_bypass"]
