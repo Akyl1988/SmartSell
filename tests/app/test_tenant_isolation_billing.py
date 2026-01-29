@@ -1,10 +1,54 @@
-import pytest
+from datetime import UTC, datetime, timedelta
+from decimal import Decimal
 
+import pytest
+from sqlalchemy import select
+
+from app.models.billing import Subscription
+from app.models.company import Company
 from app.models.user import User
 
 
 def _get_user_by_phone(db_session, phone: str) -> User:
     return db_session.query(User).filter(User.phone == phone).one()
+
+
+async def _ensure_active_subscription(async_db_session, company_id: int) -> None:
+    company = (await async_db_session.execute(select(Company).where(Company.id == company_id))).scalars().first()
+    if company is None:
+        company = Company(id=company_id, name=f"Company {company_id}")
+        async_db_session.add(company)
+        await async_db_session.flush()
+
+    existing = (
+        (
+            await async_db_session.execute(
+                select(Subscription)
+                .where(Subscription.company_id == company_id)
+                .where(Subscription.deleted_at.is_(None))
+            )
+        )
+        .scalars()
+        .first()
+    )
+    if existing:
+        return
+
+    now = datetime.now(UTC)
+    sub = Subscription(
+        company_id=company_id,
+        plan="start",
+        status="active",
+        billing_cycle="monthly",
+        price=Decimal("0.00"),
+        currency="KZT",
+        started_at=now,
+        period_start=now,
+        period_end=now + timedelta(days=30),
+        next_billing_date=now + timedelta(days=31),
+    )
+    async_db_session.add(sub)
+    await async_db_session.commit()
 
 
 @pytest.mark.asyncio
@@ -193,9 +237,11 @@ async def test_subscriptions_company_param_bypass_forbidden(
 async def test_invoices_company_param_bypass_forbidden(
     client,
     db_session,
+    async_db_session,
     company_a_admin_headers,
     company_b_admin_headers,
 ):
+    await _ensure_active_subscription(async_db_session, 2001)
     user_a = _get_user_by_phone(db_session, "+70000010001")
     resp = await client.get(
         "/api/v1/invoices",
@@ -210,9 +256,12 @@ async def test_invoices_company_param_bypass_forbidden(
 async def test_invoices_cross_tenant_get_by_id_forbidden(
     client,
     db_session,
+    async_db_session,
     company_a_admin_headers,
     company_b_admin_headers,
 ):
+    await _ensure_active_subscription(async_db_session, 1001)
+    await _ensure_active_subscription(async_db_session, 2001)
     user_a = _get_user_by_phone(db_session, "+70000010001")
 
     created = await client.post(

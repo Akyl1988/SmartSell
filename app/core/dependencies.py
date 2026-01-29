@@ -436,7 +436,7 @@ async def require_active_subscription(
         return current_user
     if path.startswith("/api/v1/wallet") or path.startswith("/api/v1/payments"):
         return current_user
-    if path.startswith("/api/v1/invoices") or path.startswith("/api/v1/subscriptions"):
+    if path.startswith("/api/v1/subscriptions"):
         return current_user
 
     if current_user is None:
