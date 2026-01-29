@@ -29,11 +29,6 @@ from fastapi.responses import JSONResponse
 from app.core import config
 
 logger = logging.getLogger(__name__)
-if not logger.handlers:
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s %(levelname)s [%(name)s] %(message)s",
-    )
 
 
 _IMPORT_TIMINGS_MS: dict[str, float] = {}
@@ -74,7 +69,6 @@ def _try_import(path: str) -> Any | None:
         return mod
     except Exception:
         if _is_test_or_ci_mode() and path in _STRICT_IMPORTS_IN_TESTS:
-            logger.exception("Failed to import %s in test/CI mode", path)
             raise
         _IMPORT_TIMINGS_MS[path] = -1.0
         return None
@@ -180,11 +174,9 @@ def register_v1_router(name: str, router: APIRouter, is_absolute: bool = False) 
     for i, (n, _, _) in enumerate(V1_ROUTERS):
         if n == name:
             V1_ROUTERS[i] = (name, router, is_absolute)
-            logger.info("Updated v1 router registration: %s (absolute=%s)", name, is_absolute)
             break
     else:
         V1_ROUTERS.append((name, router, is_absolute))
-        logger.info("Registered v1 router: %s (absolute=%s)", name, is_absolute)
 
 
 def register_optional_v1_router(name: str, import_path: str, is_absolute_hint: bool | None = None) -> bool:
@@ -199,7 +191,6 @@ def register_optional_v1_router(name: str, import_path: str, is_absolute_hint: b
 
     abs_flag = bool(is_absolute_hint) or _router_prefix_startswith(r, "/api/v1")
     register_v1_router(name, r, abs_flag)
-    logger.info("Optional v1 router registered: %s from %s (absolute=%s)", name, import_path, abs_flag)
     return True
 
 

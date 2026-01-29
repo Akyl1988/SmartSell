@@ -85,7 +85,7 @@ from app.schemas.user import (
     UserLogin,
 )
 from app.services.messaging import MessagingConfigError, send_email
-from app.services.otp_providers import is_otp_active
+from app.services.otp_providers import is_otp_active, require_otp_provider_or_admin_bypass
 from app.utils.otp import create_otp_attempt, verify_otp_code
 from app.utils.tokens import generate_token, hash_token
 
@@ -312,8 +312,7 @@ async def register(user_data: UserCreate, request: Request, db: AsyncSession = D
     """
     client_info = get_client_info(request)
 
-    if not is_otp_active():
-        raise AuthorizationError("OTP provider is not active", "OTP_REQUIRED")
+    require_otp_provider_or_admin_bypass(None, action="register")
 
     phone = _normalize_phone(user_data.phone)
     email = _normalize_email(user_data.email)
@@ -905,13 +904,16 @@ async def create_invitation(
         role = (getattr(current_user, "role", "") or "").lower()
         is_admin = role == "admin"
 
-    otp_active = is_otp_active()
-    if otp_active:
+    if is_otp_active():
         if not is_admin:
             raise AuthorizationError("Insufficient permissions", "FORBIDDEN")
     else:
-        if not (is_admin or is_owner):
-            raise AuthorizationError("OTP provider is not active", "OTP_REQUIRED")
+        require_otp_provider_or_admin_bypass(
+            current_user,
+            action="invite_create",
+            company_id=company_id,
+            owner_id=company.owner_id if company else None,
+        )
     email = (payload.email or "").strip().lower()
     phone = _normalize_phone(payload.phone)
     variants = _phone_variants(phone)

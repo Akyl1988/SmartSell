@@ -79,7 +79,7 @@ from app.schemas.kaspi import (
 from app.services.kaspi_goods_client import KaspiGoodsClient, KaspiNotAuthenticated
 from app.services.kaspi_mc_sync import mark_mc_session_error, sync_kaspi_mc_offers
 from app.services.kaspi_service import KaspiService, KaspiSyncAlreadyRunning
-from app.services.otp_providers import is_otp_active
+from app.services.otp_providers import is_otp_active, require_otp_provider_or_admin_bypass
 
 logger = get_logger(__name__)
 router = APIRouter(prefix="/api/v1/kaspi", tags=["kaspi"])
@@ -591,10 +591,12 @@ async def connect_store(
         )
 
     if not is_otp_active():
-        is_owner = bool(company.owner_id and company.owner_id == current_user.id)
-        is_admin = bool(current_user.is_superuser or current_user.role == "admin")
-        if not (is_owner or is_admin):
-            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="otp_required")
+        require_otp_provider_or_admin_bypass(
+            current_user,
+            action="kaspi_connect",
+            company_id=company_id,
+            owner_id=company.owner_id,
+        )
 
     # Verify token if requested (before persisting) - HTTP only, no PowerShell
     if body.verify:

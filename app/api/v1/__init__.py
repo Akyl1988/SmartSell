@@ -40,21 +40,6 @@ try:
 except Exception:
     _API_V1_PREFIX = "/api/v1"
 
-try:
-    from app.core.logging import get_logger  # type: ignore
-
-    logger = get_logger(__name__)
-except Exception:
-    # минимальный fallback логгер
-    import logging as _logging
-
-    logger = _logging.getLogger(__name__)
-    if not logger.handlers:
-        _logging.basicConfig(
-            level=_logging.INFO,
-            format="%(asctime)s %(levelname)s [%(name)s] %(message)s",
-        )
-
 # -----------------------------
 # Список модулей с роутерами
 # -----------------------------
@@ -85,7 +70,7 @@ def register_extra_router_module(module_name: str) -> None:
         return
     if module_name not in EXTRA_ROUTER_MODULES:
         EXTRA_ROUTER_MODULES.append(module_name)
-        logger.info("Registered extra router module: %s", module_name)
+        pass
 
 
 # -----------------------------

@@ -4,6 +4,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.invitation import InvitationToken
+from app.models.marketplace import KaspiStoreToken
 from app.models.user import User
 from app.services.otp_providers import is_otp_active
 from app.utils.tokens import hash_token
@@ -39,7 +40,8 @@ async def test_self_register_blocked_without_otp(
         "/api/v1/auth/register",
         json={"phone": "+77001110002", "password": "Password123!", "company_name": "No OTP Co"},
     )
-    assert resp.status_code in {401, 403}
+    assert resp.status_code == 409
+    assert resp.json().get("detail") == "otp_provider_not_configured"
 
 
 @pytest.mark.asyncio
@@ -61,7 +63,35 @@ async def test_connect_store_blocked_without_otp(
             "verify": False,
         },
     )
-    assert resp.status_code in {401, 403}
+    assert resp.status_code == 409
+    assert resp.json().get("detail") == "otp_provider_not_configured"
+
+
+@pytest.mark.asyncio
+async def test_admin_can_connect_store_without_otp(
+    async_client: AsyncClient,
+    async_db_session: AsyncSession,
+    company_a_admin_headers,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    _disable_otp(monkeypatch)
+
+    async def _upsert_token(cls, session, store_name: str, plaintext_token: str):
+        return None
+
+    monkeypatch.setattr(KaspiStoreToken, "upsert_token", classmethod(_upsert_token))
+
+    resp = await async_client.post(
+        "/api/v1/kaspi/connect",
+        headers=company_a_admin_headers,
+        json={
+            "company_name": "Kaspi Admin Co",
+            "store_name": "kaspi-store-admin",
+            "token": "kaspi-token-1234567890",
+            "verify": False,
+        },
+    )
+    assert resp.status_code == 200, resp.text
 
 
 @pytest.mark.asyncio
