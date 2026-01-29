@@ -1,5 +1,16 @@
 ## [2026-01-28] Eliminate import-time stdout/stderr side effects
 
+## [2026-01-29] Env contract for production packaging
+
+### Added
+- .env.example with REQUIRED_PROD/REQUIRED_DEV_MIN/OPTIONAL/TEST_ONLY sections and safe defaults.
+- Explicit dev guidance: REDIS_DISABLED=1, REDIS_URL=disabled, RATE_LIMIT_ENABLED=0.
+- Heuristic test to ensure .env.example exists and contains no secret-like values.
+
+### Verified
+- ruff format / ruff check
+- pytest -q
+
 ## [2026-01-29] Subscriptions enforcement skeleton
 
 ### Added
