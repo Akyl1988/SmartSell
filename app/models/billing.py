@@ -708,7 +708,7 @@ class Invoice(BaseModel, SoftDeleteMixin):
     order_id: Mapped[int | None] = mapped_column(ForeignKey("orders.id", ondelete="CASCADE"), nullable=True, index=True)
     company_id: Mapped[int] = mapped_column(ForeignKey("companies.id", ondelete="CASCADE"), nullable=False, index=True)
 
-    invoice_number: Mapped[str] = mapped_column(String(64), nullable=False, index=True, unique=True)
+    invoice_number: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
     invoice_type: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
 
     subtotal: Mapped[Decimal] = mapped_column(Numeric(14, 2), nullable=False)
@@ -720,7 +720,9 @@ class Invoice(BaseModel, SoftDeleteMixin):
 
     issue_date: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     due_date: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    issued_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
     paid_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    voided_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
 
     pdf_url: Mapped[str | None] = mapped_column(String(1024))
     pdf_path: Mapped[str | None] = mapped_column(String(512))
@@ -729,14 +731,19 @@ class Invoice(BaseModel, SoftDeleteMixin):
     internal_notes: Mapped[str | None] = mapped_column(Text)
 
     payment_id: Mapped[int | None] = mapped_column(ForeignKey("billing_payments.id"))
+    ledger_entry_id: Mapped[int | None] = mapped_column(ForeignKey("wallet_transactions.id"))
+    payment_ref: Mapped[str | None] = mapped_column(String(128))
 
     company: Mapped[Any | None] = relationship("Company", backref="invoices")
     order: Mapped[Order | None] = relationship("Order", backref="invoices", foreign_keys=lambda: [Invoice.order_id])
     payment: Mapped[BillingPayment | None] = relationship("BillingPayment")
+    ledger_entry: Mapped[WalletTransaction | None] = relationship("WalletTransaction")
 
     __table_args__ = (
+        UniqueConstraint("company_id", "invoice_number", name="uq_invoice_company_number"),
         Index("ix_invoice_company_status", "company_id", "status"),
         Index("ix_invoice_company_created", "company_id", "issue_date"),
+        Index("ix_invoice_company_status_created", "company_id", "status", "created_at"),
         CheckConstraint("subtotal >= 0", name="ck_invoice_subtotal_nonneg"),
         CheckConstraint("tax_amount >= 0", name="ck_invoice_tax_nonneg"),
         CheckConstraint("total_amount >= 0", name="ck_invoice_total_nonneg"),
@@ -750,7 +757,31 @@ class Invoice(BaseModel, SoftDeleteMixin):
 
     @validates("invoice_type", "status")
     def _strip_short(self, _k: str, v: str | None) -> str | None:
-        return (v or "").strip() or None
+        return (v or "").strip().lower() or None
+
+    @property
+    def is_draft(self) -> bool:
+        return self.status == "draft"
+
+    @property
+    def is_issued(self) -> bool:
+        return self.status == "issued"
+
+    @property
+    def is_paid(self) -> bool:
+        return self.status == "paid"
+
+    @property
+    def is_void(self) -> bool:
+        return self.status == "void"
+
+    def mark_issued(self, when: datetime | None = None) -> None:
+        self.status = "issued"
+        self.issued_at = when or utc_now()
+
+    def mark_voided(self, when: datetime | None = None) -> None:
+        self.status = "void"
+        self.voided_at = when or utc_now()
 
     @classmethod
     def generate_number(
@@ -823,6 +854,8 @@ class Invoice(BaseModel, SoftDeleteMixin):
     def mark_paid(self, when: datetime | None = None) -> None:
         self.status = "paid"
         self.paid_at = when or utc_now()
+        if not self.issued_at:
+            self.issued_at = self.paid_at
 
     def mark_overdue(self) -> None:
         if self.status not in {"paid", "canceled"}:
@@ -852,12 +885,16 @@ class Invoice(BaseModel, SoftDeleteMixin):
             "status": self.status,
             "issue_date": _safe_iso(self.issue_date),
             "due_date": _safe_iso(self.due_date),
+            "issued_at": _safe_iso(self.issued_at),
             "paid_at": _safe_iso(self.paid_at),
+            "voided_at": _safe_iso(self.voided_at),
             "pdf_url": self.pdf_url,
             "pdf_path": self.pdf_path,
             "notes": self.notes,
             "internal_notes": self.internal_notes,
             "payment_id": self.payment_id,
+            "ledger_entry_id": self.ledger_entry_id,
+            "payment_ref": self.payment_ref,
         }
 
     @classmethod
@@ -2000,6 +2037,7 @@ class WalletTransaction(BaseModel, SoftDeleteMixin):
 
     reference_type: Mapped[str | None] = mapped_column(String(32))
     reference_id: Mapped[int | None] = mapped_column(Integer, index=True)
+    client_request_id: Mapped[str | None] = mapped_column(String(128), index=True)
 
     description: Mapped[str] = mapped_column(String(255), nullable=False, default="")
     extra_data: Mapped[str | None] = mapped_column(Text)
@@ -2010,6 +2048,7 @@ class WalletTransaction(BaseModel, SoftDeleteMixin):
 
     __table_args__ = (
         Index("ix_wallet_transaction_wallet_type", "wallet_id", "transaction_type"),
+        Index("ix_wallet_transaction_wallet_client_request", "wallet_id", "client_request_id"),
         CheckConstraint("amount >= 0", name="ck_wallet_trx_amount_nonneg"),
         CheckConstraint("balance_before >= 0", name="ck_wallet_trx_before_nonneg"),
         CheckConstraint("balance_after >= 0", name="ck_wallet_trx_after_nonneg"),
@@ -2034,6 +2073,7 @@ class WalletTransaction(BaseModel, SoftDeleteMixin):
             "balance_after": str(self.balance_after) if self.balance_after is not None else None,
             "reference_type": self.reference_type,
             "reference_id": self.reference_id,
+            "client_request_id": self.client_request_id,
             "description": self.description,
             "extra_data": self.extra_data,
         }
