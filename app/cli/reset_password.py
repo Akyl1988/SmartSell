@@ -15,6 +15,7 @@ def _to_sync_url(url: str) -> str:
         return "postgresql+psycopg2://" + url.split("postgresql+psycopg://", 1)[1]
     return url
 
+
 from app.core.config import get_settings
 from app.core.security import get_password_hash
 
@@ -53,14 +54,18 @@ def _reset_password(identifier: str, password: str, unlock: bool) -> int:
     engine = create_engine(_to_sync_url(db_url))
     hashed = get_password_hash(password)
     with engine.begin() as conn:
-        row = conn.execute(
-            text(
-                "SELECT id, phone, email FROM public.users "
-                "WHERE phone = :identifier OR email = :identifier "
-                "LIMIT 1"
-            ),
-            {"identifier": identifier},
-        ).mappings().first()
+        row = (
+            conn.execute(
+                text(
+                    "SELECT id, phone, email FROM public.users "
+                    "WHERE phone = :identifier OR email = :identifier "
+                    "LIMIT 1"
+                ),
+                {"identifier": identifier},
+            )
+            .mappings()
+            .first()
+        )
 
         if not row:
             return 2

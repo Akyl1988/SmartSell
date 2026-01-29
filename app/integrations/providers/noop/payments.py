@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+from decimal import Decimal
 from typing import Any
+from uuid import uuid4
 
-from app.integrations.ports.payments import PaymentGateway
+from app.integrations.ports.payments import PaymentGateway, PaymentIntent
 
 
 class NoOpPaymentGateway(PaymentGateway):
@@ -35,22 +37,23 @@ class NoOpPaymentGateway(PaymentGateway):
 
     async def create_payment_intent(
         self,
-        amount: float,
+        amount: Decimal,
         currency: str,
         customer_id: str,
         metadata: dict[str, Any] | None = None,
-    ) -> dict[str, Any]:
-        return {
-            "status": "noop",
-            "provider": self.name,
-            "version": self.version,
-            "payment_intent_id": "noop",
-            "amount": amount,
-            "currency": currency,
-            "customer_id": customer_id,
-            "metadata": metadata or {},
-            "config": self.config,
-        }
+    ) -> PaymentIntent:
+        intent_id = uuid4().hex
+        return PaymentIntent(
+            id=intent_id,
+            status="created",
+            amount=Decimal(str(amount)),
+            currency=(currency or "").upper(),
+            customer_id=customer_id,
+            provider=self.name,
+            provider_intent_id=intent_id,
+            provider_version=self.version,
+            metadata=metadata or {},
+        )
 
     async def refund(
         self,
@@ -74,7 +77,7 @@ class NoOpPaymentGateway(PaymentGateway):
     # Backward-compat alias
     async def charge(
         self,
-        amount: float,
+        amount: Decimal,
         currency: str,
         customer_id: str,
         metadata: dict[str, Any] | None = None,

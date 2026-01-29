@@ -64,6 +64,17 @@ async def test_payments_provider_hot_switch(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_payments_provider_fallback_noop(monkeypatch):
+    async def _missing_provider(db, domain):
+        return None
+
+    monkeypatch.setattr(ProviderRegistry, "get_active_provider", staticmethod(_missing_provider))
+
+    resolved = await PaymentProviderResolver.resolve(None, domain="payments", company_id=1001)
+    assert getattr(resolved, "provider_name", None) == "noop"
+
+
+@pytest.mark.asyncio
 async def test_payments_config_redaction_no_secrets(monkeypatch, async_client, async_db_session):
     _, token = await _make_admin(async_db_session)
     headers = {"Authorization": f"Bearer {token}"}
