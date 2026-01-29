@@ -1979,3 +1979,189 @@ Timeout could cancel/rollback the main sync transaction, causing `kaspi_order_sy
 
 **References (commits/merges):**
 - PR merges: #121 (479fc75), #120 (6dbfac0), #119 (0a992e6), #118 (e46a2fd), #117 (fe60b33), #116 (d28476a), #115 (de93e16), #114 (75cd28b), #113 (adecd98), #112 (ff0e7ce), #111 (c04da0a), #110 (5513e59), #109 (b989027), #108 (6809ad3), #107 (9a52af1), #106 (65da776), #105 (6d7b1de), #104 (fe0352d), #103 (68740eb), #102 (941a962), #101 (36bf657), #100 (fc3d7cb), #99 (0618794), #97 (17f9c45), #96 (661e47d), #95 (27f5f11), #93 (06c5f7b), #91 (e838bda), #90 (aba2d22), #89 (b038d70), #88 (2dd5dce), #87 (f4390d6).
+
+## 2025-12-30 — 2026-01-29 (Monthly summary)
+
+### 2025-12-31
+- PR #7 (41979ed): release v0.1.0 automation updates. Files: .github/workflows/ci.yml, .github/workflows/security.yml, .gitignore, CHANGELOG.md, README.md.
+- PR #8 (a461f4f): release v0.1.0 CD workflow. Files: .github/workflows/cd.yml.
+- PR #9 (e1c4552): release v0.1.0 CI workflow. Files: .github/workflows/ci.yml.
+- PR #10 (e86cce9): CI/alembic sync DSN fix. Files: .github/workflows/ci.yml, .github/workflows/cd.yml, migrations/versions/0c0c5c57a5b1_fix_allow_platform_admin_role.py, migrations/versions/20251227_add_provider_configs.py, migrations/versions/20251228_active_subscription_uniqueness.py.
+- PR #11 (fd41ef1): dev merge (DB tooling). Files: _create_tables_direct.py, bootstrap_schema.py, migrations/env.py, reset_testdb.py, tools_create_smart_sell_test_db.py.
+- PR #12 (c24c203): CI alembic smoke (CD). Files: .github/workflows/cd.yml.
+- PR #13 (2ac9861): CI alembic smoke v2 (CI). Files: .github/workflows/ci.yml, .gitattributes.
+- be6ed5a: style format for test DB URL priority. Files: tests/test_db_url_priority.py.
+- 796b7c2: journal update for CI/DB work. Files: PROJECT_JOURNAL.md.
+
+### 2026-01-01
+- PR #15 (db3896b): dev merge (env/docs). Files: .env.example, docs/env.md, PROJECT_JOURNAL.md.
+- 6e71009: journal entry for release v0.1.1. Files: PROJECT_JOURNAL.md.
+
+### 2026-01-02
+- PR #16 (93ea371): next plan step (tenant scoping helpers). Files: app/core/security.py, app/core/dependencies.py, app/api/v1/users.py, app/api/v1/products.py, app/api/v1/campaigns.py.
+
+### 2026-01-03
+- PR #17 (35f9090): tenant scope billing (audit artifacts). Files: STRUCTURE.project.txt, _audit_check_db.py, _changes_28_report.txt, _changes_full_report.txt, .gitignore.
+- PR #19 (9a0f253): dev merge (неясно по коммитам, требуется уточнение). Files: (no files listed).
+- PR #20 (09b0c79): tenant isolation for invoices/subscriptions. Files: app/api/routes/__init__.py, app/api/v1/invoices.py, migrations/versions/20251228_subs_deleted_at.py, migrations/versions/20260102_wallet_and_payments.py, PROJECT_JOURNAL.md.
+- PR #21 (fe3fb2b): dev merge (journal). Files: PROJECT_JOURNAL.md.
+- PR #22 (66f54c9): tenant scope wallet/payments. Files: app/api/v1/wallet.py, app/api/v1/payments.py, app/storage/wallet_sql.py, app/storage/payments_sql.py, tests/app/api/test_wallet_payments_tenant.py.
+- PR #24 (a707009): dev merge (journal). Files: PROJECT_JOURNAL.md.
+- PR #25 (50132aa): dev merge (billing tests). Files: app/api/v1/invoices.py, app/api/v1/subscriptions.py, tests/app/test_tenant_isolation_billing.py, tests/app/test_tenant_isolation_subscriptions.py.
+- PR #27 (624f656): dev merge (campaigns tenant isolation). Files: app/api/v1/campaigns.py, app/storage/campaigns_sql.py, tests/app/test_tenant_isolation_campaigns.py, PROJECT_JOURNAL.md.
+- PR #28 (dc74b77): dev merge (journal). Files: PROJECT_JOURNAL.md.
+- PR #30 (a7a8947): dev merge (v1 hardening). Files: app/api/v1/analytics.py, app/api/v1/kaspi.py, app/api/v1/payments.py, app/api/v1/wallet.py.
+- PR #31 (486e1bf): dev merge (journal). Files: PROJECT_JOURNAL.md.
+
+### 2026-01-04
+- PR #32 (900830a): API v1 async-session only. Files: app/api/v1/campaigns.py, app/api/v1/payments.py, app/api/v1/wallet.py, tests/app/api/test_no_sync_db_calls.py, PROJECT_JOURNAL.md.
+- PR #33 (517ead6): API v1 async DB only. Files: app/api/v1/auth.py, app/api/v1/analytics.py, app/api/v1/kaspi.py, app/api/v1/payments.py, PROJECT_JOURNAL.md.
+- PR #34 (acc1693): API v1 async-native (no run_sync). Files: app/api/v1/payments.py, app/api/v1/products.py, app/api/v1/users.py, app/api/v1/wallet.py, PROJECT_JOURNAL.md.
+- PR #47 (2f06bbf): Kaspi v1 no body + safe logging. Files: app/api/v1/kaspi.py, tests/app/api/test_kaspi_endpoints.py, PROJECT_JOURNAL.md.
+- 01cdebc: remove platform override for company scoping. Files: app/api/v1/subscriptions.py, tests/app/api/test_subscriptions_api.py, tests/app/api/test_wallet_payments_tenant.py, PROJECT_JOURNAL.md.
+- 3106213: enforce tenant scope across API v1. Files: app/api/v1/analytics.py, app/api/v1/products.py, tests/app/api/test_invoices_tenant.py, PROJECT_JOURNAL.md.
+- 6aaf442: guard test for company_id request params. Files: app/api/v1/invoices.py, app/api/v1/kaspi.py, app/api/v1/payments.py, app/api/v1/subscriptions.py, app/api/v1/wallet.py.
+- 35f3c41: remove company_id inputs in v1. Files: app/api/v1/invoices.py, app/api/v1/kaspi.py, app/api/v1/subscriptions.py, tests/app/api/test_invoices_tenant.py, PROJECT_JOURNAL.md.
+- 89885f5: guard test for allow_platform_override flag. Files: tests/test_no_platform_override_flag.py.
+- e4c9560: interrupt-safe teardown. Files: tests/conftest.py, migrations/versions/20251228_subs_deleted_at.py, migrations/versions/20260102_wallet_and_payments.py, PROJECT_JOURNAL.md.
+- f049cf1: RBAC v2 test stabilization. Files: tests/app/api/test_rbac_v2.py, PROJECT_JOURNAL.md.
+- efe6353: RBAC tenant claims + regression. Files: app/api/v1/analytics.py, app/api/v1/campaigns.py, app/api/v1/kaspi.py, app/api/v1/payments.py, _create_tables_direct.py.
+- 016e72f: dev sync (tenant scope). Files: app/api/v1/analytics.py, app/api/v1/invoices.py, app/api/v1/kaspi.py, app/api/v1/payments.py, PROJECT_JOURNAL.md.
+
+### 2026-01-05
+- PR #48 (5947296): platform admin tenant access policy. Files: app/api/v1/__init__.py, app/api/v1/analytics.py, app/api/v1/kaspi.py, app/api/v1/payments.py, PROJECT_JOURNAL.md.
+- PR #49 (33a4df7): Kaspi orders sync MVP. Files: app/models/kaspi_order_sync_state.py, app/models/order.py, migrations/versions/e3ee67c23527_kaspi_add_order_sync_state_uq_orders_.py, PROJECT_JOURNAL.md.
+
+### 2026-01-06
+- PR #52 (44a1981): dev merge (Kaspi sync + DB config). Files: app/api/v1/kaspi.py, app/core/config.py, app/core/db.py, app/services/kaspi_service.py, PROJECT_JOURNAL.md.
+- PR #53 (24731bb): dev merge (journal). Files: PROJECT_JOURNAL.md.
+- PR #55 (2d924f5): Kaspi orders status history. Files: app/models/order.py, app/services/kaspi_service.py, migrations/versions/2d43c3d56e28_kaspi_unique_order_items_order_id_sku.py, .gitignore, PROJECT_JOURNAL.md.
+- PR #57 (5dc3933): dev merge (Kaspi status history follow-ups). Files: app/models/order.py, app/services/kaspi_service.py, migrations/versions/29a2929fc59b_kaspi_order_status_history_unique.py, tests/app/api/test_kaspi_orders_sync.py, PROJECT_JOURNAL.md.
+- PR #59 (b159d00): dev merge (Kaspi sync). Files: app/api/v1/kaspi.py, app/services/kaspi_service.py, tests/app/api/test_kaspi_orders_sync.py, PROJECT_JOURNAL.md.
+- PR #61 (14b8958): dev merge (Kaspi sync). Files: app/services/kaspi_service.py, tests/app/api/test_kaspi_orders_sync.py, PROJECT_JOURNAL.md.
+- PR #62 (914e506): Kaspi orders sync hardening. Files: app/api/v1/kaspi.py, app/services/kaspi_service.py, tests/app/api/test_kaspi_endpoints.py, tests/app/api/test_kaspi_orders_sync.py, PROJECT_JOURNAL.md.
+- PR #63 (b2a9167): Kaspi sync state last error. Files: app/models/kaspi_order_sync_state.py, app/services/kaspi_service.py, migrations/versions/3a4e0c5f9c2b_kaspi_sync_state_last_error_fields.py, PROJECT_JOURNAL.md.
+- PR #64 (847c76a): Kaspi sync HTTP statuses. Files: app/api/v1/kaspi.py, app/services/kaspi_service.py, app/core/errors.py, tests/app/api/test_kaspi_orders_sync.py.
+
+### 2026-01-07
+- PR #65 (a2f8eb8): Kaspi sync state metrics. Files: app/models/kaspi_order_sync_state.py, app/services/kaspi_service.py, migrations/env.py, PROJECT_JOURNAL.md.
+- PR #67 (7eddb75): journal append-only policy. Files: PROJECT_JOURNAL.md.
+- PR #69 (5367edf): dev merge (security workflow). Files: .github/workflows/security.yml.
+- PR #71 (a166795): dev merge (gitattributes). Files: .gitattributes.
+
+### 2026-01-09
+- PR #74 (fb84d16): dev merge (env + alembic autogen). Files: .env.example, app/core/alembic_autogen.py, PROJECT_JOURNAL.md.
+- PR #75 (3bec804): dev merge (repo hygiene). Files: .editorconfig, .gitattributes, .gitignore, CHANGELOG.md, STRUCTURE.project.txt.
+- PR #76 (4a93457): Kaspi orders sync MVP tests. Files: tests/app/api/test_kaspi_orders_sync_mvp.py, KASPI_SYNC_MVP_SUMMARY.md, docs/ENGINEERING_JOURNAL.md.
+
+### 2026-01-10
+- PR #77 (1968db8): Kaspi autosync scheduler. Files: app/worker/kaspi_autosync.py, app/worker/scheduler_worker.py, app/api/v1/kaspi.py, app/core/config.py, KASPI_AUTOSYNC_IMPLEMENTATION.md.
+- PR #78 (2b6a096): autosync default off. Files: app/api/v1/kaspi.py, app/core/config.py, tests/test_kaspi_autosync.py, KASPI_AUTOSYNC_IMPLEMENTATION.md, docs/ENGINEERING_JOURNAL.md.
+- PR #79 (da2c814): autosync ops/status. Files: app/api/v1/kaspi.py, tests/test_kaspi_autosync.py, docs/ENGINEERING_JOURNAL.md.
+- 5d34f8f: strict runtime/pytest DB URL resolution. Files: app/core/config.py, app/core/db.py, tests/test_db_async_url_resolution.py, tests/test_db_runtime_vs_test_selection.py, PROJECT_JOURNAL.md.
+- 9ea4823: Kaspi ops endpoint + timeout 504. Files: app/api/v1/kaspi.py.
+- da4a6aa: persist Kaspi timeout sync_state. Files: app/services/kaspi_service.py, tests/app/api/test_kaspi_orders_sync.py.
+- 1f0b220: migrate engineering journal into PROJECT_JOURNAL. Files: PROJECT_JOURNAL.md, docs/ENGINEERING_JOURNAL.md, KASPI_AUTOSYNC_IMPLEMENTATION.md.
+- 3d5c760: journal updates (Kaspi timeout persistence). Files: docs/ENGINEERING_JOURNAL.md.
+
+### 2026-01-11
+- PR #81 (4fa0ac0): dev merge (CI/config). Files: .github/workflows/ci.yml, app/core/config.py, app/core/db.py, app/core/provider_registry.py, app/main.py.
+- PR #82 (77817a3): Kaspi sync lock scope fix. Files: app/services/kaspi_service.py, tests/app/api/test_kaspi_orders_sync.py.
+- PR #83 (04acf35): Kaspi orders sync scheduler. Files: app/main.py, app/services/kaspi_orders_sync_runner.py, docs/KASPI_SYNC_RUNNER.md, tests/test_kaspi_orders_sync_runner.py.
+- PR #85 (a03f85d): dev merge (auth + docs). Files: app/api/v1/auth.py, docs/REGISTRATION_COMPANY_TENANT.md, tests/app/test_auth.py, PROJECT_JOURNAL.md.
+- PR #87 (f4390d6): dev merge (Kaspi schemas). Files: app/api/v1/kaspi.py, app/schemas/kaspi.py, tests/app/api/test_kaspi_connect.py, PROJECT_JOURNAL.md.
+
+### 2026-01-12
+- PR #88 (2dd5dce): Kaspi orders sync implementation (journal noted). Files: PROJECT_JOURNAL.md.
+- PR #89 (b038d70): Kaspi autosync mutual exclusion. Files: app/api/v1/kaspi.py, app/worker/scheduler_worker.py, docs/KASPI_AUTOSYNC_MUTUAL_EXCLUSION.md, tests/test_kaspi_autosync_mutual_exclusion.py, PROJECT_JOURNAL.md.
+- PR #91 (e838bda): dev merge (journal). Files: PROJECT_JOURNAL.md.
+- PR #94 (bc1fd75): dev merge (Kaspi connect). Files: app/api/v1/kaspi.py, app/services/kaspi_service.py, tests/app/api/test_kaspi_connect.py, .gitignore.
+
+### 2026-01-13
+- PR #96 (661e47d): dev merge (startup hooks guard). Files: app/core/config.py, app/core/__init__.py, tests/test_core_startup_hook_guards.py.
+- PR #97 (17f9c45): process role gating. Files: app/main.py, app/worker/scheduler_worker.py, pytest.ini, tests/test_process_role_gating.py.
+- PR #99 (0618794): Kaspi orders sync MVP prod. Files: app/api/v1/kaspi.py, app/services/kaspi_service.py.
+- 36ee029: PROCESS_ROLE runbook. Files: docs/PROCESS_ROLES.md, PROJECT_JOURNAL.md.
+- 5795dd6: sync main into dev (Kaspi sync). Files: app/api/v1/kaspi.py, app/services/kaspi_service.py.
+
+### 2026-01-14
+- PR #101 (36bf657): dev merge (Kaspi adapter). Files: app/core/__init__.py, app/integrations/kaspi_adapter.py, app/main.py, tests/app/api/test_kaspi_endpoints.py.
+- PR #102 (941a962): Kaspi product sync MVP. Files: app/models/kaspi_catalog_product.py, app/services/kaspi_products_sync_service.py, migrations/versions/20260114_kaspi_catalog_products.py, app/api/v1/kaspi.py.
+- PR #103 (68740eb): Kaspi feed upload MVP. Files: app/models/kaspi_feed_export.py, app/services/kaspi_feed_export_service.py, app/services/kaspi_service.py, app/api/v1/kaspi.py.
+- PR #104 (fe0352d): Kaspi feed upload hardening. Files: app/api/v1/kaspi.py, app/services/kaspi_feed_export_service.py, migrations/versions/20260114_kaspi_feed_hardening.py, tests/test_kaspi_feed_exports.py.
+- PR #105 (6d7b1de): Kaspi status API. Files: app/models/kaspi_feed_export.py, app/api/v1/kaspi.py, tests/test_kaspi_status_api.py.
+- d3dc4de: ruff format. Files: app/main.py, app/integrations/kaspi_adapter.py, tests/test_process_role_gating.py.
+- 50dce4c: ignore local state snapshots. Files: .gitignore.
+
+### 2026-01-15
+- 2926f64: auth async DB + OTP attempt unify. Files: app/api/v1/auth.py, app/core/dependencies.py, app/utils/otp.py.
+
+### 2026-01-16
+- PR #106 (65da776): auth invite/reset. Files: app/api/v1/auth.py, app/models/invitation.py, app/models/user.py, app/schemas/user.py.
+- PR #107 (9a52af1): security no debug leaks. Files: app/api/v1/debug_db.py, app/api/v1/auth.py, app/api/v1/users.py, app/core/config.py, app/api/routes/__init__.py.
+- PR #108 (6809ad3): Kaspi product sync MVP v1. Files: app/api/v1/kaspi.py, app/services/kaspi_products_sync_service.py, tests/app/test_kaspi_products_sync.py, tests/test_kaspi_products_catalog_sync.py.
+
+### 2026-01-17
+- PR #112 (ff0e7ce): dev merge (Kaspi imports). Files: app/models/catalog_import.py, app/models/kaspi_goods_import.py, app/api/v1/kaspi.py, app/models/__init__.py, .gitignore.
+
+### 2026-01-19
+- PR #115 (de93e16): dev merge (Kaspi feed tokens). Files: app/models/kaspi_feed_public_token.py, migrations/versions/20260117_kaspi_feed_pub_tokens.py, tests/app/test_kaspi_catalog_import.py, app/api/v1/kaspi.py.
+- PR #117 (fe60b33): dev merge (startup hook guards). Files: app/core/__init__.py, tests/test_core_startup_hook_guards.py, .gitignore.
+
+### 2026-01-20
+- PR #119 (0a992e6): dev merge (Kaspi imports + auth deps). Files: app/api/v1/auth.py, app/api/v1/kaspi.py, app/core/dependencies.py, app/models/kaspi_goods_import.py, app/storage/campaigns_sql.py.
+
+### 2026-01-23
+- PR #123 (887b108): dev merge (Kaspi adapter + redis). Files: app/api/v1/kaspi.py, app/core/provider_registry.py, app/core/redis_client.py, app/integrations/kaspi_adapter.py, app/main.py.
+- PR #124 (03630d1): dev merge (provider configs). Files: app/core/provider_registry.py, app/services/provider_configs.py, .gitignore.
+
+### 2026-01-27
+- PR #126 (5d0c7e4): dev merge (main + tests). Files: app/main.py, tests/conftest.py.
+- PR #128 (6dce13e): dev merge (tooling). Files: pyproject.toml, ruff.toml.
+- PR #129 (e435982): alembic version text migration. Files: app/models/user.py, migrations/env.py, migrations/versions/20260127_users_hashed_password_text_alter_users_hashed_password_to_text.py.
+- PR #130 (857e694): journal monthly catch-up. Files: PROJECT_JOURNAL.md, .gitignore.
+- aeeb20c: add /api/health + /api/v1/health aliases. Files: app/main.py.
+- ad86c48: health aliases tests. Files: tests/app/test_health_aliases.py.
+- 11e6f6a: CORE_PROD_PLAN doc. Files: docs/CORE_PROD_PLAN.md.
+- 1d05959: ignore docs/smoke artifacts. Files: .gitignore.
+- f31ba9d: hide legacy /api routes in OpenAPI. Files: app/api/routes/__init__.py, app/main.py, tests/app/api/test_openapi_legacy_contract.py.
+- e558c00: hashed_password/refresh_token -> TEXT. Files: app/models/user.py, migrations/versions/20260127_users_hashed_password_text_alter_users_hashed_password_to_text.py, tests/app/models/test_user.py.
+- b005b76: track auth smoke script. Files: scripts/smoke-auth.ps1, .gitignore.
+- 7ffe20e: align auth smoke output to /auth/me. Files: scripts/smoke-auth.ps1.
+- b64a6b7: security denylist resilience. Files: app/core/provider_registry.py, app/core/security.py, tests/test_security_denylist_backend.py.
+
+### 2026-01-28
+- PR #131 (7ec03a1): auth errors never 500 (Kaspi/OTP). Files: app/api/v1/auth.py, app/api/v1/kaspi.py, app/core/config.py, app/services/otp_providers.py, PROJECT_JOURNAL.md.
+- PR #132 (064aa0d): wallet ledger idempotency. Files: app/api/v1/wallet.py, app/storage/wallet_sql.py, migrations/versions/20260128_wallet_ledger_client_request_id.py, tests/app/test_wallet_idempotency.py.
+- PR #133 (b7df8f8): remove import side effects. Files: app/main.py, app/core/config.py, app/api/routes/__init__.py, app/api/v1/__init__.py, PROJECT_JOURNAL.md.
+- eb0e7f2: /me returns company_id/name/bin_iin. Files: app/api/auth.py, app/api/v1/auth.py, tests/app/test_auth.py.
+- f538824: ignore scripts/* except smoke. Files: .gitignore.
+- f688872: add openapi smoke script. Files: scripts/smoke-openapi.ps1.
+- 0f0984f: openapi smoke tolerates legacy /api/auth/me. Files: scripts/smoke-openapi.ps1.
+- 2eb6c01: revoke access token on logout; tighten smoke. Files: app/api/v1/auth.py, app/core/dependencies.py, app/core/security.py, scripts/smoke-auth.ps1, tests/app/test_auth.py.
+- 60beb68: revoke access on logout when body provided. Files: app/api/v1/auth.py, tests/app/test_auth.py.
+- 23e1e06: revoke access on logout for body+auth path. Files: app/api/v1/auth.py.
+- d7fcd6e: auth smoke requires /me failure after logout. Files: scripts/smoke-auth.ps1.
+- d1bc969: allow scripts/smoke-core.ps1. Files: .gitignore.
+- 009a515: add smoke-core runner. Files: scripts/smoke-core.ps1.
+- 1a296f7: reduce password hashing cost in tests. Files: app/core/security.py, tests/test_security_password_hasher.py.
+- 7721d9d: avoid real sleep in Kaspi 429 test. Files: tests/app/api/test_kaspi_orders_sync.py.
+- 1806de5: track prod-gate (gitignore + script). Files: .gitignore, scripts/prod-gate.ps1.
+- 10a0770: prod-gate strict ruff/alembic/pytest/smoke. Files: scripts/prod-gate.ps1.
+- 7f0eeda: whitelist prod-gate in scripts. Files: .gitignore.
+
+### 2026-01-29
+- PR #134 (fa59a0e): dev reset password CLI. Files: app/cli/reset_password.py, app/cli/__init__.py, tests/app/test_cli_reset_password.py.
+- PR #135 (930d0f1): app import silent scope. Files: app/api/routes/__init__.py, app/api/v1/__init__.py, app/main.py.
+- PR #136 (d733c83): migrations policy doc. Files: docs/MIGRATIONS_POLICY.md.
+- PR #137 (8564522): admin bootstrap without OTP. Files: app/api/v1/auth.py, app/api/v1/kaspi.py, app/services/otp_providers.py, app/api/routes/__init__.py, app/api/v1/__init__.py.
+- PR #138 (aba3fd5): wallet invariants tests. Files: tests/app/test_wallet_invariants.py.
+- PR #139 (258d1c6): payments intents contract. Files: app/api/v1/payments.py, app/integrations/ports/payments.py, app/integrations/providers/noop/payments.py, app/services/payment_providers.py, app/cli/reset_password.py.
+- PR #140 (2254f60): subscriptions enforcement skeleton. Files: app/api/v1/subscriptions.py, app/api/v1/analytics.py, app/api/v1/campaigns.py, app/api/v1/products.py, PROJECT_JOURNAL.md.
+- PR #141 (a192611): products hardening. Files: app/api/v1/products.py, app/schemas/product.py, migrations/versions/20260129_products_tenant_uniqs.py, tests/app/test_products_hardening.py, tests/conftest.py.
+- PR #142 (4e622d8): campaigns hardening. Files: app/api/v1/campaigns.py, app/schemas/campaign.py, migrations/versions/20260129_campaigns_tenant_title_unique.py, tests/app/test_campaigns_hardening.py.
+- PR #143 (e9ccf75): analytics hardening. Files: app/api/v1/analytics.py, tests/app/test_analytics_hardening.py.
+- PR #144 (87500fd): invoices MVP core. Files: app/api/v1/invoices.py, app/core/dependencies.py, app/models/billing.py, migrations/versions/20260129_invoices_mvp_core.py, tests/app/test_invoices_mvp_core.py.
+- PR #145 (05487a9): .env.example prod keys. Files: .env.example, tests/test_env_example.py, PROJECT_JOURNAL.md.
+- PR #146 (81014d8): unified error contract (F2). Files: app/core/exceptions.py, app/main.py, tests/test_error_contract.py, PROJECT_JOURNAL.md.
+- PR #147 (aced20e): deploy guide (F3). Files: docs/DEPLOYMENT.md, tests/test_deploy_guide.py, PROJECT_JOURNAL.md.
