@@ -25,9 +25,6 @@ from starlette.middleware.httpsredirect import HTTPSRedirectMiddleware
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 from starlette.staticfiles import StaticFiles
 
-# Prevent import-time router logging from emitting output.
-os.environ.setdefault("APP_IMPORT_SILENT", "1")
-
 from app.api.routes import mount_v1
 from app.core import config as core_config
 from app.core.config import run_startup_side_effects, settings, should_disable_startup_hooks
@@ -84,17 +81,11 @@ def _configure_base_logging() -> None:
 @contextmanager
 def _suppress_import_logging() -> Any:
     previous_level = logging.root.manager.disable
-    previous_silent = os.environ.get("APP_IMPORT_SILENT")
-    os.environ["APP_IMPORT_SILENT"] = "1"
     logging.disable(logging.CRITICAL)
     try:
         yield
     finally:
         logging.disable(previous_level)
-        if previous_silent is None:
-            os.environ.pop("APP_IMPORT_SILENT", None)
-        else:
-            os.environ["APP_IMPORT_SILENT"] = previous_silent
 
 
 # ======================================================================================
@@ -922,6 +913,20 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:  # type: ignore[overrid
         logger.debug("DB URL startup guard skipped: %s", e)
 
     _import_models_once()
+    try:
+        from app.api.routes import get_mount_diagnostics as _get_mount_diagnostics
+
+        diag = _get_mount_diagnostics()
+        logger.info(
+            "router_mount_diagnostics",
+            extra={
+                "event_name": "router_mount_diagnostics",
+                "counts": diag.get("counts", {}),
+                "module_timings_ms": diag.get("module_timings_ms", {}),
+            },
+        )
+    except Exception:
+        pass
 
     try:
         settings.init_opentelemetry()
