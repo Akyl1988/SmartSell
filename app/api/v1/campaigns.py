@@ -14,6 +14,7 @@ from fastapi import APIRouter, Body, Depends, HTTPException, Path, Query, status
 from pydantic import BaseModel, Field, ValidationError, field_validator
 
 from app.core.dependencies import require_active_subscription
+from app.core.exceptions import ConflictError
 from app.core.security import get_current_user
 from app.models.user import User
 
@@ -461,18 +462,45 @@ class ChannelType(str, Enum):
 
 class Message(BaseModel):
     id: int | None = None
-    recipient: str = Field(..., min_length=1, description="Recipient (email/phone/username)")
+    recipient: str = Field(..., min_length=1, max_length=255, description="Recipient (email/phone/username)")
     content: str = Field(..., min_length=1, max_length=2000)
     status: MessageStatus = MessageStatus.pending
     channel: ChannelType = ChannelType.email
     scheduled_for: str | None = None  # ISO datetime (UTC)
     error: str | None = None
 
+    @field_validator("recipient")
+    def _validate_recipient(cls, v: str) -> str:
+        vv = (v or "").strip()
+        if not vv:
+            raise ValueError("recipient must be non-empty")
+        return vv
+
+    @field_validator("content")
+    def _validate_content(cls, v: str) -> str:
+        vv = (v or "").strip()
+        if not vv:
+            raise ValueError("content must be non-empty")
+        return vv
+
+    @field_validator("scheduled_for", mode="before")
+    def _validate_scheduled_for(cls, v: str | None) -> str | None:
+        if v is None:
+            return None
+        vv = (v or "").strip()
+        if not vv:
+            return None
+        try:
+            _parse_dt(vv)
+        except Exception:
+            raise ValueError("scheduled_for must be ISO 8601, e.g. 2025-12-31T23:59:59Z")
+        return vv
+
 
 class Campaign(BaseModel):
     id: int | None = None
     title: str = Field(..., min_length=1, max_length=255)
-    description: str | None = None
+    description: str | None = Field(None, max_length=2000)
     active: bool = True
     archived: bool = False
     company_id: int | None = None
@@ -481,11 +509,61 @@ class Campaign(BaseModel):
     created_at: str | None = None
     updated_at: str | None = None
     schedule: str | None = None  # ISO datetime (UTC)
-    owner: str | None = None
+    owner: str | None = Field(None, max_length=100)
 
     @field_validator("tags", mode="before")
     def _ensure_tags(cls, v):
-        return v or []
+        if v is None:
+            return []
+        if isinstance(v, str):
+            v = [v]
+        cleaned: list[str] = []
+        seen = set()
+        for raw in v or []:
+            tag = (raw or "").strip().lower()
+            if not tag:
+                continue
+            if len(tag) > 50:
+                raise ValueError("tag must be <= 50 characters")
+            if tag in seen:
+                continue
+            seen.add(tag)
+            cleaned.append(tag)
+        return cleaned
+
+    @field_validator("title")
+    def _validate_title(cls, v: str) -> str:
+        vv = (v or "").strip()
+        if not vv:
+            raise ValueError("title must be non-empty")
+        return vv
+
+    @field_validator("description", mode="before")
+    def _normalize_description(cls, v: str | None) -> str | None:
+        if v is None:
+            return None
+        vv = (v or "").strip()
+        return vv or None
+
+    @field_validator("owner", mode="before")
+    def _normalize_owner(cls, v: str | None) -> str | None:
+        if v is None:
+            return None
+        vv = (v or "").strip()
+        return vv or None
+
+    @field_validator("schedule", mode="before")
+    def _validate_schedule(cls, v: str | None) -> str | None:
+        if v is None:
+            return None
+        vv = (v or "").strip()
+        if not vv:
+            return None
+        try:
+            _parse_dt(vv)
+        except Exception:
+            raise ValueError("schedule must be ISO 8601, e.g. 2025-12-31T23:59:59Z")
+        return vv
 
 
 class CampaignStats(BaseModel):
@@ -703,7 +781,7 @@ async def create_campaign(campaign: Campaign = Body(...), user: User = Depends(_
     # owner, учитываем при уникальности
     owner = (campaign.owner or user.username or "").strip()
     if _title_exists(campaign.title, owner=owner, company_id=getattr(user, "company_id", None)):
-        raise HTTPException(status_code=400, detail="title must be unique")
+        raise ConflictError("Campaign with this title already exists", "DUPLICATE_TITLE", http_status=409)
     new_id = storage.next_id("campaigns")
 
     # подготовим payload
@@ -1035,7 +1113,7 @@ async def import_campaigns_bulk(payload: list[Campaign] = Body(...), user: User 
 async def save_campaign_draft(campaign: Campaign = Body(...), user: User = Depends(_auth_user)):
     owner = (campaign.owner or user.username or "").strip()
     if _title_exists(campaign.title, owner=owner, company_id=getattr(user, "company_id", None)):
-        raise HTTPException(status_code=400, detail="title must be unique")
+        raise ConflictError("Campaign with this title already exists", "DUPLICATE_TITLE", http_status=409)
     new_id = storage.next_id("campaigns")
     payload = campaign.model_dump()
     payload["id"] = new_id
@@ -1133,7 +1211,7 @@ async def update_campaign(campaign_id: int, campaign: Campaign = Body(...), user
         owner=owner,
         company_id=current.get("company_id") or getattr(user, "company_id", None),
     ):
-        raise HTTPException(status_code=400, detail="title must be unique")
+        raise ConflictError("Campaign with this title already exists", "DUPLICATE_TITLE", http_status=409)
     updated = {**current, **campaign.model_dump(exclude_unset=True)}
     updated["id"] = campaign_id
     updated["company_id"] = current.get("company_id", getattr(user, "company_id", None))
