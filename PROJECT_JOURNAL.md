@@ -1,3 +1,15 @@
+## [2026-01-29] Deploy guide (F3)
+
+### Added
+- docs/DEPLOYMENT.md golden-path guide.
+- Contract test for deployment guide anchors.
+
+### Verified
+- python -m ruff format .
+- python -m ruff check .
+- python -m pytest -q
+- scripts/prod-gate.ps1
+
 ## [2026-01-29] Unified error response contract (F2)
 
 ### Added
