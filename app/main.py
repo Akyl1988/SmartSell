@@ -1187,7 +1187,22 @@ def _create_app() -> FastAPI:
                 if _max_body > 0:
                     cl = request.headers.get("content-length")
                     if cl and cl.isdigit() and int(cl) > _max_body:
-                        return JSONResponse(status_code=413, content={"detail": "request_entity_too_large"})
+                        rid = getattr(request.state, "request_id", None) or request.headers.get("X-Request-ID")
+                        if not rid:
+                            rid = str(uuid.uuid4())
+                            try:
+                                request.state.request_id = rid
+                            except Exception:
+                                pass
+                        return JSONResponse(
+                            status_code=413,
+                            content={
+                                "detail": "request_entity_too_large",
+                                "code": "REQUEST_ENTITY_TOO_LARGE",
+                                "request_id": rid,
+                            },
+                            headers={"X-Request-ID": rid},
+                        )
             except Exception:
                 pass
             return await call_next(request)
@@ -1257,13 +1272,13 @@ def _create_app() -> FastAPI:
             request: Request, call_next: Callable[[Request], Awaitable[Response]]
         ) -> Response:
             req_id = request.headers.get("X-Request-ID") or str(uuid.uuid4())
+            try:
+                request.state.request_id = req_id
+            except Exception:
+                pass
             token = _request_id_var.set(req_id)
             try:
-                try:
-                    response = await call_next(request)
-                except Exception as e:
-                    logger.exception("Unhandled error (rid=%s): %s", req_id, e)
-                    return JSONResponse(status_code=500, content={"detail": "internal_error", "request_id": req_id})
+                response = await call_next(request)
                 response.headers["X-Request-ID"] = req_id
                 # полезные заголовки на каждом ответе
                 response.headers.setdefault("X-Process-Id", str(os.getpid()))
@@ -1302,21 +1317,6 @@ def _create_app() -> FastAPI:
                 response.headers["x-mw-post-ms"] = str(int((t_post_end - t_call_end) * 1000))
                 response.headers["x-total-ms"] = str(int((t_post_end - t0) * 1000))
                 return response
-
-    # ✅ единый обработчик HTTPException, чтобы в ответе всегда был request_id
-    @app.exception_handler(HTTPException)
-    async def http_exceptions(_: Request, exc: HTTPException) -> JSONResponse:
-        rid = _request_id_var.get()
-        payload = {"detail": exc.detail, "request_id": rid}
-        if exc.headers:
-            return JSONResponse(status_code=exc.status_code, content=payload, headers=exc.headers)
-        return JSONResponse(status_code=exc.status_code, content=payload)
-
-    @app.exception_handler(Exception)
-    async def unhandled_exceptions(_: Request, exc: Exception) -> JSONResponse:
-        rid = str(uuid.uuid4())
-        logger.exception("Unhandled exception (rid=%s): %s", rid, exc)
-        return JSONResponse(status_code=500, content={"detail": "internal_error", "request_id": rid})
 
     # ----------------------------------------------------------------------------------
     # Base info helpers & endpoints

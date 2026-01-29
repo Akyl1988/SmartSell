@@ -1,3 +1,16 @@
+## [2026-01-29] Unified error response contract (F2)
+
+### Added
+- Unified error payload contract: {detail, code, request_id} across handlers.
+- request_id propagation from headers and X-Request-ID on error responses.
+- Tests covering 401/404/422/500 error responses and request_id header.
+
+### Verified
+- python -m ruff format .
+- python -m ruff check .
+- python -m pytest -q
+- scripts/prod-gate.ps1
+
 ## [2026-01-28] Eliminate import-time stdout/stderr side effects
 
 ## [2026-01-29] Env contract for production packaging
