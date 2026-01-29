@@ -88,6 +88,7 @@ wallet = _try_import("app.api.v1.wallet")
 payments = _try_import("app.api.v1.payments")
 invoices = _try_import("app.api.v1.invoices")
 kaspi_mod = _try_import("app.api.v1.kaspi")  # ⬅ добавлено
+integrations_mod = _try_import("app.api.v1.integrations")
 debug_db_mod = _try_import("app.api.v1.debug_db")
 
 # Переэкспорт удобных имён/алиасов (для внешнего кода)
@@ -163,6 +164,8 @@ if invoices and _router_or_none(invoices):
 if kaspi_mod and _router_or_none(kaspi_mod):
     # в kaspi.py объявлен prefix '/api/v1/kaspi' → абсолютный
     V1_ROUTERS.append(("kaspi", kaspi_mod.router, True))
+if integrations_mod and _router_or_none(integrations_mod):
+    V1_ROUTERS.append(("integrations", integrations_mod.router, True))
 if debug_db_mod and _router_or_none(debug_db_mod):
     V1_ROUTERS.append(("debug_db", debug_db_mod.router, True))
 

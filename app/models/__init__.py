@@ -185,6 +185,7 @@ _LAZY_MODELS: dict[str, tuple[str, str]] = {
         "app.models.integration_provider_config",
         "IntegrationProviderConfig",
     ),
+    "IntegrationEvent": ("app.models.integration_event", "IntegrationEvent"),
     "KaspiOrderSyncState": ("app.models.kaspi_order_sync_state", "KaspiOrderSyncState"),
     "KaspiCatalogProduct": ("app.models.kaspi_catalog_product", "KaspiCatalogProduct"),
     "KaspiFeedExport": ("app.models.kaspi_feed_export", "KaspiFeedExport"),
@@ -220,6 +221,7 @@ _DOMAIN_MODULES: tuple[str, ...] = (
     "app.models.system_integrations",
     "app.models.integration_provider",
     "app.models.integration_provider_config",
+    "app.models.integration_event",
 )
 
 # Критичные модули/классы, чья регистрация нужна даже при «холодном» старте (FK/relationship)
