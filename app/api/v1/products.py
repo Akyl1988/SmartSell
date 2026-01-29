@@ -283,10 +283,10 @@ async def create_product(
         await db.rollback()
         msg = str(getattr(e, "orig", e))
         if "sku" in msg:
-            raise ConflictError("Product with this SKU already exists", "DUPLICATE_SKU")
+            raise ConflictError("Product with this SKU already exists", "DUPLICATE_SKU", http_status=409)
         if "slug" in msg:
-            raise ConflictError("Product with this slug already exists", "DUPLICATE_SLUG")
-        raise ConflictError("Product creation failed due to data conflict", "CREATION_FAILED")
+            raise ConflictError("Product with this slug already exists", "DUPLICATE_SLUG", http_status=409)
+        raise ConflictError("Product creation failed due to data conflict", "CREATION_FAILED", http_status=409)
 
 
 @router.put("/{product_id}", response_model=ProductResponse)
@@ -329,10 +329,10 @@ async def update_product(
         await db.rollback()
         msg = str(getattr(e, "orig", e))
         if "sku" in msg:
-            raise ConflictError("Product with this SKU already exists", "DUPLICATE_SKU")
+            raise ConflictError("Product with this SKU already exists", "DUPLICATE_SKU", http_status=409)
         if "slug" in msg:
-            raise ConflictError("Product with this slug already exists", "DUPLICATE_SLUG")
-        raise ConflictError("Product update failed due to data conflict", "UPDATE_FAILED")
+            raise ConflictError("Product with this slug already exists", "DUPLICATE_SLUG", http_status=409)
+        raise ConflictError("Product update failed due to data conflict", "UPDATE_FAILED", http_status=409)
 
 
 @router.delete("/{product_id}", response_model=SuccessResponse)
