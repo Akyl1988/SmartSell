@@ -22,6 +22,7 @@ class KaspiFeedUpload(Base):
     attempts = Column(Integer, nullable=False, server_default=text("0"))
     last_error_code = Column(String(64), nullable=True)
     last_error_message = Column(Text, nullable=True)
+    last_attempt_at = Column(DateTime, nullable=True)
     request_id = Column(String(128), nullable=True, index=True)
 
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)

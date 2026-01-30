@@ -60,6 +60,7 @@ async def mark_feed_upload_attempt(
     *,
     job: KaspiFeedUpload,
 ) -> KaspiFeedUpload:
+    job.last_attempt_at = datetime.utcnow()
     job.attempts = int(job.attempts or 0) + 1
     job.updated_at = datetime.utcnow()
     await session.commit()
@@ -75,6 +76,7 @@ async def update_feed_upload_job(
     import_code: str | None = None,
     error_code: str | None = None,
     error_message: str | None = None,
+    last_attempt_at: datetime | None = None,
 ) -> KaspiFeedUpload:
     if status is not None:
         job.status = status
@@ -82,6 +84,8 @@ async def update_feed_upload_job(
         job.import_code = import_code
     job.last_error_code = error_code
     job.last_error_message = error_message
+    if last_attempt_at is not None:
+        job.last_attempt_at = last_attempt_at
     job.updated_at = datetime.utcnow()
     await session.commit()
     await session.refresh(job)

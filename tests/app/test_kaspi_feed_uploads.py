@@ -50,6 +50,11 @@ class _FakeKaspiAdapter:
         return {"importCode": import_id, "status": "done"}
 
 
+class _FailingKaspiAdapter:
+    def feed_upload(self, *args, **kwargs):
+        raise RuntimeError("upstream_unavailable")
+
+
 async def _ensure_company(async_db_session, company_id: int, store_id: str) -> None:
     company = await async_db_session.get(Company, company_id)
     if not company:
@@ -335,3 +340,159 @@ async def test_kaspi_feed_upload_publish(
     assert publish_resp.status_code == 200
     publish_data = publish_resp.json()
     assert publish_data["status"] == "published"
+
+
+@pytest.mark.asyncio
+async def test_kaspi_feed_upload_upstream_error_returns_201(
+    async_client,
+    async_db_session,
+    company_a_admin_headers,
+    monkeypatch,
+):
+    await _ensure_company(async_db_session, 1001, "store-a")
+
+    async def _get_token(session, store_name: str):
+        return "token-a"
+
+    monkeypatch.setattr(KaspiStoreToken, "get_token", _get_token)
+
+    offer = KaspiOffer(
+        company_id=1001,
+        merchant_uid="M123",
+        sku="SKU-1",
+        title="Item 1",
+        price=1000,
+    )
+    async_db_session.add(offer)
+    await async_db_session.commit()
+
+    from app.api.v1 import kaspi as kaspi_module
+
+    monkeypatch.setattr(kaspi_module, "KaspiAdapter", lambda: _FailingKaspiAdapter())
+
+    resp = await async_client.post(
+        "/api/v1/kaspi/feed/uploads",
+        headers=company_a_admin_headers,
+        json={"merchant_uid": "M123", "source": "public_token"},
+    )
+    assert resp.status_code == 201
+    data = resp.json()
+    assert data["status"] == "failed"
+    assert data["last_error_code"] == "upstream_unavailable"
+
+    record = (
+        (await async_db_session.execute(select(KaspiFeedUpload).where(KaspiFeedUpload.company_id == 1001)))
+        .scalars()
+        .first()
+    )
+    assert record is not None
+    assert record.status == "failed"
+    assert record.last_error_code == "upstream_unavailable"
+
+
+@pytest.mark.asyncio
+async def test_feed_upload_export_id_int_and_string(
+    async_client,
+    async_db_session,
+    company_a_admin_headers,
+    monkeypatch,
+):
+    await _ensure_company(async_db_session, 1001, "store-a")
+
+    async def _get_token(session, store_name: str):
+        return "token-a"
+
+    monkeypatch.setattr(KaspiStoreToken, "get_token", _get_token)
+
+    export = KaspiFeedExport(
+        company_id=1001,
+        kind="offers",
+        format="xml",
+        status="DONE",
+        checksum="chk-2",
+        payload_text="<kaspi_catalog/>",
+        stats_json={"merchant_uid": "M123"},
+    )
+    async_db_session.add(export)
+    await async_db_session.commit()
+    await async_db_session.refresh(export)
+
+    fake_adapter = _FakeKaspiAdapter()
+    from app.api.v1 import kaspi as kaspi_module
+
+    monkeypatch.setattr(kaspi_module, "KaspiAdapter", lambda: fake_adapter)
+
+    resp_int = await async_client.post(
+        "/api/v1/kaspi/feed/uploads",
+        headers=company_a_admin_headers,
+        json={"merchant_uid": "M123", "source": "export_id", "export_id": export.id},
+    )
+    assert resp_int.status_code == 200
+
+    resp_str = await async_client.post(
+        "/api/v1/kaspi/feed/uploads",
+        headers=company_a_admin_headers,
+        json={"merchant_uid": "M123", "source": "export_id", "export_id": str(export.id)},
+    )
+    assert resp_str.status_code == 200
+
+    record = (
+        (
+            await async_db_session.execute(
+                select(KaspiFeedUpload).where(
+                    KaspiFeedUpload.company_id == 1001,
+                    KaspiFeedUpload.export_id == export.id,
+                )
+            )
+        )
+        .scalars()
+        .first()
+    )
+    assert record is not None
+
+
+@pytest.mark.asyncio
+async def test_feed_upload_export_id_invalid_returns_422(async_client, company_a_admin_headers):
+    resp = await async_client.post(
+        "/api/v1/kaspi/feed/uploads",
+        headers=company_a_admin_headers,
+        json={"merchant_uid": "M123", "source": "export_id", "export_id": "abc"},
+    )
+    assert resp.status_code == 422
+    data = resp.json()
+    assert data.get("code") == "REQUEST_VALIDATION_ERROR"
+
+
+@pytest.mark.asyncio
+async def test_feed_upload_local_file_path(
+    async_client,
+    async_db_session,
+    company_a_admin_headers,
+    monkeypatch,
+    tmp_path,
+):
+    await _ensure_company(async_db_session, 1001, "store-a")
+
+    async def _get_token(session, store_name: str):
+        return "token-a"
+
+    monkeypatch.setattr(KaspiStoreToken, "get_token", _get_token)
+
+    file_path = tmp_path / "offers.xml"
+    file_path.write_text("<kaspi_catalog/>", encoding="utf-8")
+
+    fake_adapter = _FakeKaspiAdapter()
+    from app.api.v1 import kaspi as kaspi_module
+
+    monkeypatch.setattr(kaspi_module, "KaspiAdapter", lambda: fake_adapter)
+
+    resp = await async_client.post(
+        "/api/v1/kaspi/feed/uploads",
+        headers=company_a_admin_headers,
+        json={
+            "merchant_uid": "M123",
+            "source": "local_file_path",
+            "local_file_path": str(file_path),
+        },
+    )
+    assert resp.status_code == 200
