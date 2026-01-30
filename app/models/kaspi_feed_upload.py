@@ -14,6 +14,7 @@ class KaspiFeedUpload(Base):
     id = Column(UUID(as_uuid=True), primary_key=True, server_default=text("gen_random_uuid()"))
     company_id = Column(Integer, ForeignKey("companies.id", ondelete="CASCADE"), nullable=False, index=True)
     merchant_uid = Column(String(128), nullable=False, index=True)
+    export_id = Column(Integer, nullable=True, index=True)
     source = Column(String(32), nullable=True, index=True)
     comment = Column(Text, nullable=True)
     status = Column(String(64), nullable=False, server_default=text("'created'"))

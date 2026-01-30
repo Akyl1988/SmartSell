@@ -1,5 +1,6 @@
 import httpx
 import pytest
+import sqlalchemy as sa
 
 from app.models.company import Company
 from app.models.kaspi_goods_import import KaspiGoodsImport
@@ -35,7 +36,7 @@ class _FakeAsyncClient:
     async def __aexit__(self, exc_type, exc, tb):
         return False
 
-    async def request(self, method, url, headers=None, params=None, json=None):
+    async def request(self, method, url, headers=None, params=None, json=None, files=None):
         self._recorder.append(
             {
                 "method": method,
@@ -43,6 +44,7 @@ class _FakeAsyncClient:
                 "headers": headers or {},
                 "params": params,
                 "json": json,
+                "files": files,
             }
         )
         return self._responses.pop(0) if self._responses else _FakeResponse(200)
@@ -200,3 +202,102 @@ async def test_kaspi_goods_import_handles_upstream_error(
     )
     assert resp.status_code == 502
     assert resp.json().get("detail") == "kaspi_upstream_error"
+
+
+@pytest.mark.asyncio
+async def test_kaspi_goods_import_upload_mvp(
+    async_client,
+    async_db_session,
+    company_a_admin_headers,
+    monkeypatch,
+):
+    await _ensure_company(async_db_session, 1001, "store-a")
+
+    async def _get_token(session, store_name: str):
+        return "token-a"
+
+    monkeypatch.setattr(KaspiStoreToken, "get_token", _get_token)
+
+    recorder: list[dict] = []
+    responses = [_FakeResponse(200, {"importCode": "IC-UP-1", "status": "submitted"})]
+
+    from app.services import kaspi_goods_client
+
+    monkeypatch.setattr(
+        kaspi_goods_client.httpx,
+        "AsyncClient",
+        lambda *args, **kwargs: _FakeAsyncClient(responses, recorder),
+    )
+
+    files = {"file": ("goods.csv", b"sku,name\nS1,Item\n", "text/csv")}
+    resp = await async_client.post(
+        "/api/v1/kaspi/goods/import/upload",
+        headers=company_a_admin_headers,
+        params={"merchantUid": "M1"},
+        files=files,
+    )
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["import_code"] == "IC-UP-1"
+    assert data["status"] == "submitted"
+
+    assert recorder[0]["method"] == "POST"
+    assert recorder[0]["url"].endswith("/shop/api/products/import")
+    assert recorder[0]["headers"]["X-Auth-Token"] == "token-a"
+    assert recorder[0]["files"]["file"][0] == "goods.csv"
+
+    record = (
+        (
+            await async_db_session.execute(
+                sa.select(KaspiGoodsImport).where(
+                    sa.and_(KaspiGoodsImport.company_id == 1001, KaspiGoodsImport.import_code == "IC-UP-1")
+                )
+            )
+        )
+        .scalars()
+        .first()
+    )
+    assert record is not None
+    assert record.filename == "goods.csv"
+    assert record.merchant_uid == "M1"
+    assert "IC-UP-1" in (record.raw_response or "")
+
+
+@pytest.mark.asyncio
+async def test_kaspi_goods_import_status_by_code(
+    async_client,
+    async_db_session,
+    company_a_admin_headers,
+    monkeypatch,
+):
+    await _ensure_company(async_db_session, 1001, "store-a")
+
+    async def _get_token(session, store_name: str):
+        return "token-a"
+
+    monkeypatch.setattr(KaspiStoreToken, "get_token", _get_token)
+
+    recorder: list[dict] = []
+    responses = [_FakeResponse(200, {"status": "processing"})]
+
+    from app.services import kaspi_goods_client
+
+    monkeypatch.setattr(
+        kaspi_goods_client.httpx,
+        "AsyncClient",
+        lambda *args, **kwargs: _FakeAsyncClient(responses, recorder),
+    )
+
+    resp = await async_client.get(
+        "/api/v1/kaspi/goods/import/status",
+        headers=company_a_admin_headers,
+        params={"importCode": "IC-STATUS-1"},
+    )
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["import_code"] == "IC-STATUS-1"
+    assert data["status"] == "processing"
+
+    assert recorder[0]["method"] == "GET"
+    assert recorder[0]["url"].endswith("/shop/api/products/import/status")
+    assert recorder[0]["params"] == {"importCode": "IC-STATUS-1"}

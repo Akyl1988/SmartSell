@@ -15,6 +15,7 @@ class KaspiGoodsImport(Base):
     company_id = Column(ForeignKey("companies.id", ondelete="CASCADE"), nullable=False, index=True)
     created_by_user_id = Column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True)
     merchant_uid = Column(String(128), nullable=True, index=True)
+    filename = Column(String(256), nullable=True)
     import_code = Column(String(128), nullable=False, index=True)
     status = Column(String(64), nullable=False, server_default=text("'created'"))
     source = Column(String(32), nullable=True, index=True)
