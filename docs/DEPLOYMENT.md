@@ -41,6 +41,11 @@ Kaspi feed (optional, for feed upload flow):
 - KASPI_FEED_BASE_URL, KASPI_FEED_UPLOAD_URL, KASPI_FEED_STATUS_URL, KASPI_FEED_RESULT_URL
 - KASPI_HTTP_TIMEOUT_SEC
 
+Kaspi onboarding (golden path):
+- SMARTSELL_IDENTIFIER
+- SMARTSELL_PASSWORD
+- KASPI_FEED_* (only if running feed upload)
+
 Kaspi PowerShell helper script: scripts/Kaspi.ps1 (dot-source before use).
 
 Never commit real secrets. Use a secure secrets manager or systemd EnvironmentFile.
@@ -49,6 +54,12 @@ Redis is optional. If disabled, set:
 
 - REDIS_DISABLED=1
 - REDIS_URL=disabled
+
+## Kaspi onboarding
+
+One-liner (selftest + events, and optionally feed upload):
+
+pwsh -NoProfile -File .\scripts\kaspi-onboarding.ps1 -DoFeedUpload
 
 ## Install and migrate
 
