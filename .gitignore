@@ -359,3 +359,7 @@ scripts/*
 # scripts/ is ignored globally; allow only tracked runner(s)
 !scripts/prod-gate.ps1
 
+
+# local tmp/debug artifacts
+tmp_kaspi_goods_*.json
+
