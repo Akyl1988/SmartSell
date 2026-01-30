@@ -51,6 +51,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
 from app.core.db import get_async_db  # noqa — для совместимости импорт-алиас
+from app.core.errors import safe_error_message
 from app.core.logging import get_logger
 from app.core.security import get_current_user, resolve_tenant_company_id
 from app.integrations.kaspi_adapter import KaspiAdapter, KaspiAdapterError
@@ -1061,14 +1062,50 @@ async def kaspi_orders_sync(
         resolved_company_id = _resolve_company_id(current_user)
         svc = KaspiService()
         request_id = getattr(getattr(request, "state", None), "request_id", None) if request else None
-        return await svc.sync_orders(db=session, company_id=resolved_company_id, request_id=request_id)
+        result = await svc.sync_orders(db=session, company_id=resolved_company_id, request_id=request_id)
+        await _record_kaspi_event(
+            session,
+            company_id=resolved_company_id,
+            kind="kaspi_orders_sync",
+            status="success",
+            request_id=request_id,
+            meta_json={
+                "fetched": result.get("fetched"),
+                "inserted": result.get("inserted"),
+                "updated": result.get("updated"),
+                "watermark": result.get("watermark"),
+            },
+        )
+        return result
     except KaspiSyncAlreadyRunning:
+        request_id = getattr(getattr(request, "state", None), "request_id", None) if request else None
+        if resolved_company_id is not None:
+            await _record_kaspi_event(
+                session,
+                company_id=resolved_company_id,
+                kind="kaspi_orders_sync",
+                status="skipped",
+                request_id=request_id,
+                error_code="sync_locked",
+                error_message="already_running",
+            )
         raise HTTPException(status_code=status.HTTP_423_LOCKED, detail="kaspi sync already running")
     except Exception as e:
         svc = svc or KaspiService()
         error_code = svc.classify_sync_error(e)
         retry_after = svc.get_retry_after_seconds(e)
         logger.error("Kaspi orders sync failed: company_id=%s code=%s err=%s", resolved_company_id, error_code, e)
+        request_id = getattr(getattr(request, "state", None), "request_id", None) if request else None
+        if resolved_company_id is not None:
+            await _record_kaspi_event(
+                session,
+                company_id=resolved_company_id,
+                kind="kaspi_orders_sync",
+                status="failed",
+                request_id=request_id,
+                error_code=error_code,
+                error_message=safe_error_message(e),
+            )
 
         if error_code == "kaspi_http_429":
             headers = {"Retry-After": str(retry_after)} if retry_after is not None else None

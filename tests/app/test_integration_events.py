@@ -79,3 +79,30 @@ async def test_integration_events_connect_and_selftest(
     data = resp.json()
     assert len(data) >= 2
     assert all(str(item["kind"]).startswith("kaspi") for item in data)
+
+
+@pytest.mark.asyncio
+async def test_integration_events_orders_sync_failure(
+    async_client, async_db_session, monkeypatch, company_a_admin_headers
+):
+    from app.api.v1 import kaspi as kaspi_router
+
+    async def _sync_orders(*args, **kwargs):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(kaspi_router.KaspiService, "sync_orders", _sync_orders)
+
+    resp = await async_client.post("/api/v1/kaspi/orders/sync", headers=company_a_admin_headers)
+    assert resp.status_code == 500, resp.text
+
+    event = (
+        (
+            await async_db_session.execute(
+                sa.select(IntegrationEvent).where(IntegrationEvent.kind == "kaspi_orders_sync")
+            )
+        )
+        .scalars()
+        .first()
+    )
+    assert event is not None
+    assert event.status == "failed"
