@@ -2,6 +2,8 @@
 
 This guide covers a single, practical path to deploy SmartSell in production.
 
+See also: Kaspi feed lifecycle guide in docs/KASPI_FEED.md.
+
 ## Requirements
 
 - Python 3.11
@@ -33,6 +35,13 @@ Use .env.example as the reference. These keys are **required in production**:
 - ALLOWED_HOSTS: comma-separated hostnames
 - PGCRYPTO_KEY: key used for DB-level encryption
 - INTEGRATIONS_MASTER_KEY: key for integrations secrets
+
+Kaspi feed (optional, for feed upload flow):
+- KASPI_FEED_TOKEN or KASPI_TOKEN
+- KASPI_FEED_BASE_URL, KASPI_FEED_UPLOAD_URL, KASPI_FEED_STATUS_URL, KASPI_FEED_RESULT_URL
+- KASPI_HTTP_TIMEOUT_SEC
+
+Kaspi PowerShell helper script: scripts/Kaspi.ps1 (dot-source before use).
 
 Never commit real secrets. Use a secure secrets manager or systemd EnvironmentFile.
 
