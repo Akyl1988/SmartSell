@@ -50,6 +50,11 @@ class _FakeKaspiAdapter:
         return {"importCode": import_id, "status": "done"}
 
 
+class _FailingKaspiAdapter:
+    def feed_upload(self, *args, **kwargs):
+        raise RuntimeError("upstream_unavailable")
+
+
 async def _ensure_company(async_db_session, company_id: int, store_id: str) -> None:
     company = await async_db_session.get(Company, company_id)
     if not company:
@@ -335,6 +340,54 @@ async def test_kaspi_feed_upload_publish(
     assert publish_resp.status_code == 200
     publish_data = publish_resp.json()
     assert publish_data["status"] == "published"
+
+
+@pytest.mark.asyncio
+async def test_kaspi_feed_upload_upstream_error_returns_201(
+    async_client,
+    async_db_session,
+    company_a_admin_headers,
+    monkeypatch,
+):
+    await _ensure_company(async_db_session, 1001, "store-a")
+
+    async def _get_token(session, store_name: str):
+        return "token-a"
+
+    monkeypatch.setattr(KaspiStoreToken, "get_token", _get_token)
+
+    offer = KaspiOffer(
+        company_id=1001,
+        merchant_uid="M123",
+        sku="SKU-1",
+        title="Item 1",
+        price=1000,
+    )
+    async_db_session.add(offer)
+    await async_db_session.commit()
+
+    from app.api.v1 import kaspi as kaspi_module
+
+    monkeypatch.setattr(kaspi_module, "KaspiAdapter", lambda: _FailingKaspiAdapter())
+
+    resp = await async_client.post(
+        "/api/v1/kaspi/feed/uploads",
+        headers=company_a_admin_headers,
+        json={"merchant_uid": "M123", "source": "public_token"},
+    )
+    assert resp.status_code == 201
+    data = resp.json()
+    assert data["status"] == "failed"
+    assert data["last_error_code"] == "upstream_unavailable"
+
+    record = (
+        (await async_db_session.execute(select(KaspiFeedUpload).where(KaspiFeedUpload.company_id == 1001)))
+        .scalars()
+        .first()
+    )
+    assert record is not None
+    assert record.status == "failed"
+    assert record.last_error_code == "upstream_unavailable"
 
 
 @pytest.mark.asyncio

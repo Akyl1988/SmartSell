@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from sqlalchemy import Column, DateTime, ForeignKey, String, Text, text
+from sqlalchemy import Column, DateTime, ForeignKey, Integer, String, Text, text
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 
 from app.models.base import Base
@@ -20,7 +20,10 @@ class KaspiGoodsImport(Base):
     status = Column(String(64), nullable=False, server_default=text("'created'"))
     source = Column(String(32), nullable=True, index=True)
     comment = Column(Text, nullable=True)
+    payload_hash = Column(String(64), nullable=True, index=True)
+    attempts = Column(Integer, nullable=False, server_default=text("0"))
     request_json = Column(JSONB, nullable=False, server_default=text("'[]'::jsonb"))
+    raw_status_json = Column(JSONB, nullable=True)
     status_json = Column(JSONB, nullable=True)
     result_json = Column(JSONB, nullable=True)
     error_code = Column(String(64), nullable=True)
