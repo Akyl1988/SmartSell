@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import httpx
+from fastapi import status
 
+from app.core.exceptions import http_error
 from app.core.logging import get_logger
 
 logger = get_logger(__name__)
@@ -17,6 +19,8 @@ class KaspiGoodsClient:
             raise ValueError("kaspi_token_required")
         self._token = token
         self._base_url = base_url.rstrip("/")
+        self._default_timeout = 30.0
+        self._fast_timeout = 8.0
 
     def _headers(self) -> dict[str, str]:
         return {
@@ -37,22 +41,30 @@ class KaspiGoodsClient:
         params: dict[str, str] | None = None,
         json_body: object | None = None,
         content_type: str | None = None,
+        timeout_sec: float | None = None,
     ) -> dict:
         headers = self._headers()
         if content_type:
             headers["Content-Type"] = content_type
-        async with httpx.AsyncClient(timeout=30.0) as client:
-            resp = await client.request(method, self._url(path), headers=headers, params=params, json=json_body)
+        timeout_value = float(timeout_sec) if timeout_sec is not None else self._default_timeout
+        try:
+            async with httpx.AsyncClient(timeout=timeout_value) as client:
+                resp = await client.request(method, self._url(path), headers=headers, params=params, json=json_body)
+        except (httpx.TimeoutException, httpx.RequestError) as exc:
+            logger.warning("Kaspi goods upstream unavailable: %s", exc)
+            raise http_error(status.HTTP_502_BAD_GATEWAY, "kaspi_upstream_unavailable") from exc
         if resp.status_code == 401:
             raise KaspiNotAuthenticated("Kaspi token is not authenticated")
         resp.raise_for_status()
         return resp.json() if resp.content else {}
 
     async def get_schema(self) -> dict:
-        return await self._request("GET", "/shop/api/products/import/schema")
+        return await self._request("GET", "/shop/api/products/import/schema", timeout_sec=self._fast_timeout)
 
     async def get_categories(self) -> dict:
-        return await self._request("GET", "/shop/api/products/classification/categories")
+        return await self._request(
+            "GET", "/shop/api/products/classification/categories", timeout_sec=self._fast_timeout
+        )
 
     async def get_attributes(self, *, category_code: str) -> dict:
         return await self._request(
