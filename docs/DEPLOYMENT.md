@@ -127,6 +127,13 @@ Readiness is exposed at /ready (optional strict gating with env flags).
 
 Logs include a request identifier. Clients can send X-Request-ID to correlate logs.
 
+## Integration events (Kaspi)
+
+Recent Kaspi integration events (connect, selftest, orders sync, feed uploads) are stored
+in the integration events log. Use it to trace failures by request_id.
+
+- GET /api/v1/integrations/events?kind=kaspi&limit=100
+
 ## Backup and restore
 
 ```bash
