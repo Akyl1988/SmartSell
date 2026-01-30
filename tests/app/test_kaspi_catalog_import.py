@@ -1,7 +1,7 @@
 import pytest
 from sqlalchemy import select
 
-from app.models.catalog_import import CatalogImportRow
+from app.models.catalog_import import CatalogImportBatch, CatalogImportRow
 from app.models.kaspi_offer import KaspiOffer
 
 
@@ -49,7 +49,8 @@ async def test_kaspi_catalog_import_header_aliases(async_client, async_db_sessio
     assert resp.status_code == 200
     data = resp.json()
     assert data["rows_ok"] == 1
-    assert data["rows_failed"] == 0
+    assert data["rows_skipped"] == 0
+    assert data["top_errors"] == []
 
     await async_db_session.rollback()
     row = (await async_db_session.execute(select(CatalogImportRow))).scalars().first()
@@ -112,8 +113,9 @@ async def test_kaspi_catalog_import_missing_sku(async_client, company_a_admin_he
     )
     assert resp.status_code == 200
     data = resp.json()
-    assert data["rows_failed"] == 1
-    assert data["errors"][0]["error"] == "missing_sku"
+    assert data["rows_skipped"] == 1
+    assert data["top_errors"][0]["error"] == "missing_sku"
+    assert data["top_errors"][0]["count"] == 1
 
 
 @pytest.mark.asyncio
@@ -307,6 +309,7 @@ async def test_kaspi_catalog_import_master_sku_not_overwritten(
     assert resp.status_code == 200
     data = resp.json()
     assert data["rows_ok"] == 1
+    assert data["rows_skipped"] == 0
 
     await async_db_session.rollback()
     offer = (
@@ -386,3 +389,83 @@ async def test_kaspi_catalog_import_jsonl_ok(async_client, async_db_session, com
     assert offer is not None
     assert offer.sku == "S11"
     assert offer.master_sku == "MS11"
+
+
+@pytest.mark.asyncio
+async def test_kaspi_catalog_import_alias_collision_prefers_primary(
+    async_client,
+    async_db_session,
+    company_a_admin_headers,
+):
+    csv_data = "SKU,Offer_ID,Title,Price\nS1,S2,Item 1,1000\n"
+    resp = await async_client.post(
+        "/api/v1/kaspi/catalog/import",
+        headers=company_a_admin_headers,
+        params={"merchantUid": "M1"},
+        files={"file": ("catalog.csv", _csv_bytes(csv_data), "text/csv")},
+    )
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["rows_ok"] == 1
+
+    await async_db_session.rollback()
+    offer = (
+        (
+            await async_db_session.execute(
+                select(KaspiOffer).where(KaspiOffer.sku == "S1", KaspiOffer.merchant_uid == "M1")
+            )
+        )
+        .scalars()
+        .first()
+    )
+    assert offer is not None
+    assert offer.sku == "S1"
+
+
+@pytest.mark.asyncio
+async def test_kaspi_catalog_import_deduplicates_by_sku(async_client, async_db_session, company_a_admin_headers):
+    csv_data = "SKU,Title,Price,Stock\nS1,Item 1,1000,5\nS1,Item 1,1200,7\n"
+    resp = await async_client.post(
+        "/api/v1/kaspi/catalog/import",
+        headers=company_a_admin_headers,
+        params={"merchantUid": "M1"},
+        files={"file": ("catalog.csv", _csv_bytes(csv_data), "text/csv")},
+    )
+    assert resp.status_code == 200
+
+    await async_db_session.rollback()
+    offers = (
+        (
+            await async_db_session.execute(
+                select(KaspiOffer).where(KaspiOffer.sku == "S1", KaspiOffer.merchant_uid == "M1")
+            )
+        )
+        .scalars()
+        .all()
+    )
+    assert len(offers) == 1
+    assert float(offers[0].price or 0) == 1200.0
+
+
+@pytest.mark.asyncio
+async def test_kaspi_catalog_import_dry_run(async_client, async_db_session, company_a_admin_headers):
+    csv_data = "SKU,Title,Price\nS1,Item 1,1000\n"
+    resp = await async_client.post(
+        "/api/v1/kaspi/catalog/import",
+        headers=company_a_admin_headers,
+        params={"merchantUid": "M1", "dry_run": "true"},
+        files={"file": ("catalog.csv", _csv_bytes(csv_data), "text/csv")},
+    )
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["dry_run"] is True
+    assert data["status"] == "DRY_RUN"
+    assert data["rows_ok"] == 1
+
+    await async_db_session.rollback()
+    batch = (await async_db_session.execute(select(CatalogImportBatch))).scalars().first()
+    row = (await async_db_session.execute(select(CatalogImportRow))).scalars().first()
+    offer = (await async_db_session.execute(select(KaspiOffer))).scalars().first()
+    assert batch is None
+    assert row is None
+    assert offer is None

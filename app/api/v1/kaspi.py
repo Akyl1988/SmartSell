@@ -44,6 +44,7 @@ from xml.etree import ElementTree as ET
 import httpx
 import sqlalchemy as sa
 from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, Response, UploadFile, status
+from openpyxl import load_workbook
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import bindparam, text
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -168,34 +169,19 @@ def _norm_header(name: str) -> str:
     return "".join(ch if ch.isalnum() else "_" for ch in (name or "").strip().lower()).strip("_")
 
 
-_HEADER_ALIASES = {
-    "sku": {"sku", "offer_id", "offersku", "merchant_sku"},
-    "master_sku": {"master_sku", "mastersku", "parent_sku"},
-    "title": {"title", "name", "product_name"},
-    "price": {"price", "price_kzt", "price_kz"},
-    "old_price": {"old_price", "oldprice", "price_old"},
-    "stock_count": {"stock", "stock_count", "qty", "quantity"},
-    "pre_order": {"pre_order", "preorder", "pre_order_flag"},
-    "stock_specified": {"stock_specified", "stockspecified", "stock_flag"},
-    "updated_at": {"updated_at", "updated", "last_update"},
+_CATALOG_HEADER_ALIASES: dict[str, list[str]] = {
+    "sku": ["sku", "offer_id", "offerid", "offersku", "merchant_sku"],
+    "masterSku": ["master_sku", "mastersku", "master sku", "parent_sku"],
+    "title": ["title", "name", "product_name"],
+    "price": ["price", "price_kzt", "price_kz", "minprice", "maxprice"],
+    "oldprice": ["oldprice", "old_price", "oldprice_kzt", "oldprice_kz", "price_old"],
+    "stockCount": ["stock", "stock_count", "stockcount", "qty", "quantity"],
+    "preOrder": ["preorder", "pre_order", "pre_order_flag", "preorder_flag"],
+    "images": ["images", "image", "image_urls", "pictures"],
+    "attributes": ["attributes", "attrs"],
+    "stock_specified": ["stock_specified", "stockspecified", "stock_flag", "stockspecified_flag"],
+    "updated_at": ["updated_at", "updated", "last_update", "updatedat"],
 }
-
-
-def _normalize_headers(fieldnames: list[str]) -> dict[str, str]:
-    normalized = {_norm_header(name): name for name in fieldnames}
-    mapping: dict[str, str] = {}
-    for canonical, aliases in _HEADER_ALIASES.items():
-        for alias in aliases:
-            alias_norm = _norm_header(alias)
-            if alias_norm in normalized:
-                mapping[canonical] = alias_norm
-                break
-    return mapping
-
-
-def _get_mapped_value(normalized_raw: dict[str, Any], header_map: dict[str, str], key: str) -> str | None:
-    lookup = header_map.get(key)
-    return normalized_raw.get(lookup) if lookup else None
 
 
 def _parse_int(value: str | None) -> int | None:
@@ -222,7 +208,7 @@ def _parse_bool(value: str | None) -> bool | None:
     return None
 
 
-def _get_json_value(normalized_raw: dict[str, Any], keys: list[str]) -> str | None:
+def _get_json_value(normalized_raw: dict[str, Any], keys: list[str]) -> Any | None:
     for key in keys:
         value = normalized_raw.get(_norm_header(key))
         if value is None:
@@ -236,70 +222,174 @@ def _get_json_value(normalized_raw: dict[str, Any], keys: list[str]) -> str | No
     return None
 
 
-def _iter_import_rows(
-    content: bytes, filename: str, content_type: str | None
-) -> tuple[list[tuple[dict[str, Any], dict[str, Any]]], dict[str, str] | None]:
-    name = (filename or "").lower()
-    content_type = (content_type or "").lower()
+def _select_alias_value(normalized_raw: dict[str, Any], aliases: list[str]) -> Any | None:
+    for alias in aliases:
+        value = _get_json_value(normalized_raw, [alias])
+        if value is not None:
+            return value
+    return None
 
-    is_jsonl = name.endswith(".jsonl") or content_type in {
-        "application/x-ndjson",
-        "application/jsonl",
-        "application/x-jsonlines",
+
+def _normalize_catalog_row(raw: dict[str, Any]) -> dict[str, Any]:
+    normalized_raw = {_norm_header(str(k)): v for k, v in raw.items()}
+
+    def clean_str(value: Any | None) -> str | None:
+        if value is None:
+            return None
+        text = str(value).strip()
+        return text or None
+
+    def pick(key: str) -> Any | None:
+        return _select_alias_value(normalized_raw, _CATALOG_HEADER_ALIASES.get(key, []))
+
+    sku = pick("sku")
+    master_sku = pick("masterSku")
+    title = pick("title")
+    price = _parse_int(pick("price"))
+    old_price = _parse_int(pick("oldprice"))
+    stock_count = _parse_int(pick("stockCount"))
+    pre_order = _parse_bool(pick("preOrder"))
+    stock_specified = _parse_bool(pick("stock_specified"))
+    images = pick("images")
+    attributes = pick("attributes")
+    updated_at_raw = pick("updated_at")
+
+    updated_at = None
+    if updated_at_raw:
+        try:
+            updated_at = datetime.fromisoformat(str(updated_at_raw).replace("Z", ""))
+        except Exception:
+            updated_at = None
+
+    return {
+        "raw": raw,
+        "sku": clean_str(sku) if isinstance(sku, str) or sku is not None else None,
+        "master_sku": clean_str(master_sku) if isinstance(master_sku, str) or master_sku is not None else None,
+        "title": clean_str(title) if isinstance(title, str) or title is not None else None,
+        "price": price,
+        "old_price": old_price,
+        "stock_count": stock_count,
+        "pre_order": pre_order,
+        "stock_specified": stock_specified,
+        "images": images,
+        "attributes": attributes,
+        "updated_at": updated_at,
     }
-    is_json = name.endswith(".json") or content_type == "application/json"
 
+
+def _parse_csv_rows(content: bytes) -> list[dict[str, Any]]:
     try:
         text = content.decode("utf-8-sig", errors="replace")
     except Exception:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="invalid_encoding")
 
+    try:
+        sample = text[:4096]
+        dialect = csv.Sniffer().sniff(sample, delimiters=",;\t|")
+    except Exception:
+        dialect = csv.excel
+        dialect.delimiter = ","
+
+    reader = csv.DictReader(io.StringIO(text), dialect=dialect)
+    if not reader.fieldnames:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="missing_headers")
+
+    rows: list[dict[str, Any]] = []
+    for raw in reader:
+        if raw is None:
+            continue
+        if all((str(v).strip() == "" if v is not None else True) for v in raw.values()):
+            continue
+        rows.append(raw)
+    return rows
+
+
+def _parse_xlsx_rows(content: bytes) -> list[dict[str, Any]]:
+    try:
+        wb = load_workbook(io.BytesIO(content), read_only=True, data_only=True)
+    except Exception:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="invalid_xlsx")
+
+    sheet = wb.worksheets[0]
+    header_row: list[str] | None = None
+    rows: list[dict[str, Any]] = []
+
+    for row in sheet.iter_rows(values_only=True):
+        values = [str(c).strip() if c is not None else "" for c in row]
+        if header_row is None:
+            if any(values):
+                header_row = values
+            continue
+
+        if not any(values):
+            continue
+
+        raw: dict[str, Any] = {}
+        for idx, header in enumerate(header_row):
+            if not header:
+                continue
+            raw[header] = row[idx] if idx < len(row) else None
+        rows.append(raw)
+
+    if header_row is None:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="missing_headers")
+
+    return rows
+
+
+def _parse_json_rows(content: bytes, is_jsonl: bool) -> list[dict[str, Any]]:
+    try:
+        text = content.decode("utf-8-sig", errors="replace")
+    except Exception:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="invalid_encoding")
+
+    rows: list[dict[str, Any]] = []
     if is_jsonl:
-        rows: list[tuple[dict[str, Any], dict[str, Any]]] = []
         for line in text.splitlines():
             if not line.strip():
                 continue
             try:
-                obj = json.loads(line)
-            except Exception as exc:
-                raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="invalid_json") from exc
-            if not isinstance(obj, dict):
+                payload = json.loads(line)
+            except json.JSONDecodeError:
                 raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="invalid_json")
-            normalized = {_norm_header(k): (v.strip() if isinstance(v, str) else v) for k, v in obj.items()}
-            rows.append((obj, normalized))
-        return rows, None
+            if not isinstance(payload, dict):
+                raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="invalid_json_row")
+            rows.append(payload)
+        return rows
 
-    if is_json:
-        try:
-            payload = json.loads(text)
-        except Exception as exc:
-            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="invalid_json") from exc
+    try:
+        payload = json.loads(text)
+    except json.JSONDecodeError:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="invalid_json")
 
-        if isinstance(payload, dict) and isinstance(payload.get("data"), list):
-            items = payload["data"]
-        elif isinstance(payload, list):
-            items = payload
-        else:
-            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="invalid_json")
+    if isinstance(payload, dict):
+        payload = payload.get("data") or payload.get("items") or payload.get("rows") or payload
 
-        rows = []
-        for obj in items:
-            if not isinstance(obj, dict):
-                raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="invalid_json")
-            normalized = {_norm_header(k): (v.strip() if isinstance(v, str) else v) for k, v in obj.items()}
-            rows.append((obj, normalized))
-        return rows, None
+    if not isinstance(payload, list):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="invalid_json_payload")
 
-    reader = csv.DictReader(io.StringIO(text))
-    if not reader.fieldnames:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="missing_headers")
+    for item in payload:
+        if not isinstance(item, dict):
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="invalid_json_row")
+        rows.append(item)
+    return rows
 
-    header_map = _normalize_headers(reader.fieldnames)
-    rows = []
-    for raw in reader:
-        normalized = {_norm_header(k): (v.strip() if isinstance(v, str) else v) for k, v in raw.items()}
-        rows.append((normalized, normalized))
-    return rows, header_map
+
+def parse_catalog_file(file_bytes: bytes, filename: str) -> list[dict[str, Any]]:
+    name = (filename or "").lower()
+
+    if name.endswith(".xlsx") or name.endswith(".xlsm"):
+        rows = _parse_xlsx_rows(file_bytes)
+    elif name.endswith(".csv"):
+        rows = _parse_csv_rows(file_bytes)
+    elif name.endswith(".jsonl"):
+        rows = _parse_json_rows(file_bytes, is_jsonl=True)
+    elif name.endswith(".json"):
+        rows = _parse_json_rows(file_bytes, is_jsonl=False)
+    else:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="unsupported_file_type")
+
+    return [_normalize_catalog_row(raw) for raw in rows]
 
 
 def _truncate_raw(raw: Any, max_len: int = 2000) -> str | None:
@@ -1484,12 +1574,13 @@ class KaspiTokenSelftestOut(BaseModel):
 
 
 class KaspiCatalogImportOut(BaseModel):
-    batch_id: str
+    batch_id: str | None = None
     status: str
     rows_total: int
     rows_ok: int
-    rows_failed: int
-    errors: list[dict[str, Any]]
+    rows_skipped: int
+    top_errors: list[dict[str, Any]]
+    dry_run: bool = False
 
 
 class KaspiCatalogImportBatchOut(BaseModel):
@@ -2162,12 +2253,13 @@ async def kaspi_token_selftest(
 
 @router.post(
     "/catalog/import",
-    summary="Kaspi catalog import (CSV)",
+    summary="Kaspi catalog import (CSV/XLSX/JSON)",
     response_model=KaspiCatalogImportOut,
 )
 async def kaspi_catalog_import(
     file: UploadFile = File(...),
     merchant_uid: str | None = Query(None, alias="merchantUid"),
+    dry_run: bool = Query(False, alias="dry_run"),
     current_user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_async_db),
 ):
@@ -2184,106 +2276,122 @@ async def kaspi_catalog_import(
     if not content:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="empty_file")
 
-    content_hash = sha256(content).hexdigest()
     filename = file.filename or "catalog.csv"
+    rows = parse_catalog_file(content, filename)
 
-    rows, header_map = _iter_import_rows(content, filename, file.content_type)
+    batch: CatalogImportBatch | None = None
+    if not dry_run:
+        content_hash = sha256(content).hexdigest()
+        batch = CatalogImportBatch(
+            company_id=company_id,
+            source="kaspi",
+            filename=filename,
+            content_hash=content_hash,
+            status="RUNNING",
+            merchant_uid=merchant_uid,
+            started_at=datetime.utcnow(),
+        )
+        session.add(batch)
+        await session.commit()
+        await session.refresh(batch)
 
-    batch = CatalogImportBatch(
-        company_id=company_id,
-        source="kaspi",
-        filename=filename,
-        content_hash=content_hash,
-        status="RUNNING",
-        merchant_uid=merchant_uid,
-        started_at=datetime.utcnow(),
-    )
-    session.add(batch)
-    await session.commit()
-    await session.refresh(batch)
-
-    rows_total = 0
+    rows_total = len(rows)
     rows_ok = 0
-    rows_failed = 0
-    row_errors: list[dict[str, Any]] = []
+    rows_skipped = 0
+    error_counts: dict[str, int] = {}
     row_records: list[dict[str, Any]] = []
     offer_records: list[dict[str, Any]] = []
 
-    for idx, (raw, normalized_raw) in enumerate(rows, start=1):
-        rows_total += 1
-
-        if header_map is not None:
-            sku = _get_mapped_value(normalized_raw, header_map, "sku")
-            master_sku = _get_mapped_value(normalized_raw, header_map, "master_sku")
-            title = _get_mapped_value(normalized_raw, header_map, "title")
-            price = _parse_int(_get_mapped_value(normalized_raw, header_map, "price"))
-            old_price = _parse_int(_get_mapped_value(normalized_raw, header_map, "old_price"))
-            stock_count = _parse_int(_get_mapped_value(normalized_raw, header_map, "stock_count"))
-            pre_order = _parse_bool(_get_mapped_value(normalized_raw, header_map, "pre_order"))
-            stock_specified = _parse_bool(_get_mapped_value(normalized_raw, header_map, "stock_specified"))
-            updated_at_raw = _get_mapped_value(normalized_raw, header_map, "updated_at")
-        else:
-            sku = _get_json_value(normalized_raw, ["offerId", "offer_id", "sku"])
-            master_sku = _get_json_value(normalized_raw, ["masterSku", "master_sku"])
-            title = _get_json_value(normalized_raw, ["name", "title"])
-            price = _parse_int(_get_json_value(normalized_raw, ["price", "minPrice", "maxPrice"]))
-            old_price = _parse_int(_get_json_value(normalized_raw, ["oldprice", "oldPrice", "old_price"]))
-            stock_count = _parse_int(_get_json_value(normalized_raw, ["stockCount", "stock_quantity", "stock"]))
-            pre_order = _parse_bool(_get_json_value(normalized_raw, ["preOrder", "preorder"]))
-            stock_specified = _parse_bool(_get_json_value(normalized_raw, ["stockSpecified"]))
-            updated_at_raw = _get_json_value(normalized_raw, ["updatedAt", "updated_at"])
-        updated_at = None
-        if updated_at_raw:
-            try:
-                updated_at = datetime.fromisoformat(updated_at_raw.replace("Z", ""))
-            except Exception:
-                updated_at = None
+    for idx, row in enumerate(rows, start=1):
+        raw = row.get("raw")
+        sku = row.get("sku")
+        master_sku = row.get("master_sku")
+        title = row.get("title")
+        price = row.get("price")
+        old_price = row.get("old_price")
+        stock_count = row.get("stock_count")
+        pre_order = row.get("pre_order")
+        stock_specified = row.get("stock_specified")
+        updated_at = row.get("updated_at")
 
         error = None
         if not sku:
             error = "missing_sku"
-
-        row_records.append(
-            {
-                "batch_id": batch.id,
-                "company_id": company_id,
-                "row_num": idx,
-                "raw": raw,
-                "sku": sku,
-                "master_sku": master_sku,
-                "title": title,
-                "price": price,
-                "old_price": old_price,
-                "stock_count": stock_count,
-                "pre_order": pre_order,
-                "stock_specified": stock_specified,
-                "updated_at": updated_at,
-                "error": error,
-            }
-        )
-
         if error:
-            rows_failed += 1
-            if len(row_errors) < 5:
-                row_errors.append({"row": idx, "error": error})
+            rows_skipped += 1
+            error_counts[error] = error_counts.get(error, 0) + 1
+            if not dry_run and batch is not None:
+                row_records.append(
+                    {
+                        "batch_id": batch.id,
+                        "company_id": company_id,
+                        "row_num": idx,
+                        "raw": raw,
+                        "sku": sku,
+                        "master_sku": master_sku,
+                        "title": title,
+                        "price": price,
+                        "old_price": old_price,
+                        "stock_count": stock_count,
+                        "pre_order": pre_order,
+                        "stock_specified": stock_specified,
+                        "updated_at": updated_at,
+                        "error": error,
+                    }
+                )
             continue
 
         rows_ok += 1
-        offer_records.append(
-            {
-                "company_id": company_id,
-                "merchant_uid": merchant_uid,
-                "sku": sku,
-                "master_sku": master_sku,
-                "title": title,
-                "price": price,
-                "old_price": old_price,
-                "stock_count": stock_count,
-                "pre_order": pre_order,
-                "stock_specified": stock_specified,
-                "raw": raw,
-                "updated_at": datetime.utcnow(),
-            }
+        if not dry_run and batch is not None:
+            row_records.append(
+                {
+                    "batch_id": batch.id,
+                    "company_id": company_id,
+                    "row_num": idx,
+                    "raw": raw,
+                    "sku": sku,
+                    "master_sku": master_sku,
+                    "title": title,
+                    "price": price,
+                    "old_price": old_price,
+                    "stock_count": stock_count,
+                    "pre_order": pre_order,
+                    "stock_specified": stock_specified,
+                    "updated_at": updated_at,
+                    "error": None,
+                }
+            )
+            offer_records.append(
+                {
+                    "company_id": company_id,
+                    "merchant_uid": merchant_uid,
+                    "sku": sku,
+                    "master_sku": master_sku,
+                    "title": title,
+                    "price": price,
+                    "old_price": old_price,
+                    "stock_count": stock_count,
+                    "pre_order": pre_order,
+                    "stock_specified": stock_specified,
+                    "raw": raw,
+                    "updated_at": datetime.utcnow(),
+                }
+            )
+
+    top_errors = [
+        {"error": key, "count": count}
+        for key, count in sorted(error_counts.items(), key=lambda item: (-item[1], item[0]))
+    ][:5]
+
+    if dry_run or batch is None:
+        return KaspiCatalogImportOut(
+            batch_id=None,
+            status="DRY_RUN",
+            rows_total=rows_total,
+            rows_ok=rows_ok,
+            rows_skipped=rows_skipped,
+            top_errors=top_errors,
+            dry_run=True,
         )
 
     try:
@@ -2291,20 +2399,29 @@ async def kaspi_catalog_import(
             await session.execute(sa.insert(CatalogImportRow), row_records)
 
         if offer_records:
-            for chunk_start in range(0, len(offer_records), 500):
-                chunk = offer_records[chunk_start : chunk_start + 500]
+            deduped: dict[tuple[int, str, str], dict[str, Any]] = {}
+            for record in offer_records:
+                key = (record["company_id"], record["merchant_uid"], record["sku"])
+                deduped[key] = record
+            deduped_records = list(deduped.values())
+
+            for chunk_start in range(0, len(deduped_records), 500):
+                chunk = deduped_records[chunk_start : chunk_start + 500]
                 stmt = sa.dialects.postgresql.insert(KaspiOffer).values(chunk)
                 stmt = stmt.on_conflict_do_update(
                     index_elements=["company_id", "merchant_uid", "sku"],
                     set_={
-                        "master_sku": stmt.excluded.master_sku,
-                        "title": stmt.excluded.title,
-                        "price": stmt.excluded.price,
-                        "old_price": stmt.excluded.old_price,
-                        "stock_count": stmt.excluded.stock_count,
-                        "pre_order": stmt.excluded.pre_order,
-                        "stock_specified": stmt.excluded.stock_specified,
-                        "raw": stmt.excluded.raw,
+                        "master_sku": sa.func.coalesce(
+                            sa.func.nullif(stmt.excluded.master_sku, ""),
+                            KaspiOffer.master_sku,
+                        ),
+                        "title": sa.func.coalesce(sa.func.nullif(stmt.excluded.title, ""), KaspiOffer.title),
+                        "price": sa.func.coalesce(stmt.excluded.price, KaspiOffer.price),
+                        "old_price": sa.func.coalesce(stmt.excluded.old_price, KaspiOffer.old_price),
+                        "stock_count": sa.func.coalesce(stmt.excluded.stock_count, KaspiOffer.stock_count),
+                        "pre_order": sa.func.coalesce(stmt.excluded.pre_order, KaspiOffer.pre_order),
+                        "stock_specified": sa.func.coalesce(stmt.excluded.stock_specified, KaspiOffer.stock_specified),
+                        "raw": sa.func.coalesce(stmt.excluded.raw, KaspiOffer.raw),
                         "updated_at": datetime.utcnow(),
                     },
                 )
@@ -2312,11 +2429,11 @@ async def kaspi_catalog_import(
 
         batch.rows_total = rows_total
         batch.rows_ok = rows_ok
-        batch.rows_failed = rows_failed
+        batch.rows_failed = rows_skipped
         batch.status = "DONE"
         batch.finished_at = datetime.utcnow()
-        if rows_failed:
-            batch.error_summary = "; ".join({e["error"] for e in row_errors})
+        if rows_skipped:
+            batch.error_summary = "; ".join({e["error"] for e in top_errors})
 
         await session.commit()
     except Exception as exc:
@@ -2334,8 +2451,9 @@ async def kaspi_catalog_import(
         status=batch.status,
         rows_total=rows_total,
         rows_ok=rows_ok,
-        rows_failed=rows_failed,
-        errors=row_errors,
+        rows_skipped=rows_skipped,
+        top_errors=top_errors,
+        dry_run=False,
     )
 
 
