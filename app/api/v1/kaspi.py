@@ -46,7 +46,7 @@ import sqlalchemy as sa
 from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, Response, UploadFile, status
 from fastapi.responses import JSONResponse
 from openpyxl import load_workbook
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 from sqlalchemy import bindparam, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -1581,8 +1581,19 @@ class KaspiFeedUploadIn(BaseModel):
     merchant_uid: str = Field(..., min_length=3, max_length=128)
     source: str = Field(..., description="public_token | export_id | local_file_path")
     comment: str | None = Field(None, max_length=500)
-    export_id: str | None = None
+    export_id: int | None = None
     local_file_path: str | None = None
+
+    @field_validator("export_id", mode="before")
+    @classmethod
+    def _coerce_export_id(cls, value: object) -> object:
+        if value is None or isinstance(value, int):
+            return value
+        if isinstance(value, str):
+            raw = value.strip()
+            if raw.isdigit():
+                return int(raw)
+        raise ValueError("export_id must be an integer")
 
 
 class KaspiFeedUploadRecordOut(BaseModel):
@@ -3299,18 +3310,11 @@ async def kaspi_feed_upload_create(
         company_name = (company.name if company else None) or f"Company {company_id}"
         xml_body = _build_kaspi_offers_xml(offers, company=company_name, merchant_id=merchant_uid)
 
-    export_id_for_job = body.export_id if source == "export_id" else None
-    parsed_export_id: int | None = None
-    if export_id_for_job is not None:
-        try:
-            parsed_export_id = int(export_id_for_job)
-        except (TypeError, ValueError):
-            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="invalid_export_id")
     job = await create_feed_upload_job(
         session,
         company_id=company_id,
         merchant_uid=merchant_uid,
-        export_id=parsed_export_id,
+        export_id=body.export_id if source == "export_id" else None,
         source=source,
         request_id=request_id,
         comment=body.comment,
