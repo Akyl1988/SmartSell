@@ -39,13 +39,19 @@ class KaspiAdapter:
         if extra_env:
             env.update(extra_env)
 
-        completed = subprocess.run(
-            [self.pwsh, "-NoProfile", "-Command", ps_command],
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            env=env,
-        )
+        timeout_sec = getattr(settings, "KASPI_HTTP_TIMEOUT_SEC", 60)
+
+        try:
+            completed = subprocess.run(
+                [self.pwsh, "-NoProfile", "-Command", ps_command],
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                env=env,
+                timeout=timeout_sec,
+            )
+        except subprocess.TimeoutExpired as exc:
+            raise KaspiAdapterError(f"Kaspi.ps1 error: timeout after {timeout_sec}s") from exc
 
         stdout_raw = completed.stdout or ""
         stderr_raw = completed.stderr or ""
