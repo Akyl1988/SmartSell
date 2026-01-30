@@ -8,6 +8,12 @@ from app.core.logging import get_logger
 
 logger = get_logger(__name__)
 
+DEFAULT_HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120 Safari/537.36",
+    "Accept": "application/json,text/plain,*/*",
+    "Accept-Language": "ru-RU,ru;q=0.9,en-US;q=0.8,en;q=0.7",
+}
+
 
 class KaspiNotAuthenticated(RuntimeError):
     """Kaspi token is invalid or not authenticated."""
@@ -23,10 +29,14 @@ class KaspiGoodsClient:
         self._fast_timeout = 8.0
 
     def _headers(self) -> dict[str, str]:
-        return {
-            "X-Auth-Token": self._token,
-            "Accept": "application/json",
-        }
+        return self._build_headers(self._token)
+
+    @staticmethod
+    def _build_headers(token: str, extra: dict[str, str] | None = None) -> dict[str, str]:
+        headers = {**DEFAULT_HEADERS, "X-Auth-Token": token}
+        if extra:
+            headers.update(extra)
+        return headers
 
     def _url(self, path: str) -> str:
         if not path.startswith("/"):
@@ -43,9 +53,10 @@ class KaspiGoodsClient:
         content_type: str | None = None,
         timeout_sec: float | None = None,
     ) -> dict:
-        headers = self._headers()
+        extra_headers: dict[str, str] = {}
         if content_type:
-            headers["Content-Type"] = content_type
+            extra_headers["Content-Type"] = content_type
+        headers = self._build_headers(self._token, extra=extra_headers)
         timeout_value = float(timeout_sec) if timeout_sec is not None else self._default_timeout
         try:
             async with httpx.AsyncClient(timeout=timeout_value) as client:

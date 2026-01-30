@@ -3,7 +3,7 @@ import pytest
 
 from app.models.company import Company
 from app.models.marketplace import KaspiStoreToken
-from app.services.kaspi_goods_client import KaspiNotAuthenticated
+from app.services.kaspi_goods_client import KaspiGoodsClient, KaspiNotAuthenticated
 
 
 class _FakeResponse:
@@ -143,3 +143,11 @@ async def test_kaspi_goods_categories_timeout_returns_502(
     assert resp.status_code == 502
     assert resp.json().get("detail") == "kaspi_upstream_unavailable"
     assert resp.json().get("code") == "HTTP_502"
+
+
+def test_kaspi_goods_headers_builder():
+    headers = KaspiGoodsClient._build_headers("token-123")
+    assert headers["User-Agent"]
+    assert headers["Accept"] == "application/json,text/plain,*/*"
+    assert headers["Accept-Language"] == "ru-RU,ru;q=0.9,en-US;q=0.8,en;q=0.7"
+    assert headers["X-Auth-Token"] == "token-123"
