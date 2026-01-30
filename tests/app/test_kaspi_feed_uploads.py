@@ -7,6 +7,7 @@ from sqlalchemy import select
 
 from app.models.company import Company
 from app.models.integration_event import IntegrationEvent
+from app.models.kaspi_feed_export import KaspiFeedExport
 from app.models.kaspi_feed_upload import KaspiFeedUpload
 from app.models.kaspi_offer import KaspiOffer
 from app.models.marketplace import KaspiStoreToken
@@ -220,6 +221,59 @@ async def test_kaspi_feed_upload_permission_denied(
         headers=company_a_manager_headers,
     )
     assert refresh_resp.status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_upload_not_claimable_returns_409_and_existing_upload_id(
+    async_client,
+    async_db_session,
+    company_a_admin_headers,
+):
+    await _ensure_company(async_db_session, 1001, "store-a")
+
+    export = KaspiFeedExport(
+        company_id=1001,
+        kind="offers",
+        format="xml",
+        status="DONE",
+        checksum="chk-1",
+        payload_text="<xml>ok</xml>",
+        stats_json={"merchant_uid": "M123"},
+    )
+    async_db_session.add(export)
+    await async_db_session.commit()
+    await async_db_session.refresh(export)
+
+    existing = KaspiFeedUpload(
+        company_id=1001,
+        merchant_uid="M123",
+        export_id=export.id,
+        status="processing",
+        source="export_id",
+    )
+    async_db_session.add(existing)
+    await async_db_session.commit()
+    await async_db_session.refresh(existing)
+
+    resp = await async_client.post(
+        f"/api/v1/kaspi/feeds/{export.id}/upload",
+        headers=company_a_admin_headers,
+    )
+    assert resp.status_code == 409
+    data = resp.json()
+    assert data.get("detail") == "upload_not_claimable"
+    assert data.get("code") == "HTTP_409"
+    assert data.get("existing_upload_id") == str(existing.id)
+    assert data.get("status") == "processing"
+
+
+@pytest.mark.asyncio
+async def test_invalid_upload_id_returns_422(async_client, company_a_admin_headers):
+    resp = await async_client.post(
+        "/api/v1/kaspi/feed/uploads/<PASTE_UPLOAD_ID_HERE>/refresh",
+        headers=company_a_admin_headers,
+    )
+    assert resp.status_code == 422
 
 
 @pytest.mark.asyncio

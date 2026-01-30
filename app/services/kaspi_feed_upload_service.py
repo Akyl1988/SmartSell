@@ -31,6 +31,7 @@ async def create_feed_upload_job(
     *,
     company_id: int,
     merchant_uid: str,
+    export_id: int | None = None,
     source: str,
     request_id: str | None,
     comment: str | None = None,
@@ -39,6 +40,7 @@ async def create_feed_upload_job(
     job = KaspiFeedUpload(
         company_id=company_id,
         merchant_uid=merchant_uid,
+        export_id=export_id,
         source=source,
         comment=comment,
         status="created",

@@ -51,6 +51,7 @@ class KaspiGoodsClient:
         params: dict[str, str] | None = None,
         json_body: object | None = None,
         content_type: str | None = None,
+        files: dict[str, tuple[str, bytes, str | None]] | None = None,
         timeout_sec: float | None = None,
     ) -> dict:
         extra_headers: dict[str, str] = {}
@@ -60,7 +61,14 @@ class KaspiGoodsClient:
         timeout_value = float(timeout_sec) if timeout_sec is not None else self._default_timeout
         try:
             async with httpx.AsyncClient(timeout=timeout_value) as client:
-                resp = await client.request(method, self._url(path), headers=headers, params=params, json=json_body)
+                resp = await client.request(
+                    method,
+                    self._url(path),
+                    headers=headers,
+                    params=params,
+                    json=json_body,
+                    files=files,
+                )
         except (httpx.TimeoutException, httpx.RequestError) as exc:
             logger.warning("Kaspi goods upstream unavailable: %s", exc)
             raise http_error(status.HTTP_502_BAD_GATEWAY, "kaspi_upstream_unavailable") from exc
@@ -99,11 +107,26 @@ class KaspiGoodsClient:
             content_type=content_type or "application/json",
         )
 
+    async def post_import_upload(self, *, filename: str, file_bytes: bytes, content_type: str | None = None) -> dict:
+        upload_content_type = content_type or "application/octet-stream"
+        return await self._request(
+            "POST",
+            "/shop/api/products/import",
+            files={"file": (filename, file_bytes, upload_content_type)},
+        )
+
     async def get_import_status(self, *, import_code: str) -> dict:
         return await self._request(
             "GET",
             "/shop/api/products/import",
             params={"i": import_code},
+        )
+
+    async def get_import_status_by_code(self, *, import_code: str) -> dict:
+        return await self._request(
+            "GET",
+            "/shop/api/products/import/status",
+            params={"importCode": import_code},
         )
 
     async def get_import_result(self, *, import_code: str) -> dict:
