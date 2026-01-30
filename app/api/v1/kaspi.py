@@ -53,8 +53,6 @@ from app.core.config import settings
 from app.core.db import get_async_db  # noqa — для совместимости импорт-алиас
 from app.core.logging import get_logger
 from app.core.security import get_current_user, resolve_tenant_company_id
-
-# Доменные зависимости/схемы:
 from app.integrations.kaspi_adapter import KaspiAdapter, KaspiAdapterError
 from app.models import Product
 from app.models.catalog_import import CatalogImportBatch, CatalogImportRow
@@ -62,6 +60,7 @@ from app.models.company import Company
 from app.models.kaspi_catalog_product import KaspiCatalogProduct
 from app.models.kaspi_feed_export import KaspiFeedExport
 from app.models.kaspi_feed_public_token import KaspiFeedPublicToken
+from app.models.kaspi_feed_upload import KaspiFeedUpload
 from app.models.kaspi_goods_import import KaspiGoodsImport
 from app.models.kaspi_mc_session import KaspiMcSession
 from app.models.kaspi_offer import KaspiOffer
@@ -78,6 +77,13 @@ from app.schemas.kaspi import (
     OrdersQuery,
 )
 from app.services.integration_events import record_integration_event
+from app.services.kaspi_feed_upload_service import (
+    create_feed_upload_job,
+    get_feed_upload_by_request_id,
+    mark_feed_upload_attempt,
+    normalize_kaspi_payload,
+    update_feed_upload_job,
+)
 from app.services.kaspi_goods_client import KaspiGoodsClient, KaspiNotAuthenticated
 from app.services.kaspi_mc_sync import mark_mc_session_error, sync_kaspi_mc_offers
 from app.services.kaspi_service import KaspiService, KaspiSyncAlreadyRunning
@@ -554,22 +560,18 @@ def _goods_import_to_out(record: KaspiGoodsImport) -> KaspiGoodsImportRecordOut:
     )
 
 
-def _feed_upload_to_out(record: KaspiGoodsImport) -> KaspiFeedUploadRecordOut:
+def _feed_upload_to_out(record: KaspiFeedUpload) -> KaspiFeedUploadRecordOut:
     return KaspiFeedUploadRecordOut(
         id=str(record.id),
-        merchant_uid=record.merchant_uid or "",
+        merchant_uid=record.merchant_uid,
         import_code=record.import_code,
         status=record.status,
         source=record.source,
         comment=record.comment,
-        request_json=record.request_json,
-        status_json=record.status_json,
-        result_json=record.result_json,
-        raw_response=record.raw_response,
-        error_code=record.error_code,
-        error_message=record.error_message,
-        last_error_at=record.last_error_at,
-        last_checked_at=record.last_checked_at,
+        attempts=record.attempts or 0,
+        last_error_code=record.last_error_code,
+        last_error_message=record.last_error_message,
+        request_id=record.request_id,
         created_at=record.created_at,
         updated_at=record.updated_at,
     )
@@ -1542,18 +1544,14 @@ class KaspiFeedUploadIn(BaseModel):
 class KaspiFeedUploadRecordOut(BaseModel):
     id: str
     merchant_uid: str
-    import_code: str
+    import_code: str | None = None
     status: str
     source: str | None = None
     comment: str | None = None
-    request_json: dict[str, Any] | list[dict[str, Any]]
-    status_json: dict[str, Any] | None = None
-    result_json: dict[str, Any] | None = None
-    raw_response: str | None = None
-    error_code: str | None = None
-    error_message: str | None = None
-    last_error_at: datetime | None = None
-    last_checked_at: datetime | None = None
+    attempts: int = 0
+    last_error_code: str | None = None
+    last_error_message: str | None = None
+    request_id: str | None = None
     created_at: datetime
     updated_at: datetime
 
@@ -3087,6 +3085,7 @@ async def kaspi_feed_exports_list(
     response_model=KaspiFeedUploadRecordOut,
 )
 async def kaspi_feed_upload_create(
+    request: Request,
     body: KaspiFeedUploadIn,
     current_user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_async_db),
@@ -3109,6 +3108,11 @@ async def kaspi_feed_upload_create(
 
     company_id = _resolve_company_id(current_user)
     store_name, token = await _resolve_kaspi_token(session, company_id)
+    request_id = getattr(getattr(request, "state", None), "request_id", None) or request.headers.get("X-Request-ID")
+
+    existing = await get_feed_upload_by_request_id(session, company_id=company_id, request_id=request_id)
+    if existing:
+        return _feed_upload_to_out(existing)
 
     base_url = os.getenv("KASPI_FEED_BASE_URL", "https://kaspi.kz")
     upload_url = os.getenv("KASPI_FEED_UPLOAD_URL", f"{base_url.rstrip('/')}/shop/api/feeds/import")
@@ -3156,6 +3160,16 @@ async def kaspi_feed_upload_create(
         company_name = (company.name if company else None) or f"Company {company_id}"
         xml_body = _build_kaspi_offers_xml(offers, company=company_name, merchant_id=merchant_uid)
 
+    job = await create_feed_upload_job(
+        session,
+        company_id=company_id,
+        merchant_uid=merchant_uid,
+        source=source,
+        request_id=request_id,
+        comment=body.comment,
+    )
+    await mark_feed_upload_attempt(session, job=job)
+
     tmp_dir = settings.tmp_dir()
     tmp_dir.mkdir(parents=True, exist_ok=True)
     tmp_path = tmp_dir / f"kaspi_feed_{company_id}_{uuid4().hex}.xml"
@@ -3169,9 +3183,45 @@ async def kaspi_feed_upload_create(
             extra_env=extra_env,
         )
     except KaspiAdapterError as exc:
-        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc)) from exc
+        await update_feed_upload_job(
+            session,
+            job=job,
+            status="failed",
+            error_code="kaspi_upstream_unavailable",
+            error_message=str(exc)[:500],
+        )
+        await _record_kaspi_event(
+            session,
+            company_id=company_id,
+            merchant_uid=merchant_uid,
+            kind="kaspi_feed",
+            status="error",
+            request_id=request_id,
+            error_code="kaspi_upstream_unavailable",
+            error_message=str(exc)[:500],
+            meta_json={"upload_id": str(job.id), "import_code": None},
+        )
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail="kaspi_upstream_unavailable") from exc
     except Exception as exc:
         logger.error("Kaspi feed upload failed: company_id=%s error=%s", company_id, exc)
+        await update_feed_upload_job(
+            session,
+            job=job,
+            status="failed",
+            error_code="kaspi_feed_upload_failed",
+            error_message=str(exc)[:500],
+        )
+        await _record_kaspi_event(
+            session,
+            company_id=company_id,
+            merchant_uid=merchant_uid,
+            kind="kaspi_feed",
+            status="error",
+            request_id=request_id,
+            error_code="kaspi_feed_upload_failed",
+            error_message=str(exc)[:500],
+            meta_json={"upload_id": str(job.id), "import_code": None},
+        )
         raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail="kaspi_feed_upload_failed") from exc
     finally:
         try:
@@ -3180,41 +3230,52 @@ async def kaspi_feed_upload_create(
         except Exception:
             logger.warning("Kaspi feed upload temp cleanup failed: path=%s", tmp_path)
 
-    normalized = _normalize_kaspi_response(response)
+    normalized = normalize_kaspi_payload(_normalize_kaspi_response(response))
     import_code = _extract_import_code(normalized)
     if not import_code:
+        await update_feed_upload_job(
+            session,
+            job=job,
+            status="failed",
+            error_code="kaspi_import_code_missing",
+            error_message="kaspi_import_code_missing",
+        )
+        await _record_kaspi_event(
+            session,
+            company_id=company_id,
+            merchant_uid=merchant_uid,
+            kind="kaspi_feed",
+            status="error",
+            request_id=request_id,
+            error_code="kaspi_import_code_missing",
+            error_message="kaspi_import_code_missing",
+            meta_json={"upload_id": str(job.id), "import_code": None},
+        )
         raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail="kaspi_import_code_missing")
 
-    now = datetime.utcnow()
+    status_value = normalized.get("status") or "uploaded"
     error_code, error_message = _extract_error_info(normalized)
-
-    record = KaspiGoodsImport(
-        company_id=company_id,
-        created_by_user_id=current_user.id,
-        merchant_uid=merchant_uid,
+    await update_feed_upload_job(
+        session,
+        job=job,
+        status=str(status_value),
         import_code=str(import_code),
-        status="PENDING",
-        source=source,
-        comment=(body.comment or None),
-        request_json={
-            "source": source,
-            "export_id": body.export_id,
-            "local_file_path": body.local_file_path,
-            "comment": body.comment,
-        },
-        status_json=normalized,
-        result_json=None,
         error_code=error_code,
         error_message=error_message,
-        last_error_at=now if error_code or error_message else None,
-        last_checked_at=now,
-        raw_response=_serialize_raw_response(response),
     )
-    session.add(record)
-    await session.commit()
-    await session.refresh(record)
+    await _record_kaspi_event(
+        session,
+        company_id=company_id,
+        merchant_uid=merchant_uid,
+        kind="kaspi_feed",
+        status="success",
+        request_id=request_id,
+        error_code=error_code,
+        error_message=error_message,
+        meta_json={"upload_id": str(job.id), "import_code": str(import_code)},
+    )
 
-    return _feed_upload_to_out(record)
+    return _feed_upload_to_out(job)
 
 
 @router.get(
@@ -3235,12 +3296,9 @@ async def kaspi_feed_uploads_list(
     offset = max(0, offset)
 
     result = await session.execute(
-        sa.select(KaspiGoodsImport)
-        .where(
-            KaspiGoodsImport.company_id == company_id,
-            KaspiGoodsImport.source.in_(["public_token", "export_id", "local_file_path"]),
-        )
-        .order_by(KaspiGoodsImport.created_at.desc())
+        sa.select(KaspiFeedUpload)
+        .where(KaspiFeedUpload.company_id == company_id)
+        .order_by(KaspiFeedUpload.created_at.desc())
         .limit(limit)
         .offset(offset)
     )
@@ -3264,10 +3322,9 @@ async def kaspi_feed_upload_get(
     record = (
         (
             await session.execute(
-                sa.select(KaspiGoodsImport).where(
-                    KaspiGoodsImport.company_id == company_id,
-                    KaspiGoodsImport.id == upload_id,
-                    KaspiGoodsImport.source.in_(["public_token", "export_id", "local_file_path"]),
+                sa.select(KaspiFeedUpload).where(
+                    KaspiFeedUpload.company_id == company_id,
+                    KaspiFeedUpload.id == upload_id,
                 )
             )
         )
@@ -3280,11 +3337,12 @@ async def kaspi_feed_upload_get(
 
 
 @router.post(
-    "/feed/uploads/{upload_id}/refresh-status",
+    "/feed/uploads/{upload_id}/refresh",
     summary="Refresh Kaspi feed upload status",
     response_model=KaspiFeedUploadRecordOut,
 )
 async def kaspi_feed_upload_refresh(
+    request: Request,
     upload_id: str,
     current_user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_async_db),
@@ -3292,13 +3350,14 @@ async def kaspi_feed_upload_refresh(
     _require_admin(current_user)
     company_id = _resolve_company_id(current_user)
 
+    request_id = getattr(getattr(request, "state", None), "request_id", None) or request.headers.get("X-Request-ID")
+
     record = (
         (
             await session.execute(
-                sa.select(KaspiGoodsImport).where(
-                    KaspiGoodsImport.company_id == company_id,
-                    KaspiGoodsImport.id == upload_id,
-                    KaspiGoodsImport.source.in_(["public_token", "export_id", "local_file_path"]),
+                sa.select(KaspiFeedUpload).where(
+                    KaspiFeedUpload.company_id == company_id,
+                    KaspiFeedUpload.id == upload_id,
                 )
             )
         )
@@ -3307,6 +3366,9 @@ async def kaspi_feed_upload_refresh(
     )
     if not record:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="upload_not_found")
+
+    if not record.import_code:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="import_code_missing")
 
     store_name, token = await _resolve_kaspi_token(session, company_id)
     base_url = os.getenv("KASPI_FEED_BASE_URL", "https://kaspi.kz")
@@ -3320,7 +3382,6 @@ async def kaspi_feed_upload_refresh(
         "KASPI_FEED_TOKEN": token,
         "KASPI_TOKEN": token,
     }
-    now = datetime.utcnow()
     try:
         response = KaspiAdapter().feed_import_status(
             store_name,
@@ -3328,27 +3389,228 @@ async def kaspi_feed_upload_refresh(
             extra_env=extra_env,
         )
     except KaspiAdapterError as exc:
-        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc)) from exc
+        await update_feed_upload_job(
+            session,
+            job=record,
+            status="failed",
+            error_code="kaspi_upstream_unavailable",
+            error_message=str(exc)[:500],
+        )
+        await _record_kaspi_event(
+            session,
+            company_id=company_id,
+            merchant_uid=record.merchant_uid,
+            kind="kaspi_feed",
+            status="error",
+            request_id=request_id,
+            error_code="kaspi_upstream_unavailable",
+            error_message=str(exc)[:500],
+            meta_json={"upload_id": str(record.id), "import_code": record.import_code},
+        )
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail="kaspi_upstream_unavailable") from exc
     except Exception as exc:
         logger.error("Kaspi feed status failed: company_id=%s error=%s", company_id, exc)
+        await update_feed_upload_job(
+            session,
+            job=record,
+            status="failed",
+            error_code="kaspi_feed_status_failed",
+            error_message=str(exc)[:500],
+        )
+        await _record_kaspi_event(
+            session,
+            company_id=company_id,
+            merchant_uid=record.merchant_uid,
+            kind="kaspi_feed",
+            status="error",
+            request_id=request_id,
+            error_code="kaspi_feed_status_failed",
+            error_message=str(exc)[:500],
+            meta_json={"upload_id": str(record.id), "import_code": record.import_code},
+        )
         raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail="kaspi_feed_status_failed") from exc
 
-    normalized = _normalize_kaspi_response(response)
+    normalized = normalize_kaspi_payload(_normalize_kaspi_response(response))
     status_value = normalized.get("status") or record.status
     error_code, error_message = _extract_error_info(normalized)
 
-    record.status = str(status_value)
-    record.status_json = normalized
-    record.result_json = normalized
-    record.raw_response = _serialize_raw_response(response)
-    record.last_checked_at = now
-    if error_code or error_message:
-        record.error_code = error_code
-        record.error_message = error_message
-        record.last_error_at = now
+    await update_feed_upload_job(
+        session,
+        job=record,
+        status=str(status_value),
+        error_code=error_code,
+        error_message=error_message,
+    )
+    await _record_kaspi_event(
+        session,
+        company_id=company_id,
+        merchant_uid=record.merchant_uid,
+        kind="kaspi_feed",
+        status="success",
+        request_id=request_id,
+        error_code=error_code,
+        error_message=error_message,
+        meta_json={"upload_id": str(record.id), "import_code": record.import_code},
+    )
+    return _feed_upload_to_out(record)
 
-    await session.commit()
-    await session.refresh(record)
+
+@router.post(
+    "/feed/uploads/{upload_id}/refresh-status",
+    summary="Refresh Kaspi feed upload status (deprecated)",
+    response_model=KaspiFeedUploadRecordOut,
+)
+async def kaspi_feed_upload_refresh_compat(
+    request: Request,
+    upload_id: str,
+    current_user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_async_db),
+):
+    return await kaspi_feed_upload_refresh(
+        request=request,
+        upload_id=upload_id,
+        current_user=current_user,
+        session=session,
+    )
+
+
+@router.post(
+    "/feed/uploads/{upload_id}/publish",
+    summary="Publish Kaspi feed upload",
+    response_model=KaspiFeedUploadRecordOut,
+)
+async def kaspi_feed_upload_publish(
+    request: Request,
+    upload_id: str,
+    current_user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_async_db),
+):
+    _require_admin(current_user)
+    company_id = _resolve_company_id(current_user)
+    request_id = getattr(getattr(request, "state", None), "request_id", None) or request.headers.get("X-Request-ID")
+
+    record = (
+        (
+            await session.execute(
+                sa.select(KaspiFeedUpload).where(
+                    KaspiFeedUpload.company_id == company_id,
+                    KaspiFeedUpload.id == upload_id,
+                )
+            )
+        )
+        .scalars()
+        .first()
+    )
+    if not record:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="upload_not_found")
+
+    if not record.import_code:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="import_code_missing")
+
+    store_name, token = await _resolve_kaspi_token(session, company_id)
+    base_url = os.getenv("KASPI_FEED_BASE_URL", "https://kaspi.kz")
+    upload_url = os.getenv("KASPI_FEED_UPLOAD_URL", f"{base_url.rstrip('/')}/shop/api/feeds/import")
+    status_url = os.getenv("KASPI_FEED_STATUS_URL", f"{base_url.rstrip('/')}/shop/api/feeds/import/status")
+    result_url = os.getenv("KASPI_FEED_RESULT_URL", f"{base_url.rstrip('/')}/shop/api/feeds/import/result")
+    extra_env = {
+        "KASPI_FEED_UPLOAD_URL": upload_url,
+        "KASPI_FEED_STATUS_URL": status_url,
+        "KASPI_FEED_RESULT_URL": result_url,
+        "KASPI_FEED_TOKEN": token,
+        "KASPI_TOKEN": token,
+    }
+
+    try:
+        response = KaspiAdapter().feed_import_status(
+            store_name,
+            import_id=record.import_code,
+            extra_env=extra_env,
+        )
+    except KaspiAdapterError as exc:
+        await update_feed_upload_job(
+            session,
+            job=record,
+            status="failed",
+            error_code="kaspi_upstream_unavailable",
+            error_message=str(exc)[:500],
+        )
+        await _record_kaspi_event(
+            session,
+            company_id=company_id,
+            merchant_uid=record.merchant_uid,
+            kind="kaspi_feed",
+            status="error",
+            request_id=request_id,
+            error_code="kaspi_upstream_unavailable",
+            error_message=str(exc)[:500],
+            meta_json={"upload_id": str(record.id), "import_code": record.import_code},
+        )
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail="kaspi_upstream_unavailable") from exc
+    except Exception as exc:
+        logger.error("Kaspi feed publish failed: company_id=%s error=%s", company_id, exc)
+        await update_feed_upload_job(
+            session,
+            job=record,
+            status="failed",
+            error_code="kaspi_feed_publish_failed",
+            error_message=str(exc)[:500],
+        )
+        await _record_kaspi_event(
+            session,
+            company_id=company_id,
+            merchant_uid=record.merchant_uid,
+            kind="kaspi_feed",
+            status="error",
+            request_id=request_id,
+            error_code="kaspi_feed_publish_failed",
+            error_message=str(exc)[:500],
+            meta_json={"upload_id": str(record.id), "import_code": record.import_code},
+        )
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail="kaspi_feed_publish_failed") from exc
+
+    normalized = normalize_kaspi_payload(_normalize_kaspi_response(response))
+    status_value = str(normalized.get("status") or record.status)
+    error_code, error_message = _extract_error_info(normalized)
+
+    if status_value.lower() not in {"done", "success", "completed", "published"}:
+        await update_feed_upload_job(
+            session,
+            job=record,
+            status=status_value,
+            error_code=error_code,
+            error_message=error_message,
+        )
+        await _record_kaspi_event(
+            session,
+            company_id=company_id,
+            merchant_uid=record.merchant_uid,
+            kind="kaspi_feed",
+            status="error",
+            request_id=request_id,
+            error_code="feed_not_ready_for_publish",
+            error_message="feed_not_ready_for_publish",
+            meta_json={"upload_id": str(record.id), "import_code": record.import_code},
+        )
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="feed_not_ready_for_publish")
+
+    await update_feed_upload_job(
+        session,
+        job=record,
+        status="published",
+        error_code=error_code,
+        error_message=error_message,
+    )
+    await _record_kaspi_event(
+        session,
+        company_id=company_id,
+        merchant_uid=record.merchant_uid,
+        kind="kaspi_feed",
+        status="success",
+        request_id=request_id,
+        error_code=error_code,
+        error_message=error_message,
+        meta_json={"upload_id": str(record.id), "import_code": record.import_code},
+    )
     return _feed_upload_to_out(record)
 
 

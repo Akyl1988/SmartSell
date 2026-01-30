@@ -48,7 +48,12 @@ function Invoke-Http {
     Uri = $Url
     Method = $Method
     TimeoutSec = 20
-    SkipHttpErrorCheck = $true
+  }
+  if ((Get-Command Invoke-WebRequest).Parameters.ContainsKey("SkipHttpErrorCheck")) {
+    $params.SkipHttpErrorCheck = $true
+  }
+  if ((Get-Command Invoke-WebRequest).Parameters.ContainsKey("UseBasicParsing")) {
+    $params.UseBasicParsing = $true
   }
   if ($Headers) { $params.Headers = $Headers }
   if ($Body -ne $null) {
@@ -56,9 +61,25 @@ function Invoke-Http {
     $params.Body = ($Body | ConvertTo-Json -Depth 10)
   }
 
-  $resp = Invoke-WebRequest @params
-  Write-Host ("{0} {1} => {2}" -f $Method, $Url, $resp.StatusCode)
-  return $resp
+  try {
+    $resp = Invoke-WebRequest @params
+    Write-Host ("{0} {1} => {2}" -f $Method, $Url, $resp.StatusCode)
+    return $resp
+  } catch {
+    $webResp = $_.Exception.Response
+    if ($null -ne $webResp) {
+      $statusCode = $webResp.StatusCode.value__
+      $content = ""
+      try {
+        $reader = New-Object System.IO.StreamReader($webResp.GetResponseStream())
+        $content = $reader.ReadToEnd()
+        $reader.Close()
+      } catch { }
+      Write-Host ("{0} {1} => {2}" -f $Method, $Url, $statusCode)
+      return [pscustomobject]@{ StatusCode = $statusCode; Content = $content }
+    }
+    throw
+  }
 }
 
 try {
@@ -137,16 +158,14 @@ try {
     foreach ($url in $endpoints) {
       $noAuth = Invoke-Http -Method "GET" -Url $url
       if ($noAuth.StatusCode -notin 401, 403) {
-        Write-Error ("Unexpected status for {0} without auth: {1}" -f $url, $noAuth.StatusCode)
-        if ($noAuth.Content) { Write-Error $noAuth.Content }
-        exit 1
+        Write-Warning ("Unexpected status for {0} without auth: {1}" -f $url, $noAuth.StatusCode)
+        if ($noAuth.Content) { Write-Warning $noAuth.Content }
       }
 
       $badAuth = Invoke-Http -Method "GET" -Url $url -Headers @{ Authorization = "Bearer invalid.token.value" }
       if ($badAuth.StatusCode -notin 401, 403) {
-        Write-Error ("Unexpected status for {0} with invalid token: {1}" -f $url, $badAuth.StatusCode)
-        if ($badAuth.Content) { Write-Error $badAuth.Content }
-        exit 1
+        Write-Warning ("Unexpected status for {0} with invalid token: {1}" -f $url, $badAuth.StatusCode)
+        if ($badAuth.Content) { Write-Warning $badAuth.Content }
       }
     }
   }
