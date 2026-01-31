@@ -663,6 +663,11 @@ class Settings(BaseSettings):
     KASPI_MERCHANT_ID: str | None = Field(
         default=None, description="Kaspi merchant ID", validation_alias="KASPI_MERCHANT_ID"
     )
+    KASPI_API_TOKEN: str | None = Field(
+        default=None,
+        description="Kaspi API token",
+        validation_alias=AliasChoices("KASPI_API_TOKEN", "KASPI_TOKEN", "KASPI_SHOP_TOKEN"),
+    )
     KASPI_API_KEY: str | None = Field(default=None, description="Kaspi API key", validation_alias="KASPI_API_KEY")
     KASPI_API_URL: str = Field(default="https://api.kaspi.kz", description="Kaspi API URL")
 
@@ -715,6 +720,21 @@ class Settings(BaseSettings):
     KASPI_HTTP_TIMEOUT_SEC: int = Field(default=60, description="HTTP timeout to Kaspi (seconds)")
     KASPI_HTTP_RETRIES: int = Field(default=3, description="HTTP retries to Kaspi")
     KASPI_HTTP_RETRY_BACKOFF_SEC: float = Field(default=1.5, description="HTTP retry backoff base")
+
+    # Orders API timeouts (fast-fail)
+    KASPI_ORDERS_TIMEOUT_SEC: float = Field(
+        default=8,
+        description="Kaspi orders read/write/pool timeout (seconds)",
+        validation_alias=AliasChoices("KASPI_ORDERS_TIMEOUT_SEC", "KASPI_ORDERS_TIMEOUT"),
+    )
+    KASPI_ORDERS_CONNECT_TIMEOUT_SEC: float = Field(
+        default=3,
+        description="Kaspi orders connect timeout (seconds)",
+        validation_alias=AliasChoices(
+            "KASPI_ORDERS_CONNECT_TIMEOUT_SEC",
+            "KASPI_ORDERS_CONNECT_TIMEOUT",
+        ),
+    )
 
     # Пути для интеграции с Bridge/outbox и для генерации фидов
     KASPI_BRIDGE_OUTBOX: str | None = Field(

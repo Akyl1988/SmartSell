@@ -77,6 +77,12 @@ class TestSettings:
         assert hasattr(test_settings, "SCHEDULER_TIMEZONE")
         assert isinstance(test_settings.SCHEDULER_TIMEZONE, str)
 
+    def test_kaspi_api_token_from_env(self, monkeypatch):
+        """Test KASPI_API_TOKEN reads from env."""
+        monkeypatch.setenv("KASPI_API_TOKEN", "token-123")
+        test_settings = Settings()
+        assert test_settings.KASPI_API_TOKEN == "token-123"
+
 
 class TestGlobalSettings:
     """Test global settings instance."""
