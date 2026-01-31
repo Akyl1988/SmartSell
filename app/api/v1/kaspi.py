@@ -26,6 +26,7 @@ app/api/v1/kaspi.py — Полный, боевой роутер интеграц
 - Расширяемость: аккуратные модели ввода/вывода; готово к будущим эндпоинтам.
 """
 
+import asyncio
 import csv
 import hashlib
 import inspect
@@ -50,6 +51,7 @@ from fastapi.responses import JSONResponse
 from openpyxl import load_workbook
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 from sqlalchemy import bindparam, text
+from sqlalchemy import inspect as sa_inspect
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
@@ -1110,6 +1112,7 @@ async def kaspi_import_status(req: ImportStatusQuery):
 )
 async def kaspi_orders_sync(
     request: Request,
+    response: Response,
     current_user: User = Depends(_auth_user),
     session: AsyncSession = Depends(get_async_db),
 ):
@@ -1120,20 +1123,64 @@ async def kaspi_orders_sync(
         svc = KaspiService()
         request_id = getattr(getattr(request, "state", None), "request_id", None) if request else None
         result = await svc.sync_orders(db=session, company_id=resolved_company_id, request_id=request_id)
+        if "ok" not in result and "status" not in result and "code" not in result:
+            response.status_code = status.HTTP_200_OK
+            return result
+
+        if result.get("ok") is True:
+            await _record_kaspi_event(
+                session,
+                company_id=resolved_company_id,
+                kind="kaspi_orders_sync",
+                status="success",
+                request_id=request_id,
+                meta_json={
+                    "fetched": result.get("fetched"),
+                    "inserted": result.get("inserted"),
+                    "updated": result.get("updated"),
+                    "watermark": result.get("watermark"),
+                },
+            )
+            return result
+
+        code = str(result.get("code") or "internal_error")
+        status_value = str(result.get("status") or "failed")
+        retry_after = result.get("retry_after")
+
+        if code in {"locked", "sync_locked"} or status_value == "locked":
+            response.status_code = status.HTTP_423_LOCKED
+            detail = "kaspi sync already running"
+        elif code in {"timeout", "connect_timeout", "read_timeout"} or status_value == "timeout":
+            response.status_code = status.HTTP_504_GATEWAY_TIMEOUT
+            detail = "kaspi timeout"
+        elif code == "rate_limited" or status_value == "rate_limited":
+            response.status_code = status.HTTP_429_TOO_MANY_REQUESTS
+            detail = "kaspi rate limited"
+            if retry_after is not None:
+                response.headers["Retry-After"] = str(retry_after)
+        elif code == "upstream_unavailable":
+            response.status_code = status.HTTP_502_BAD_GATEWAY
+            detail = "kaspi upstream error"
+        else:
+            response.status_code = status.HTTP_500_INTERNAL_SERVER_ERROR
+            detail = "kaspi sync failed"
+
         await _record_kaspi_event(
             session,
             company_id=resolved_company_id,
             kind="kaspi_orders_sync",
-            status="success",
+            status="failed" if response.status_code >= 500 else "skipped",
             request_id=request_id,
-            meta_json={
-                "fetched": result.get("fetched"),
-                "inserted": result.get("inserted"),
-                "updated": result.get("updated"),
-                "watermark": result.get("watermark"),
-            },
+            error_code=code,
+            error_message=detail,
         )
-        return result
+
+        return {
+            **result,
+            "detail": detail,
+            "code": code,
+            "request_id": request_id,
+        }
     except KaspiSyncAlreadyRunning:
         request_id = getattr(getattr(request, "state", None), "request_id", None) if request else None
         if resolved_company_id is not None:
@@ -1146,7 +1193,14 @@ async def kaspi_orders_sync(
                 error_code="sync_locked",
                 error_message="already_running",
             )
-        raise HTTPException(status_code=status.HTTP_423_LOCKED, detail="kaspi sync already running")
+        response.status_code = status.HTTP_423_LOCKED
+        return {
+            "ok": False,
+            "status": "locked",
+            "code": "locked",
+            "detail": "kaspi sync already running",
+            "request_id": request_id,
+        }
     except Exception as e:
         svc = svc or KaspiService()
         error_code = svc.classify_sync_error(e)
@@ -1165,18 +1219,27 @@ async def kaspi_orders_sync(
             )
 
         if error_code == "kaspi_http_429":
-            headers = {"Retry-After": str(retry_after)} if retry_after is not None else None
-            raise HTTPException(
-                status_code=status.HTTP_429_TOO_MANY_REQUESTS, detail="kaspi rate limited", headers=headers
-            )
+            response.status_code = status.HTTP_429_TOO_MANY_REQUESTS
+            if retry_after is not None:
+                response.headers["Retry-After"] = str(retry_after)
+            detail = "kaspi rate limited"
+        elif error_code in {"kaspi_timeout", "timeout"}:
+            response.status_code = status.HTTP_504_GATEWAY_TIMEOUT
+            detail = "kaspi timeout"
+        elif error_code.startswith("kaspi_http_") or error_code == "kaspi_adapter_error":
+            response.status_code = status.HTTP_502_BAD_GATEWAY
+            detail = "kaspi upstream error"
+        else:
+            response.status_code = status.HTTP_500_INTERNAL_SERVER_ERROR
+            detail = "kaspi sync failed"
 
-        if error_code in {"kaspi_timeout", "timeout"}:
-            raise HTTPException(status_code=status.HTTP_504_GATEWAY_TIMEOUT, detail="kaspi timeout")
-
-        if error_code.startswith("kaspi_http_") or error_code == "kaspi_adapter_error":
-            raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail="kaspi upstream error")
-
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="kaspi sync failed")
+        return {
+            "ok": False,
+            "status": "failed",
+            "code": error_code,
+            "detail": detail,
+            "request_id": request_id,
+        }
 
 
 @router.get(
@@ -1653,7 +1716,9 @@ class KaspiSyncNowOut(BaseModel):
     goods_import_id: str | None = None
     goods_import_code: str | None = None
     goods_import_status: str | None = None
+    goods_import_result: dict[str, Any] | None = None
     feed_last_generated_at: datetime | None = None
+    offers_feed_result: dict[str, Any] | None = None
 
 
 class KaspiFeedUploadIn(BaseModel):
@@ -2330,6 +2395,9 @@ async def kaspi_sync_now(
 ):
     _require_admin(current_user)
 
+    insp = sa_inspect(current_user)
+    current_user_id = insp.identity[0] if insp.identity else int(current_user.id)
+
     merchant_uid = (body.merchant_uid or "").strip()
     if not merchant_uid:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="missing_merchant_uid")
@@ -2353,11 +2421,47 @@ async def kaspi_sync_now(
             extra={"company_id": company_id, "merchant_uid": merchant_uid, "request_id": request_id},
         )
 
-        orders_result = await KaspiService().sync_orders(
-            db=session,
-            company_id=company_id,
-            request_id=request_id,
-        )
+        try:
+            orders_result = await KaspiService().sync_orders(
+                db=session,
+                company_id=company_id,
+                request_id=request_id,
+            )
+        except httpx.ConnectTimeout:
+            orders_result = {
+                "ok": False,
+                "status": "failed",
+                "code": "connect_timeout",
+                "message": "kaspi orders sync failed",
+            }
+        except httpx.ReadTimeout:
+            orders_result = {
+                "ok": False,
+                "status": "failed",
+                "code": "read_timeout",
+                "message": "kaspi orders sync failed",
+            }
+        except httpx.TimeoutException:
+            orders_result = {
+                "ok": False,
+                "status": "failed",
+                "code": "timeout",
+                "message": "kaspi orders sync failed",
+            }
+        except (TimeoutError, asyncio.TimeoutError):
+            orders_result = {
+                "ok": False,
+                "status": "timeout",
+                "code": "timeout",
+                "message": "kaspi orders sync timeout",
+            }
+
+        if not isinstance(orders_result, dict) or "ok" not in orders_result:
+            orders_result = {
+                "ok": True,
+                "status": "success",
+                "result": orders_result,
+            }
 
         company = await session.get(Company, company_id)
         flags = _get_goods_import_flags(company, merchant_uid)
@@ -2394,7 +2498,7 @@ async def kaspi_sync_now(
 
         record = KaspiGoodsImport(
             company_id=company_id,
-            created_by_user_id=current_user.id,
+            created_by_user_id=current_user_id,
             merchant_uid=merchant_uid,
             import_code=str(import_code),
             status=str(status_value),
@@ -2473,6 +2577,19 @@ async def kaspi_sync_now(
             extra={"company_id": company_id, "merchant_uid": merchant_uid, "request_id": request_id},
         )
 
+        goods_import_result = {
+            "ok": True,
+            "status": "success",
+            "import_id": str(record.id),
+            "import_code": str(import_code),
+            "import_status": record.status,
+        }
+        offers_feed_result = {
+            "ok": True,
+            "status": "success",
+            "generated_at": generated_at.isoformat(),
+        }
+
         return KaspiSyncNowOut(
             ok=True,
             company_id=company_id,
@@ -2481,7 +2598,9 @@ async def kaspi_sync_now(
             goods_import_id=str(record.id),
             goods_import_code=str(import_code),
             goods_import_status=record.status,
+            goods_import_result=goods_import_result,
             feed_last_generated_at=generated_at,
+            offers_feed_result=offers_feed_result,
         )
     finally:
         await _release_sync_now_lock(session, company_id=company_id, merchant_uid=merchant_uid)

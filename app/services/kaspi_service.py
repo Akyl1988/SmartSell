@@ -92,7 +92,15 @@ class _RetryingAsyncClient:
     Поддерживает async context manager (`async with`) для корректного закрытия соединений.
     """
 
-    def __init__(self, *, timeout: float = 30.0, retries: int = 2, backoff_base: float = 0.5):
+    def __init__(
+        self,
+        *,
+        timeout: float | httpx.Timeout = 30.0,
+        retries: int = 2,
+        backoff_base: float = 0.5,
+    ):
+        if isinstance(timeout, int | float):
+            timeout = httpx.Timeout(timeout)
         self._client = httpx.AsyncClient(timeout=timeout)
         self._retries = max(0, retries)
         self._base = backoff_base
@@ -168,9 +176,15 @@ class KaspiService:
 
     # ---------------------- helpers ---------------------- #
 
-    def _client(self) -> _RetryingAsyncClient:
+    def _client(self, *, timeout: float | httpx.Timeout | None = None) -> _RetryingAsyncClient:
         # Единые сетевые настройки
-        return _RetryingAsyncClient(timeout=30.0, retries=2, backoff_base=0.5)
+        effective_timeout = 30.0 if timeout is None else timeout
+        return _RetryingAsyncClient(timeout=effective_timeout, retries=2, backoff_base=0.5)
+
+    def _orders_timeout(self) -> httpx.Timeout:
+        connect = float(getattr(settings, "KASPI_ORDERS_CONNECT_TIMEOUT_SEC", 3) or 3)
+        rw_pool = float(getattr(settings, "KASPI_ORDERS_TIMEOUT_SEC", 8) or 8)
+        return httpx.Timeout(connect=connect, read=rw_pool, write=rw_pool, pool=rw_pool)
 
     def _url(self, path: str) -> str:
         if not path.startswith("/"):
@@ -207,7 +221,7 @@ class KaspiService:
         if status:
             params["status"] = status
 
-        async with self._client() as client:
+        async with self._client(timeout=self._orders_timeout()) as client:
             try:
                 if _diag_enabled():
                     logger.info(
@@ -543,8 +557,100 @@ class KaspiService:
                 request_id,
                 duration_ms,
             )
-            raise
-        except asyncio.TimeoutError:
+            return {
+                "ok": False,
+                "status": "locked",
+                "code": "locked",
+                "message": "kaspi orders sync locked",
+                "company_id": company_id,
+                "duration_ms": duration_ms,
+            }
+        except httpx.TimeoutException as exc:
+            duration_ms = int((perf_counter() - started_at) * 1000)
+            req = None
+            try:
+                req = exc.request
+            except Exception:
+                req = None
+            url = getattr(req, "url", None)
+            error_message = f"{exc.__class__.__name__} {url}" if url is not None else f"{exc.__class__.__name__}"
+
+            await self.record_sync_error(
+                db,
+                company_id=company_id,
+                code="kaspi_timeout",
+                message=error_message,
+                occurred_at=_utcnow(),
+                attempt_at=attempt_at,
+                duration_ms=duration_ms,
+                fetched=fetched,
+                inserted=inserted,
+                updated=updated,
+            )
+            logger.error(
+                "Kaspi orders sync timeout: company_id=%s request_id=%s duration_ms=%s",
+                company_id,
+                request_id,
+                duration_ms,
+            )
+            return {
+                "ok": False,
+                "status": "timeout",
+                "code": "timeout",
+                "message": "kaspi orders sync timeout",
+                "company_id": company_id,
+                "duration_ms": duration_ms,
+            }
+        except httpx.HTTPStatusError as exc:
+            duration_ms = int((perf_counter() - started_at) * 1000)
+            status_code = getattr(getattr(exc, "response", None), "status_code", None)
+            retry_after = self.get_retry_after_seconds(exc)
+
+            if status_code == 429:
+                await self.record_sync_error(
+                    db,
+                    company_id=company_id,
+                    code="rate_limited",
+                    message="kaspi rate limited",
+                    occurred_at=_utcnow(),
+                    attempt_at=attempt_at,
+                    duration_ms=duration_ms,
+                    fetched=fetched,
+                    inserted=inserted,
+                    updated=updated,
+                )
+                return {
+                    "ok": False,
+                    "status": "rate_limited",
+                    "code": "rate_limited",
+                    "message": "kaspi rate limited",
+                    "company_id": company_id,
+                    "duration_ms": duration_ms,
+                    "retry_after": retry_after,
+                }
+
+            error_code = "upstream_unavailable" if status_code and status_code >= 500 else "internal_error"
+            await self.record_sync_error(
+                db,
+                company_id=company_id,
+                code=error_code,
+                message=safe_error_message(exc),
+                occurred_at=_utcnow(),
+                attempt_at=attempt_at,
+                duration_ms=duration_ms,
+                fetched=fetched,
+                inserted=inserted,
+                updated=updated,
+            )
+            return {
+                "ok": False,
+                "status": "failed",
+                "code": error_code,
+                "message": "kaspi orders sync failed",
+                "company_id": company_id,
+                "duration_ms": duration_ms,
+            }
+        except (TimeoutError, asyncio.TimeoutError):
             duration_ms = int((perf_counter() - started_at) * 1000)
 
             # Critical fix: explicit rollback before creating fresh session to avoid deadlock
@@ -569,15 +675,39 @@ class KaspiService:
                 request_id,
                 duration_ms,
             )
-            raise
+            return {
+                "ok": False,
+                "status": "timeout",
+                "code": "timeout",
+                "message": "kaspi orders sync timeout",
+                "company_id": company_id,
+                "duration_ms": duration_ms,
+            }
         except Exception as exc:
             duration_ms = int((perf_counter() - started_at) * 1000)
             error_code = self.classify_sync_error(exc)
+            error_message = safe_error_message(exc)
+
+            if isinstance(exc, httpx.ConnectTimeout):
+                error_code = "connect_timeout"
+            elif isinstance(exc, httpx.ReadTimeout):
+                error_code = "read_timeout"
+            elif isinstance(exc, httpx.TimeoutException):
+                error_code = "timeout"
+
+            if isinstance(exc, httpx.TimeoutException):
+                req = getattr(exc, "request", None)
+                url = getattr(req, "url", None)
+                if url is not None:
+                    error_message = f"{exc.__class__.__name__} {url}"
+                else:
+                    error_message = f"{exc.__class__.__name__}"
+
             await self.record_sync_error(
                 db,
                 company_id=company_id,
                 code=error_code,
-                message=safe_error_message(exc),
+                message=error_message,
                 occurred_at=_utcnow(),
                 attempt_at=attempt_at,
                 duration_ms=duration_ms,
@@ -591,9 +721,18 @@ class KaspiService:
                 request_id,
                 duration_ms,
             )
-            raise
+            return {
+                "ok": False,
+                "status": "failed",
+                "code": error_code or "failed",
+                "message": "kaspi orders sync failed",
+                "company_id": company_id,
+                "duration_ms": duration_ms,
+            }
 
         summary = {
+            "ok": True,
+            "status": "success",
             "company_id": company_id,
             "fetched": fetched,
             "inserted": inserted,
@@ -798,8 +937,6 @@ class KaspiService:
     ) -> dict[str, Any] | list[dict[str, Any]]:
         attempts = 3
         delays = [0.2, 0.5, 1.0]
-        fetch_timeout = float(getattr(settings, "KASPI_HTTP_TIMEOUT_SEC", 60))
-
         for attempt in range(attempts):
             try:
                 if _diag_enabled():
@@ -809,18 +946,15 @@ class KaspiService:
                         page,
                         status,
                         attempt + 1,
-                        fetch_timeout,
+                        self._orders_timeout(),
                         perf_counter(),
                     )
-                result = await asyncio.wait_for(
-                    self.get_orders(
-                        date_from=date_from,
-                        date_to=date_to,
-                        status=status,
-                        page=page,
-                        page_size=page_size,
-                    ),
-                    timeout=fetch_timeout,
+                result = await self.get_orders(
+                    date_from=date_from,
+                    date_to=date_to,
+                    status=status,
+                    page=page,
+                    page_size=page_size,
                 )
                 if _diag_enabled():
                     logger.info(
