@@ -206,6 +206,111 @@ class KaspiService:
 
     # ---------------------- Orders API ---------------------- #
 
+    async def list_orders(
+        self,
+        *,
+        token: str,
+        merchant_uid: str,
+        state: str | None,
+        date_from_ms: int,
+        date_to_ms: int,
+        page: int,
+        limit: int,
+        include_entries: bool,
+        request_id: str | None,
+    ) -> dict[str, Any]:
+        orders_url = "https://kaspi.kz/shop/api/v2/orders"
+        params: dict[str, Any] = {
+            "page[number]": page,
+            "page[size]": limit,
+            "filter[orders][merchantUid]": merchant_uid,
+            "filter[orders][creationDate][$ge]": date_from_ms,
+            "filter[orders][creationDate][$le]": date_to_ms,
+        }
+        if state:
+            params["filter[orders][state]"] = state
+        if include_entries:
+            params["include[orders]"] = "entries"
+
+        headers = {
+            "X-Auth-Token": token,
+            "Accept": "application/vnd.api+json",
+        }
+
+        timeout = httpx.Timeout(connect=3.0, read=5.0, write=5.0, pool=5.0)
+        try:
+            async with httpx.AsyncClient(timeout=timeout) as client:
+                resp = await client.get(orders_url, headers=headers, params=params)
+                if resp.status_code in {401, 403}:
+                    return {
+                        "ok": False,
+                        "code": "NOT_AUTHENTICATED",
+                        "detail": "NOT_AUTHENTICATED",
+                        "status_code": 401,
+                        "request_id": request_id,
+                    }
+                resp.raise_for_status()
+                payload = resp.json() or {}
+        except httpx.TimeoutException:
+            return {
+                "ok": False,
+                "code": "upstream_timeout",
+                "detail": "kaspi_timeout",
+                "status_code": 504,
+                "request_id": request_id,
+            }
+        except httpx.HTTPStatusError as exc:
+            status_code = getattr(getattr(exc, "response", None), "status_code", None)
+            code = "upstream_unavailable" if status_code and status_code >= 500 else "upstream_error"
+            return {
+                "ok": False,
+                "code": code,
+                "detail": "kaspi_upstream_error",
+                "status_code": 502,
+                "request_id": request_id,
+            }
+        except httpx.RequestError:
+            return {
+                "ok": False,
+                "code": "upstream_unavailable",
+                "detail": "kaspi_upstream_error",
+                "status_code": 502,
+                "request_id": request_id,
+            }
+
+        raw_items = payload.get("data") or payload.get("items") or payload.get("orders") or []
+        data: list[dict[str, Any]] = []
+        for item in raw_items:
+            if not isinstance(item, dict):
+                continue
+            attrs = item.get("attributes") if isinstance(item.get("attributes"), dict) else {}
+            order_id = str(item.get("id") or attrs.get("id") or "")
+            creation_raw = attrs.get("creationDate") or attrs.get("createdAt")
+            creation_date = None
+            if creation_raw is not None:
+                try:
+                    creation_date = datetime.fromtimestamp(int(creation_raw) / 1000.0, tz=UTC)
+                except Exception:
+                    creation_date = None
+            entries = attrs.get("entries") if include_entries else None
+            data.append(
+                {
+                    "order_id": order_id,
+                    "code": attrs.get("code") or attrs.get("orderCode"),
+                    "creation_date": creation_date,
+                    "state": attrs.get("state") or attrs.get("status"),
+                    "total_price": attrs.get("totalPrice") or attrs.get("total_price"),
+                    "customer": attrs.get("customer"),
+                    "entries": entries,
+                }
+            )
+
+        return {
+            "ok": True,
+            "data": data,
+            "request_id": request_id,
+        }
+
     async def get_orders(
         self,
         *,
