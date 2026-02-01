@@ -4309,7 +4309,7 @@ async def kaspi_feed_public_token_create(
 ):
     _require_admin(current_user)
     company_id = _resolve_company_id(current_user)
-    env_is_dev = settings.is_development
+    env_is_dev = settings.is_development or settings.is_testing
 
     merchant_uid = (payload.merchant_uid or "").strip()
     if not merchant_uid:

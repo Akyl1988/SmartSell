@@ -46,24 +46,26 @@ def _find_child(root: ET.Element, tag: str) -> ET.Element | None:
 
 @pytest.mark.asyncio
 async def test_public_feed_ok(async_client, async_db_session, company_a_admin_headers, monkeypatch):
-    monkeypatch.setenv("ENVIRONMENT", "development")
-    await _create_company(async_db_session, 1001)
-    await _create_offer(async_db_session, 1001, "17319385", "S1")
+    company_id = 1001
+    merchant_uid = "17319385"
+    sku = "S1"
+    await _create_company(async_db_session, company_id)
+    await _create_offer(async_db_session, company_id, merchant_uid, sku)
 
     token_resp = await async_client.post(
         "/api/v1/kaspi/feed/public-tokens",
         headers=company_a_admin_headers,
-        json={"merchant_uid": "17319385", "comment": "test"},
+        json={"merchant_uid": merchant_uid, "comment": "test"},
     )
     token = token_resp.json()["token"]
 
     resp = await async_client.get(
         "/api/v1/kaspi/feed/public/offers.xml",
-        params={"token": token, "merchantUid": "17319385"},
+        params={"token": token, "merchantUid": merchant_uid},
     )
     assert resp.status_code == 200
     assert resp.headers.get("content-type", "").startswith("application/xml")
-    assert "S1" in resp.text
+    assert sku in resp.text
 
 
 @pytest.mark.asyncio
