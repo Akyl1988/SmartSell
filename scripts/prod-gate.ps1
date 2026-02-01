@@ -174,6 +174,41 @@ try {
     pwsh -NoProfile -File .\scripts\smoke-core.ps1 -BaseUrl $BaseUrl -Identifier $Identifier -Password $Password
   }
 
+  $smokeScript = ".\scripts\smoke-kaspi-sync-now.ps1"
+  $hasSmokeScript = Test-Path $smokeScript
+  $hasEnv = (
+    -not [string]::IsNullOrWhiteSpace($env:SMARTSELL_IDENTIFIER) -and
+    -not [string]::IsNullOrWhiteSpace($env:SMARTSELL_PASSWORD) -and
+    -not [string]::IsNullOrWhiteSpace($env:KASPI_MERCHANT_UID)
+  )
+  $apiOk = $false
+
+  if ($hasSmokeScript -and $hasEnv) {
+    try {
+      $pingParams = @{ Uri = "$BaseUrl/openapi.json"; Method = "GET"; TimeoutSec = 2 }
+      if ((Get-Command Invoke-WebRequest).Parameters.ContainsKey("SkipHttpErrorCheck")) {
+        $pingParams.SkipHttpErrorCheck = $true
+      }
+      if ((Get-Command Invoke-WebRequest).Parameters.ContainsKey("UseBasicParsing")) {
+        $pingParams.UseBasicParsing = $true
+      }
+      $ping = Invoke-WebRequest @pingParams
+      if ($ping.StatusCode -ge 200 -and $ping.StatusCode -lt 300) {
+        $apiOk = $true
+      }
+    } catch {
+      $apiOk = $false
+    }
+  }
+
+  if ($hasSmokeScript -and $hasEnv -and $apiOk) {
+    Run-Step "SMOKE-KASPI-SYNC-NOW" {
+      pwsh -NoProfile -File $smokeScript
+    }
+  } else {
+    Write-Host "SKIP: smoke-kaspi-sync-now (missing env or API not running)"
+  }
+
   Write-Host "DONE OK"
 } catch {
   Write-Host $_
