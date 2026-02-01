@@ -1,10 +1,14 @@
 from __future__ import annotations
 
+from datetime import UTC, datetime, timedelta
+from decimal import Decimal
 from pathlib import Path
 
 import pytest
+import pytest_asyncio
 from sqlalchemy import select
 
+from app.models.billing import Subscription
 from app.models.company import Company
 from app.models.integration_event import IntegrationEvent
 from app.models.kaspi_feed_export import KaspiFeedExport
@@ -62,6 +66,46 @@ async def _ensure_company(async_db_session, company_id: int, store_id: str) -> N
         async_db_session.add(company)
     company.kaspi_store_id = store_id
     await async_db_session.commit()
+
+
+async def _ensure_subscription_plan(async_db_session, company_id: int, plan: str) -> None:
+    existing_company = await async_db_session.get(Company, company_id)
+    if not existing_company:
+        async_db_session.add(Company(id=company_id, name=f"Company {company_id}"))
+        await async_db_session.flush()
+
+    res = await async_db_session.execute(
+        select(Subscription)
+        .where(Subscription.company_id == company_id)
+        .where(Subscription.deleted_at.is_(None))
+    )
+    sub = res.scalars().first()
+    now = datetime.now(UTC)
+    if sub is None:
+        sub = Subscription(
+            company_id=company_id,
+            plan=plan,
+            status="active",
+            billing_cycle="monthly",
+            price=Decimal("0.00"),
+            currency="KZT",
+            started_at=now,
+            period_start=now,
+            period_end=now + timedelta(days=30),
+            next_billing_date=now + timedelta(days=31),
+        )
+        async_db_session.add(sub)
+    else:
+        sub.plan = plan
+        sub.status = "active"
+    await async_db_session.commit()
+
+
+@pytest_asyncio.fixture(autouse=True)
+async def _ensure_feed_uploads_subscription(async_db_session, request):
+    if "company_a_admin_headers" not in request.fixturenames:
+        return
+    await _ensure_subscription_plan(async_db_session, company_id=1001, plan="pro")
 
 
 @pytest.mark.asyncio
