@@ -116,6 +116,8 @@ async def test_kaspi_sync_now_order_flow(
     assert resp.status_code == 200
     data = resp.json()
     assert data["ok"] is True
+    assert data["status"] == "ok"
+    assert data["errors"] == []
     assert data["goods_import_code"] == "IC-1"
     assert order == ["orders", "goods_import", "goods_refresh", "feed"]
 
@@ -153,7 +155,8 @@ async def test_kaspi_sync_now_orders_timeout_returns_200(
         return None
 
     async def _sync_orders(*args, **kwargs):
-        raise TimeoutError("timeout")
+        await asyncio.sleep(999)
+        return {"ok": True}
 
     async def _submit_import(*args, **kwargs):
         return {"code": "IC-1", "status": "UPLOADED"}
@@ -172,14 +175,22 @@ async def test_kaspi_sync_now_orders_timeout_returns_200(
     monkeypatch.setattr(kaspi_module, "_build_kaspi_offers_xml", _build_xml)
 
     resp = await async_client.post(
-        "/api/v1/kaspi/sync/now",
+        "/api/v1/kaspi/sync/now?timeout_sec=25",
         headers=company_a_admin_headers,
         json={"merchant_uid": "M1"},
     )
     assert resp.status_code == 200
     data = resp.json()
     assert data["ok"] is True
+    assert data["status"] == "partial"
     assert data["orders_sync"]["status"] == "timeout"
+    assert data["orders_sync"]["code"] == "upstream_timeout"
+    assert data["orders_sync"]["detail"] == "Kaspi orders sync timed out"
+    assert data["errors"][0]["code"] == "upstream_timeout"
+    assert data["errors"][0]["detail"] == "Kaspi orders sync timed out"
+    assert data["errors"][0]["request_id"]
+    assert data["goods_import_result"]["status"] == "success"
+    assert data["offers_feed_result"]["status"] == "success"
 
 
 @pytest.mark.asyncio
@@ -209,6 +220,9 @@ async def test_kaspi_sync_now_orders_read_timeout_code(
     import httpx
 
     from app.api.v1 import kaspi as kaspi_module
+    from app.services.kaspi_service import KaspiService
+
+    order = []
 
     async def _lock_true(*args, **kwargs):
         return True
@@ -216,22 +230,25 @@ async def test_kaspi_sync_now_orders_read_timeout_code(
     async def _unlock(*args, **kwargs):
         return None
 
-    async def _sync_orders(*args, **kwargs):
+    async def _fetch_orders_page(*args, **kwargs):
         request = httpx.Request("GET", "https://kaspi.kz/shop/api/v2/orders")
         raise httpx.ReadTimeout("read timeout", request=request)
 
     async def _submit_import(*args, **kwargs):
+        order.append("goods_import")
         return {"code": "IC-1", "status": "UPLOADED"}
 
     async def _get_status(*args, **kwargs):
+        order.append("goods_refresh")
         return {"status": "UPLOADED"}
 
     def _build_xml(*args, **kwargs):
+        order.append("feed")
         return "<xml/>"
 
     monkeypatch.setattr(kaspi_module, "_try_sync_now_lock", _lock_true)
     monkeypatch.setattr(kaspi_module, "_release_sync_now_lock", _unlock)
-    monkeypatch.setattr(kaspi_module.KaspiService, "sync_orders", _sync_orders)
+    monkeypatch.setattr(KaspiService, "_fetch_orders_page", _fetch_orders_page)
     monkeypatch.setattr(kaspi_module.KaspiGoodsImportClient, "submit_import", _submit_import)
     monkeypatch.setattr(kaspi_module.KaspiGoodsImportClient, "get_status", _get_status)
     monkeypatch.setattr(kaspi_module, "_build_kaspi_offers_xml", _build_xml)
@@ -243,7 +260,13 @@ async def test_kaspi_sync_now_orders_read_timeout_code(
     )
     assert resp.status_code == 200
     data = resp.json()
-    assert data["orders_sync"]["code"] == "read_timeout"
+    assert data["status"] == "partial"
+    assert data["orders_sync"]["status"] == "timeout"
+    assert data["orders_sync"]["code"] == "upstream_timeout"
+    assert data["orders_sync"]["detail"] == "Kaspi orders sync timed out"
+    assert data["goods_import_result"]["status"] == "success"
+    assert data["offers_feed_result"]["status"] == "success"
+    assert order == ["goods_import", "goods_refresh", "feed"]
 
 
 @pytest.mark.asyncio
@@ -287,6 +310,54 @@ async def test_kaspi_sync_now_timeout_is_bounded(
     elapsed = time.monotonic() - start
 
     assert elapsed < 1.0
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data.get("status") == "partial"
+    assert data.get("phase") == "orders_sync"
+    assert data["errors"][0]["code"] == "kaspi_sync_timeout"
+    assert data["errors"][0]["detail"]
+    assert data["errors"][0]["phase"] == "orders_sync"
+    assert data["errors"][0]["request_id"]
+
+
+@pytest.mark.asyncio
+async def test_kaspi_sync_now_timeout_hard_returns_504(
+    async_client,
+    async_db_session,
+    monkeypatch,
+    company_a_admin_headers,
+):
+    await _ensure_company(async_db_session, 1001, "store-a")
+
+    async def _get_token(session, store_name: str):
+        return "token-a"
+
+    from app.api.v1 import kaspi as kaspi_module
+
+    async def _lock_true(*args, **kwargs):
+        return True
+
+    async def _unlock(*args, **kwargs):
+        return None
+
+    async def _sync_orders(*args, **kwargs):
+        await asyncio.sleep(999)
+        return {"ok": True}
+
+    monkeypatch.setattr(kaspi_module, "_try_sync_now_lock", _lock_true)
+    monkeypatch.setattr(kaspi_module, "_release_sync_now_lock", _unlock)
+    monkeypatch.setattr(kaspi_module.KaspiService, "sync_orders", _sync_orders)
+    monkeypatch.setattr(KaspiStoreToken, "get_token", _get_token)
+
+    resp = await asyncio.wait_for(
+        async_client.post(
+            "/api/v1/kaspi/sync/now?timeout_sec=0.2&hard=1",
+            headers=company_a_admin_headers,
+            json={"merchant_uid": "M1", "refresh_once": False},
+        ),
+        timeout=1.0,
+    )
+
     assert resp.status_code == 504
     data = resp.json()
     assert data.get("code") == "kaspi_sync_timeout"

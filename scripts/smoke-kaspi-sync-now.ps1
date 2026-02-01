@@ -348,6 +348,17 @@ if (-not ($secondCode -eq 409 -and $secondErrCode -eq "kaspi_sync_in_progress"))
     Write-Host "WARN: kaspi sync timeout on second call; not failing script."
     exit 0
   }
+  if ($secondCode -eq 200 -or $secondCode -eq 202) {
+    $secondStatus = Get-JsonProperty -Object $secondBody -Name "status"
+    $secondErrors = Get-JsonProperty -Object $secondBody -Name "errors"
+    $secondErr0 = $null
+    if ($secondErrors -and $secondErrors.Count -gt 0) { $secondErr0 = $secondErrors[0] }
+    $secondErr0Code = Get-JsonProperty -Object $secondErr0 -Name "code"
+    if ($secondStatus -eq "partial" -and $secondErr0Code -eq "kaspi_sync_timeout") {
+      Write-Host "WARN: kaspi sync timeout on second call (partial); not failing script."
+      exit 0
+    }
+  }
   Write-Error "Second call returned unexpected status: $secondCode"
   exit 1
 }

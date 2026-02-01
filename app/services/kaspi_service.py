@@ -176,12 +176,25 @@ class KaspiService:
 
     # ---------------------- helpers ---------------------- #
 
-    def _client(self, *, timeout: float | httpx.Timeout | None = None) -> _RetryingAsyncClient:
+    def _client(
+        self,
+        *,
+        timeout: float | httpx.Timeout | None = None,
+        retries: int | None = None,
+        backoff_base: float = 0.5,
+    ) -> _RetryingAsyncClient:
         # Единые сетевые настройки
         effective_timeout = 30.0 if timeout is None else timeout
-        return _RetryingAsyncClient(timeout=effective_timeout, retries=2, backoff_base=0.5)
+        effective_retries = 2 if retries is None else max(0, int(retries))
+        return _RetryingAsyncClient(timeout=effective_timeout, retries=effective_retries, backoff_base=backoff_base)
 
-    def _orders_timeout(self) -> httpx.Timeout:
+    def _orders_timeout(self, total_sec: float | None = None) -> httpx.Timeout:
+        if total_sec is not None:
+            total = max(1.0, float(total_sec))
+            connect = min(3.0, total)
+            rw_pool = max(1.0, min(6.0, total - 0.5))
+            return httpx.Timeout(connect=connect, read=rw_pool, write=rw_pool, pool=rw_pool)
+
         connect = float(getattr(settings, "KASPI_ORDERS_CONNECT_TIMEOUT_SEC", 3) or 3)
         rw_pool = float(getattr(settings, "KASPI_ORDERS_TIMEOUT_SEC", 8) or 8)
         return httpx.Timeout(connect=connect, read=rw_pool, write=rw_pool, pool=rw_pool)
@@ -201,6 +214,8 @@ class KaspiService:
         status: Optional[str] = None,
         page: int = 1,
         page_size: int = 100,
+        timeout: float | httpx.Timeout | None = None,
+        retries: int | None = None,
     ) -> dict[str, Any] | list[dict[str, Any]]:
         """
         Получение заказов из Kaspi.
@@ -221,7 +236,7 @@ class KaspiService:
         if status:
             params["status"] = status
 
-        async with self._client(timeout=self._orders_timeout()) as client:
+        async with self._client(timeout=timeout or self._orders_timeout(), retries=retries) as client:
             try:
                 if _diag_enabled():
                     logger.info(
@@ -365,6 +380,9 @@ class KaspiService:
         date_to: datetime | None = None,
         statuses: list[str] | None = None,
         request_id: str | None = None,
+        timeout_seconds: float | None = None,
+        orders_max_attempts: int | None = None,
+        client_retries: int | None = None,
     ) -> dict[str, Any]:
         """Инкрементальная и идемпотентная синхронизация заказов Kaspi."""
         attempt_at = _utcnow()
@@ -374,7 +392,7 @@ class KaspiService:
         inserted = 0
         updated = 0
         started_at = perf_counter()
-        timeout_seconds = float(self._sync_timeout_seconds or 30)
+        timeout_seconds = float(timeout_seconds or self._sync_timeout_seconds or 30)
 
         logger.info("Kaspi orders sync start: company_id=%s request_id=%s", company_id, request_id)
         if _diag_enabled():
@@ -422,6 +440,9 @@ class KaspiService:
                                 status=status,
                                 page_size=100,
                                 company_id=company_id,
+                                orders_timeout_sec=timeout_seconds,
+                                max_attempts=orders_max_attempts,
+                                client_retries=client_retries,
                             ):
                                 fetched += len(batch)
                                 for payload in batch:
@@ -901,6 +922,9 @@ class KaspiService:
         status: str | None,
         page_size: int,
         company_id: int,
+        orders_timeout_sec: float | None = None,
+        max_attempts: int | None = None,
+        client_retries: int | None = None,
     ) -> AsyncIterator[list[dict[str, Any]]]:
         page = 1
 
@@ -912,6 +936,9 @@ class KaspiService:
                 page=page,
                 page_size=page_size,
                 company_id=company_id,
+                orders_timeout_sec=orders_timeout_sec,
+                max_attempts=max_attempts,
+                client_retries=client_retries,
             )
 
             items, meta = self._normalize_orders_response(batch, page, page_size)
@@ -934,8 +961,11 @@ class KaspiService:
         page: int,
         page_size: int,
         company_id: int,
+        orders_timeout_sec: float | None = None,
+        max_attempts: int | None = None,
+        client_retries: int | None = None,
     ) -> dict[str, Any] | list[dict[str, Any]]:
-        attempts = 3
+        attempts = max(1, int(max_attempts or 3))
         delays = [0.2, 0.5, 1.0]
         for attempt in range(attempts):
             try:
@@ -946,16 +976,32 @@ class KaspiService:
                         page,
                         status,
                         attempt + 1,
-                        self._orders_timeout(),
+                        self._orders_timeout(orders_timeout_sec),
                         perf_counter(),
                     )
-                result = await self.get_orders(
-                    date_from=date_from,
-                    date_to=date_to,
-                    status=status,
-                    page=page,
-                    page_size=page_size,
-                )
+                base_kwargs = {
+                    "date_from": date_from,
+                    "date_to": date_to,
+                    "status": status,
+                    "page": page,
+                    "page_size": page_size,
+                }
+                extra_kwargs: dict[str, Any] = {}
+                if orders_timeout_sec is not None:
+                    extra_kwargs["timeout"] = self._orders_timeout(orders_timeout_sec)
+                if client_retries is not None:
+                    extra_kwargs["retries"] = client_retries
+
+                try:
+                    result = await self.get_orders(**base_kwargs, **extra_kwargs)
+                except TypeError as exc:
+                    msg = str(exc)
+                    if "unexpected keyword argument" in msg and (
+                        "timeout" in msg or "retries" in msg
+                    ):
+                        result = await self.get_orders(**base_kwargs)
+                    else:
+                        raise
                 if _diag_enabled():
                     logger.info(
                         "[CI_DIAG] _fetch_orders_page POST get_orders SUCCESS: company_id=%s page=%s items=%s monotonic=%s",
