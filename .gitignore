@@ -346,20 +346,18 @@ docs/smoke/
 
 
 
+# local tmp/debug artifacts
+tmp_kaspi_goods_*.json
+
+
 # Allow only smoke scripts in /scripts (ignore everything else)
+scripts/**
 !scripts/
-scripts/*
+!scripts/**/
 !scripts/smoke-auth.ps1
 !scripts/smoke-openapi.ps1
 !scripts/smoke-core.ps1
-
-# allow PowerShell runners in scripts/
-
-
-# scripts/ is ignored globally; allow only tracked runner(s)
 !scripts/prod-gate.ps1
+!scripts/smoke-kaspi-sync-now.ps1
 
-
-# local tmp/debug artifacts
-tmp_kaspi_goods_*.json
 
