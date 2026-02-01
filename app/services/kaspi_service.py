@@ -1101,9 +1101,7 @@ class KaspiService:
                     result = await self.get_orders(**base_kwargs, **extra_kwargs)
                 except TypeError as exc:
                     msg = str(exc)
-                    if "unexpected keyword argument" in msg and (
-                        "timeout" in msg or "retries" in msg
-                    ):
+                    if "unexpected keyword argument" in msg and ("timeout" in msg or "retries" in msg):
                         result = await self.get_orders(**base_kwargs)
                     else:
                         raise

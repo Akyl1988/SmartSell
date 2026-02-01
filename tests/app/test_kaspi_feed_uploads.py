@@ -75,9 +75,7 @@ async def _ensure_subscription_plan(async_db_session, company_id: int, plan: str
         await async_db_session.flush()
 
     res = await async_db_session.execute(
-        select(Subscription)
-        .where(Subscription.company_id == company_id)
-        .where(Subscription.deleted_at.is_(None))
+        select(Subscription).where(Subscription.company_id == company_id).where(Subscription.deleted_at.is_(None))
     )
     sub = res.scalars().first()
     now = datetime.now(UTC)
