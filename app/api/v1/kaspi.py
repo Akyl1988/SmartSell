@@ -39,7 +39,7 @@ from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from hashlib import sha256
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 from uuid import UUID, uuid4
 from xml.etree import ElementTree as ET
 
@@ -48,7 +48,7 @@ import sqlalchemy as sa
 from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, Response, UploadFile, status
 from fastapi.encoders import jsonable_encoder
 from fastapi.responses import JSONResponse
-from openpyxl import load_workbook
+from openpyxl import Workbook, load_workbook
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 from sqlalchemy import bindparam, text
 from sqlalchemy import inspect as sa_inspect
@@ -3790,16 +3790,77 @@ async def kaspi_offers_list(
     "/catalog/import/template.csv",
     summary="Download catalog import CSV template",
 )
-async def kaspi_catalog_import_template(
+async def kaspi_catalog_import_template_csv(
     current_user: User = Depends(get_current_user),
 ):
     _require_admin(current_user)
-    content = (
-        "sku,master_sku,title,price,old_price,stock_count,pre_order,stock_specified,updated_at\n"
-        "SKU-001,MASTER-001,Sample title,1000,1200,5,false,true,2026-01-17T12:00:00\n"
-    )
+    content = _kaspi_catalog_template_csv()
     headers = {"Content-Disposition": "attachment; filename=kaspi_catalog_template.csv"}
-    return Response(content=content, media_type="text/csv", headers=headers)
+    return Response(content=content, media_type="text/csv; charset=utf-8", headers=headers)
+
+
+KASPI_CATALOG_TEMPLATE_HEADERS: list[str] = [
+    "sku",
+    "master_sku",
+    "title",
+    "price",
+    "old_price",
+    "stock_count",
+    "pre_order",
+    "stock_specified",
+    "updated_at",
+]
+
+
+def _kaspi_catalog_template_csv() -> str:
+    output = io.StringIO()
+    writer = csv.writer(output, lineterminator="\n")
+    writer.writerow(KASPI_CATALOG_TEMPLATE_HEADERS)
+    writer.writerow([
+        "SKU-001",
+        "MASTER-001",
+        "Sample title",
+        "1000",
+        "1200",
+        "5",
+        "false",
+        "true",
+        "2026-01-17T12:00:00",
+    ])
+    return output.getvalue()
+
+
+def _kaspi_catalog_template_xlsx() -> bytes:
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "template"
+    ws.append(KASPI_CATALOG_TEMPLATE_HEADERS)
+    buf = io.BytesIO()
+    wb.save(buf)
+    return buf.getvalue()
+
+
+@router.get(
+    "/catalog/template",
+    summary="Download catalog import template",
+)
+async def kaspi_catalog_import_template(
+    format: Literal["csv", "xlsx"] = Query("xlsx"),
+    current_user: User = Depends(get_current_user),
+):
+    _require_admin(current_user)
+    if format == "csv":
+        content = _kaspi_catalog_template_csv()
+        headers = {"Content-Disposition": "attachment; filename=kaspi_catalog_template.csv"}
+        return Response(content=content, media_type="text/csv; charset=utf-8", headers=headers)
+
+    content = _kaspi_catalog_template_xlsx()
+    headers = {"Content-Disposition": "attachment; filename=kaspi_catalog_template.xlsx"}
+    return Response(
+        content=content,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers=headers,
+    )
 
 
 @router.get(
