@@ -72,6 +72,7 @@ from app.models.kaspi_mc_session import KaspiMcSession
 from app.models.kaspi_offer import KaspiOffer
 from app.models.kaspi_order_sync_state import KaspiOrderSyncState
 from app.models.marketplace import KaspiStoreToken
+from app.models.order import Order, OrderSource, OrderStatus
 from app.models.user import User
 from app.schemas.kaspi import (
     ImportRequest,
@@ -1059,6 +1060,105 @@ async def kaspi_health(store: str):
     except Exception as e:
         logger.error("Kaspi health unexpected error: store=%s err=%s", store, e)
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e))
+
+
+class KaspiOrderListItemOut(BaseModel):
+    id: int
+    external_id: str | None = None
+    status: str
+    total_amount: Decimal | None = None
+    created_at: datetime
+
+
+class KaspiOrdersListOut(BaseModel):
+    items: list[KaspiOrderListItemOut]
+    skip: int
+    limit: int
+    has_more: bool
+
+
+def _parse_iso_dt(value: str) -> datetime:
+    try:
+        return datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except Exception as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="invalid_datetime") from exc
+
+
+def _status_to_str(value: OrderStatus | str | None) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, OrderStatus):
+        return value.value
+    return str(value)
+
+
+@router.get(
+    "/orders",
+    response_model=KaspiOrdersListOut,
+    summary="Local Kaspi orders (after sync)",
+)
+async def kaspi_orders_list(
+    status: str | None = Query(None),
+    created_from: str | None = Query(None),
+    created_to: str | None = Query(None),
+    skip: int = Query(0, ge=0),
+    limit: int = Query(50, ge=1, le=200),
+    current_user: User = Depends(_auth_user),
+    session: AsyncSession = Depends(get_async_db),
+):
+    try:
+        company_id = _resolve_company_id(current_user)
+
+        conditions: list[Any] = [Order.company_id == company_id, Order.source == OrderSource.KASPI]
+
+        if status:
+            status_value = status.strip().lower()
+            try:
+                status_enum = OrderStatus(status_value)
+            except ValueError as exc:
+                raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="invalid_status") from exc
+            conditions.append(Order.status == status_enum)
+
+        if created_from:
+            conditions.append(Order.created_at >= _parse_iso_dt(created_from))
+        if created_to:
+            conditions.append(Order.created_at <= _parse_iso_dt(created_to))
+
+        limit = max(1, min(limit, 200))
+        skip = max(0, skip)
+
+        stmt = (
+            sa.select(Order)
+            .where(*conditions)
+            .order_by(Order.created_at.desc(), Order.id.desc())
+            .offset(skip)
+            .limit(limit + 1)
+        )
+        rows = (await session.execute(stmt)).scalars().all()
+
+        has_more = len(rows) > limit
+        items = rows[:limit]
+
+        return KaspiOrdersListOut(
+            items=[
+                KaspiOrderListItemOut(
+                    id=order.id,
+                    external_id=getattr(order, "external_id", None),
+                    status=_status_to_str(getattr(order, "status", None)),
+                    total_amount=getattr(order, "total_amount", None),
+                    created_at=order.created_at,
+                )
+                for order in items
+            ],
+            skip=skip,
+            limit=limit,
+            has_more=has_more,
+        )
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.error("Kaspi orders list failed: err=%s", exc)
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="kaspi_orders_list_failed")
 
 
 @router.post(
