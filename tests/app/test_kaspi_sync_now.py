@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import asyncio
+import time
+
 import pytest
 
 from app.models.company import Company
@@ -17,8 +20,20 @@ async def _ensure_company(async_db_session, company_id: int, store_id: str) -> N
 
 
 @pytest.mark.asyncio
-async def test_kaspi_sync_now_lock_prevents_parallel(async_client, monkeypatch, company_a_admin_headers):
+async def test_kaspi_sync_now_lock_prevents_parallel(
+    async_client,
+    async_db_session,
+    monkeypatch,
+    company_a_admin_headers,
+):
     from app.api.v1 import kaspi as kaspi_module
+
+    await _ensure_company(async_db_session, 1001, "store-a")
+
+    async def _get_token(session, store_name: str):
+        return "token-a"
+
+    monkeypatch.setattr(KaspiStoreToken, "get_token", _get_token)
 
     async def _lock_false(*args, **kwargs):
         return False
@@ -229,3 +244,49 @@ async def test_kaspi_sync_now_orders_read_timeout_code(
     assert resp.status_code == 200
     data = resp.json()
     assert data["orders_sync"]["code"] == "read_timeout"
+
+
+@pytest.mark.asyncio
+async def test_kaspi_sync_now_timeout_is_bounded(
+    async_client,
+    async_db_session,
+    monkeypatch,
+    company_a_admin_headers,
+):
+    await _ensure_company(async_db_session, 1001, "store-a")
+
+    async def _get_token(session, store_name: str):
+        return "token-a"
+
+    from app.api.v1 import kaspi as kaspi_module
+
+    async def _lock_true(*args, **kwargs):
+        return True
+
+    async def _unlock(*args, **kwargs):
+        return None
+
+    async def _sync_orders(*args, **kwargs):
+        await asyncio.sleep(999)
+        return {"ok": True}
+
+    monkeypatch.setattr(kaspi_module, "_try_sync_now_lock", _lock_true)
+    monkeypatch.setattr(kaspi_module, "_release_sync_now_lock", _unlock)
+    monkeypatch.setattr(kaspi_module.KaspiService, "sync_orders", _sync_orders)
+    monkeypatch.setattr(KaspiStoreToken, "get_token", _get_token)
+
+    start = time.monotonic()
+    resp = await asyncio.wait_for(
+        async_client.post(
+            "/api/v1/kaspi/sync/now?timeout_sec=0.2",
+            headers=company_a_admin_headers,
+            json={"merchant_uid": "M1", "refresh_once": False},
+        ),
+        timeout=1.0,
+    )
+    elapsed = time.monotonic() - start
+
+    assert elapsed < 1.0
+    assert resp.status_code == 504
+    data = resp.json()
+    assert data.get("code") == "kaspi_sync_timeout"

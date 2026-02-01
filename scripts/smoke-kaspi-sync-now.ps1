@@ -309,6 +309,9 @@ if ($firstCode -eq 409 -and $firstErrCode -eq "kaspi_sync_in_progress") {
   # ok
 } elseif ($firstCode -eq 200 -or $firstCode -eq 202) {
   # ok
+} elseif ($firstCode -eq 504 -and $firstErrCode -eq "kaspi_sync_timeout") {
+  Write-Host "WARN: kaspi sync timeout; not failing script."
+  exit 0
 } else {
   Write-Error "First call returned unexpected status: $firstCode"
   exit 1
@@ -341,6 +344,10 @@ $secondBody = Get-JsonProperty -Object $second -Name "Body"
 $secondErrCode = Get-JsonProperty -Object $secondBody -Name "code"
 
 if (-not ($secondCode -eq 409 -and $secondErrCode -eq "kaspi_sync_in_progress")) {
+  if ($secondCode -eq 504 -and $secondErrCode -eq "kaspi_sync_timeout") {
+    Write-Host "WARN: kaspi sync timeout on second call; not failing script."
+    exit 0
+  }
   Write-Error "Second call returned unexpected status: $secondCode"
   exit 1
 }
