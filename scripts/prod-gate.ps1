@@ -203,7 +203,7 @@ try {
 
   if ($hasSmokeScript -and $hasEnv -and $apiOk) {
     Run-Step "SMOKE-KASPI-SYNC-NOW" {
-      pwsh -NoProfile -File $smokeScript
+      pwsh -NoProfile -File $smokeScript -BaseUrl $BaseUrl -Identifier $env:SMARTSELL_IDENTIFIER -Password $env:SMARTSELL_PASSWORD -MerchantUid $env:KASPI_MERCHANT_UID -TimeoutSec 30 -ProbeTimeoutSec 2 -SkipIfApiDown
     }
   } else {
     Write-Host "SKIP: smoke-kaspi-sync-now (missing env or API not running)"
