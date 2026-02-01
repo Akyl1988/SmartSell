@@ -84,6 +84,7 @@ function Invoke-Http {
 
 try {
   Run-Step "RUFF" {
+python -m ruff format --check .
     python -m ruff check .
   }
 
@@ -214,3 +215,4 @@ try {
   Write-Host $_
   exit 1
 }
+
