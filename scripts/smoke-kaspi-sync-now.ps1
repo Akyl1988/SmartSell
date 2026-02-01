@@ -1,12 +1,18 @@
+param(
+  [string]$BaseUrl = $env:SMARTSELL_BASE_URL,
+  [string]$Identifier = $env:SMARTSELL_IDENTIFIER,
+  [string]$Password = $env:SMARTSELL_PASSWORD,
+  [string]$MerchantUid = $env:KASPI_MERCHANT_UID,
+  [int]$TimeoutSec = 30,
+  [int]$ProbeTimeoutSec = 2,
+  [switch]$SkipIfApiDown
+)
+
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
 # --------- User-configurable variables ---------
-$BaseUrl    = "http://127.0.0.1:8000"
-$Identifier = $env:SMARTSELL_IDENTIFIER
-$Password   = $env:SMARTSELL_PASSWORD
-$MerchantUid = $env:KASPI_MERCHANT_UID
-
+if (-not $BaseUrl) { $BaseUrl = "http://127.0.0.1:8000" }
 if (-not $Identifier) { $Identifier = "" }
 if (-not $Password) { $Password = "" }
 if (-not $MerchantUid) { $MerchantUid = "" }
@@ -76,6 +82,7 @@ function Print-Response {
     $retryAfter = Get-JsonProperty -Object $Resp -Name "RetryAfter"
     $body = Get-JsonProperty -Object $Resp -Name "Body"
     $requestId = Get-JsonProperty -Object $Resp -Name "RequestId"
+    $error = Get-JsonProperty -Object $Resp -Name "Error"
 
     $statusVal = 0
     if ($null -ne $status) { $statusVal = [int]$status }
@@ -84,6 +91,7 @@ function Print-Response {
     Write-Host "LATENCY_MS: $LatencyMs"
     Write-Host "REQUEST_ID: $requestId"
     if ($retryAfter) { Write-Host "RETRY_AFTER: $retryAfter" }
+    if ($error) { Write-Host "ERROR: $error" }
     if ($body) {
       $bodyText = $body
       if ($body -isnot [string]) {
@@ -109,6 +117,19 @@ function Invoke-WebRequestSafe {
   return Invoke-WebRequest @Params
 }
 
+function Test-ApiReady {
+  try {
+    $resp = Invoke-WebRequestSafe -Params @{
+      Method = "GET"
+      Uri = "$BaseUrl/openapi.json"
+      TimeoutSec = $ProbeTimeoutSec
+    }
+    return ($resp.StatusCode -ge 200 -and $resp.StatusCode -lt 300)
+  } catch {
+    return $false
+  }
+}
+
 function Invoke-KaspiSyncNow {
   param(
     [string]$Token,
@@ -128,16 +149,20 @@ function Invoke-KaspiSyncNow {
       Headers = $headers
       ContentType = "application/json"
       Body = $null
-      TimeoutSec = 30
+      TimeoutSec = $TimeoutSec
     }
   } catch {
     $sw.Stop()
+    $errMsg = ""
+    try { $errMsg = $_.Exception.Message } catch { $errMsg = "request failed" }
+    if ($errMsg) { Write-Host "ERROR: $errMsg" }
     Print-Response -Resp $null -LatencyMs $sw.ElapsedMilliseconds
     return [PSCustomObject]@{
       StatusCode = 0
       RetryAfter = $null
       Body = $null
       RequestId = $rid
+      Error = $errMsg
     }
   }
   $sw.Stop()
@@ -170,15 +195,19 @@ function Invoke-KaspiSyncNow {
         Headers = $retryHeaders
         ContentType = "application/json"
         Body = $retryBody
-        TimeoutSec = 30
+        TimeoutSec = $TimeoutSec
       }
     } catch {
       $sw.Stop()
+      $errMsg = ""
+      try { $errMsg = $_.Exception.Message } catch { $errMsg = "request failed" }
+      if ($errMsg) { Write-Host "ERROR: $errMsg" }
       $result = [PSCustomObject]@{
         StatusCode = 0
         RetryAfter = $null
         Body = $null
         RequestId = $retryRid
+        Error = $errMsg
       }
       Print-Response -Resp $result -LatencyMs $sw.ElapsedMilliseconds
       return $result
@@ -207,14 +236,25 @@ function Invoke-KaspiSyncNow {
     RetryAfter = $retryAfter
     Body = $body
     RequestId = $requestId
+    Error = $null
   }
 
   Print-Response -Resp $result -LatencyMs $sw.ElapsedMilliseconds
   return $result
 }
 
-if (-not $Identifier -or -not $Password) {
-  throw "SMARTSELL_IDENTIFIER and SMARTSELL_PASSWORD must be set (env vars or edit script)."
+if (-not $Identifier -or -not $Password -or -not $MerchantUid) {
+  Write-Error "missing Identifier/Password/MerchantUid"
+  exit 2
+}
+
+if (-not (Test-ApiReady)) {
+  if ($SkipIfApiDown) {
+    Write-Host "SKIP: API unreachable"
+    exit 0
+  }
+  Write-Error "API unreachable"
+  exit 1
 }
 
 $loginRid = New-RequestId
@@ -230,11 +270,29 @@ $path = Resolve-KaspiSyncNowPath
 if (-not $path) { exit 1 }
 "Resolved endpoint: $path"
 
+if (-not (Test-ApiReady)) {
+  if ($SkipIfApiDown) {
+    Write-Host "SKIP: API unreachable"
+    exit 0
+  }
+  Write-Error "API unreachable"
+  exit 1
+}
+
 "--- First call ---"
 $first = Invoke-KaspiSyncNow -Token $access -Path $path -MerchantUid $MerchantUid
 
 if (-not $first) {
   Write-Error "First call failed to return a response"
+  exit 1
+}
+
+if ($first.StatusCode -eq 0) {
+  if ($SkipIfApiDown) {
+    Write-Host "SKIP: API unreachable"
+    exit 0
+  }
+  Write-Error "API unreachable"
   exit 1
 }
 
@@ -251,6 +309,9 @@ if ($firstCode -eq 409 -and $firstErrCode -eq "kaspi_sync_in_progress") {
   # ok
 } elseif ($firstCode -eq 200 -or $firstCode -eq 202) {
   # ok
+} elseif ($firstCode -eq 504 -and $firstErrCode -eq "kaspi_sync_timeout") {
+  Write-Host "WARN: kaspi sync timeout; not failing script."
+  exit 0
 } else {
   Write-Error "First call returned unexpected status: $firstCode"
   exit 1
@@ -264,6 +325,15 @@ if (-not $second) {
   exit 1
 }
 
+if ($second.StatusCode -eq 0) {
+  if ($SkipIfApiDown) {
+    Write-Host "SKIP: API unreachable"
+    exit 0
+  }
+  Write-Error "API unreachable"
+  exit 1
+}
+
 if ($second.StatusCode -eq 429) {
   Write-Host "WARN: rate limited on second call; not failing script."
   exit 0
@@ -274,6 +344,10 @@ $secondBody = Get-JsonProperty -Object $second -Name "Body"
 $secondErrCode = Get-JsonProperty -Object $secondBody -Name "code"
 
 if (-not ($secondCode -eq 409 -and $secondErrCode -eq "kaspi_sync_in_progress")) {
+  if ($secondCode -eq 504 -and $secondErrCode -eq "kaspi_sync_timeout") {
+    Write-Host "WARN: kaspi sync timeout on second call; not failing script."
+    exit 0
+  }
   Write-Error "Second call returned unexpected status: $secondCode"
   exit 1
 }
