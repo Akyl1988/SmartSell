@@ -72,24 +72,41 @@ function Print-Response {
     [int]$LatencyMs
   )
   try {
-    if (-not $Resp) {
-      Write-Host "STATUS: <null>"
-      return
-    }
-
     $status = Get-JsonProperty -Object $Resp -Name "StatusCode"
     $retryAfter = Get-JsonProperty -Object $Resp -Name "RetryAfter"
     $body = Get-JsonProperty -Object $Resp -Name "Body"
     $requestId = Get-JsonProperty -Object $Resp -Name "RequestId"
 
-    Write-Host "STATUS: $status"
+    $statusVal = 0
+    if ($null -ne $status) { $statusVal = [int]$status }
+
+    Write-Host "STATUS: $statusVal"
     Write-Host "LATENCY_MS: $LatencyMs"
-    if ($requestId) { Write-Host "REQUEST_ID: $requestId" }
+    Write-Host "REQUEST_ID: $requestId"
     if ($retryAfter) { Write-Host "RETRY_AFTER: $retryAfter" }
-    if ($body) { Write-Host ($body | ConvertTo-Json -Depth 50) }
+    if ($body) {
+      $bodyText = $body
+      if ($body -isnot [string]) {
+        $bodyText = $body | ConvertTo-Json -Depth 50
+      }
+      Write-Host "BODY: $bodyText"
+    }
   } catch {
     Write-Host "WARN: failed to print response"
   }
+}
+
+function Invoke-WebRequestSafe {
+  param(
+    [hashtable]$Params
+  )
+  if ((Get-Command Invoke-WebRequest).Parameters.ContainsKey("SkipHttpErrorCheck")) {
+    $Params.SkipHttpErrorCheck = $true
+  }
+  if ((Get-Command Invoke-WebRequest).Parameters.ContainsKey("UseBasicParsing")) {
+    $Params.UseBasicParsing = $true
+  }
+  return Invoke-WebRequest @Params
 }
 
 function Invoke-KaspiSyncNow {
@@ -105,12 +122,19 @@ function Invoke-KaspiSyncNow {
   $sw = [System.Diagnostics.Stopwatch]::StartNew()
   $resp = $null
   try {
-    $resp = Invoke-WebRequest -Method Post -Uri "$BaseUrl$Path" -Headers $headers -ContentType "application/json" -Body $null -SkipHttpErrorCheck -TimeoutSec 15
+    $resp = Invoke-WebRequestSafe -Params @{
+      Method = "Post"
+      Uri = "$BaseUrl$Path"
+      Headers = $headers
+      ContentType = "application/json"
+      Body = $null
+      TimeoutSec = 30
+    }
   } catch {
     $sw.Stop()
     Print-Response -Resp $null -LatencyMs $sw.ElapsedMilliseconds
     return [PSCustomObject]@{
-      StatusCode = $null
+      StatusCode = 0
       RetryAfter = $null
       Body = $null
       RequestId = $rid
@@ -140,11 +164,18 @@ function Invoke-KaspiSyncNow {
     $retryBody = @{ merchant_uid = $MerchantUid } | ConvertTo-Json
     $sw = [System.Diagnostics.Stopwatch]::StartNew()
     try {
-      $resp = Invoke-WebRequest -Method Post -Uri "$BaseUrl$Path" -Headers $retryHeaders -ContentType "application/json" -Body $retryBody -SkipHttpErrorCheck -TimeoutSec 15
+      $resp = Invoke-WebRequestSafe -Params @{
+        Method = "Post"
+        Uri = "$BaseUrl$Path"
+        Headers = $retryHeaders
+        ContentType = "application/json"
+        Body = $retryBody
+        TimeoutSec = 30
+      }
     } catch {
       $sw.Stop()
       $result = [PSCustomObject]@{
-        StatusCode = $null
+        StatusCode = 0
         RetryAfter = $null
         Body = $null
         RequestId = $retryRid
@@ -207,14 +238,22 @@ if (-not $first) {
   exit 1
 }
 
-if ($first.StatusCode -ge 500) {
-  Write-Error "First call returned server error: $($first.StatusCode)"
-  exit 1
+if ($first.StatusCode -eq 429) {
+  Write-Host "WARN: rate limited; not failing script."
+  exit 0
 }
 
-if ($first.StatusCode -eq 429) {
-  "WARN: rate limited; not failing script."
-  exit 0
+$firstCode = $first.StatusCode
+$firstBody = Get-JsonProperty -Object $first -Name "Body"
+$firstErrCode = Get-JsonProperty -Object $firstBody -Name "code"
+
+if ($firstCode -eq 409 -and $firstErrCode -eq "kaspi_sync_in_progress") {
+  # ok
+} elseif ($firstCode -eq 200 -or $firstCode -eq 202) {
+  # ok
+} else {
+  Write-Error "First call returned unexpected status: $firstCode"
+  exit 1
 }
 
 "--- Second call ---"
@@ -225,14 +264,18 @@ if (-not $second) {
   exit 1
 }
 
-if ($second.StatusCode -ge 500) {
-  Write-Error "Second call returned server error: $($second.StatusCode)"
-  exit 1
+if ($second.StatusCode -eq 429) {
+  Write-Host "WARN: rate limited on second call; not failing script."
+  exit 0
 }
 
-if ($second.StatusCode -eq 429) {
-  "WARN: rate limited on second call; not failing script."
-  exit 0
+$secondCode = $second.StatusCode
+$secondBody = Get-JsonProperty -Object $second -Name "Body"
+$secondErrCode = Get-JsonProperty -Object $secondBody -Name "code"
+
+if (-not ($secondCode -eq 409 -and $secondErrCode -eq "kaspi_sync_in_progress")) {
+  Write-Error "Second call returned unexpected status: $secondCode"
+  exit 1
 }
 
 "PASS"
