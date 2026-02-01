@@ -3816,17 +3816,19 @@ def _kaspi_catalog_template_csv() -> str:
     output = io.StringIO()
     writer = csv.writer(output, lineterminator="\n")
     writer.writerow(KASPI_CATALOG_TEMPLATE_HEADERS)
-    writer.writerow([
-        "SKU-001",
-        "MASTER-001",
-        "Sample title",
-        "1000",
-        "1200",
-        "5",
-        "false",
-        "true",
-        "2026-01-17T12:00:00",
-    ])
+    writer.writerow(
+        [
+            "SKU-001",
+            "MASTER-001",
+            "Sample title",
+            "1000",
+            "1200",
+            "5",
+            "false",
+            "true",
+            "2026-01-17T12:00:00",
+        ]
+    )
     return output.getvalue()
 
 
