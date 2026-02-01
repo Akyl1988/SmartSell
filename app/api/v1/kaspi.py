@@ -59,6 +59,14 @@ from app.core.db import get_async_db  # noqa — для совместимост
 from app.core.errors import safe_error_message
 from app.core.logging import get_logger
 from app.core.security import get_current_user, resolve_tenant_company_id
+from app.core.subscriptions import (
+    FEATURE_KASPI_AUTOSYNC,
+    FEATURE_KASPI_FEED_UPLOADS,
+    FEATURE_KASPI_GOODS_IMPORTS,
+    FEATURE_KASPI_ORDERS_LIST,
+    FEATURE_KASPI_SYNC_NOW,
+    require_feature,
+)
 from app.integrations.kaspi_adapter import KaspiAdapter, KaspiAdapterError
 from app.models import Product
 from app.models.catalog_import import CatalogImportBatch, CatalogImportRow
@@ -1133,7 +1141,7 @@ async def kaspi_orders_list(
     page: int = Query(0, ge=0),
     limit: int = Query(50, ge=1, le=100),
     include_entries: bool = Query(True),
-    current_user: User = Depends(_auth_user),
+    current_user: User = Depends(require_feature(FEATURE_KASPI_ORDERS_LIST)),
     session: AsyncSession = Depends(get_async_db),
 ):
     company_id = _resolve_company_id(current_user)
@@ -1628,7 +1636,7 @@ class KaspiAutoSyncStatusOut(BaseModel):
 )
 async def kaspi_autosync_status(
     request: Request,
-    current_user: User = Depends(_auth_user),
+    current_user: User = Depends(require_feature(FEATURE_KASPI_AUTOSYNC)),
 ):
     """
     Возвращает статус последнего запуска автоматической синхронизации заказов Kaspi
@@ -1736,7 +1744,7 @@ async def kaspi_autosync_status(
     response_model=KaspiAutoSyncStatusOut,
 )
 async def kaspi_autosync_trigger(
-    current_user: User = Depends(_auth_user),
+    current_user: User = Depends(require_feature(FEATURE_KASPI_AUTOSYNC)),
 ):
     """
     Запускает синхронизацию заказов Kaspi для всех активных компаний вручную.
@@ -2116,7 +2124,7 @@ async def kaspi_goods_attribute_values(
 async def kaspi_goods_import_upload(
     file: UploadFile = File(...),
     merchant_uid: str | None = Query(None, alias="merchantUid"),
-    current_user: User = Depends(_auth_user),
+    current_user: User = Depends(require_feature(FEATURE_KASPI_GOODS_IMPORTS)),
     session: AsyncSession = Depends(get_async_db),
 ):
     company_id = _resolve_company_id(current_user)
@@ -2169,7 +2177,7 @@ async def kaspi_goods_import_upload(
 )
 async def kaspi_goods_import_status_by_code(
     import_code: str = Query(..., alias="importCode"),
-    current_user: User = Depends(_auth_user),
+    current_user: User = Depends(require_feature(FEATURE_KASPI_GOODS_IMPORTS)),
     session: AsyncSession = Depends(get_async_db),
 ):
     company_id = _resolve_company_id(current_user)
@@ -2209,7 +2217,7 @@ async def kaspi_goods_import_status_by_code(
 )
 async def kaspi_goods_import(
     body: KaspiGoodsImportIn,
-    current_user: User = Depends(_auth_user),
+    current_user: User = Depends(require_feature(FEATURE_KASPI_GOODS_IMPORTS)),
     session: AsyncSession = Depends(get_async_db),
 ):
     company_id = _resolve_company_id(current_user)
@@ -2263,7 +2271,7 @@ async def kaspi_goods_import(
 )
 async def kaspi_goods_import_status(
     code: str,
-    current_user: User = Depends(_auth_user),
+    current_user: User = Depends(require_feature(FEATURE_KASPI_GOODS_IMPORTS)),
     session: AsyncSession = Depends(get_async_db),
 ):
     company_id = _resolve_company_id(current_user)
@@ -2297,7 +2305,7 @@ async def kaspi_goods_import_status(
 )
 async def kaspi_goods_import_result(
     code: str,
-    current_user: User = Depends(_auth_user),
+    current_user: User = Depends(require_feature(FEATURE_KASPI_GOODS_IMPORTS)),
     session: AsyncSession = Depends(get_async_db),
 ):
     company_id = _resolve_company_id(current_user)
@@ -2331,7 +2339,7 @@ async def kaspi_goods_import_result(
 )
 async def kaspi_goods_import_create(
     body: KaspiGoodsImportCreateIn,
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_feature(FEATURE_KASPI_GOODS_IMPORTS)),
     session: AsyncSession = Depends(get_async_db),
 ):
     _require_admin(current_user)
@@ -2426,7 +2434,7 @@ async def kaspi_goods_import_create(
 async def kaspi_goods_import_list(
     limit: int = Query(50, ge=1, le=200),
     offset: int = Query(0, ge=0),
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_feature(FEATURE_KASPI_GOODS_IMPORTS)),
     session: AsyncSession = Depends(get_async_db),
 ):
     _require_admin(current_user)
@@ -2450,7 +2458,7 @@ async def kaspi_goods_import_list(
 )
 async def kaspi_goods_import_get(
     import_id: str,
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_feature(FEATURE_KASPI_GOODS_IMPORTS)),
     session: AsyncSession = Depends(get_async_db),
 ):
     _require_admin(current_user)
@@ -2481,7 +2489,7 @@ async def kaspi_goods_import_get(
 async def kaspi_goods_import_refresh(
     import_id: str,
     request: Request,
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_feature(FEATURE_KASPI_GOODS_IMPORTS)),
     session: AsyncSession = Depends(get_async_db),
 ):
     _require_admin(current_user)
@@ -2563,7 +2571,7 @@ async def kaspi_sync_now(
     body: KaspiSyncNowIn,
     timeout_sec: float = Query(SYNC_NOW_TIMEOUT_SEC, ge=0.1, le=60.0),
     hard: int = Query(0, ge=0, le=1),
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_feature(FEATURE_KASPI_SYNC_NOW)),
     session: AsyncSession = Depends(get_async_db),
 ):
     _require_admin(current_user)
@@ -4061,7 +4069,7 @@ async def kaspi_feed_exports_list(
 async def kaspi_feed_upload_create(
     request: Request,
     body: KaspiFeedUploadIn,
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_feature(FEATURE_KASPI_FEED_UPLOADS)),
     session: AsyncSession = Depends(get_async_db),
 ):
     _require_admin(current_user)
@@ -4270,7 +4278,7 @@ async def kaspi_feed_upload_create(
 async def kaspi_feed_uploads_list(
     limit: int = 50,
     offset: int = 0,
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_feature(FEATURE_KASPI_FEED_UPLOADS)),
     session: AsyncSession = Depends(get_async_db),
 ):
     _require_admin(current_user)
@@ -4297,7 +4305,7 @@ async def kaspi_feed_uploads_list(
 )
 async def kaspi_feed_upload_get(
     upload_id: UUID,
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_feature(FEATURE_KASPI_FEED_UPLOADS)),
     session: AsyncSession = Depends(get_async_db),
 ):
     _require_admin(current_user)
@@ -4328,7 +4336,7 @@ async def kaspi_feed_upload_get(
 async def kaspi_feed_upload_refresh(
     request: Request,
     upload_id: UUID,
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_feature(FEATURE_KASPI_FEED_UPLOADS)),
     session: AsyncSession = Depends(get_async_db),
 ):
     _require_admin(current_user)
@@ -4447,7 +4455,7 @@ async def kaspi_feed_upload_refresh(
 async def kaspi_feed_upload_refresh_compat(
     request: Request,
     upload_id: UUID,
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_feature(FEATURE_KASPI_FEED_UPLOADS)),
     session: AsyncSession = Depends(get_async_db),
 ):
     return await kaspi_feed_upload_refresh(
@@ -4466,7 +4474,7 @@ async def kaspi_feed_upload_refresh_compat(
 async def kaspi_feed_upload_publish(
     request: Request,
     upload_id: UUID,
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_feature(FEATURE_KASPI_FEED_UPLOADS)),
     session: AsyncSession = Depends(get_async_db),
 ):
     _require_admin(current_user)
