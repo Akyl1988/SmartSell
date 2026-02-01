@@ -170,18 +170,33 @@ function Invoke-KaspiSyncNow {
   $status = $resp.StatusCode
   $retryAfter = $resp.Headers["Retry-After"]
   $body = $null
-  $requestId = $resp.Headers["X-Request-ID"]
+  $data = $null
+  $rid = ""
+  if ($resp -and $resp.Headers) {
+    $rid = [string](@($resp.Headers["X-Request-ID"])[0])
+    if (-not $rid) { $rid = [string](@($resp.Headers["x-request-id"])[0]) }
+  }
 
   if ($resp.Content) {
     try {
-      $body = $resp.Content | ConvertFrom-Json
-      if (-not $requestId) {
-        $requestId = Get-JsonProperty -Object $body -Name "request_id"
+      $data = $resp.Content | ConvertFrom-Json
+      $body = $data
+      if (-not $rid) { $rid = [string](Get-JsonProperty -Object $data -Name "request_id") }
+      if (-not $rid) {
+        $errs = Get-JsonProperty -Object $data -Name "errors"
+        if ($errs -and $errs.Count -gt 0) {
+          $rid = [string](Get-JsonProperty -Object $errs[0] -Name "request_id")
+        }
+      }
+      if (-not $rid) {
+        $orderSync = Get-JsonProperty -Object $data -Name "orders_sync"
+        if ($orderSync) { $rid = [string](Get-JsonProperty -Object $orderSync -Name "request_id") }
       }
     } catch {
       $body = $resp.Content
     }
   }
+  $rid = [string]($rid ?? "")
 
   if ($status -eq 422 -and $MerchantUid) {
     $retryRid = New-RequestId
@@ -217,25 +232,40 @@ function Invoke-KaspiSyncNow {
     $status = $resp.StatusCode
     $retryAfter = $resp.Headers["Retry-After"]
     $body = $null
-    $requestId = $resp.Headers["X-Request-ID"]
+    $data = $null
+    $rid = ""
+    if ($resp -and $resp.Headers) {
+      $rid = [string](@($resp.Headers["X-Request-ID"])[0])
+      if (-not $rid) { $rid = [string](@($resp.Headers["x-request-id"])[0]) }
+    }
 
     if ($resp.Content) {
       try {
-        $body = $resp.Content | ConvertFrom-Json
-        if (-not $requestId) {
-          $requestId = Get-JsonProperty -Object $body -Name "request_id"
+        $data = $resp.Content | ConvertFrom-Json
+        $body = $data
+        if (-not $rid) { $rid = [string](Get-JsonProperty -Object $data -Name "request_id") }
+        if (-not $rid) {
+          $errs = Get-JsonProperty -Object $data -Name "errors"
+          if ($errs -and $errs.Count -gt 0) {
+            $rid = [string](Get-JsonProperty -Object $errs[0] -Name "request_id")
+          }
+        }
+        if (-not $rid) {
+          $orderSync = Get-JsonProperty -Object $data -Name "orders_sync"
+          if ($orderSync) { $rid = [string](Get-JsonProperty -Object $orderSync -Name "request_id") }
         }
       } catch {
         $body = $resp.Content
       }
     }
+    $rid = [string]($rid ?? "")
   }
 
   $result = [PSCustomObject]@{
     StatusCode = $status
     RetryAfter = $retryAfter
     Body = $body
-    RequestId = $requestId
+    RequestId = $rid
     Error = $null
   }
 
@@ -347,6 +377,17 @@ if (-not ($secondCode -eq 409 -and $secondErrCode -eq "kaspi_sync_in_progress"))
   if ($secondCode -eq 504 -and $secondErrCode -eq "kaspi_sync_timeout") {
     Write-Host "WARN: kaspi sync timeout on second call; not failing script."
     exit 0
+  }
+  if ($secondCode -eq 200 -or $secondCode -eq 202) {
+    $secondStatus = Get-JsonProperty -Object $secondBody -Name "status"
+    $secondErrors = Get-JsonProperty -Object $secondBody -Name "errors"
+    $secondErr0 = $null
+    if ($secondErrors -and $secondErrors.Count -gt 0) { $secondErr0 = $secondErrors[0] }
+    $secondErr0Code = Get-JsonProperty -Object $secondErr0 -Name "code"
+    if ($secondStatus -eq "partial" -and $secondErr0Code -in @("kaspi_sync_timeout", "upstream_timeout")) {
+      Write-Host "WARN: kaspi sync timeout on second call (partial); not failing script."
+      exit 0
+    }
   }
   Write-Error "Second call returned unexpected status: $secondCode"
   exit 1

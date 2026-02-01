@@ -35,11 +35,11 @@ import json
 import os
 import secrets
 import time
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from hashlib import sha256
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 from uuid import UUID, uuid4
 from xml.etree import ElementTree as ET
 
@@ -48,7 +48,7 @@ import sqlalchemy as sa
 from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, Response, UploadFile, status
 from fastapi.encoders import jsonable_encoder
 from fastapi.responses import JSONResponse
-from openpyxl import load_workbook
+from openpyxl import Workbook, load_workbook
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 from sqlalchemy import bindparam, text
 from sqlalchemy import inspect as sa_inspect
@@ -59,6 +59,14 @@ from app.core.db import get_async_db  # noqa — для совместимост
 from app.core.errors import safe_error_message
 from app.core.logging import get_logger
 from app.core.security import get_current_user, resolve_tenant_company_id
+from app.core.subscriptions import (
+    FEATURE_KASPI_AUTOSYNC,
+    FEATURE_KASPI_FEED_UPLOADS,
+    FEATURE_KASPI_GOODS_IMPORTS,
+    FEATURE_KASPI_ORDERS_LIST,
+    FEATURE_KASPI_SYNC_NOW,
+    require_feature,
+)
 from app.integrations.kaspi_adapter import KaspiAdapter, KaspiAdapterError
 from app.models import Product
 from app.models.catalog_import import CatalogImportBatch, CatalogImportRow
@@ -72,7 +80,7 @@ from app.models.kaspi_mc_session import KaspiMcSession
 from app.models.kaspi_offer import KaspiOffer
 from app.models.kaspi_order_sync_state import KaspiOrderSyncState
 from app.models.marketplace import KaspiStoreToken
-from app.models.order import Order, OrderSource, OrderStatus
+from app.models.order import OrderStatus
 from app.models.user import User
 from app.schemas.kaspi import (
     ImportRequest,
@@ -1064,18 +1072,24 @@ async def kaspi_health(store: str):
 
 
 class KaspiOrderListItemOut(BaseModel):
-    id: int
-    external_id: str | None = None
-    status: str
-    total_amount: Decimal | None = None
-    created_at: datetime
+    order_id: str
+    code: str | None = None
+    creation_date: datetime | None = None
+    state: str | None = None
+    total_price: Decimal | None = None
+    customer: dict[str, Any] | None = None
+    entries: list[dict[str, Any]] | None = None
 
 
 class KaspiOrdersListOut(BaseModel):
-    items: list[KaspiOrderListItemOut]
-    skip: int
+    ok: bool
+    merchant_uid: str
+    state: str | None = None
+    page: int
     limit: int
-    has_more: bool
+    count: int
+    data: list[KaspiOrderListItemOut]
+    request_id: str
 
 
 def _parse_iso_dt(value: str) -> datetime:
@@ -1083,6 +1097,25 @@ def _parse_iso_dt(value: str) -> datetime:
         return datetime.fromisoformat(value.replace("Z", "+00:00"))
     except Exception as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="invalid_datetime") from exc
+
+
+def _to_ms(value: datetime) -> int:
+    if value.tzinfo is None:
+        return int(value.timestamp() * 1000)
+    return int(value.astimezone(tz=UTC).timestamp() * 1000)
+
+
+def _parse_order_created_at(raw: Any) -> datetime | None:
+    if raw is None:
+        return None
+    if isinstance(raw, int | float):
+        return datetime.fromtimestamp(int(raw) / 1000.0, tz=UTC)
+    if isinstance(raw, str):
+        try:
+            return _parse_iso_dt(raw)
+        except Exception:
+            return None
+    return None
 
 
 def _status_to_str(value: OrderStatus | str | None) -> str:
@@ -1096,70 +1129,113 @@ def _status_to_str(value: OrderStatus | str | None) -> str:
 @router.get(
     "/orders",
     response_model=KaspiOrdersListOut,
-    summary="Local Kaspi orders (after sync)",
+    summary="Kaspi orders list (remote)",
 )
 async def kaspi_orders_list(
-    status: str | None = Query(None),
-    created_from: str | None = Query(None),
-    created_to: str | None = Query(None),
-    skip: int = Query(0, ge=0),
-    limit: int = Query(50, ge=1, le=200),
-    current_user: User = Depends(_auth_user),
+    request: Request,
+    merchant_uid: str = Query(..., min_length=1, alias="merchantUid"),
+    state: str | None = Query("NEW"),
+    date_from: str | None = Query(None),
+    date_to: str | None = Query(None),
+    days_back: int | None = Query(14, ge=1, le=14),
+    page: int = Query(0, ge=0),
+    limit: int = Query(50, ge=1, le=100),
+    include_entries: bool = Query(True),
+    current_user: User = Depends(require_feature(FEATURE_KASPI_ORDERS_LIST)),
     session: AsyncSession = Depends(get_async_db),
 ):
+    company_id = _resolve_company_id(current_user)
+    request_id = getattr(getattr(request, "state", None), "request_id", None)
+    rid = request_id or request.headers.get("X-Request-ID") or str(uuid4())
+
+    if not merchant_uid.isdigit():
+        payload = {"detail": "invalid_merchant_uid", "code": "invalid_merchant_uid", "request_id": rid}
+        return JSONResponse(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            content=payload,
+            headers={"X-Request-ID": rid},
+        )
+
+    has_merchant = (
+        await session.execute(
+            sa.select(sa.literal(True)).where(
+                KaspiOffer.company_id == company_id,
+                KaspiOffer.merchant_uid == merchant_uid,
+            )
+        )
+    ).scalar_one_or_none()
+    if not has_merchant:
+        payload = {"detail": "merchant_not_found", "code": "merchant_not_found", "request_id": rid}
+        return JSONResponse(
+            status_code=status.HTTP_404_NOT_FOUND,
+            content=payload,
+            headers={"X-Request-ID": rid},
+        )
+
+    if date_from and date_to:
+        try:
+            dt_from = _parse_iso_dt(date_from)
+            dt_to = _parse_iso_dt(date_to)
+        except HTTPException:
+            payload = {"detail": "invalid_datetime", "code": "invalid_datetime", "request_id": rid}
+            return JSONResponse(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                content=payload,
+                headers={"X-Request-ID": rid},
+            )
+    else:
+        days = days_back or 14
+        if days > 14:
+            payload = {"detail": "days_back_too_large", "code": "days_back_too_large", "request_id": rid}
+            return JSONResponse(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                content=payload,
+                headers={"X-Request-ID": rid},
+            )
+        dt_to = datetime.now(tz=UTC)
+        dt_from = dt_to - timedelta(days=days)
+
     try:
-        company_id = _resolve_company_id(current_user)
-
-        conditions: list[Any] = [Order.company_id == company_id, Order.source == OrderSource.KASPI]
-
-        if status:
-            status_value = status.strip().lower()
-            try:
-                status_enum = OrderStatus(status_value)
-            except ValueError as exc:
-                raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="invalid_status") from exc
-            conditions.append(Order.status == status_enum)
-
-        if created_from:
-            conditions.append(Order.created_at >= _parse_iso_dt(created_from))
-        if created_to:
-            conditions.append(Order.created_at <= _parse_iso_dt(created_to))
-
-        limit = max(1, min(limit, 200))
-        skip = max(0, skip)
-
-        stmt = (
-            sa.select(Order)
-            .where(*conditions)
-            .order_by(Order.created_at.desc(), Order.id.desc())
-            .offset(skip)
-            .limit(limit + 1)
-        )
-        rows = (await session.execute(stmt)).scalars().all()
-
-        has_more = len(rows) > limit
-        items = rows[:limit]
-
-        return KaspiOrdersListOut(
-            items=[
-                KaspiOrderListItemOut(
-                    id=order.id,
-                    external_id=getattr(order, "external_id", None),
-                    status=_status_to_str(getattr(order, "status", None)),
-                    total_amount=getattr(order, "total_amount", None),
-                    created_at=order.created_at,
-                )
-                for order in items
-            ],
-            skip=skip,
-            limit=limit,
-            has_more=has_more,
-        )
-    except HTTPException:
+        _store_name, token = await _resolve_kaspi_token(session, company_id)
+    except HTTPException as exc:
+        if exc.status_code in {status.HTTP_404_NOT_FOUND, status.HTTP_409_CONFLICT}:
+            payload = {"detail": "kaspi_not_configured", "code": "kaspi_not_configured", "request_id": rid}
+            return JSONResponse(
+                status_code=status.HTTP_409_CONFLICT,
+                content=payload,
+                headers={"X-Request-ID": rid},
+            )
         raise
-    except Exception as exc:
-        logger.error("Kaspi orders list failed: err=%s", exc)
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="kaspi_orders_list_failed")
+
+    svc = KaspiService()
+    result = await svc.list_orders(
+        token=token,
+        merchant_uid=merchant_uid,
+        state=state,
+        date_from_ms=_to_ms(dt_from),
+        date_to_ms=_to_ms(dt_to),
+        page=page,
+        limit=limit,
+        include_entries=include_entries,
+        request_id=rid,
+    )
+    if not result.get("ok"):
+        code = result.get("code") or "upstream_error"
+        detail = result.get("detail") or "kaspi_upstream_error"
+        status_code = result.get("status_code") or status.HTTP_502_BAD_GATEWAY
+        payload = {"detail": detail, "code": code, "request_id": rid}
+        return JSONResponse(status_code=status_code, content=payload, headers={"X-Request-ID": rid})
+
+    return KaspiOrdersListOut(
+        ok=True,
+        merchant_uid=merchant_uid,
+        state=state,
+        page=page,
+        limit=limit,
+        count=len(result.get("data") or []),
+        data=result.get("data") or [],
+        request_id=rid,
+    )
 
 
 @router.post(
@@ -1560,7 +1636,7 @@ class KaspiAutoSyncStatusOut(BaseModel):
 )
 async def kaspi_autosync_status(
     request: Request,
-    current_user: User = Depends(_auth_user),
+    current_user: User = Depends(require_feature(FEATURE_KASPI_AUTOSYNC)),
 ):
     """
     Возвращает статус последнего запуска автоматической синхронизации заказов Kaspi
@@ -1668,7 +1744,7 @@ async def kaspi_autosync_status(
     response_model=KaspiAutoSyncStatusOut,
 )
 async def kaspi_autosync_trigger(
-    current_user: User = Depends(_auth_user),
+    current_user: User = Depends(require_feature(FEATURE_KASPI_AUTOSYNC)),
 ):
     """
     Запускает синхронизацию заказов Kaspi для всех активных компаний вручную.
@@ -1811,6 +1887,8 @@ class KaspiSyncNowIn(BaseModel):
 
 class KaspiSyncNowOut(BaseModel):
     ok: bool
+    status: str | None = None
+    errors: list[dict[str, Any]] = Field(default_factory=list)
     company_id: int
     merchant_uid: str
     orders_sync: dict[str, Any] | None = None
@@ -2046,7 +2124,7 @@ async def kaspi_goods_attribute_values(
 async def kaspi_goods_import_upload(
     file: UploadFile = File(...),
     merchant_uid: str | None = Query(None, alias="merchantUid"),
-    current_user: User = Depends(_auth_user),
+    current_user: User = Depends(require_feature(FEATURE_KASPI_GOODS_IMPORTS)),
     session: AsyncSession = Depends(get_async_db),
 ):
     company_id = _resolve_company_id(current_user)
@@ -2099,7 +2177,7 @@ async def kaspi_goods_import_upload(
 )
 async def kaspi_goods_import_status_by_code(
     import_code: str = Query(..., alias="importCode"),
-    current_user: User = Depends(_auth_user),
+    current_user: User = Depends(require_feature(FEATURE_KASPI_GOODS_IMPORTS)),
     session: AsyncSession = Depends(get_async_db),
 ):
     company_id = _resolve_company_id(current_user)
@@ -2139,7 +2217,7 @@ async def kaspi_goods_import_status_by_code(
 )
 async def kaspi_goods_import(
     body: KaspiGoodsImportIn,
-    current_user: User = Depends(_auth_user),
+    current_user: User = Depends(require_feature(FEATURE_KASPI_GOODS_IMPORTS)),
     session: AsyncSession = Depends(get_async_db),
 ):
     company_id = _resolve_company_id(current_user)
@@ -2193,7 +2271,7 @@ async def kaspi_goods_import(
 )
 async def kaspi_goods_import_status(
     code: str,
-    current_user: User = Depends(_auth_user),
+    current_user: User = Depends(require_feature(FEATURE_KASPI_GOODS_IMPORTS)),
     session: AsyncSession = Depends(get_async_db),
 ):
     company_id = _resolve_company_id(current_user)
@@ -2227,7 +2305,7 @@ async def kaspi_goods_import_status(
 )
 async def kaspi_goods_import_result(
     code: str,
-    current_user: User = Depends(_auth_user),
+    current_user: User = Depends(require_feature(FEATURE_KASPI_GOODS_IMPORTS)),
     session: AsyncSession = Depends(get_async_db),
 ):
     company_id = _resolve_company_id(current_user)
@@ -2261,7 +2339,7 @@ async def kaspi_goods_import_result(
 )
 async def kaspi_goods_import_create(
     body: KaspiGoodsImportCreateIn,
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_feature(FEATURE_KASPI_GOODS_IMPORTS)),
     session: AsyncSession = Depends(get_async_db),
 ):
     _require_admin(current_user)
@@ -2356,7 +2434,7 @@ async def kaspi_goods_import_create(
 async def kaspi_goods_import_list(
     limit: int = Query(50, ge=1, le=200),
     offset: int = Query(0, ge=0),
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_feature(FEATURE_KASPI_GOODS_IMPORTS)),
     session: AsyncSession = Depends(get_async_db),
 ):
     _require_admin(current_user)
@@ -2380,7 +2458,7 @@ async def kaspi_goods_import_list(
 )
 async def kaspi_goods_import_get(
     import_id: str,
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_feature(FEATURE_KASPI_GOODS_IMPORTS)),
     session: AsyncSession = Depends(get_async_db),
 ):
     _require_admin(current_user)
@@ -2411,7 +2489,7 @@ async def kaspi_goods_import_get(
 async def kaspi_goods_import_refresh(
     import_id: str,
     request: Request,
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_feature(FEATURE_KASPI_GOODS_IMPORTS)),
     session: AsyncSession = Depends(get_async_db),
 ):
     _require_admin(current_user)
@@ -2492,7 +2570,8 @@ async def kaspi_sync_now(
     request: Request,
     body: KaspiSyncNowIn,
     timeout_sec: float = Query(SYNC_NOW_TIMEOUT_SEC, ge=0.1, le=60.0),
-    current_user: User = Depends(get_current_user),
+    hard: int = Query(0, ge=0, le=1),
+    current_user: User = Depends(require_feature(FEATURE_KASPI_SYNC_NOW)),
     session: AsyncSession = Depends(get_async_db),
 ):
     _require_admin(current_user)
@@ -2507,6 +2586,8 @@ async def kaspi_sync_now(
     company_id = _resolve_company_id(current_user)
     request_id = getattr(getattr(request, "state", None), "request_id", None)
     rid = request_id or request.headers.get("X-Request-ID") or str(uuid4())
+
+    phase = "init"
 
     async def _run_sync_now_bounded() -> KaspiSyncNowOut | JSONResponse:
         lock_acquired = False
@@ -2542,9 +2623,11 @@ async def kaspi_sync_now(
                 )
 
             async def _run_sync_now() -> KaspiSyncNowOut:
+                nonlocal phase
+                started_at = time.perf_counter()
                 logger.info(
-                    "Kaspi sync now started",
-                    extra={"company_id": company_id, "merchant_uid": merchant_uid, "request_id": request_id},
+                    "kaspi_sync_now start",
+                    extra={"company_id": company_id, "merchant_uid": merchant_uid, "request_id": rid},
                 )
 
                 svc = KaspiService()
@@ -2554,40 +2637,90 @@ async def kaspi_sync_now(
                     svc_timeout = float(timeout_sec)
                 svc._sync_timeout_seconds = max(0.1, min(svc_timeout, float(timeout_sec)))
 
+                safety_margin = 1.5
+                default_orders = 12.0
+                default_goods = 10.0
+                default_feed = 3.0
+                default_total = default_orders + default_goods + default_feed
+                budget_total = max(0.1, float(timeout_sec) - safety_margin)
+                scale = 1.0
+                if default_total > 0 and budget_total < default_total:
+                    scale = max(0.1, budget_total / default_total)
+                orders_timeout_sec = max(0.1, default_orders * scale)
+                goods_timeout_sec = max(0.1, default_goods * scale)
+                feed_timeout_sec = max(0.1, default_feed * scale)
+                total_alloc = orders_timeout_sec + goods_timeout_sec + feed_timeout_sec
+                if total_alloc > budget_total:
+                    over = total_alloc - budget_total
+                    feed_timeout_sec = max(0.1, feed_timeout_sec - over)
+
+                logger.info(
+                    "kaspi_sync_now budgets",
+                    extra={
+                        "company_id": company_id,
+                        "merchant_uid": merchant_uid,
+                        "request_id": rid,
+                        "orders_timeout_sec": orders_timeout_sec,
+                        "goods_timeout_sec": goods_timeout_sec,
+                        "feed_timeout_sec": feed_timeout_sec,
+                        "safety_margin_sec": safety_margin,
+                    },
+                )
+
+                errors: list[dict[str, Any]] = []
+                orders_timed_out = False
+                orders_budget = min(12.0, max(1.0, float(timeout_sec) - 8.0))
                 try:
-                    orders_result = await svc.sync_orders(
-                        db=session,
-                        company_id=company_id,
-                        request_id=request_id,
+                    phase = "orders_sync"
+                    orders_result = await asyncio.wait_for(
+                        svc.sync_orders(
+                            db=session,
+                            company_id=company_id,
+                            request_id=rid,
+                            timeout_seconds=orders_timeout_sec,
+                            orders_max_attempts=1,
+                            client_retries=0,
+                        ),
+                        timeout=orders_budget,
                     )
-                except httpx.ConnectTimeout:
-                    orders_result = {
-                        "ok": False,
-                        "status": "failed",
-                        "code": "connect_timeout",
-                        "message": "kaspi orders sync failed",
-                    }
-                except httpx.ReadTimeout:
-                    orders_result = {
-                        "ok": False,
-                        "status": "failed",
-                        "code": "read_timeout",
-                        "message": "kaspi orders sync failed",
-                    }
-                except httpx.TimeoutException:
-                    orders_result = {
-                        "ok": False,
-                        "status": "failed",
-                        "code": "timeout",
-                        "message": "kaspi orders sync failed",
-                    }
-                except (TimeoutError, asyncio.TimeoutError):
+                except asyncio.TimeoutError:
+                    orders_timed_out = True
                     orders_result = {
                         "ok": False,
                         "status": "timeout",
-                        "code": "timeout",
-                        "message": "kaspi orders sync timeout",
+                        "code": "upstream_timeout",
+                        "detail": "Kaspi orders sync timed out",
+                        "request_id": rid,
                     }
+                    errors.append(
+                        {
+                            "status": "timeout",
+                            "detail": "Kaspi orders sync timed out",
+                            "code": "upstream_timeout",
+                            "request_id": rid,
+                        }
+                    )
+                    elapsed_ms = int((time.perf_counter() - started_at) * 1000)
+                    logger.warning(
+                        "kaspi_sync_now orders timeout",
+                        extra={
+                            "company_id": company_id,
+                            "merchant_uid": merchant_uid,
+                            "request_id": rid,
+                            "elapsed_ms": elapsed_ms,
+                        },
+                    )
+                    await _record_kaspi_event(
+                        session,
+                        company_id=company_id,
+                        kind="kaspi_orders_sync",
+                        status="timeout",
+                        request_id=rid,
+                        merchant_uid=merchant_uid,
+                        error_code="upstream_timeout",
+                        error_message="Kaspi orders sync timed out",
+                        meta_json={"source": "sync_now"},
+                    )
 
                 if not isinstance(orders_result, dict) or "ok" not in orders_result:
                     orders_result = {
@@ -2595,7 +2728,53 @@ async def kaspi_sync_now(
                         "status": "success",
                         "result": orders_result,
                     }
+                else:
+                    status_value = str(orders_result.get("status") or "")
+                    code_value = str(orders_result.get("code") or "")
+                    if (not orders_timed_out) and (
+                        status_value == "timeout" or code_value in {"timeout", "read_timeout", "connect_timeout"}
+                    ):
+                        orders_timed_out = True
+                        duration_ms = orders_result.get("duration_ms")
+                        orders_result = {
+                            "ok": False,
+                            "status": "timeout",
+                            "code": "upstream_timeout",
+                            "detail": "Kaspi orders sync timed out",
+                            "request_id": rid,
+                        }
+                        if duration_ms is not None:
+                            orders_result["duration_ms"] = duration_ms
+                        errors.append(
+                            {
+                                "detail": "Kaspi orders sync timed out",
+                                "code": "upstream_timeout",
+                                "request_id": rid,
+                            }
+                        )
+                        elapsed_ms = int((time.perf_counter() - started_at) * 1000)
+                        logger.warning(
+                            "kaspi_sync_now orders timeout",
+                            extra={
+                                "company_id": company_id,
+                                "merchant_uid": merchant_uid,
+                                "request_id": rid,
+                                "elapsed_ms": elapsed_ms,
+                            },
+                        )
+                        await _record_kaspi_event(
+                            session,
+                            company_id=company_id,
+                            kind="kaspi_orders_sync",
+                            status="timeout",
+                            request_id=rid,
+                            merchant_uid=merchant_uid,
+                            error_code="upstream_timeout",
+                            error_message="Kaspi orders sync timed out",
+                            meta_json={"source": "sync_now"},
+                        )
 
+                phase = "goods_import"
                 company = await session.get(Company, company_id)
                 flags = _get_goods_import_flags(company, merchant_uid)
                 payload = await load_offers_payload(
@@ -2680,6 +2859,7 @@ async def kaspi_sync_now(
                         await session.commit()
                         raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail="kaspi_upstream_error")
 
+                phase = "offers_feed"
                 offers = (
                     (
                         await session.execute(
@@ -2708,9 +2888,17 @@ async def kaspi_sync_now(
                     company.settings = json.dumps(settings_obj, ensure_ascii=False, separators=(",", ":"))
                     await session.commit()
 
+                status_value = "partial" if orders_timed_out else "ok"
+                elapsed_ms = int((time.perf_counter() - started_at) * 1000)
                 logger.info(
-                    "Kaspi sync now finished",
-                    extra={"company_id": company_id, "merchant_uid": merchant_uid, "request_id": request_id},
+                    "kaspi_sync_now done",
+                    extra={
+                        "company_id": company_id,
+                        "merchant_uid": merchant_uid,
+                        "request_id": rid,
+                        "status": status_value,
+                        "elapsed_ms": elapsed_ms,
+                    },
                 )
 
                 goods_import_result = {
@@ -2728,6 +2916,8 @@ async def kaspi_sync_now(
 
                 return KaspiSyncNowOut(
                     ok=True,
+                    status=status_value,
+                    errors=errors,
                     company_id=company_id,
                     merchant_uid=merchant_uid,
                     orders_sync=orders_result,
@@ -2748,16 +2938,58 @@ async def kaspi_sync_now(
         return await asyncio.wait_for(_run_sync_now_bounded(), timeout=timeout_sec)
     except asyncio.TimeoutError:
         payload = {
-            "detail": "kaspi_sync_timeout",
-            "code": "kaspi_sync_timeout",
-            "request_id": rid,
-            "ok": False,
+            "ok": True,
+            "status": "partial",
+            "phase": phase,
+            "errors": [
+                {
+                    "status": "timeout",
+                    "code": "kaspi_sync_timeout",
+                    "detail": "Kaspi sync now timed out",
+                    "phase": phase,
+                    "request_id": rid,
+                }
+            ],
+            "company_id": company_id,
+            "merchant_uid": merchant_uid,
+            "orders_sync": {
+                "status": "timeout",
+                "code": "kaspi_sync_timeout",
+                "detail": "Kaspi sync now timed out",
+                "request_id": rid,
+            },
+            "goods_import_result": {
+                "status": "skipped",
+                "code": "kaspi_sync_timeout",
+                "detail": "Kaspi sync now timed out",
+                "request_id": rid,
+            },
+            "offers_feed_result": {
+                "status": "skipped",
+                "code": "kaspi_sync_timeout",
+                "detail": "Kaspi sync now timed out",
+                "phase": phase,
+                "request_id": rid,
+            },
         }
-        return JSONResponse(
-            status_code=status.HTTP_504_GATEWAY_TIMEOUT,
-            content=payload,
-            headers={"X-Request-ID": rid},
+        logger.warning(
+            "kaspi_sync_now orchestration timeout",
+            extra={"company_id": company_id, "merchant_uid": merchant_uid, "request_id": rid, "phase": phase},
         )
+        if hard:
+            hard_payload = {
+                "detail": "kaspi_sync_timeout",
+                "code": "kaspi_sync_timeout",
+                "phase": phase,
+                "request_id": rid,
+                "ok": False,
+            }
+            return JSONResponse(
+                status_code=status.HTTP_504_GATEWAY_TIMEOUT,
+                content=hard_payload,
+                headers={"X-Request-ID": rid},
+            )
+        return JSONResponse(status_code=status.HTTP_200_OK, content=payload, headers={"X-Request-ID": rid})
 
 
 @router.get(
@@ -3558,16 +3790,77 @@ async def kaspi_offers_list(
     "/catalog/import/template.csv",
     summary="Download catalog import CSV template",
 )
-async def kaspi_catalog_import_template(
+async def kaspi_catalog_import_template_csv(
     current_user: User = Depends(get_current_user),
 ):
     _require_admin(current_user)
-    content = (
-        "sku,master_sku,title,price,old_price,stock_count,pre_order,stock_specified,updated_at\n"
-        "SKU-001,MASTER-001,Sample title,1000,1200,5,false,true,2026-01-17T12:00:00\n"
-    )
+    content = _kaspi_catalog_template_csv()
     headers = {"Content-Disposition": "attachment; filename=kaspi_catalog_template.csv"}
-    return Response(content=content, media_type="text/csv", headers=headers)
+    return Response(content=content, media_type="text/csv; charset=utf-8", headers=headers)
+
+
+KASPI_CATALOG_TEMPLATE_HEADERS: list[str] = [
+    "sku",
+    "master_sku",
+    "title",
+    "price",
+    "old_price",
+    "stock_count",
+    "pre_order",
+    "stock_specified",
+    "updated_at",
+]
+
+
+def _kaspi_catalog_template_csv() -> str:
+    output = io.StringIO()
+    writer = csv.writer(output, lineterminator="\n")
+    writer.writerow(KASPI_CATALOG_TEMPLATE_HEADERS)
+    writer.writerow([
+        "SKU-001",
+        "MASTER-001",
+        "Sample title",
+        "1000",
+        "1200",
+        "5",
+        "false",
+        "true",
+        "2026-01-17T12:00:00",
+    ])
+    return output.getvalue()
+
+
+def _kaspi_catalog_template_xlsx() -> bytes:
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "template"
+    ws.append(KASPI_CATALOG_TEMPLATE_HEADERS)
+    buf = io.BytesIO()
+    wb.save(buf)
+    return buf.getvalue()
+
+
+@router.get(
+    "/catalog/template",
+    summary="Download catalog import template",
+)
+async def kaspi_catalog_import_template(
+    format: Literal["csv", "xlsx"] = Query("xlsx"),
+    current_user: User = Depends(get_current_user),
+):
+    _require_admin(current_user)
+    if format == "csv":
+        content = _kaspi_catalog_template_csv()
+        headers = {"Content-Disposition": "attachment; filename=kaspi_catalog_template.csv"}
+        return Response(content=content, media_type="text/csv; charset=utf-8", headers=headers)
+
+    content = _kaspi_catalog_template_xlsx()
+    headers = {"Content-Disposition": "attachment; filename=kaspi_catalog_template.xlsx"}
+    return Response(
+        content=content,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers=headers,
+    )
 
 
 @router.get(
@@ -3837,7 +4130,7 @@ async def kaspi_feed_exports_list(
 async def kaspi_feed_upload_create(
     request: Request,
     body: KaspiFeedUploadIn,
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_feature(FEATURE_KASPI_FEED_UPLOADS)),
     session: AsyncSession = Depends(get_async_db),
 ):
     _require_admin(current_user)
@@ -4046,7 +4339,7 @@ async def kaspi_feed_upload_create(
 async def kaspi_feed_uploads_list(
     limit: int = 50,
     offset: int = 0,
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_feature(FEATURE_KASPI_FEED_UPLOADS)),
     session: AsyncSession = Depends(get_async_db),
 ):
     _require_admin(current_user)
@@ -4073,7 +4366,7 @@ async def kaspi_feed_uploads_list(
 )
 async def kaspi_feed_upload_get(
     upload_id: UUID,
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_feature(FEATURE_KASPI_FEED_UPLOADS)),
     session: AsyncSession = Depends(get_async_db),
 ):
     _require_admin(current_user)
@@ -4104,7 +4397,7 @@ async def kaspi_feed_upload_get(
 async def kaspi_feed_upload_refresh(
     request: Request,
     upload_id: UUID,
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_feature(FEATURE_KASPI_FEED_UPLOADS)),
     session: AsyncSession = Depends(get_async_db),
 ):
     _require_admin(current_user)
@@ -4223,7 +4516,7 @@ async def kaspi_feed_upload_refresh(
 async def kaspi_feed_upload_refresh_compat(
     request: Request,
     upload_id: UUID,
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_feature(FEATURE_KASPI_FEED_UPLOADS)),
     session: AsyncSession = Depends(get_async_db),
 ):
     return await kaspi_feed_upload_refresh(
@@ -4242,7 +4535,7 @@ async def kaspi_feed_upload_refresh_compat(
 async def kaspi_feed_upload_publish(
     request: Request,
     upload_id: UUID,
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_feature(FEATURE_KASPI_FEED_UPLOADS)),
     session: AsyncSession = Depends(get_async_db),
 ):
     _require_admin(current_user)
