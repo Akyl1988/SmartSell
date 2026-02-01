@@ -152,6 +152,10 @@ pg_dump -Fc -d smartsell -f smartsell.dump
 pg_restore -d smartsell smartsell.dump
 ```
 
+## Upgrade & rollback
+
+See the step-by-step playbook in [UPGRADE_PLAYBOOK.md](UPGRADE_PLAYBOOK.md).
+
 ## Password reset / admin recovery
 
 Use the CLI tool:
