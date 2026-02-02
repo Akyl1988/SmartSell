@@ -2209,6 +2209,29 @@ Timeout could cancel/rollback the main sync transaction, causing `kaspi_order_sy
 - Working tree: only journal updates plus an untracked local artifact (`kaspi_catalog_template.csv`).
 - No staged code changes pending beyond this journal append.
 
+## [2026-02-02] Kaspi subscription gating matrix
+
+### Changed
+- Expanded subscription feature matrix: trial blocks sync-now; basic includes Kaspi feed uploads and autosync.
+- Added subscription matrix tests covering goods imports, feed uploads, autosync status, and sync-now across trial/basic/pro.
+
+### Verification
+- `python -m ruff format app tests`
+- `python -m ruff check app tests`
+- `python -m pytest -q tests/app/test_kaspi_subscription_matrix.py`
+
+## [2026-02-02] Kaspi RBAC-first subscription gating
+
+### Changed
+- Ensured RBAC runs before subscription gating for Kaspi feed uploads and sync-now.
+- Added sync-now subscription setup (basic/pro) in tests and a trial plan 402 assertion.
+
+### Verification
+- `python -m ruff format app tests`
+- `python -m ruff check app tests`
+- `python -m pytest -q tests/app/test_kaspi_feed_uploads.py tests/app/test_kaspi_sync_now.py`
+- `scripts/prod-gate.ps1`
+
 ## [2026-02-02] Subscription feature matrix for Kaspi operations (WIP)
 
 ### Added
@@ -2222,3 +2245,14 @@ Timeout could cancel/rollback the main sync transaction, causing `kaspi_order_sy
 
 ### Next
 - Apply enforcement to concrete Kaspi endpoints (feed uploads / autosync / sync-now / goods imports) and expand tests to cover each endpoint.
+
+## [2026-02-02] Kaspi subscription gating matrix (addendum)
+
+### Changed
+- Expanded subscription feature matrix: trial blocks sync-now; basic includes Kaspi feed uploads and autosync.
+- Expanded subscription matrix tests for goods imports, feed uploads, autosync status, and sync-now across trial/basic/pro.
+
+### Verification
+- `python -m ruff format app tests`
+- `python -m ruff check app tests`
+- `python -m pytest -q tests/app/test_kaspi_subscription_matrix.py`
