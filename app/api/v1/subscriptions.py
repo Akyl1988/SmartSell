@@ -20,7 +20,11 @@ from app.core.security import (
     is_token_revoked,
     resolve_tenant_company_id,
 )
-from app.core.subscriptions.plan_catalog import get_plan_display_name, normalize_plan_id
+from app.core.subscriptions.plan_catalog import (
+    get_plan_display_name,
+    list_plans,
+    normalize_plan_id,
+)
 from app.models.billing import BillingPayment, Subscription
 from app.models.company import Company
 from app.models.user import User
@@ -105,6 +109,14 @@ class PaymentOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
 
+class PlanCatalogOut(BaseModel):
+    plan_id: str
+    plan: str
+    currency: str
+    monthly_price: Decimal
+    yearly_price: Decimal
+
+
 # ====== Утилиты доступа/времени ======
 def utc_now() -> datetime:
     return datetime.now(UTC)
@@ -145,6 +157,11 @@ def ensure_company_access(user, company: Company) -> None:
     }:
         return
     raise HTTPException(status_code=404, detail="Company not found")
+
+
+def ensure_platform_admin(user: User) -> None:
+    if getattr(user, "role", None) not in {"platform_admin", "superadmin"}:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="forbidden")
 
 
 async def _get_subscription_scoped(
@@ -229,6 +246,14 @@ async def _auth_user(
     if not user:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Not authenticated")
     return user
+
+
+@router.get("/plans", response_model=list[PlanCatalogOut])
+async def list_plan_catalog(
+    user: User = Depends(_auth_user),
+):
+    ensure_platform_admin(user)
+    return list_plans()
 
 
 # ====== Эндпоинты ======

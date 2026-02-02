@@ -61,6 +61,25 @@ def iter_plan_ids() -> Iterable[str]:
     return PLAN_CATALOG.keys()
 
 
+def list_plans() -> list[dict[str, Decimal | str]]:
+    ordered = ["start", "business", "pro"]
+    items: list[dict[str, Decimal | str]] = []
+    for plan_id in ordered:
+        plan = PLAN_CATALOG[plan_id]
+        monthly_price = plan.price
+        yearly_price = plan.price * Decimal("12")
+        items.append(
+            {
+                "plan_id": plan.plan_id,
+                "plan": plan.display_name,
+                "currency": plan.currency,
+                "monthly_price": monthly_price,
+                "yearly_price": yearly_price,
+            }
+        )
+    return items
+
+
 __all__ = [
     "PlanCatalogEntry",
     "PLAN_CATALOG",
@@ -70,4 +89,5 @@ __all__ = [
     "get_plan",
     "get_plan_display_name",
     "iter_plan_ids",
+    "list_plans",
 ]
