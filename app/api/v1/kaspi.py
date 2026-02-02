@@ -50,7 +50,7 @@ from fastapi.encoders import jsonable_encoder
 from fastapi.responses import JSONResponse
 from openpyxl import Workbook, load_workbook
 from pydantic import BaseModel, ConfigDict, Field, field_validator
-from sqlalchemy import bindparam, text
+from sqlalchemy import bindparam, select, text
 from sqlalchemy import inspect as sa_inspect
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -80,7 +80,7 @@ from app.models.kaspi_mc_session import KaspiMcSession
 from app.models.kaspi_offer import KaspiOffer
 from app.models.kaspi_order_sync_state import KaspiOrderSyncState
 from app.models.marketplace import KaspiStoreToken
-from app.models.order import OrderStatus
+from app.models.order import Order, OrderSource, OrderStatus
 from app.models.user import User
 from app.schemas.kaspi import (
     ImportRequest,
@@ -1083,25 +1083,37 @@ async def kaspi_health(store: str):
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e))
 
 
+class KaspiOrderEntryOut(BaseModel):
+    id: int
+    sku: str
+    name: str
+    quantity: int
+    unit_price: Decimal
+    total_price: Decimal
+
+
 class KaspiOrderListItemOut(BaseModel):
-    order_id: str
-    code: str | None = None
-    creation_date: datetime | None = None
-    state: str | None = None
-    total_price: Decimal | None = None
-    customer: dict[str, Any] | None = None
-    entries: list[dict[str, Any]] | None = None
+    id: int
+    external_id: str | None = None
+    order_number: str
+    status: str
+    created_at: datetime
+    updated_at: datetime
+    total_amount: Decimal
+    currency: str
+    customer_name: str | None = None
+    customer_phone: str | None = None
+
+
+class KaspiOrderDetailOut(KaspiOrderListItemOut):
+    items: list[KaspiOrderEntryOut]
 
 
 class KaspiOrdersListOut(BaseModel):
-    ok: bool
-    merchant_uid: str
-    state: str | None = None
+    items: list[KaspiOrderListItemOut]
     page: int
     limit: int
-    count: int
-    data: list[KaspiOrderListItemOut]
-    request_id: str
+    total: int
 
 
 def _parse_iso_dt(value: str) -> datetime:
@@ -1138,30 +1150,68 @@ def _status_to_str(value: OrderStatus | str | None) -> str:
     return str(value)
 
 
+def _normalize_db_dt(value: datetime) -> datetime:
+    if value.tzinfo is None:
+        return value
+    return value.astimezone(tz=UTC).replace(tzinfo=None)
+
+
+def _order_to_list_item(order: Order) -> KaspiOrderListItemOut:
+    return KaspiOrderListItemOut(
+        id=order.id,
+        external_id=order.external_id,
+        order_number=order.order_number,
+        status=_status_to_str(order.status),
+        created_at=order.created_at,
+        updated_at=order.updated_at,
+        total_amount=Decimal(order.total_amount or 0),
+        currency=order.currency,
+        customer_name=order.customer_name,
+        customer_phone=order.customer_phone,
+    )
+
+
+def _order_to_detail(order: Order) -> KaspiOrderDetailOut:
+    items = [
+        KaspiOrderEntryOut(
+            id=item.id,
+            sku=item.sku,
+            name=item.name,
+            quantity=int(item.quantity or 0),
+            unit_price=Decimal(item.unit_price or 0),
+            total_price=Decimal(item.total_price or 0),
+        )
+        for item in (order.items or [])
+    ]
+    base = _order_to_list_item(order)
+    return KaspiOrderDetailOut(**base.model_dump(), items=items)
+
+
 @router.get(
     "/orders",
     response_model=KaspiOrdersListOut,
-    summary="Kaspi orders list (remote)",
+    summary="Kaspi orders list (local)",
 )
 async def kaspi_orders_list(
     request: Request,
-    merchant_uid: str = Query(..., min_length=1, alias="merchantUid"),
-    state: str | None = Query("NEW"),
-    date_from: str | None = Query(None),
-    date_to: str | None = Query(None),
-    days_back: int | None = Query(14, ge=1, le=14),
-    page: int = Query(0, ge=0),
-    limit: int = Query(50, ge=1, le=100),
-    include_entries: bool = Query(True),
-    current_user: User = Depends(require_feature(FEATURE_KASPI_ORDERS_LIST)),
+    merchant_uid: str | None = Query(None, min_length=1, alias="merchantUid"),
+    state: str | None = Query(None),
+    created_from: str | None = Query(None),
+    created_to: str | None = Query(None),
+    page: int = Query(1, ge=1),
+    limit: int = Query(50, ge=1, le=200),
+    current_user: User = Depends(require_admin_then_feature(FEATURE_KASPI_ORDERS_LIST)),
     session: AsyncSession = Depends(get_async_db),
 ):
     company_id = _resolve_company_id(current_user)
     request_id = getattr(getattr(request, "state", None), "request_id", None)
     rid = request_id or request.headers.get("X-Request-ID") or str(uuid4())
-
-    if not merchant_uid.isdigit():
-        payload = {"detail": "invalid_merchant_uid", "code": "invalid_merchant_uid", "request_id": rid}
+    if not merchant_uid:
+        company = await session.get(Company, company_id)
+        # Default store: company.kaspi_store_id (single-store assumption).
+        merchant_uid = (company.kaspi_store_id or "").strip() if company else ""
+    if not merchant_uid:
+        payload = {"detail": "merchant_uid_required", "code": "merchant_uid_required", "request_id": rid}
         return JSONResponse(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             content=payload,
@@ -1184,10 +1234,11 @@ async def kaspi_orders_list(
             headers={"X-Request-ID": rid},
         )
 
-    if date_from and date_to:
+    dt_from = None
+    dt_to = None
+    if created_from:
         try:
-            dt_from = _parse_iso_dt(date_from)
-            dt_to = _parse_iso_dt(date_to)
+            dt_from = _normalize_db_dt(_parse_iso_dt(created_from))
         except HTTPException:
             payload = {"detail": "invalid_datetime", "code": "invalid_datetime", "request_id": rid}
             return JSONResponse(
@@ -1195,59 +1246,67 @@ async def kaspi_orders_list(
                 content=payload,
                 headers={"X-Request-ID": rid},
             )
-    else:
-        days = days_back or 14
-        if days > 14:
-            payload = {"detail": "days_back_too_large", "code": "days_back_too_large", "request_id": rid}
+    if created_to:
+        try:
+            dt_to = _normalize_db_dt(_parse_iso_dt(created_to))
+        except HTTPException:
+            payload = {"detail": "invalid_datetime", "code": "invalid_datetime", "request_id": rid}
             return JSONResponse(
-                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                status_code=status.HTTP_400_BAD_REQUEST,
                 content=payload,
                 headers={"X-Request-ID": rid},
             )
-        dt_to = datetime.now(tz=UTC)
-        dt_from = dt_to - timedelta(days=days)
 
-    try:
-        _store_name, token = await _resolve_kaspi_token(session, company_id)
-    except HTTPException as exc:
-        if exc.status_code in {status.HTTP_404_NOT_FOUND, status.HTTP_409_CONFLICT}:
-            payload = {"detail": "kaspi_not_configured", "code": "kaspi_not_configured", "request_id": rid}
-            return JSONResponse(
-                status_code=status.HTTP_409_CONFLICT,
-                content=payload,
-                headers={"X-Request-ID": rid},
-            )
-        raise
-
-    svc = KaspiService()
-    result = await svc.list_orders(
-        token=token,
-        merchant_uid=merchant_uid,
-        state=state,
-        date_from_ms=_to_ms(dt_from),
-        date_to_ms=_to_ms(dt_to),
-        page=page,
-        limit=limit,
-        include_entries=include_entries,
-        request_id=rid,
+    stmt = select(Order).where(
+        Order.company_id == company_id,
+        Order.source == OrderSource.KASPI,
     )
-    if not result.get("ok"):
-        code = result.get("code") or "upstream_error"
-        detail = result.get("detail") or "kaspi_upstream_error"
-        status_code = result.get("status_code") or status.HTTP_502_BAD_GATEWAY
-        payload = {"detail": detail, "code": code, "request_id": rid}
-        return JSONResponse(status_code=status_code, content=payload, headers={"X-Request-ID": rid})
+    if state:
+        stmt = stmt.where(Order.status == _status_to_str(state))
+    if dt_from:
+        stmt = stmt.where(Order.created_at >= dt_from)
+    if dt_to:
+        stmt = stmt.where(Order.created_at <= dt_to)
+
+    total = (await session.scalar(select(sa.func.count()).select_from(stmt.subquery()))) or 0
+
+    offset = (page - 1) * limit
+    rows = (await session.execute(stmt.order_by(Order.created_at.desc()).limit(limit).offset(offset))).scalars().all()
 
     return KaspiOrdersListOut(
-        ok=True,
-        merchant_uid=merchant_uid,
-        state=state,
+        items=[_order_to_list_item(order) for order in rows],
         page=page,
         limit=limit,
-        count=len(result.get("data") or []),
-        data=result.get("data") or [],
-        request_id=rid,
+        total=int(total),
     )
+
+
+@router.get(
+    "/orders/{order_id}",
+    response_model=KaspiOrderDetailOut,
+    summary="Kaspi order detail (local)",
+)
+async def kaspi_order_detail(
+    order_id: int,
+    request: Request,
+    current_user: User = Depends(require_admin_then_feature(FEATURE_KASPI_ORDERS_LIST)),
+    session: AsyncSession = Depends(get_async_db),
+):
+    company_id = _resolve_company_id(current_user)
+    request_id = getattr(getattr(request, "state", None), "request_id", None)
+    rid = request_id or request.headers.get("X-Request-ID") or str(uuid4())
+
+    order = await session.get(Order, order_id)
+    if not order or order.company_id != company_id or order.source != OrderSource.KASPI:
+        payload = {"detail": "order_not_found", "code": "order_not_found", "request_id": rid}
+        return JSONResponse(
+            status_code=status.HTTP_404_NOT_FOUND,
+            content=payload,
+            headers={"X-Request-ID": rid},
+        )
+
+    await session.refresh(order, attribute_names=["items"])
+    return _order_to_detail(order)
 
 
 @router.post(
