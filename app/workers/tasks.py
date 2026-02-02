@@ -11,6 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.db import async_session_maker
 from app.core.logging import get_logger
+from app.core.subscriptions.plan_catalog import get_plan_display_name, normalize_plan_id
 from app.models import AuditLog, Company, OtpAttempt, Product, ProductStock, User
 from app.services import EmailService, KaspiService
 from app.utils.idempotency import cleanup_idempotency_records
@@ -312,7 +313,7 @@ class TaskManager:
                         await email_service.send_subscription_notification(
                             to_email=admin.email,
                             company_name=company.name,
-                            plan=company.subscription_plan,
+                            plan=get_plan_display_name(normalize_plan_id(company.subscription_plan) or "start"),
                             expires_at=company.subscription_expires_at,
                         )
 

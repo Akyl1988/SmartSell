@@ -1075,6 +1075,7 @@ async def _ensure_active_subscription(async_db_session: AsyncSession, request):
 
     from sqlalchemy import select
 
+    from app.core.subscriptions.plan_catalog import normalize_plan_id
     from app.models.billing import Subscription
     from app.models.company import Company
 
@@ -1103,7 +1104,7 @@ async def _ensure_active_subscription(async_db_session: AsyncSession, request):
 
         sub = Subscription(
             company_id=company_id,
-            plan="start",
+            plan=normalize_plan_id("start") or "trial",
             status="active",
             billing_cycle="monthly",
             price=Decimal("0.00"),
@@ -1146,6 +1147,7 @@ def db_session(test_db: None):
 def auth_headers(test_db: None):
     """Seed a platform admin user and return its bearer token."""
     from app.core.security import create_access_token, get_password_hash  # type: ignore
+    from app.core.subscriptions.plan_catalog import normalize_plan_id
     from app.models.billing import Subscription  # type: ignore
     from app.models.company import Company  # type: ignore
     from app.models.user import User  # type: ignore
@@ -1174,7 +1176,7 @@ def auth_headers(test_db: None):
         if existing_sub is None:
             sub = Subscription(
                 company_id=company.id,
-                plan="start",
+                plan=normalize_plan_id("start") or "trial",
                 status="active",
                 billing_cycle="monthly",
                 price=0,
