@@ -11,6 +11,7 @@ from app.core.db import get_async_db
 from app.core.exceptions import AuthorizationError
 from app.core.logging import get_logger
 from app.core.security import get_current_user, resolve_tenant_company_id
+from app.core.subscriptions.plan_catalog import get_plan_features as _catalog_plan_features
 from app.core.subscriptions.plan_catalog import normalize_plan_id
 from app.models.company import Company
 from app.services.subscriptions import get_company_subscription, is_subscription_active
@@ -22,26 +23,6 @@ FEATURE_KASPI_SYNC_NOW = "kaspi.sync_now"
 FEATURE_KASPI_GOODS_IMPORTS = "kaspi.goods_imports"
 FEATURE_KASPI_FEED_UPLOADS = "kaspi.feed_uploads"
 FEATURE_KASPI_AUTOSYNC = "kaspi.autosync"
-
-_FEATURE_MATRIX: dict[str, set[str]] = {
-    "start": {
-        FEATURE_KASPI_ORDERS_LIST,
-    },
-    "business": {
-        FEATURE_KASPI_ORDERS_LIST,
-        FEATURE_KASPI_SYNC_NOW,
-        FEATURE_KASPI_GOODS_IMPORTS,
-        FEATURE_KASPI_FEED_UPLOADS,
-        FEATURE_KASPI_AUTOSYNC,
-    },
-    "pro": {
-        FEATURE_KASPI_ORDERS_LIST,
-        FEATURE_KASPI_SYNC_NOW,
-        FEATURE_KASPI_GOODS_IMPORTS,
-        FEATURE_KASPI_FEED_UPLOADS,
-        FEATURE_KASPI_AUTOSYNC,
-    },
-}
 
 
 async def _resolve_plan(db: AsyncSession, company_id: int) -> str:
@@ -55,7 +36,7 @@ async def _resolve_plan(db: AsyncSession, company_id: int) -> str:
 
 
 def _has_feature(plan: str, feature: str) -> bool:
-    return feature in _FEATURE_MATRIX.get(plan, set())
+    return feature in _catalog_plan_features(plan)
 
 
 def require_feature(feature: str) -> Any:
@@ -79,7 +60,7 @@ def require_feature(feature: str) -> Any:
 
 
 def get_plan_features(plan: str) -> Iterable[str]:
-    return _FEATURE_MATRIX.get(normalize_plan_id(plan) or "start", set())
+    return _catalog_plan_features(normalize_plan_id(plan) or "start")
 
 
 __all__ = [
