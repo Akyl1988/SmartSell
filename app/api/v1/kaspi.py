@@ -2410,11 +2410,9 @@ async def kaspi_goods_import_result(
 )
 async def kaspi_goods_import_create(
     body: KaspiGoodsImportCreateIn,
-    current_user: User = Depends(require_feature(FEATURE_KASPI_GOODS_IMPORTS)),
+    current_user: User = Depends(require_admin_then_feature(FEATURE_KASPI_GOODS_IMPORTS)),
     session: AsyncSession = Depends(get_async_db),
 ):
-    _require_admin(current_user)
-
     merchant_uid = (body.merchant_uid or "").strip()
     if not merchant_uid:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="missing_merchant_uid")
@@ -2505,10 +2503,9 @@ async def kaspi_goods_import_create(
 async def kaspi_goods_import_list(
     limit: int = Query(50, ge=1, le=200),
     offset: int = Query(0, ge=0),
-    current_user: User = Depends(require_feature(FEATURE_KASPI_GOODS_IMPORTS)),
+    current_user: User = Depends(require_admin_then_feature(FEATURE_KASPI_GOODS_IMPORTS)),
     session: AsyncSession = Depends(get_async_db),
 ):
-    _require_admin(current_user)
     company_id = _resolve_company_id(current_user)
 
     result = await session.execute(
@@ -2529,10 +2526,9 @@ async def kaspi_goods_import_list(
 )
 async def kaspi_goods_import_get(
     import_id: str,
-    current_user: User = Depends(require_feature(FEATURE_KASPI_GOODS_IMPORTS)),
+    current_user: User = Depends(require_admin_then_feature(FEATURE_KASPI_GOODS_IMPORTS)),
     session: AsyncSession = Depends(get_async_db),
 ):
-    _require_admin(current_user)
     company_id = _resolve_company_id(current_user)
 
     record = (
@@ -2560,10 +2556,9 @@ async def kaspi_goods_import_get(
 async def kaspi_goods_import_refresh(
     import_id: str,
     request: Request,
-    current_user: User = Depends(require_feature(FEATURE_KASPI_GOODS_IMPORTS)),
+    current_user: User = Depends(require_admin_then_feature(FEATURE_KASPI_GOODS_IMPORTS)),
     session: AsyncSession = Depends(get_async_db),
 ):
-    _require_admin(current_user)
     company_id = _resolve_company_id(current_user)
 
     record = (

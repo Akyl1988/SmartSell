@@ -27,6 +27,26 @@ PLAN_ALIASES: dict[str, str] = {
     "pro": "pro",
 }
 
+FEATURE_MATRIX: dict[str, set[str]] = {
+    "start": {
+        "kaspi.orders_list",
+    },
+    "business": {
+        "kaspi.orders_list",
+        "kaspi.sync_now",
+        "kaspi.goods_imports",
+        "kaspi.feed_uploads",
+        "kaspi.autosync",
+    },
+    "pro": {
+        "kaspi.orders_list",
+        "kaspi.sync_now",
+        "kaspi.goods_imports",
+        "kaspi.feed_uploads",
+        "kaspi.autosync",
+    },
+}
+
 
 def normalize_plan_id(raw: str | None, *, default: str | None = "start") -> str | None:
     key = (raw or "").strip().lower()
@@ -80,14 +100,21 @@ def list_plans() -> list[dict[str, Decimal | str]]:
     return items
 
 
+def get_plan_features(plan_id: str | None) -> set[str]:
+    normalized = normalize_plan_id(plan_id) or "start"
+    return FEATURE_MATRIX.get(normalized, set())
+
+
 __all__ = [
     "PlanCatalogEntry",
     "PLAN_CATALOG",
     "PLAN_ALIASES",
+    "FEATURE_MATRIX",
     "normalize_plan_id",
     "is_canonical_plan_id",
     "get_plan",
     "get_plan_display_name",
     "iter_plan_ids",
     "list_plans",
+    "get_plan_features",
 ]
