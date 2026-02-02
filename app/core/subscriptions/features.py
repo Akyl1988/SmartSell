@@ -16,11 +16,11 @@ from app.services.subscriptions import get_company_subscription, is_subscription
 
 logger = get_logger(__name__)
 
-FEATURE_KASPI_ORDERS_LIST = "kaspi_orders_list"
-FEATURE_KASPI_SYNC_NOW = "kaspi_sync_now"
-FEATURE_KASPI_GOODS_IMPORTS = "kaspi_goods_imports"
-FEATURE_KASPI_FEED_UPLOADS = "kaspi_feed_uploads"
-FEATURE_KASPI_AUTOSYNC = "kaspi_autosync"
+FEATURE_KASPI_ORDERS_LIST = "kaspi.orders_list"
+FEATURE_KASPI_SYNC_NOW = "kaspi.sync_now"
+FEATURE_KASPI_GOODS_IMPORTS = "kaspi.goods_imports"
+FEATURE_KASPI_FEED_UPLOADS = "kaspi.feed_uploads"
+FEATURE_KASPI_AUTOSYNC = "kaspi.autosync"
 
 _FEATURE_MATRIX: dict[str, set[str]] = {
     "trial": {
@@ -81,7 +81,7 @@ def require_feature(feature: str) -> Any:
             raise AuthorizationError(
                 "subscription_required",
                 code="subscription_required",
-                http_status=403,
+                http_status=402,
                 extra={"feature": feature, "plan": plan, "company_id": company_id},
             )
         return current_user

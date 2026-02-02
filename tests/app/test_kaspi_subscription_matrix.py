@@ -52,7 +52,7 @@ async def test_kaspi_subscription_trial_blocks_goods_imports(
         "/api/v1/kaspi/goods/imports",
         headers=company_a_admin_headers,
     )
-    assert r.status_code == 403
+    assert r.status_code == 402
     payload = r.json()
     assert payload.get("detail") == "subscription_required"
     assert payload.get("code") == "subscription_required"
@@ -76,7 +76,7 @@ async def test_kaspi_subscription_basic_allows_goods_imports_blocks_feed_uploads
         "/api/v1/kaspi/feed/uploads",
         headers=company_a_admin_headers,
     )
-    assert r_block.status_code == 403
+    assert r_block.status_code == 402
 
 
 async def test_kaspi_subscription_pro_allows_feed_uploads_and_autosync(

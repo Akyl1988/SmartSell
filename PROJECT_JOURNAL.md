@@ -206,7 +206,7 @@
 ## [2026-01-04] Tenant company scoping helper + query guardrails
 
 ### Added
-- Shared tenant company resolver in pp/core/security.py to enforce company_id from auth claims and centralize platform-admin override rules.
+- Shared tenant company resolver in  pp/core/security.py to enforce company_id from auth claims and centralize platform-admin override rules.
 - Regression tests covering company_id query behavior for wallet/payments (same-tenant allowed, cross-tenant forbidden) in 	ests/app/api/test_wallet_payments_tenant.py.
 
 ### Changed
@@ -889,7 +889,7 @@ Commits (per git show):
 ## [2026-01-04] Tenant company scoping helper + query guardrails
 
 ### Added
-- Shared tenant company resolver in pp/core/security.py to enforce company_id from auth claims and centralize platform-admin override rules.
+- Shared tenant company resolver in  pp/core/security.py to enforce company_id from auth claims and centralize platform-admin override rules.
 - Regression tests covering company_id query behavior for wallet/payments (same-tenant allowed, cross-tenant forbidden) in 	ests/app/api/test_wallet_payments_tenant.py.
 
 ### Changed
@@ -2208,3 +2208,17 @@ Timeout could cancel/rollback the main sync transaction, causing `kaspi_order_sy
 - Branch: `feat/subscriptions-next-v1`.
 - Working tree: only journal updates plus an untracked local artifact (`kaspi_catalog_template.csv`).
 - No staged code changes pending beyond this journal append.
+
+## [2026-02-02] Subscription feature matrix for Kaspi operations (WIP)
+
+### Added
+- Subscription feature keys and plan matrix (trial/basic/pro) in `app/core/subscriptions/features.py`.
+- Initial tests for subscription gating on Kaspi operations in `tests/app/test_kaspi_subscription_matrix.py`.
+
+### Verified
+- python -m ruff format app tests
+- python -m ruff check app tests
+- python -m pytest -q tests/app/test_kaspi_subscription_matrix.py
+
+### Next
+- Apply enforcement to concrete Kaspi endpoints (feed uploads / autosync / sync-now / goods imports) and expand tests to cover each endpoint.
