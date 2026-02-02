@@ -158,6 +158,18 @@ def _require_admin(current_user: User) -> None:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="forbidden")
 
 
+def require_admin_then_feature(feature: str) -> Any:
+    async def _dep(
+        current_user: User = Depends(get_current_user),  # noqa: B008
+        db: AsyncSession = Depends(get_async_db),  # noqa: B008
+    ) -> User:
+        _require_admin(current_user)
+        await require_feature(feature)(current_user=current_user, db=db)
+        return current_user
+
+    return _dep
+
+
 def _load_company_settings(company: Company | None) -> dict[str, Any]:
     if not company or not company.settings:
         return {}
@@ -2571,11 +2583,9 @@ async def kaspi_sync_now(
     body: KaspiSyncNowIn,
     timeout_sec: float = Query(SYNC_NOW_TIMEOUT_SEC, ge=0.1, le=60.0),
     hard: int = Query(0, ge=0, le=1),
-    current_user: User = Depends(require_feature(FEATURE_KASPI_SYNC_NOW)),
+    current_user: User = Depends(require_admin_then_feature(FEATURE_KASPI_SYNC_NOW)),
     session: AsyncSession = Depends(get_async_db),
 ):
-    _require_admin(current_user)
-
     insp = sa_inspect(current_user)
     current_user_id = insp.identity[0] if insp.identity else int(current_user.id)
 
@@ -4132,11 +4142,9 @@ async def kaspi_feed_exports_list(
 async def kaspi_feed_upload_create(
     request: Request,
     body: KaspiFeedUploadIn,
-    current_user: User = Depends(require_feature(FEATURE_KASPI_FEED_UPLOADS)),
+    current_user: User = Depends(require_admin_then_feature(FEATURE_KASPI_FEED_UPLOADS)),
     session: AsyncSession = Depends(get_async_db),
 ):
-    _require_admin(current_user)
-
     merchant_uid = (body.merchant_uid or "").strip()
     if not merchant_uid:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="missing_merchant_uid")
@@ -4341,10 +4349,9 @@ async def kaspi_feed_upload_create(
 async def kaspi_feed_uploads_list(
     limit: int = 50,
     offset: int = 0,
-    current_user: User = Depends(require_feature(FEATURE_KASPI_FEED_UPLOADS)),
+    current_user: User = Depends(require_admin_then_feature(FEATURE_KASPI_FEED_UPLOADS)),
     session: AsyncSession = Depends(get_async_db),
 ):
-    _require_admin(current_user)
     company_id = _resolve_company_id(current_user)
 
     limit = max(1, min(limit, 200))
@@ -4368,10 +4375,9 @@ async def kaspi_feed_uploads_list(
 )
 async def kaspi_feed_upload_get(
     upload_id: UUID,
-    current_user: User = Depends(require_feature(FEATURE_KASPI_FEED_UPLOADS)),
+    current_user: User = Depends(require_admin_then_feature(FEATURE_KASPI_FEED_UPLOADS)),
     session: AsyncSession = Depends(get_async_db),
 ):
-    _require_admin(current_user)
     company_id = _resolve_company_id(current_user)
 
     record = (
@@ -4399,10 +4405,9 @@ async def kaspi_feed_upload_get(
 async def kaspi_feed_upload_refresh(
     request: Request,
     upload_id: UUID,
-    current_user: User = Depends(require_feature(FEATURE_KASPI_FEED_UPLOADS)),
+    current_user: User = Depends(require_admin_then_feature(FEATURE_KASPI_FEED_UPLOADS)),
     session: AsyncSession = Depends(get_async_db),
 ):
-    _require_admin(current_user)
     company_id = _resolve_company_id(current_user)
 
     request_id = getattr(getattr(request, "state", None), "request_id", None) or request.headers.get("X-Request-ID")
@@ -4518,7 +4523,7 @@ async def kaspi_feed_upload_refresh(
 async def kaspi_feed_upload_refresh_compat(
     request: Request,
     upload_id: UUID,
-    current_user: User = Depends(require_feature(FEATURE_KASPI_FEED_UPLOADS)),
+    current_user: User = Depends(require_admin_then_feature(FEATURE_KASPI_FEED_UPLOADS)),
     session: AsyncSession = Depends(get_async_db),
 ):
     return await kaspi_feed_upload_refresh(
@@ -4537,10 +4542,9 @@ async def kaspi_feed_upload_refresh_compat(
 async def kaspi_feed_upload_publish(
     request: Request,
     upload_id: UUID,
-    current_user: User = Depends(require_feature(FEATURE_KASPI_FEED_UPLOADS)),
+    current_user: User = Depends(require_admin_then_feature(FEATURE_KASPI_FEED_UPLOADS)),
     session: AsyncSession = Depends(get_async_db),
 ):
-    _require_admin(current_user)
     company_id = _resolve_company_id(current_user)
     request_id = getattr(getattr(request, "state", None), "request_id", None) or request.headers.get("X-Request-ID")
 

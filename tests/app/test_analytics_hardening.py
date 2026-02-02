@@ -8,6 +8,7 @@ from httpx import AsyncClient
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.subscriptions.plan_catalog import normalize_plan_id
 from app.models.billing import Subscription
 from app.models.company import Company
 from app.models.order import Order, OrderStatus
@@ -65,7 +66,7 @@ async def test_analytics_subscription_inactive_blocked(
 
     sub = Subscription(
         company_id=company.id,
-        plan="start",
+        plan=normalize_plan_id("start") or "trial",
         status="canceled",
         billing_cycle="monthly",
         price=Decimal("0.00"),
