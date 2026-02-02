@@ -8,7 +8,7 @@ from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Path, Query, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
-from pydantic import BaseModel, ConfigDict, Field, condecimal, constr
+from pydantic import BaseModel, ConfigDict, Field, computed_field, condecimal, constr, field_serializer
 from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -20,6 +20,7 @@ from app.core.security import (
     is_token_revoked,
     resolve_tenant_company_id,
 )
+from app.core.subscriptions.plan_catalog import get_plan_display_name, normalize_plan_id
 from app.models.billing import BillingPayment, Subscription
 from app.models.company import Company
 from app.models.user import User
@@ -82,6 +83,15 @@ class SubscriptionOut(BaseModel):
     deleted_at: datetime | None = None
 
     model_config = ConfigDict(from_attributes=True)
+
+    @field_serializer("plan")
+    def _serialize_plan(self, plan: str) -> str:
+        return get_plan_display_name(plan)
+
+    @computed_field(return_type=str)
+    @property
+    def plan_id(self) -> str:
+        return normalize_plan_id(self.plan, default=self.plan) or (self.plan or "")
 
 
 class PaymentOut(BaseModel):
@@ -245,7 +255,8 @@ async def list_subscriptions(
     if status_filter:
         stmt = stmt.where(Subscription.status == status_filter)
     if plan:
-        stmt = stmt.where(Subscription.plan == plan)
+        normalized_plan = normalize_plan_id(plan, default=plan)
+        stmt = stmt.where(Subscription.plan == normalized_plan)
     if from_date:
         stmt = stmt.where(Subscription.next_billing_date >= from_date)
     if to_date:
@@ -314,9 +325,10 @@ async def create_subscription(
 
         now = utc_now()
         period_end = next_billing_from(now, payload.billing_cycle)
+        normalized_plan = normalize_plan_id(payload.plan, default=payload.plan)
         sub = Subscription(
             company_id=resolved_company_id,
-            plan=payload.plan,
+            plan=normalized_plan,
             status="trial" if payload.trial_days > 0 else "active",
             billing_cycle=payload.billing_cycle,
             price=Decimal(payload.price),
@@ -355,7 +367,7 @@ async def update_subscription(
 
     try:
         if payload.plan is not None:
-            sub.plan = payload.plan
+            sub.plan = normalize_plan_id(payload.plan, default=payload.plan)
         if payload.billing_cycle is not None:
             sub.billing_cycle = payload.billing_cycle
             sub.next_billing_date = next_billing_from(utc_now(), sub.billing_cycle)

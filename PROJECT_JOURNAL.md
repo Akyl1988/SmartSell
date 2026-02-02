@@ -206,7 +206,7 @@
 ## [2026-01-04] Tenant company scoping helper + query guardrails
 
 ### Added
-- Shared tenant company resolver in pp/core/security.py to enforce company_id from auth claims and centralize platform-admin override rules.
+- Shared tenant company resolver in  pp/core/security.py to enforce company_id from auth claims and centralize platform-admin override rules.
 - Regression tests covering company_id query behavior for wallet/payments (same-tenant allowed, cross-tenant forbidden) in 	ests/app/api/test_wallet_payments_tenant.py.
 
 ### Changed
@@ -889,7 +889,7 @@ Commits (per git show):
 ## [2026-01-04] Tenant company scoping helper + query guardrails
 
 ### Added
-- Shared tenant company resolver in pp/core/security.py to enforce company_id from auth claims and centralize platform-admin override rules.
+- Shared tenant company resolver in  pp/core/security.py to enforce company_id from auth claims and centralize platform-admin override rules.
 - Regression tests covering company_id query behavior for wallet/payments (same-tenant allowed, cross-tenant forbidden) in 	ests/app/api/test_wallet_payments_tenant.py.
 
 ### Changed
@@ -2162,6 +2162,97 @@ Timeout could cancel/rollback the main sync transaction, causing `kaspi_order_sy
 - PR #142 (4e622d8): campaigns hardening. Files: app/api/v1/campaigns.py, app/schemas/campaign.py, migrations/versions/20260129_campaigns_tenant_title_unique.py, tests/app/test_campaigns_hardening.py.
 - PR #143 (e9ccf75): analytics hardening. Files: app/api/v1/analytics.py, tests/app/test_analytics_hardening.py.
 - PR #144 (87500fd): invoices MVP core. Files: app/api/v1/invoices.py, app/core/dependencies.py, app/models/billing.py, migrations/versions/20260129_invoices_mvp_core.py, tests/app/test_invoices_mvp_core.py.
+
 - PR #145 (05487a9): .env.example prod keys. Files: .env.example, tests/test_env_example.py, PROJECT_JOURNAL.md.
 - PR #146 (81014d8): unified error contract (F2). Files: app/core/exceptions.py, app/main.py, tests/test_error_contract.py, PROJECT_JOURNAL.md.
 - PR #147 (aced20e): deploy guide (F3). Files: docs/DEPLOYMENT.md, tests/test_deploy_guide.py, PROJECT_JOURNAL.md.
+
+## [2026-02-02] 30-day summary
+
+### Context
+- Time window: 2026-01-03 → 2026-02-02 (last 30 days).
+- Evidence commands executed (sanitized):
+  - `git status -sb`
+  - `git log --since="30 days ago" --date=iso --pretty=format:"%h %ad %s" --name-status`
+  - `git shortlog -sn --since="30 days ago"`
+  - `git diff --stat`
+- Working tree snapshot: `PROJECT_JOURNAL.md` modified (append-only entry), untracked `kaspi_catalog_template.csv`.
+
+### Highlights
+
+**Core/Auth**
+- 86f35af (2026-01-16): removed debug leaks in OTP/DB/config; tightened security and logging.
+- 5168ce9 (2026-01-16): invitations + password reset tokens; new employee role and OTP TTL; tests added.
+- 2926f64 (2026-01-15): async token auth DB path + unified OTP verify attempts.
+
+**Kaspi**
+- 7031dd5 (2026-01-10): autosync scheduler + endpoints + tests; later hardened with status/runner guards.
+- 4815c83 / d03fa91 (2026-01-17): catalog import MVP + UX endpoints (batches/errors/offers/template).
+- c3ea329 (2026-01-17): feed export MVP (XML) + download endpoint and tests.
+
+**Billing / Subscriptions**
+- 35f9090 (2026-01-03): tenant-scoped billing (subscriptions/invoices) + isolation tests.
+- 01cdebc / 3106213 (2026-01-04): removed platform overrides for company scoping; tenant-safety guards.
+
+**Docs / Tooling / Tests**
+- 2f087a2 (2026-02-02): DB backup/restore tools (`tools/backup_db.ps1`, `tools/restore_db.ps1`) + docs.
+- 95be10b (2026-02-02): upgrade/rollback playbook (`docs/UPGRADE_PLAYBOOK.md`).
+- 3857e9e (2026-02-02): prod-gate adds `ruff format --check`.
+
+### Risks / Follow-ups
+- Open tasks around subscription enforcement and Kaspi feature gating continue to evolve; verify endpoint guards per milestone E.
+- Catalog template UX: OpenAPI currently exposes `/api/v1/kaspi/catalog/import/template.csv`; unified format endpoint remains optional/partial.
+- Catalog template verification: OpenAPI exposes `/api/v1/kaspi/catalog/import/template.csv` (auth required); `/api/v1/kaspi/catalog/template` is absent; 404 was wrong path; 401 was unauthenticated call; verified 200 with Bearer token.
+
+### Current status snapshot
+- Branch: `feat/subscriptions-next-v1`.
+- Working tree: only journal updates plus an untracked local artifact (`kaspi_catalog_template.csv`).
+- No staged code changes pending beyond this journal append.
+
+## [2026-02-02] Kaspi subscription gating matrix
+
+### Changed
+- Expanded subscription feature matrix: trial blocks sync-now; basic includes Kaspi feed uploads and autosync.
+- Added subscription matrix tests covering goods imports, feed uploads, autosync status, and sync-now across trial/basic/pro.
+
+### Verification
+- `python -m ruff format app tests`
+- `python -m ruff check app tests`
+- `python -m pytest -q tests/app/test_kaspi_subscription_matrix.py`
+
+## [2026-02-02] Kaspi RBAC-first subscription gating
+
+### Changed
+- Ensured RBAC runs before subscription gating for Kaspi feed uploads and sync-now.
+- Added sync-now subscription setup (basic/pro) in tests and a trial plan 402 assertion.
+
+### Verification
+- `python -m ruff format app tests`
+- `python -m ruff check app tests`
+- `python -m pytest -q tests/app/test_kaspi_feed_uploads.py tests/app/test_kaspi_sync_now.py`
+- `scripts/prod-gate.ps1`
+
+## [2026-02-02] Subscription feature matrix for Kaspi operations (WIP)
+
+### Added
+- Subscription feature keys and plan matrix (trial/basic/pro) in `app/core/subscriptions/features.py`.
+- Initial tests for subscription gating on Kaspi operations in `tests/app/test_kaspi_subscription_matrix.py`.
+
+### Verified
+- python -m ruff format app tests
+- python -m ruff check app tests
+- python -m pytest -q tests/app/test_kaspi_subscription_matrix.py
+
+### Next
+- Apply enforcement to concrete Kaspi endpoints (feed uploads / autosync / sync-now / goods imports) and expand tests to cover each endpoint.
+
+## [2026-02-02] Kaspi subscription gating matrix (addendum)
+
+### Changed
+- Expanded subscription feature matrix: trial blocks sync-now; basic includes Kaspi feed uploads and autosync.
+- Expanded subscription matrix tests for goods imports, feed uploads, autosync status, and sync-now across trial/basic/pro.
+
+### Verification
+- `python -m ruff format app tests`
+- `python -m ruff check app tests`
+- `python -m pytest -q tests/app/test_kaspi_subscription_matrix.py`
