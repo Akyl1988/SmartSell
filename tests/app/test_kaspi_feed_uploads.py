@@ -8,6 +8,7 @@ import pytest
 import pytest_asyncio
 from sqlalchemy import select
 
+from app.core.subscriptions.plan_catalog import normalize_plan_id
 from app.models.billing import Subscription
 from app.models.company import Company
 from app.models.integration_event import IntegrationEvent
@@ -82,7 +83,7 @@ async def _ensure_subscription_plan(async_db_session, company_id: int, plan: str
     if sub is None:
         sub = Subscription(
             company_id=company_id,
-            plan=plan,
+            plan=normalize_plan_id(plan) or "trial",
             status="active",
             billing_cycle="monthly",
             price=Decimal("0.00"),
@@ -94,7 +95,7 @@ async def _ensure_subscription_plan(async_db_session, company_id: int, plan: str
         )
         async_db_session.add(sub)
     else:
-        sub.plan = plan
+        sub.plan = normalize_plan_id(plan) or "trial"
         sub.status = "active"
     await async_db_session.commit()
 
