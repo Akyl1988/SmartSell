@@ -73,6 +73,9 @@ except Exception:
 # Р’СЃСЋРґСѓ UTF-8 (С†РµРЅС‚СЂР°Р»РёР·РѕРІР°РЅРЅРѕ)
 os.environ.setdefault("PYTHONIOENCODING", "UTF-8")
 
+# Ensure host SUPERUSER_ALLOWLIST does not leak into test runs
+os.environ.pop("SUPERUSER_ALLOWLIST", None)
+
 # Disable rate limiting in tests by default (can be overridden explicitly)
 os.environ.setdefault("RATE_LIMIT_ENABLED", "0")
 os.environ.setdefault("TESTING", "1")

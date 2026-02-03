@@ -480,6 +480,11 @@ class Settings(BaseSettings):
     PASSWORD_MIN_LENGTH: int = Field(
         default=8, description="Password min length", validation_alias="PASSWORD_MIN_LENGTH"
     )
+    SUPERUSER_ALLOWLIST: list[str] = Field(
+        default_factory=list,
+        description="Comma-separated superuser allowlist identifiers",
+        validation_alias="SUPERUSER_ALLOWLIST",
+    )
 
     # ---- БД
     DATABASE_URL: str | None = Field(
@@ -839,6 +844,17 @@ class Settings(BaseSettings):
     @field_validator("BACKEND_CORS_ORIGINS", mode="before")
     def _bcors(cls, v: Any) -> Any:
         return _parse_list_like(v)
+
+    @field_validator("SUPERUSER_ALLOWLIST", mode="before")
+    def _superuser_allowlist(cls, v: Any) -> Any:
+        if v is None:
+            return []
+        if isinstance(v, list | tuple | set):
+            return [str(item).strip() for item in v if str(item).strip()]
+        parsed = _parse_list_like(v)
+        if isinstance(parsed, list):
+            return [str(item).strip() for item in parsed if str(item).strip()]
+        return [str(parsed).strip()] if str(parsed).strip() else []
 
     @field_validator("SMTP_FROM_EMAIL", mode="before")
     def empty_email_is_none(cls, v: Any) -> Any:
