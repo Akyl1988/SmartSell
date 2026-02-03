@@ -1152,6 +1152,18 @@ def _status_to_str(value: OrderStatus | str | None) -> str:
     return str(value)
 
 
+def _parse_order_status(raw: str) -> OrderStatus:
+    value = str(raw or "").strip()
+    if not value:
+        raise ValueError("empty_status")
+    if "." in value:
+        value = value.split(".")[-1].strip()
+    try:
+        return OrderStatus[value.upper()]
+    except KeyError as exc:
+        raise ValueError("invalid_status") from exc
+
+
 def _normalize_db_dt(value: datetime) -> datetime:
     if value.tzinfo is None:
         return value
@@ -1256,9 +1268,19 @@ async def kaspi_orders_list(
         Order.company_id == company_id,
         Order.source == OrderSource.KASPI,
     )
+    # status has priority; state is legacy alias.
     effective_status = status_filter or state
     if effective_status:
-        stmt = stmt.where(Order.status == _status_to_str(effective_status))
+        try:
+            parsed_status = _parse_order_status(effective_status)
+        except ValueError:
+            payload = {"detail": "invalid_status", "code": "invalid_status", "request_id": rid}
+            return JSONResponse(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                content=payload,
+                headers={"X-Request-ID": rid},
+            )
+        stmt = stmt.where(Order.status == parsed_status)
     if q:
         like = f"%{q}%"
         stmt = stmt.where(
