@@ -160,11 +160,12 @@ def _require_admin(current_user: User) -> None:
 
 def require_admin_then_feature(feature: str) -> Any:
     async def _dep(
+        request: Request,
         current_user: User = Depends(get_current_user),  # noqa: B008
         db: AsyncSession = Depends(get_async_db),  # noqa: B008
     ) -> User:
         _require_admin(current_user)
-        await require_feature(feature)(current_user=current_user, db=db)
+        await require_feature(feature)(request=request, current_user=current_user, db=db)
         return current_user
 
     return _dep

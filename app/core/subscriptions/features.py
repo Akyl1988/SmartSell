@@ -3,7 +3,7 @@ from __future__ import annotations
 from collections.abc import Iterable
 from typing import Any
 
-from fastapi import Depends
+from fastapi import Depends, Request
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -14,6 +14,7 @@ from app.core.security import get_current_user, resolve_tenant_company_id
 from app.core.subscriptions.plan_catalog import get_plan_features as _catalog_plan_features
 from app.core.subscriptions.plan_catalog import normalize_plan_id
 from app.models.company import Company
+from app.services.subscription_overrides import is_subscription_override_active
 from app.services.subscriptions import get_company_subscription, is_subscription_active
 
 logger = get_logger(__name__)
@@ -39,14 +40,52 @@ def _has_feature(plan: str, feature: str) -> bool:
     return feature in _catalog_plan_features(plan)
 
 
+async def _extract_merchant_uid(request: Request) -> str | None:
+    try:
+        for key in ("merchantUid", "merchant_uid"):
+            raw = request.query_params.get(key)
+            if raw:
+                return raw.strip() or None
+    except Exception:
+        pass
+
+    content_type = (request.headers.get("content-type") or "").lower()
+    if "application/json" not in content_type:
+        return None
+
+    try:
+        body = await request.json()
+    except Exception:
+        return None
+    if isinstance(body, dict):
+        raw = body.get("merchant_uid") or body.get("merchantUid")
+        if isinstance(raw, str):
+            return raw.strip() or None
+    return None
+
+
 def require_feature(feature: str) -> Any:
     async def _dep(
+        request: Request,
         current_user=Depends(get_current_user),  # noqa: B008
         db: AsyncSession = Depends(get_async_db),  # noqa: B008
     ) -> Any:
         company_id = resolve_tenant_company_id(current_user, not_found_detail="Company not set")
         plan = await _resolve_plan(db, company_id)
         if not _has_feature(plan, feature):
+            if feature.startswith("kaspi."):
+                merchant_uid = await _extract_merchant_uid(request)
+                if merchant_uid:
+                    if await is_subscription_override_active(db, company_id, "kaspi", merchant_uid):
+                        logger.info(
+                            "Feature override allowed",
+                            extra={
+                                "feature": feature,
+                                "company_id": company_id,
+                                "merchant_uid": merchant_uid,
+                            },
+                        )
+                        return current_user
             logger.info("Feature blocked", extra={"feature": feature, "plan": plan, "company_id": company_id})
             raise AuthorizationError(
                 "subscription_required",

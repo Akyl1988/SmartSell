@@ -14,6 +14,7 @@
 - [ ] Address Pydantic config deprecation warnings; update models/config accordingly.
 - [ ] Document asyncio-only support or add trio backend coverage; monitor asyncpg compatibility.
 - [ ] Consolidate httpx version (runtime vs dev) to avoid drift.
+- [x] Owner store whitelist bypass exists for subscription gating (option A).
 - [x] SMTP in TESTING/CI fixed to port 587 (ignores `.env` overrides); add `SMTP_PORT_TEST` to override safely if needed.
 
 ## P2
