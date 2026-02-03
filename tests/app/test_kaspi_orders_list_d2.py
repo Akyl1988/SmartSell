@@ -174,6 +174,112 @@ async def test_kaspi_orders_list_filters(async_client, async_db_session, company
     assert data["items"][0]["external_id"] == "a2"
 
 
+async def test_kaspi_orders_list_status_filter_enum(async_client, async_db_session, company_a_admin_headers):
+    await _create_offer(async_db_session, company_id=1001, merchant_uid="123", sku="SKU-STATUS")
+    now = datetime.utcnow()
+    orders = [
+        _make_order(company_id=1001, ext_id="s1", created_at=now, status=OrderStatus.PAID),
+        _make_order(company_id=1001, ext_id="s2", created_at=now, status=OrderStatus.PENDING),
+    ]
+    async_db_session.add_all(orders)
+    await async_db_session.flush()
+    async_db_session.add_all(
+        [
+            OrderItem(
+                order_id=orders[0].id,
+                sku="SKU-STATUS",
+                name="Item",
+                quantity=1,
+                unit_price=Decimal("1000.00"),
+                total_price=Decimal("1000.00"),
+                cost_price=Decimal("100.00"),
+            ),
+            OrderItem(
+                order_id=orders[1].id,
+                sku="SKU-STATUS",
+                name="Item",
+                quantity=1,
+                unit_price=Decimal("1000.00"),
+                total_price=Decimal("1000.00"),
+                cost_price=Decimal("100.00"),
+            ),
+        ]
+    )
+    await async_db_session.commit()
+
+    resp = await async_client.get(
+        "/api/v1/kaspi/orders?merchantUid=123&status=OrderStatus.PAID",
+        headers=company_a_admin_headers,
+    )
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["total"] == 1
+    assert data["items"][0]["external_id"] == "s1"
+
+
+async def test_kaspi_orders_list_invalid_status(async_client, company_a_admin_headers):
+    resp = await async_client.get(
+        "/api/v1/kaspi/orders?status=bad_status",
+        headers={**company_a_admin_headers, "X-Request-ID": "req-invalid-status"},
+    )
+    assert resp.status_code == 400
+    data = resp.json()
+    assert data["code"] == "invalid_status"
+    assert resp.headers.get("X-Request-ID") == "req-invalid-status"
+
+
+async def test_kaspi_orders_list_invalid_datetime(async_client, company_a_admin_headers):
+    resp = await async_client.get(
+        "/api/v1/kaspi/orders?created_from=not-a-date",
+        headers={**company_a_admin_headers, "X-Request-ID": "req-invalid-datetime"},
+    )
+    assert resp.status_code == 400
+    data = resp.json()
+    assert data["code"] == "invalid_datetime"
+    assert resp.headers.get("X-Request-ID") == "req-invalid-datetime"
+
+
+async def test_kaspi_orders_list_tenant_isolation_list(async_client, async_db_session, company_a_admin_headers):
+    await _create_offer(async_db_session, company_id=1001, merchant_uid="123", sku="SKU-ISO-A")
+    await _create_offer(async_db_session, company_id=2001, merchant_uid="123", sku="SKU-ISO-B")
+    order_a = _make_order(company_id=1001, ext_id="ia", created_at=datetime.utcnow(), status=OrderStatus.PAID)
+    order_b = _make_order(company_id=2001, ext_id="ib", created_at=datetime.utcnow(), status=OrderStatus.PAID)
+    async_db_session.add_all([order_a, order_b])
+    await async_db_session.flush()
+    async_db_session.add_all(
+        [
+            OrderItem(
+                order_id=order_a.id,
+                sku="SKU-ISO-A",
+                name="Item",
+                quantity=1,
+                unit_price=Decimal("1000.00"),
+                total_price=Decimal("1000.00"),
+                cost_price=Decimal("100.00"),
+            ),
+            OrderItem(
+                order_id=order_b.id,
+                sku="SKU-ISO-B",
+                name="Item",
+                quantity=1,
+                unit_price=Decimal("1000.00"),
+                total_price=Decimal("1000.00"),
+                cost_price=Decimal("100.00"),
+            ),
+        ]
+    )
+    await async_db_session.commit()
+
+    resp = await async_client.get(
+        "/api/v1/kaspi/orders?merchantUid=123",
+        headers=company_a_admin_headers,
+    )
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["total"] == 1
+    assert data["items"][0]["external_id"] == "ia"
+
+
 async def test_kaspi_orders_detail_includes_items(async_client, async_db_session, company_a_admin_headers):
     await _create_offer(async_db_session, company_id=1001, merchant_uid="123", sku="SKU-DETAIL")
     order = _make_order(company_id=1001, ext_id="d1", created_at=datetime.utcnow(), status=OrderStatus.PAID)
@@ -196,3 +302,27 @@ async def test_kaspi_orders_detail_includes_items(async_client, async_db_session
     data = resp.json()
     assert data["id"] == order.id
     assert data["items"][0]["sku"] == "SKU-1"
+
+
+async def test_kaspi_orders_detail_tenant_isolation(async_client, async_db_session, company_a_admin_headers):
+    await _create_offer(async_db_session, company_id=2001, merchant_uid="999", sku="SKU-OTHER")
+    order = _make_order(company_id=2001, ext_id="d2", created_at=datetime.utcnow(), status=OrderStatus.PAID)
+    async_db_session.add(order)
+    await async_db_session.flush()
+    async_db_session.add(
+        OrderItem(
+            order_id=order.id,
+            sku="SKU-OTHER",
+            name="Item",
+            quantity=1,
+            unit_price=Decimal("1000.00"),
+            total_price=Decimal("1000.00"),
+            cost_price=Decimal("100.00"),
+        )
+    )
+    await async_db_session.commit()
+
+    resp = await async_client.get(f"/api/v1/kaspi/orders/{order.id}", headers=company_a_admin_headers)
+    assert resp.status_code == 404
+    data = resp.json()
+    assert data["code"] == "order_not_found"
