@@ -47,6 +47,18 @@ async def test_kaspi_orders_list_tenant_isolation(async_client, async_db_session
     await _create_offer(async_db_session, company_id=2001, merchant_uid="999", sku="SKU-ISO")
     order = _make_order(company_id=2001, ext_id="o1", created_at=datetime.now(UTC), status=OrderStatus.PENDING)
     async_db_session.add(order)
+    await async_db_session.flush()
+    async_db_session.add(
+        OrderItem(
+            order_id=order.id,
+            sku="SKU-ISO",
+            name="Item",
+            quantity=1,
+            unit_price=Decimal("1000.00"),
+            total_price=Decimal("1000.00"),
+            cost_price=Decimal("100.00"),
+        )
+    )
     await async_db_session.commit()
 
     resp = await async_client.get(
@@ -61,11 +73,48 @@ async def test_kaspi_orders_list_tenant_isolation(async_client, async_db_session
 async def test_kaspi_orders_list_pagination(async_client, async_db_session, company_a_admin_headers):
     await _create_offer(async_db_session, company_id=1001, merchant_uid="123", sku="SKU-PAGE")
     now = datetime.utcnow()
+    orders = [
+        _make_order(company_id=1001, ext_id="o1", created_at=now - timedelta(days=1), status=OrderStatus.PENDING),
+        _make_order(company_id=1001, ext_id="o2", created_at=now - timedelta(hours=12), status=OrderStatus.PENDING),
+        _make_order(company_id=1001, ext_id="o3", created_at=now - timedelta(hours=1), status=OrderStatus.PENDING),
+    ]
     async_db_session.add_all(
         [
-            _make_order(company_id=1001, ext_id="o1", created_at=now - timedelta(days=1), status=OrderStatus.PENDING),
-            _make_order(company_id=1001, ext_id="o2", created_at=now - timedelta(hours=12), status=OrderStatus.PENDING),
-            _make_order(company_id=1001, ext_id="o3", created_at=now - timedelta(hours=1), status=OrderStatus.PENDING),
+            orders[0],
+            orders[1],
+            orders[2],
+        ]
+    )
+    await async_db_session.flush()
+    async_db_session.add_all(
+        [
+            OrderItem(
+                order_id=orders[0].id,
+                sku="SKU-PAGE",
+                name="Item",
+                quantity=1,
+                unit_price=Decimal("1000.00"),
+                total_price=Decimal("1000.00"),
+                cost_price=Decimal("100.00"),
+            ),
+            OrderItem(
+                order_id=orders[1].id,
+                sku="SKU-PAGE",
+                name="Item",
+                quantity=1,
+                unit_price=Decimal("1000.00"),
+                total_price=Decimal("1000.00"),
+                cost_price=Decimal("100.00"),
+            ),
+            OrderItem(
+                order_id=orders[2].id,
+                sku="SKU-PAGE",
+                name="Item",
+                quantity=1,
+                unit_price=Decimal("1000.00"),
+                total_price=Decimal("1000.00"),
+                cost_price=Decimal("100.00"),
+            ),
         ]
     )
     await async_db_session.commit()
@@ -85,10 +134,32 @@ async def test_kaspi_orders_list_pagination(async_client, async_db_session, comp
 async def test_kaspi_orders_list_filters(async_client, async_db_session, company_a_admin_headers):
     await _create_offer(async_db_session, company_id=1001, merchant_uid="123", sku="SKU-FILTER")
     base = datetime(2026, 2, 1)
+    orders = [
+        _make_order(company_id=1001, ext_id="a1", created_at=base, status=OrderStatus.PENDING),
+        _make_order(company_id=1001, ext_id="a2", created_at=base + timedelta(hours=1), status=OrderStatus.SHIPPED),
+    ]
+    async_db_session.add_all([orders[0], orders[1]])
+    await async_db_session.flush()
     async_db_session.add_all(
         [
-            _make_order(company_id=1001, ext_id="a1", created_at=base, status=OrderStatus.PENDING),
-            _make_order(company_id=1001, ext_id="a2", created_at=base + timedelta(hours=1), status=OrderStatus.SHIPPED),
+            OrderItem(
+                order_id=orders[0].id,
+                sku="SKU-FILTER",
+                name="Item",
+                quantity=1,
+                unit_price=Decimal("1000.00"),
+                total_price=Decimal("1000.00"),
+                cost_price=Decimal("100.00"),
+            ),
+            OrderItem(
+                order_id=orders[1].id,
+                sku="SKU-FILTER",
+                name="Item",
+                quantity=1,
+                unit_price=Decimal("1000.00"),
+                total_price=Decimal("1000.00"),
+                cost_price=Decimal("100.00"),
+            ),
         ]
     )
     await async_db_session.commit()

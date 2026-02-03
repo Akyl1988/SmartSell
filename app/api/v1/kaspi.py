@@ -80,7 +80,7 @@ from app.models.kaspi_mc_session import KaspiMcSession
 from app.models.kaspi_offer import KaspiOffer
 from app.models.kaspi_order_sync_state import KaspiOrderSyncState
 from app.models.marketplace import KaspiStoreToken
-from app.models.order import Order, OrderSource, OrderStatus
+from app.models.order import Order, OrderItem, OrderSource, OrderStatus
 from app.models.user import User
 from app.schemas.kaspi import (
     ImportRequest,
@@ -1114,6 +1114,7 @@ class KaspiOrdersListOut(BaseModel):
     page: int
     limit: int
     total: int
+    offset: int = 0
 
 
 def _parse_iso_dt(value: str) -> datetime:
@@ -1195,44 +1196,37 @@ def _order_to_detail(order: Order) -> KaspiOrderDetailOut:
 async def kaspi_orders_list(
     request: Request,
     merchant_uid: str | None = Query(None, min_length=1, alias="merchantUid"),
+    status_filter: str | None = Query(None, alias="status"),
     state: str | None = Query(None),
+    q: str | None = Query(None),
     created_from: str | None = Query(None),
     created_to: str | None = Query(None),
     page: int = Query(1, ge=1),
+    offset: int | None = Query(None, ge=0),
     limit: int = Query(50, ge=1, le=200),
+    sort: Literal["created_at_desc", "created_at_asc"] = Query("created_at_desc"),
     current_user: User = Depends(require_admin_then_feature(FEATURE_KASPI_ORDERS_LIST)),
     session: AsyncSession = Depends(get_async_db),
 ):
     company_id = _resolve_company_id(current_user)
     request_id = getattr(getattr(request, "state", None), "request_id", None)
     rid = request_id or request.headers.get("X-Request-ID") or str(uuid4())
-    if not merchant_uid:
-        company = await session.get(Company, company_id)
-        # Default store: company.kaspi_store_id (single-store assumption).
-        merchant_uid = (company.kaspi_store_id or "").strip() if company else ""
-    if not merchant_uid:
-        payload = {"detail": "merchant_uid_required", "code": "merchant_uid_required", "request_id": rid}
-        return JSONResponse(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            content=payload,
-            headers={"X-Request-ID": rid},
-        )
-
-    has_merchant = (
-        await session.execute(
-            sa.select(sa.literal(True)).where(
-                KaspiOffer.company_id == company_id,
-                KaspiOffer.merchant_uid == merchant_uid,
+    if merchant_uid:
+        has_merchant = (
+            await session.execute(
+                sa.select(sa.literal(True)).where(
+                    KaspiOffer.company_id == company_id,
+                    KaspiOffer.merchant_uid == merchant_uid,
+                )
             )
-        )
-    ).scalar_one_or_none()
-    if not has_merchant:
-        payload = {"detail": "merchant_not_found", "code": "merchant_not_found", "request_id": rid}
-        return JSONResponse(
-            status_code=status.HTTP_404_NOT_FOUND,
-            content=payload,
-            headers={"X-Request-ID": rid},
-        )
+        ).scalar_one_or_none()
+        if not has_merchant:
+            payload = {"detail": "merchant_not_found", "code": "merchant_not_found", "request_id": rid}
+            return JSONResponse(
+                status_code=status.HTTP_404_NOT_FOUND,
+                content=payload,
+                headers={"X-Request-ID": rid},
+            )
 
     dt_from = None
     dt_to = None
@@ -1261,23 +1255,53 @@ async def kaspi_orders_list(
         Order.company_id == company_id,
         Order.source == OrderSource.KASPI,
     )
-    if state:
-        stmt = stmt.where(Order.status == _status_to_str(state))
+    effective_status = status_filter or state
+    if effective_status:
+        stmt = stmt.where(Order.status == _status_to_str(effective_status))
+    if q:
+        like = f"%{q}%"
+        stmt = stmt.where(
+            sa.or_(
+                Order.order_number.ilike(like),
+                Order.external_id.ilike(like),
+                Order.customer_name.ilike(like),
+                Order.customer_phone.ilike(like),
+            )
+        )
     if dt_from:
         stmt = stmt.where(Order.created_at >= dt_from)
     if dt_to:
         stmt = stmt.where(Order.created_at <= dt_to)
+    if merchant_uid:
+        items_match = (
+            sa.select(sa.literal(True))
+            .select_from(OrderItem)
+            .join(
+                KaspiOffer,
+                sa.and_(
+                    KaspiOffer.company_id == company_id,
+                    KaspiOffer.merchant_uid == merchant_uid,
+                    KaspiOffer.sku == OrderItem.sku,
+                ),
+            )
+            .where(OrderItem.order_id == Order.id)
+        )
+        stmt = stmt.where(sa.exists(items_match))
 
     total = (await session.scalar(select(sa.func.count()).select_from(stmt.subquery()))) or 0
 
-    offset = (page - 1) * limit
-    rows = (await session.execute(stmt.order_by(Order.created_at.desc()).limit(limit).offset(offset))).scalars().all()
+    effective_offset = offset if offset is not None else (page - 1) * limit
+    order_by = [Order.created_at.desc(), Order.id.desc()]
+    if sort == "created_at_asc":
+        order_by = [Order.created_at.asc(), Order.id.asc()]
+    rows = (await session.execute(stmt.order_by(*order_by).limit(limit).offset(effective_offset))).scalars().all()
 
     return KaspiOrdersListOut(
         items=[_order_to_list_item(order) for order in rows],
-        page=page,
+        page=(effective_offset // limit) + 1,
         limit=limit,
         total=int(total),
+        offset=effective_offset,
     )
 
 
