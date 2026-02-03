@@ -10,7 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.db import get_async_db
 from app.core.exceptions import AuthorizationError
 from app.core.logging import get_logger
-from app.core.security import get_current_user, resolve_tenant_company_id
+from app.core.security import get_current_user, is_superuser, resolve_tenant_company_id
 from app.core.subscriptions.plan_catalog import get_plan_features as _catalog_plan_features
 from app.core.subscriptions.plan_catalog import normalize_plan_id
 from app.models.company import Company
@@ -70,6 +70,8 @@ def require_feature(feature: str) -> Any:
         current_user=Depends(get_current_user),  # noqa: B008
         db: AsyncSession = Depends(get_async_db),  # noqa: B008
     ) -> Any:
+        if is_superuser(current_user):
+            return current_user
         company_id = resolve_tenant_company_id(current_user, not_found_detail="Company not set")
         plan = await _resolve_plan(db, company_id)
         if not _has_feature(plan, feature):

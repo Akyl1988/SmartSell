@@ -899,6 +899,24 @@ if _HAS_FASTAPI:
         except Exception:
             return ""
 
+    def is_superuser(user: User | None) -> bool:
+        if user is None:
+            return False
+        if bool(getattr(user, "is_superuser", False)):
+            return True
+        allowlist = getattr(settings, "SUPERUSER_ALLOWLIST", None) or []
+        normalized = {str(item).strip() for item in allowlist if str(item).strip()}
+        if not normalized:
+            return False
+        user_id = str(getattr(user, "id", "") or "").strip()
+        if user_id and user_id in normalized:
+            return True
+        for attr in ("email", "username", "phone"):
+            value = str(getattr(user, attr, "") or "").strip()
+            if value and value in normalized:
+                return True
+        return False
+
     def is_platform_admin(user: User | None) -> bool:
         try:
             return str(getattr(user, "role", "") or "").lower() == "platform_admin"

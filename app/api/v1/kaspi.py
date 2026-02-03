@@ -58,7 +58,7 @@ from app.core.config import settings
 from app.core.db import get_async_db  # noqa — для совместимости импорт-алиас
 from app.core.errors import safe_error_message
 from app.core.logging import get_logger
-from app.core.security import get_current_user, resolve_tenant_company_id
+from app.core.security import get_current_user, is_superuser, resolve_tenant_company_id
 from app.core.subscriptions import (
     FEATURE_KASPI_AUTOSYNC,
     FEATURE_KASPI_FEED_UPLOADS,
@@ -154,7 +154,7 @@ def _resolve_company_id(current_user: User) -> int:
 
 
 def _require_admin(current_user: User) -> None:
-    if not (current_user.is_superuser or current_user.role == "admin"):
+    if not (is_superuser(current_user) or current_user.role == "admin"):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="forbidden")
 
 
