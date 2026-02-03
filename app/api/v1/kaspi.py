@@ -1164,6 +1164,43 @@ def _parse_order_status(raw: str) -> OrderStatus:
         raise ValueError("invalid_status") from exc
 
 
+def _compute_sync_now_budgets(
+    timeout_sec: float,
+    *,
+    safety_margin: float = 1.5,
+    default_orders: float = 12.0,
+    default_goods: float = 10.0,
+    default_feed: float = 3.0,
+) -> dict[str, float]:
+    budget_total = max(0.1, float(timeout_sec) - safety_margin)
+    default_total = default_orders + default_goods + default_feed
+    scale = (budget_total / default_total) if default_total > 0 else 1.0
+
+    orders_timeout_sec = max(0.1, default_orders * scale)
+    goods_timeout_sec = max(0.0, default_goods * scale)
+    feed_timeout_sec = max(0.0, default_feed * scale)
+
+    min_orders_budget = min(12.0, budget_total)
+    non_orders_total = goods_timeout_sec + feed_timeout_sec
+    max_non_orders = max(0.0, budget_total - min_orders_budget)
+    if non_orders_total > max_non_orders and non_orders_total > 0:
+        shrink = max_non_orders / non_orders_total
+        goods_timeout_sec = max(0.0, goods_timeout_sec * shrink)
+        feed_timeout_sec = max(0.0, feed_timeout_sec * shrink)
+
+    orders_budget = max(0.1, budget_total - goods_timeout_sec - feed_timeout_sec)
+    final_orders_timeout = min(max(orders_timeout_sec, 12.0), orders_budget)
+
+    return {
+        "budget_total": budget_total,
+        "orders_timeout_sec": orders_timeout_sec,
+        "goods_timeout_sec": goods_timeout_sec,
+        "feed_timeout_sec": feed_timeout_sec,
+        "orders_budget": orders_budget,
+        "final_orders_timeout": final_orders_timeout,
+    }
+
+
 def _normalize_db_dt(value: datetime) -> datetime:
     if value.tzinfo is None:
         return value
@@ -2749,21 +2786,19 @@ async def kaspi_sync_now(
                 svc._sync_timeout_seconds = max(0.1, min(svc_timeout, float(timeout_sec)))
 
                 safety_margin = 1.5
-                default_orders = 12.0
-                default_goods = 10.0
-                default_feed = 3.0
-                default_total = default_orders + default_goods + default_feed
-                budget_total = max(0.1, float(timeout_sec) - safety_margin)
-                scale = 1.0
-                if default_total > 0 and budget_total < default_total:
-                    scale = max(0.1, budget_total / default_total)
-                orders_timeout_sec = max(0.1, default_orders * scale)
-                goods_timeout_sec = max(0.1, default_goods * scale)
-                feed_timeout_sec = max(0.1, default_feed * scale)
-                total_alloc = orders_timeout_sec + goods_timeout_sec + feed_timeout_sec
-                if total_alloc > budget_total:
-                    over = total_alloc - budget_total
-                    feed_timeout_sec = max(0.1, feed_timeout_sec - over)
+                budgets = _compute_sync_now_budgets(
+                    timeout_sec,
+                    safety_margin=safety_margin,
+                    default_orders=12.0,
+                    default_goods=10.0,
+                    default_feed=3.0,
+                )
+                budget_total = budgets["budget_total"]
+                orders_timeout_sec = budgets["orders_timeout_sec"]
+                goods_timeout_sec = budgets["goods_timeout_sec"]
+                feed_timeout_sec = budgets["feed_timeout_sec"]
+                orders_budget = budgets["orders_budget"]
+                final_orders_timeout = budgets["final_orders_timeout"]
 
                 logger.info(
                     "kaspi_sync_now budgets",
@@ -2775,12 +2810,14 @@ async def kaspi_sync_now(
                         "goods_timeout_sec": goods_timeout_sec,
                         "feed_timeout_sec": feed_timeout_sec,
                         "safety_margin_sec": safety_margin,
+                        "budget_total_sec": budget_total,
+                        "orders_budget": orders_budget,
+                        "orders_final_timeout_sec": final_orders_timeout,
                     },
                 )
 
                 errors: list[dict[str, Any]] = []
                 orders_timed_out = False
-                orders_budget = min(12.0, max(1.0, float(timeout_sec) - 8.0))
                 try:
                     phase = "orders_sync"
                     orders_result = await asyncio.wait_for(
@@ -2788,11 +2825,11 @@ async def kaspi_sync_now(
                             db=session,
                             company_id=company_id,
                             request_id=rid,
-                            timeout_seconds=orders_timeout_sec,
+                            timeout_seconds=final_orders_timeout,
                             orders_max_attempts=1,
                             client_retries=0,
                         ),
-                        timeout=orders_budget,
+                        timeout=final_orders_timeout,
                     )
                 except asyncio.TimeoutError:
                     orders_timed_out = True

@@ -358,9 +358,24 @@ async def test_kaspi_sync_now_timeout_is_bounded(
         await asyncio.sleep(999)
         return {"ok": True}
 
+    offer = KaspiOffer(
+        company_id=1001,
+        merchant_uid="M1",
+        sku="S1",
+        title="Item 1",
+        price=1000,
+    )
+    async_db_session.add(offer)
+    await async_db_session.commit()
+
+    async def _submit_import(*args, **kwargs):
+        await asyncio.sleep(999)
+        return {"code": "IC-1", "status": "UPLOADED"}
+
     monkeypatch.setattr(kaspi_module, "_try_sync_now_lock", _lock_true)
     monkeypatch.setattr(kaspi_module, "_release_sync_now_lock", _unlock)
     monkeypatch.setattr(kaspi_module.KaspiService, "sync_orders", _sync_orders)
+    monkeypatch.setattr(kaspi_module.KaspiGoodsImportClient, "submit_import", _submit_import)
     monkeypatch.setattr(KaspiStoreToken, "get_token", _get_token)
 
     start = time.monotonic()
@@ -378,10 +393,10 @@ async def test_kaspi_sync_now_timeout_is_bounded(
     assert resp.status_code == 200
     data = resp.json()
     assert data.get("status") == "partial"
-    assert data.get("phase") == "orders_sync"
+    assert data.get("phase") == "goods_import"
     assert data["errors"][0]["code"] == "kaspi_sync_timeout"
     assert data["errors"][0]["detail"]
-    assert data["errors"][0]["phase"] == "orders_sync"
+    assert data["errors"][0]["phase"] == "goods_import"
     assert data["errors"][0]["request_id"]
 
 
@@ -409,9 +424,24 @@ async def test_kaspi_sync_now_timeout_hard_returns_504(
         await asyncio.sleep(999)
         return {"ok": True}
 
+    offer = KaspiOffer(
+        company_id=1001,
+        merchant_uid="M1",
+        sku="S1",
+        title="Item 1",
+        price=1000,
+    )
+    async_db_session.add(offer)
+    await async_db_session.commit()
+
+    async def _submit_import(*args, **kwargs):
+        await asyncio.sleep(999)
+        return {"code": "IC-1", "status": "UPLOADED"}
+
     monkeypatch.setattr(kaspi_module, "_try_sync_now_lock", _lock_true)
     monkeypatch.setattr(kaspi_module, "_release_sync_now_lock", _unlock)
     monkeypatch.setattr(kaspi_module.KaspiService, "sync_orders", _sync_orders)
+    monkeypatch.setattr(kaspi_module.KaspiGoodsImportClient, "submit_import", _submit_import)
     monkeypatch.setattr(KaspiStoreToken, "get_token", _get_token)
 
     resp = await asyncio.wait_for(
@@ -426,3 +456,19 @@ async def test_kaspi_sync_now_timeout_hard_returns_504(
     assert resp.status_code == 504
     data = resp.json()
     assert data.get("code") == "kaspi_sync_timeout"
+
+
+def test_kaspi_sync_now_budget_min_orders_timeout():
+    from app.api.v1 import kaspi as kaspi_module
+
+    budgets = kaspi_module._compute_sync_now_budgets(20.0)
+    assert budgets["final_orders_timeout"] >= 12.0
+    assert budgets["final_orders_timeout"] <= budgets["budget_total"]
+
+
+def test_kaspi_sync_now_budget_grows_with_timeout():
+    from app.api.v1 import kaspi as kaspi_module
+
+    budgets = kaspi_module._compute_sync_now_budgets(60.0)
+    assert budgets["final_orders_timeout"] > 12.0
+    assert budgets["final_orders_timeout"] <= budgets["budget_total"]
