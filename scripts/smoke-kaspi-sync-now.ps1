@@ -334,6 +334,12 @@ if ($first.StatusCode -eq 429) {
 $firstCode = $first.StatusCode
 $firstBody = Get-JsonProperty -Object $first -Name "Body"
 $firstErrCode = Get-JsonProperty -Object $firstBody -Name "code"
+$firstErrDetail = Get-JsonProperty -Object $firstBody -Name "detail"
+
+if ($firstCode -eq 402 -and ($firstErrCode -eq "subscription_required" -or $firstErrDetail -eq "subscription_required")) {
+  Write-Host "SKIP: subscription required for kaspi sync now."
+  return
+}
 
 if ($firstCode -eq 409 -and $firstErrCode -eq "kaspi_sync_in_progress") {
   # ok
