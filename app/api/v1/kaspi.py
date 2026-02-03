@@ -47,7 +47,7 @@ import httpx
 import sqlalchemy as sa
 from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, Response, UploadFile, status
 from fastapi.encoders import jsonable_encoder
-from fastapi.responses import JSONResponse
+from fastapi.responses import FileResponse, JSONResponse
 from openpyxl import Workbook, load_workbook
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 from sqlalchemy import bindparam, select, text
@@ -3850,9 +3850,37 @@ async def kaspi_offers_list(
     return KaspiOfferListOut(items=items, total=int(total or 0), limit=limit, offset=offset)
 
 
+TEMPLATE_RESPONSES = {
+    200: {
+        "description": "Template file (CSV or XLSX)",
+        "content": {
+            "text/csv": {
+                "schema": {"type": "string", "format": "binary"},
+            },
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": {
+                "schema": {"type": "string", "format": "binary"},
+            },
+        },
+    }
+}
+
+LEGACY_CSV_RESPONSES = {
+    200: {
+        "description": "CSV template file",
+        "content": {
+            "text/csv": {
+                "schema": {"type": "string", "format": "binary"},
+            }
+        },
+    }
+}
+
+
 @router.get(
     "/catalog/import/template.csv",
     summary="Download catalog import CSV template",
+    response_class=FileResponse,
+    responses=LEGACY_CSV_RESPONSES,
 )
 async def kaspi_catalog_import_template_csv(
     current_user: User = Depends(get_current_user),
@@ -3909,6 +3937,8 @@ def _kaspi_catalog_template_xlsx() -> bytes:
 @router.get(
     "/catalog/template",
     summary="Download catalog import template",
+    response_class=FileResponse,
+    responses=TEMPLATE_RESPONSES,
 )
 async def kaspi_catalog_import_template(
     format: Literal["csv", "xlsx"] = Query("xlsx"),
