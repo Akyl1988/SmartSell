@@ -127,6 +127,49 @@ FAST_PROBE_TIMEOUT = 5.0
 SYNC_NOW_TIMEOUT_SEC = 25.0
 
 
+def _ci_diag_enabled() -> bool:
+    return os.environ.get("CI_DIAG", "").strip() == "1"
+
+
+try:  # pragma: no cover - py<3.11 compatibility
+    ExceptionGroup
+    _HAS_EXCEPTION_GROUP = True
+except NameError:  # pragma: no cover
+    _HAS_EXCEPTION_GROUP = False
+
+
+def _safe_log_info(event: str, **extra: Any) -> None:
+    try:
+        logger.info(event, extra=extra)
+    except Exception:
+        pass
+
+
+def _safe_log_warning(event: str, **extra: Any) -> None:
+    try:
+        logger.warning(event, extra=extra)
+    except Exception:
+        pass
+
+
+def _task_cancelled_flag() -> bool | None:
+    try:
+        task = asyncio.current_task()
+        return bool(task.cancelled()) if task else None
+    except Exception:
+        return None
+
+
+def _exception_group_info(exc: BaseException) -> dict[str, Any]:
+    info: dict[str, Any] = {}
+    if _HAS_EXCEPTION_GROUP and isinstance(exc, ExceptionGroup):  # type: ignore[name-defined]
+        sub_exc = list(exc.exceptions)[:5]
+        info["sub_exception_types"] = [type(e).__name__ for e in sub_exc]
+        if _ci_diag_enabled():
+            info["sub_exception_reprs"] = [repr(e) for e in sub_exc]
+    return info
+
+
 def normalize_name(name: str) -> str:
     return name.strip().lower()
 
@@ -2736,6 +2779,21 @@ async def kaspi_sync_now(
     rid = request_id or request.headers.get("X-Request-ID") or str(uuid4())
 
     phase = "init"
+    started_mono = time.perf_counter()
+    outcome: str | None = None
+    http_status: int | None = None
+    exc_type: str | None = None
+    exc_repr: str | None = None
+    _safe_log_info(
+        "kaspi_sync_now_enter",
+        request_id=rid,
+        company_id=company_id,
+        merchant_uid=merchant_uid,
+        hard=hard,
+        timeout_sec=timeout_sec,
+        phase=phase,
+        monotonic_start=started_mono,
+    )
 
     async def _run_sync_now_bounded() -> KaspiSyncNowOut | JSONResponse:
         lock_acquired = False
@@ -3177,8 +3235,28 @@ async def kaspi_sync_now(
                 await _release_sync_now_lock(session, company_id=company_id, merchant_uid=merchant_uid)
 
     try:
-        return await asyncio.wait_for(_run_sync_now_bounded(), timeout=timeout_sec)
-    except asyncio.TimeoutError:
+        response_obj = await asyncio.wait_for(_run_sync_now_bounded(), timeout=timeout_sec)
+        if isinstance(response_obj, JSONResponse):
+            http_status = response_obj.status_code
+            outcome = "ok" if response_obj.status_code < 400 else "error"
+        else:
+            status_value = str(getattr(response_obj, "status", "") or "")
+            outcome = status_value if status_value in {"ok", "partial", "timeout"} else "ok"
+            http_status = status.HTTP_200_OK
+        return response_obj
+    except asyncio.TimeoutError as exc:
+        exc_type = type(exc).__name__
+        exc_repr = repr(exc) if _ci_diag_enabled() else None
+        _safe_log_warning(
+            "kaspi_sync_now_outer_timeout",
+            request_id=rid,
+            company_id=company_id,
+            merchant_uid=merchant_uid,
+            phase=phase,
+            exc_type=exc_type,
+            exc_repr=exc_repr,
+            task_cancelled=_task_cancelled_flag(),
+        )
         payload = {
             "ok": True,
             "status": "partial",
@@ -3226,12 +3304,91 @@ async def kaspi_sync_now(
                 "request_id": rid,
                 "ok": False,
             }
+            http_status = status.HTTP_504_GATEWAY_TIMEOUT
+            outcome = "timeout"
             return JSONResponse(
                 status_code=status.HTTP_504_GATEWAY_TIMEOUT,
                 content=hard_payload,
                 headers={"X-Request-ID": rid},
             )
+        http_status = status.HTTP_200_OK
+        outcome = "partial"
         return JSONResponse(status_code=status.HTTP_200_OK, content=payload, headers={"X-Request-ID": rid})
+    except asyncio.CancelledError as exc:
+        exc_type = type(exc).__name__
+        exc_repr = repr(exc) if _ci_diag_enabled() else None
+        _safe_log_warning(
+            "kaspi_sync_now_cancelled",
+            request_id=rid,
+            company_id=company_id,
+            merchant_uid=merchant_uid,
+            phase=phase,
+            exc_type=exc_type,
+            exc_repr=exc_repr,
+            task_cancelled=_task_cancelled_flag(),
+        )
+        raise
+    except httpx.TimeoutException as exc:
+        exc_type = type(exc).__name__
+        exc_repr = repr(exc) if _ci_diag_enabled() else None
+        _safe_log_warning(
+            "kaspi_sync_now_httpx_timeout",
+            request_id=rid,
+            company_id=company_id,
+            merchant_uid=merchant_uid,
+            phase=phase,
+            exc_type=exc_type,
+            exc_repr=exc_repr,
+            task_cancelled=_task_cancelled_flag(),
+        )
+        raise
+    except Exception as exc:
+        exc_type = type(exc).__name__
+        exc_repr = repr(exc) if _ci_diag_enabled() else None
+        if _HAS_EXCEPTION_GROUP and isinstance(exc, ExceptionGroup):  # type: ignore[name-defined]
+            extra = _exception_group_info(exc)
+            _safe_log_warning(
+                "kaspi_sync_now_exception_group",
+                request_id=rid,
+                company_id=company_id,
+                merchant_uid=merchant_uid,
+                phase=phase,
+                exc_type=exc_type,
+                exc_repr=exc_repr,
+                task_cancelled=_task_cancelled_flag(),
+                **extra,
+            )
+            raise
+        _safe_log_warning(
+            "kaspi_sync_now_unhandled_error",
+            request_id=rid,
+            company_id=company_id,
+            merchant_uid=merchant_uid,
+            phase=phase,
+            exc_type=exc_type,
+            exc_repr=exc_repr,
+            task_cancelled=_task_cancelled_flag(),
+        )
+        raise
+    finally:
+        finished_mono = time.perf_counter()
+        elapsed_ms = int((finished_mono - started_mono) * 1000)
+        _safe_log_info(
+            "kaspi_sync_now_exit",
+            request_id=rid,
+            company_id=company_id,
+            merchant_uid=merchant_uid,
+            hard=hard,
+            timeout_sec=timeout_sec,
+            phase=phase,
+            monotonic_start=started_mono,
+            monotonic_end=finished_mono,
+            elapsed_ms=elapsed_ms,
+            http_status=http_status,
+            outcome=outcome,
+            exc_type=exc_type,
+            exc_repr=exc_repr,
+        )
 
 
 @router.get(
