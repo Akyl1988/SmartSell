@@ -253,6 +253,8 @@ async def test_kaspi_sync_now_orders_timeout_returns_200(
     assert data["orders_sync"]["detail"] == "Kaspi orders sync timed out"
     assert data["errors"][0]["code"] == "upstream_timeout"
     assert data["errors"][0]["detail"] == "Kaspi orders sync timed out"
+    assert data.get("phase")
+    assert data["errors"][0].get("phase")
     assert data["errors"][0]["request_id"]
     assert data["goods_import_result"]["status"] == "success"
     assert data["offers_feed_result"]["status"] == "success"
@@ -331,6 +333,8 @@ async def test_kaspi_sync_now_orders_read_timeout_code(
     assert data["orders_sync"]["detail"] == "Kaspi orders sync timed out"
     assert data["goods_import_result"]["status"] == "success"
     assert data["offers_feed_result"]["status"] == "success"
+    assert data.get("phase")
+    assert data["errors"][0].get("phase")
     assert order == ["goods_import", "goods_refresh", "feed"]
 
 
