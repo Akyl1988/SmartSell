@@ -368,7 +368,10 @@ async def test_kaspi_sync_now_timeout_is_bounded(
     async_db_session.add(offer)
     await async_db_session.commit()
 
+    submit_called: list[bool] = []
+
     async def _submit_import(*args, **kwargs):
+        submit_called.append(True)
         await asyncio.sleep(999)
         return {"code": "IC-1", "status": "UPLOADED"}
 
@@ -398,6 +401,11 @@ async def test_kaspi_sync_now_timeout_is_bounded(
     assert data["errors"][0]["detail"]
     assert data["errors"][0]["phase"] == "goods_import"
     assert data["errors"][0]["request_id"]
+    goods_import_result = data.get("goods_import_result") or {}
+    if goods_import_result.get("status") == "skipped":
+        assert not submit_called
+    else:
+        assert submit_called
 
 
 @pytest.mark.asyncio
