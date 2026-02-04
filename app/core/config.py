@@ -389,6 +389,9 @@ def run_startup_side_effects(s: Settings | None = None) -> None:
     if should_disable_startup_hooks():
         return
 
+    if s.is_production:
+        validate_prod_secrets(s)
+
     try:
         if s.EAGER_SIDE_EFFECTS:
             s.ensure_dirs()
@@ -401,6 +404,8 @@ def run_startup_side_effects(s: Settings | None = None) -> None:
             s.init_sentry()
             s.init_opentelemetry()
     except Exception:
+        if s.is_production:
+            raise
         pass
 
     if s.is_development and (s.STARTUP_LOG_SUMMARY or s.DEBUG_CONFIG_DUMP):
@@ -991,15 +996,15 @@ class Settings(BaseSettings):
                 logging.getLogger(__name__).warning(f"Directory not writable: {p}")
 
     def check_secret_key(self) -> None:
-        localish = _is_local_env(self.ENVIRONMENT, bool(self.DEBUG))
-        if not localish:
-            if not self.SECRET_KEY or self.SECRET_KEY.strip().lower() in {
-                "changeme",
-                "secret",
-                "password",
-            }:
-                raise ValueError("Set a secure SECRET_KEY in non-local environments!")
-
+        if not self.is_production:
+            return
+        value = (self.SECRET_KEY or "").strip()
+        if not value:
+            raise ValueError("Set a secure SECRET_KEY in production!")
+        if value.lower() in {"changeme", "secret", "password"}:
+            raise ValueError("Set a secure SECRET_KEY in production!")
+        if len(value) < 32:
+            raise ValueError("SECRET_KEY must be at least 32 characters in production!")
     def _is_postgres_url(self, url: str) -> bool:
         try:
             parsed = urlparse(url)
@@ -1997,6 +2002,12 @@ def get_settings() -> Settings:
     return s
 
 
+def validate_prod_secrets(s: Settings | None = None) -> None:
+    s = s or get_settings()
+    if s.is_production:
+        s.check_secret_key()
+
+
 settings = get_settings()
 
 __all__ = [
@@ -2005,6 +2016,7 @@ __all__ = [
     "settings",
     "should_disable_startup_hooks",
     "run_startup_side_effects",
+    "validate_prod_secrets",
     "db_url_fingerprint",
     "db_connection_fingerprint",
     "JSONAPI_MIME",

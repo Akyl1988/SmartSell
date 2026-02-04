@@ -27,7 +27,7 @@ from starlette.staticfiles import StaticFiles
 
 from app.api.routes import mount_v1
 from app.core import config as core_config
-from app.core.config import run_startup_side_effects, settings, should_disable_startup_hooks
+from app.core.config import run_startup_side_effects, settings, should_disable_startup_hooks, validate_prod_secrets
 from app.core.exceptions import register_exception_handlers
 
 try:
@@ -892,6 +892,11 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:  # type: ignore[overrid
     # ---- Startup
     _configure_base_logging()
     logger.info("Application startup… env=%s version=%s", settings.ENVIRONMENT, settings.VERSION)
+    try:
+        validate_prod_secrets(settings)
+    except Exception as e:
+        logger.error("startup secret validation failed: %s", e)
+        raise
     disable_hooks = should_disable_startup_hooks()
     if disable_hooks:
         logger.info("Startup hooks disabled (tests/CI flag)")
