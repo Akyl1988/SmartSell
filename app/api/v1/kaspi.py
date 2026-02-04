@@ -2858,6 +2858,7 @@ async def kaspi_sync_now(
                             "elapsed_ms": elapsed_ms,
                         },
                     )
+                    phase = "goods_import"
                     await _record_kaspi_event(
                         session,
                         company_id=company_id,
@@ -2910,6 +2911,7 @@ async def kaspi_sync_now(
                                 "elapsed_ms": elapsed_ms,
                             },
                         )
+                        phase = "goods_import"
                         await _record_kaspi_event(
                             session,
                             company_id=company_id,
@@ -2921,6 +2923,62 @@ async def kaspi_sync_now(
                             error_message="Kaspi orders sync timed out",
                             meta_json={"source": "sync_now"},
                         )
+
+                orders_failed = orders_timed_out or (
+                    isinstance(orders_result, dict) and orders_result.get("ok") is False
+                )
+                remaining = None
+                if orders_failed:
+                    elapsed_sec = time.perf_counter() - started_at
+                    remaining = max(0.0, float(timeout_sec) - elapsed_sec - safety_margin)
+                    if remaining <= 0:
+                        phase = "goods_import"
+                        errors.insert(
+                            0,
+                            {
+                                "status": "timeout",
+                                "code": "kaspi_sync_timeout",
+                                "detail": "Kaspi sync now timed out",
+                                "phase": "goods_import",
+                                "request_id": rid,
+                            }
+                        )
+                        if hard:
+                            hard_payload = {
+                                "detail": "kaspi_sync_timeout",
+                                "code": "kaspi_sync_timeout",
+                                "phase": "goods_import",
+                                "request_id": rid,
+                                "ok": False,
+                            }
+                            return JSONResponse(
+                                status_code=status.HTTP_504_GATEWAY_TIMEOUT,
+                                content=hard_payload,
+                                headers={"X-Request-ID": rid},
+                            )
+                        payload = {
+                            "ok": True,
+                            "status": "partial",
+                            "phase": "goods_import",
+                            "errors": errors,
+                            "company_id": company_id,
+                            "merchant_uid": merchant_uid,
+                            "orders_sync": orders_result,
+                            "goods_import_result": {
+                                "status": "skipped",
+                                "code": "kaspi_sync_timeout",
+                                "detail": "Kaspi sync now timed out",
+                                "request_id": rid,
+                            },
+                            "offers_feed_result": {
+                                "status": "skipped",
+                                "code": "kaspi_sync_timeout",
+                                "detail": "Kaspi sync now timed out",
+                                "phase": "goods_import",
+                                "request_id": rid,
+                            },
+                        }
+                        return JSONResponse(status_code=status.HTTP_200_OK, content=payload, headers={"X-Request-ID": rid})
 
                 phase = "goods_import"
                 company = await session.get(Company, company_id)
@@ -2940,7 +2998,43 @@ async def kaspi_sync_now(
 
                 import_client = KaspiGoodsImportClient(token=token or "", base_url="https://kaspi.kz")
                 try:
-                    response = await import_client.submit_import(payload_json)
+                    if remaining is not None:
+                        response = await asyncio.wait_for(import_client.submit_import(payload_json), timeout=remaining)
+                    else:
+                        response = await import_client.submit_import(payload_json)
+                except asyncio.TimeoutError:
+                    errors.append(
+                        {
+                            "status": "timeout",
+                            "code": "kaspi_sync_timeout",
+                            "detail": "Kaspi goods import timed out",
+                            "phase": "goods_import",
+                            "request_id": rid,
+                        }
+                    )
+                    payload = {
+                        "ok": True,
+                        "status": "partial",
+                        "phase": "goods_import",
+                        "errors": errors,
+                        "company_id": company_id,
+                        "merchant_uid": merchant_uid,
+                        "orders_sync": orders_result,
+                        "goods_import_result": {
+                            "status": "timeout",
+                            "code": "kaspi_sync_timeout",
+                            "detail": "Kaspi goods import timed out",
+                            "request_id": rid,
+                        },
+                        "offers_feed_result": {
+                            "status": "skipped",
+                            "code": "kaspi_sync_timeout",
+                            "detail": "Kaspi goods import timed out",
+                            "phase": "goods_import",
+                            "request_id": rid,
+                        },
+                    }
+                    return JSONResponse(status_code=status.HTTP_200_OK, content=payload, headers={"X-Request-ID": rid})
                 except KaspiImportNotAuthenticated as exc:
                     raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="NOT_AUTHENTICATED") from exc
                 except KaspiImportUpstreamUnavailable:
