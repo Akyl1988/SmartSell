@@ -83,6 +83,20 @@ def _cdata(s: Optional[str]) -> str:
     return f"<![CDATA[{safe}]]>"
 
 
+def _safe_httpx_request(exc: Exception) -> httpx.Request | None:
+    try:
+        return getattr(exc, "request", None)
+    except RuntimeError:
+        return None
+
+
+def _safe_httpx_response(exc: Exception) -> httpx.Response | None:
+    try:
+        return getattr(exc, "response", None)
+    except RuntimeError:
+        return None
+
+
 # ---------------------- resilient HTTP client ---------------------- #
 
 
@@ -218,6 +232,7 @@ class KaspiService:
         limit: int,
         include_entries: bool,
         request_id: str | None,
+        timeout_seconds: float | None = None,
     ) -> dict[str, Any]:
         orders_url = "https://kaspi.kz/shop/api/v2/orders"
         params: dict[str, Any] = {
@@ -237,7 +252,15 @@ class KaspiService:
             "Accept": "application/vnd.api+json",
         }
 
-        timeout = httpx.Timeout(connect=3.0, read=5.0, write=5.0, pool=5.0)
+        timeout = self._orders_timeout(timeout_seconds)
+        logger.info(
+            "Kaspi list_orders timeout: timeout_sec=%s connect=%s read=%s write=%s pool=%s",
+            timeout_seconds,
+            getattr(timeout, "connect", None),
+            getattr(timeout, "read", None),
+            getattr(timeout, "write", None),
+            getattr(timeout, "pool", None),
+        )
         try:
             async with httpx.AsyncClient(timeout=timeout) as client:
                 resp = await client.get(orders_url, headers=headers, params=params)
@@ -1151,8 +1174,8 @@ class KaspiService:
                 transient = code in {429, 500, 502, 503, 504} or isinstance(
                     e, asyncio.TimeoutError | httpx.TimeoutException | httpx.NetworkError
                 )
-                req_obj = getattr(e, "request", None)
-                resp_obj = getattr(e, "response", None)
+                req_obj = _safe_httpx_request(e)
+                resp_obj = _safe_httpx_response(e)
                 method = getattr(req_obj, "method", None)
                 url = getattr(req_obj, "url", None)
                 status_code = getattr(resp_obj, "status_code", None)
