@@ -127,6 +127,49 @@ FAST_PROBE_TIMEOUT = 5.0
 SYNC_NOW_TIMEOUT_SEC = 25.0
 
 
+def _ci_diag_enabled() -> bool:
+    return os.environ.get("CI_DIAG", "").strip() == "1"
+
+
+try:  # pragma: no cover - py<3.11 compatibility
+    ExceptionGroup
+    _HAS_EXCEPTION_GROUP = True
+except NameError:  # pragma: no cover
+    _HAS_EXCEPTION_GROUP = False
+
+
+def _safe_log_info(event: str, **extra: Any) -> None:
+    try:
+        logger.info(event, extra=extra)
+    except Exception:
+        pass
+
+
+def _safe_log_warning(event: str, **extra: Any) -> None:
+    try:
+        logger.warning(event, extra=extra)
+    except Exception:
+        pass
+
+
+def _task_cancelled_flag() -> bool | None:
+    try:
+        task = asyncio.current_task()
+        return bool(task.cancelled()) if task else None
+    except Exception:
+        return None
+
+
+def _exception_group_info(exc: BaseException) -> dict[str, Any]:
+    info: dict[str, Any] = {}
+    if _HAS_EXCEPTION_GROUP and isinstance(exc, ExceptionGroup):  # type: ignore[name-defined]
+        sub_exc = list(exc.exceptions)[:5]
+        info["sub_exception_types"] = [type(e).__name__ for e in sub_exc]
+        if _ci_diag_enabled():
+            info["sub_exception_reprs"] = [repr(e) for e in sub_exc]
+    return info
+
+
 def normalize_name(name: str) -> str:
     return name.strip().lower()
 
@@ -1164,6 +1207,43 @@ def _parse_order_status(raw: str) -> OrderStatus:
         raise ValueError("invalid_status") from exc
 
 
+def _compute_sync_now_budgets(
+    timeout_sec: float,
+    *,
+    safety_margin: float = 1.5,
+    default_orders: float = 12.0,
+    default_goods: float = 10.0,
+    default_feed: float = 3.0,
+) -> dict[str, float]:
+    budget_total = max(0.1, float(timeout_sec) - safety_margin)
+    default_total = default_orders + default_goods + default_feed
+    scale = (budget_total / default_total) if default_total > 0 else 1.0
+
+    orders_timeout_sec = max(0.1, default_orders * scale)
+    goods_timeout_sec = max(0.0, default_goods * scale)
+    feed_timeout_sec = max(0.0, default_feed * scale)
+
+    min_orders_budget = min(12.0, budget_total)
+    non_orders_total = goods_timeout_sec + feed_timeout_sec
+    max_non_orders = max(0.0, budget_total - min_orders_budget)
+    if non_orders_total > max_non_orders and non_orders_total > 0:
+        shrink = max_non_orders / non_orders_total
+        goods_timeout_sec = max(0.0, goods_timeout_sec * shrink)
+        feed_timeout_sec = max(0.0, feed_timeout_sec * shrink)
+
+    orders_budget = max(0.1, budget_total - goods_timeout_sec - feed_timeout_sec)
+    final_orders_timeout = min(max(orders_timeout_sec, 12.0), orders_budget)
+
+    return {
+        "budget_total": budget_total,
+        "orders_timeout_sec": orders_timeout_sec,
+        "goods_timeout_sec": goods_timeout_sec,
+        "feed_timeout_sec": feed_timeout_sec,
+        "orders_budget": orders_budget,
+        "final_orders_timeout": final_orders_timeout,
+    }
+
+
 def _normalize_db_dt(value: datetime) -> datetime:
     if value.tzinfo is None:
         return value
@@ -2006,6 +2086,7 @@ class KaspiSyncNowIn(BaseModel):
 class KaspiSyncNowOut(BaseModel):
     ok: bool
     status: str | None = None
+    phase: str | None = None
     errors: list[dict[str, Any]] = Field(default_factory=list)
     company_id: int
     merchant_uid: str
@@ -2700,6 +2781,37 @@ async def kaspi_sync_now(
 
     phase = "init"
 
+    def _err(code: str, detail: str, phase_for_error: str, status: str | None = None) -> dict[str, Any]:
+        payload: dict[str, Any] = {
+            "code": code,
+            "detail": detail,
+            "phase": phase_for_error,
+            "request_id": rid,
+        }
+        if status is not None:
+            payload["status"] = status
+        return payload
+
+    def _with_phase(payload: dict[str, Any]) -> dict[str, Any]:
+        if "phase" not in payload:
+            payload["phase"] = phase
+        return payload
+    started_mono = time.perf_counter()
+    outcome: str | None = None
+    http_status: int | None = None
+    exc_type: str | None = None
+    exc_repr: str | None = None
+    _safe_log_info(
+        "kaspi_sync_now_enter",
+        request_id=rid,
+        company_id=company_id,
+        merchant_uid=merchant_uid,
+        hard=hard,
+        timeout_sec=timeout_sec,
+        phase=phase,
+        monotonic_start=started_mono,
+    )
+
     async def _run_sync_now_bounded() -> KaspiSyncNowOut | JSONResponse:
         lock_acquired = False
         token: str | None = None
@@ -2708,11 +2820,13 @@ async def kaspi_sync_now(
                 _store_name, token = await _resolve_kaspi_token(session, company_id)
             except HTTPException as exc:
                 if exc.status_code in {status.HTTP_404_NOT_FOUND, status.HTTP_409_CONFLICT}:
-                    payload = {
-                        "detail": "kaspi_not_configured",
-                        "code": "kaspi_not_configured",
-                        "request_id": rid,
-                    }
+                    payload = _with_phase(
+                        {
+                            "detail": "kaspi_not_configured",
+                            "code": "kaspi_not_configured",
+                            "request_id": rid,
+                        }
+                    )
                     return JSONResponse(
                         status_code=status.HTTP_409_CONFLICT,
                         content=payload,
@@ -2722,11 +2836,13 @@ async def kaspi_sync_now(
 
             lock_acquired = await _try_sync_now_lock(session, company_id=company_id, merchant_uid=merchant_uid)
             if not lock_acquired:
-                payload = {
-                    "detail": "kaspi_sync_in_progress",
-                    "code": "kaspi_sync_in_progress",
-                    "request_id": rid,
-                }
+                payload = _with_phase(
+                    {
+                        "detail": "kaspi_sync_in_progress",
+                        "code": "kaspi_sync_in_progress",
+                        "request_id": rid,
+                    }
+                )
                 return JSONResponse(
                     status_code=status.HTTP_409_CONFLICT,
                     content=payload,
@@ -2749,21 +2865,19 @@ async def kaspi_sync_now(
                 svc._sync_timeout_seconds = max(0.1, min(svc_timeout, float(timeout_sec)))
 
                 safety_margin = 1.5
-                default_orders = 12.0
-                default_goods = 10.0
-                default_feed = 3.0
-                default_total = default_orders + default_goods + default_feed
-                budget_total = max(0.1, float(timeout_sec) - safety_margin)
-                scale = 1.0
-                if default_total > 0 and budget_total < default_total:
-                    scale = max(0.1, budget_total / default_total)
-                orders_timeout_sec = max(0.1, default_orders * scale)
-                goods_timeout_sec = max(0.1, default_goods * scale)
-                feed_timeout_sec = max(0.1, default_feed * scale)
-                total_alloc = orders_timeout_sec + goods_timeout_sec + feed_timeout_sec
-                if total_alloc > budget_total:
-                    over = total_alloc - budget_total
-                    feed_timeout_sec = max(0.1, feed_timeout_sec - over)
+                budgets = _compute_sync_now_budgets(
+                    timeout_sec,
+                    safety_margin=safety_margin,
+                    default_orders=12.0,
+                    default_goods=10.0,
+                    default_feed=3.0,
+                )
+                budget_total = budgets["budget_total"]
+                orders_timeout_sec = budgets["orders_timeout_sec"]
+                goods_timeout_sec = budgets["goods_timeout_sec"]
+                feed_timeout_sec = budgets["feed_timeout_sec"]
+                orders_budget = budgets["orders_budget"]
+                final_orders_timeout = budgets["final_orders_timeout"]
 
                 logger.info(
                     "kaspi_sync_now budgets",
@@ -2775,12 +2889,14 @@ async def kaspi_sync_now(
                         "goods_timeout_sec": goods_timeout_sec,
                         "feed_timeout_sec": feed_timeout_sec,
                         "safety_margin_sec": safety_margin,
+                        "budget_total_sec": budget_total,
+                        "orders_budget": orders_budget,
+                        "orders_final_timeout_sec": final_orders_timeout,
                     },
                 )
 
                 errors: list[dict[str, Any]] = []
                 orders_timed_out = False
-                orders_budget = min(12.0, max(1.0, float(timeout_sec) - 8.0))
                 try:
                     phase = "orders_sync"
                     orders_result = await asyncio.wait_for(
@@ -2788,11 +2904,11 @@ async def kaspi_sync_now(
                             db=session,
                             company_id=company_id,
                             request_id=rid,
-                            timeout_seconds=orders_timeout_sec,
+                            timeout_seconds=final_orders_timeout,
                             orders_max_attempts=1,
                             client_retries=0,
                         ),
-                        timeout=orders_budget,
+                        timeout=final_orders_timeout,
                     )
                 except asyncio.TimeoutError:
                     orders_timed_out = True
@@ -2804,12 +2920,12 @@ async def kaspi_sync_now(
                         "request_id": rid,
                     }
                     errors.append(
-                        {
-                            "status": "timeout",
-                            "detail": "Kaspi orders sync timed out",
-                            "code": "upstream_timeout",
-                            "request_id": rid,
-                        }
+                        _err(
+                            code="upstream_timeout",
+                            detail="Kaspi orders sync timed out",
+                            phase_for_error="orders_sync",
+                            status="timeout",
+                        )
                     )
                     elapsed_ms = int((time.perf_counter() - started_at) * 1000)
                     logger.warning(
@@ -2821,6 +2937,7 @@ async def kaspi_sync_now(
                             "elapsed_ms": elapsed_ms,
                         },
                     )
+                    phase = "goods_import"
                     await _record_kaspi_event(
                         session,
                         company_id=company_id,
@@ -2857,11 +2974,11 @@ async def kaspi_sync_now(
                         if duration_ms is not None:
                             orders_result["duration_ms"] = duration_ms
                         errors.append(
-                            {
-                                "detail": "Kaspi orders sync timed out",
-                                "code": "upstream_timeout",
-                                "request_id": rid,
-                            }
+                            _err(
+                                code="upstream_timeout",
+                                detail="Kaspi orders sync timed out",
+                                phase_for_error="orders_sync",
+                            )
                         )
                         elapsed_ms = int((time.perf_counter() - started_at) * 1000)
                         logger.warning(
@@ -2873,6 +2990,7 @@ async def kaspi_sync_now(
                                 "elapsed_ms": elapsed_ms,
                             },
                         )
+                        phase = "goods_import"
                         await _record_kaspi_event(
                             session,
                             company_id=company_id,
@@ -2884,6 +3002,63 @@ async def kaspi_sync_now(
                             error_message="Kaspi orders sync timed out",
                             meta_json={"source": "sync_now"},
                         )
+
+                orders_failed = orders_timed_out or (
+                    isinstance(orders_result, dict) and orders_result.get("ok") is False
+                )
+                remaining = None
+                if orders_failed:
+                    elapsed_sec = time.perf_counter() - started_at
+                    remaining = max(0.0, float(timeout_sec) - elapsed_sec - safety_margin)
+                    if remaining <= 0:
+                        phase = "goods_import"
+                        errors.insert(
+                            0,
+                            _err(
+                                code="kaspi_sync_timeout",
+                                detail="Kaspi sync now timed out",
+                                phase_for_error="goods_import",
+                                status="timeout",
+                            ),
+                        )
+                        if hard:
+                            hard_payload = _with_phase(
+                                {
+                                    "detail": "kaspi_sync_timeout",
+                                    "code": "kaspi_sync_timeout",
+                                    "request_id": rid,
+                                    "ok": False,
+                                }
+                            )
+                            return JSONResponse(
+                                status_code=status.HTTP_504_GATEWAY_TIMEOUT,
+                                content=hard_payload,
+                                headers={"X-Request-ID": rid},
+                            )
+                        payload = _with_phase(
+                            {
+                                "ok": True,
+                                "status": "partial",
+                                "errors": errors,
+                                "company_id": company_id,
+                                "merchant_uid": merchant_uid,
+                                "orders_sync": orders_result,
+                                "goods_import_result": {
+                                    "status": "skipped",
+                                    "code": "kaspi_sync_timeout",
+                                    "detail": "Kaspi sync now timed out",
+                                    "request_id": rid,
+                                },
+                                "offers_feed_result": {
+                                    "status": "skipped",
+                                    "code": "kaspi_sync_timeout",
+                                    "detail": "Kaspi sync now timed out",
+                                    "phase": "goods_import",
+                                    "request_id": rid,
+                                },
+                            }
+                        )
+                        return JSONResponse(status_code=status.HTTP_200_OK, content=payload, headers={"X-Request-ID": rid})
 
                 phase = "goods_import"
                 company = await session.get(Company, company_id)
@@ -2903,7 +3078,43 @@ async def kaspi_sync_now(
 
                 import_client = KaspiGoodsImportClient(token=token or "", base_url="https://kaspi.kz")
                 try:
-                    response = await import_client.submit_import(payload_json)
+                    if remaining is not None:
+                        response = await asyncio.wait_for(import_client.submit_import(payload_json), timeout=remaining)
+                    else:
+                        response = await import_client.submit_import(payload_json)
+                except asyncio.TimeoutError:
+                    errors.append(
+                        _err(
+                            code="kaspi_sync_timeout",
+                            detail="Kaspi goods import timed out",
+                            phase_for_error="goods_import",
+                            status="timeout",
+                        )
+                    )
+                    payload = _with_phase(
+                        {
+                            "ok": True,
+                            "status": "partial",
+                            "errors": errors,
+                            "company_id": company_id,
+                            "merchant_uid": merchant_uid,
+                            "orders_sync": orders_result,
+                            "goods_import_result": {
+                                "status": "timeout",
+                                "code": "kaspi_sync_timeout",
+                                "detail": "Kaspi goods import timed out",
+                                "request_id": rid,
+                            },
+                            "offers_feed_result": {
+                                "status": "skipped",
+                                "code": "kaspi_sync_timeout",
+                                "detail": "Kaspi goods import timed out",
+                                "phase": "goods_import",
+                                "request_id": rid,
+                            },
+                        }
+                    )
+                    return JSONResponse(status_code=status.HTTP_200_OK, content=payload, headers={"X-Request-ID": rid})
                 except KaspiImportNotAuthenticated as exc:
                     raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="NOT_AUTHENTICATED") from exc
                 except KaspiImportUpstreamUnavailable:
@@ -3028,6 +3239,7 @@ async def kaspi_sync_now(
                 return KaspiSyncNowOut(
                     ok=True,
                     status=status_value,
+                    phase=phase,
                     errors=errors,
                     company_id=company_id,
                     merchant_uid=merchant_uid,
@@ -3046,20 +3258,39 @@ async def kaspi_sync_now(
                 await _release_sync_now_lock(session, company_id=company_id, merchant_uid=merchant_uid)
 
     try:
-        return await asyncio.wait_for(_run_sync_now_bounded(), timeout=timeout_sec)
-    except asyncio.TimeoutError:
+        response_obj = await asyncio.wait_for(_run_sync_now_bounded(), timeout=timeout_sec)
+        if isinstance(response_obj, JSONResponse):
+            http_status = response_obj.status_code
+            outcome = "ok" if response_obj.status_code < 400 else "error"
+        else:
+            status_value = str(getattr(response_obj, "status", "") or "")
+            outcome = status_value if status_value in {"ok", "partial", "timeout"} else "ok"
+            http_status = status.HTTP_200_OK
+        return response_obj
+    except asyncio.TimeoutError as exc:
+        exc_type = type(exc).__name__
+        exc_repr = repr(exc) if _ci_diag_enabled() else None
+        _safe_log_warning(
+            "kaspi_sync_now_outer_timeout",
+            request_id=rid,
+            company_id=company_id,
+            merchant_uid=merchant_uid,
+            phase=phase,
+            exc_type=exc_type,
+            exc_repr=exc_repr,
+            task_cancelled=_task_cancelled_flag(),
+        )
         payload = {
             "ok": True,
             "status": "partial",
             "phase": phase,
             "errors": [
-                {
-                    "status": "timeout",
-                    "code": "kaspi_sync_timeout",
-                    "detail": "Kaspi sync now timed out",
-                    "phase": phase,
-                    "request_id": rid,
-                }
+                _err(
+                    code="kaspi_sync_timeout",
+                    detail="Kaspi sync now timed out",
+                    phase_for_error=phase,
+                    status="timeout",
+                )
             ],
             "company_id": company_id,
             "merchant_uid": merchant_uid,
@@ -3088,19 +3319,99 @@ async def kaspi_sync_now(
             extra={"company_id": company_id, "merchant_uid": merchant_uid, "request_id": rid, "phase": phase},
         )
         if hard:
-            hard_payload = {
-                "detail": "kaspi_sync_timeout",
-                "code": "kaspi_sync_timeout",
-                "phase": phase,
-                "request_id": rid,
-                "ok": False,
-            }
+            hard_payload = _with_phase(
+                {
+                    "detail": "kaspi_sync_timeout",
+                    "code": "kaspi_sync_timeout",
+                    "request_id": rid,
+                    "ok": False,
+                }
+            )
+            http_status = status.HTTP_504_GATEWAY_TIMEOUT
+            outcome = "timeout"
             return JSONResponse(
                 status_code=status.HTTP_504_GATEWAY_TIMEOUT,
                 content=hard_payload,
                 headers={"X-Request-ID": rid},
             )
+        http_status = status.HTTP_200_OK
+        outcome = "partial"
         return JSONResponse(status_code=status.HTTP_200_OK, content=payload, headers={"X-Request-ID": rid})
+    except asyncio.CancelledError as exc:
+        exc_type = type(exc).__name__
+        exc_repr = repr(exc) if _ci_diag_enabled() else None
+        _safe_log_warning(
+            "kaspi_sync_now_cancelled",
+            request_id=rid,
+            company_id=company_id,
+            merchant_uid=merchant_uid,
+            phase=phase,
+            exc_type=exc_type,
+            exc_repr=exc_repr,
+            task_cancelled=_task_cancelled_flag(),
+        )
+        raise
+    except httpx.TimeoutException as exc:
+        exc_type = type(exc).__name__
+        exc_repr = repr(exc) if _ci_diag_enabled() else None
+        _safe_log_warning(
+            "kaspi_sync_now_httpx_timeout",
+            request_id=rid,
+            company_id=company_id,
+            merchant_uid=merchant_uid,
+            phase=phase,
+            exc_type=exc_type,
+            exc_repr=exc_repr,
+            task_cancelled=_task_cancelled_flag(),
+        )
+        raise
+    except Exception as exc:
+        exc_type = type(exc).__name__
+        exc_repr = repr(exc) if _ci_diag_enabled() else None
+        if _HAS_EXCEPTION_GROUP and isinstance(exc, ExceptionGroup):  # type: ignore[name-defined]
+            extra = _exception_group_info(exc)
+            _safe_log_warning(
+                "kaspi_sync_now_exception_group",
+                request_id=rid,
+                company_id=company_id,
+                merchant_uid=merchant_uid,
+                phase=phase,
+                exc_type=exc_type,
+                exc_repr=exc_repr,
+                task_cancelled=_task_cancelled_flag(),
+                **extra,
+            )
+            raise
+        _safe_log_warning(
+            "kaspi_sync_now_unhandled_error",
+            request_id=rid,
+            company_id=company_id,
+            merchant_uid=merchant_uid,
+            phase=phase,
+            exc_type=exc_type,
+            exc_repr=exc_repr,
+            task_cancelled=_task_cancelled_flag(),
+        )
+        raise
+    finally:
+        finished_mono = time.perf_counter()
+        elapsed_ms = int((finished_mono - started_mono) * 1000)
+        _safe_log_info(
+            "kaspi_sync_now_exit",
+            request_id=rid,
+            company_id=company_id,
+            merchant_uid=merchant_uid,
+            hard=hard,
+            timeout_sec=timeout_sec,
+            phase=phase,
+            monotonic_start=started_mono,
+            monotonic_end=finished_mono,
+            elapsed_ms=elapsed_ms,
+            http_status=http_status,
+            outcome=outcome,
+            exc_type=exc_type,
+            exc_repr=exc_repr,
+        )
 
 
 @router.get(
