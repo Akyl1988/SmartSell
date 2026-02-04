@@ -1,0 +1,48 @@
+import pytest
+
+import app.core.config as config
+import app.main as main_module
+from app.main import create_app
+
+
+@pytest.mark.asyncio
+async def test_startup_fails_on_insecure_secret_in_prod(monkeypatch):
+    monkeypatch.setenv("ENVIRONMENT", "production")
+    monkeypatch.setenv("DEBUG", "0")
+    monkeypatch.setenv("SECRET_KEY", "changeme")
+    monkeypatch.setenv("DISABLE_APP_STARTUP_HOOKS", "1")
+
+    config.get_settings.cache_clear()
+    new_settings = config.get_settings()
+    monkeypatch.setattr(config, "settings", new_settings, raising=False)
+    monkeypatch.setattr(main_module, "settings", new_settings, raising=False)
+    monkeypatch.setattr(config.settings, "ENVIRONMENT", "production", raising=False)
+    monkeypatch.setattr(config.settings, "DEBUG", False, raising=False)
+    monkeypatch.setattr(config.settings, "SECRET_KEY", "changeme", raising=False)
+
+    app = create_app()
+
+    with pytest.raises(ValueError):
+        async with app.router.lifespan_context(app):
+            pass
+
+
+@pytest.mark.asyncio
+async def test_startup_allows_secure_secret_in_prod(monkeypatch):
+    monkeypatch.setenv("ENVIRONMENT", "production")
+    monkeypatch.setenv("DEBUG", "0")
+    monkeypatch.setenv("SECRET_KEY", "x" * 48)
+    monkeypatch.setenv("DISABLE_APP_STARTUP_HOOKS", "1")
+
+    config.get_settings.cache_clear()
+    new_settings = config.get_settings()
+    monkeypatch.setattr(config, "settings", new_settings, raising=False)
+    monkeypatch.setattr(main_module, "settings", new_settings, raising=False)
+    monkeypatch.setattr(config.settings, "ENVIRONMENT", "production", raising=False)
+    monkeypatch.setattr(config.settings, "DEBUG", False, raising=False)
+    monkeypatch.setattr(config.settings, "SECRET_KEY", "x" * 48, raising=False)
+
+    app = create_app()
+
+    async with app.router.lifespan_context(app):
+        pass
