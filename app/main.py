@@ -674,6 +674,19 @@ async def _check_provider_registry() -> dict[str, dict[str, Any]]:
                 if not provider_name or provider_name.startswith("noop"):
                     results[domain] = {"ok": False, "detail": "provider_noop"}
                     continue
+                if domain == "messaging" and provider_name in {"smtp", "email-smtp", "smtp-email"}:
+                    missing: list[str] = []
+                    if not settings.SMTP_HOST:
+                        missing.append("SMTP_HOST")
+                    if not settings.SMTP_USER:
+                        missing.append("SMTP_USER")
+                    if not settings.SMTP_PASSWORD:
+                        missing.append("SMTP_PASSWORD")
+                    if not settings.SMTP_FROM_EMAIL:
+                        missing.append("SMTP_FROM_EMAIL")
+                    if missing:
+                        results[domain] = {"ok": False, "detail": "smtp_missing_config", "missing": missing}
+                        continue
                 results[domain] = {
                     "ok": True,
                     "detail": "ok",
@@ -937,6 +950,16 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:  # type: ignore[overrid
     disable_hooks = should_disable_startup_hooks()
     if disable_hooks:
         logger.info("Startup hooks disabled (tests/CI flag)")
+    try:
+        require_providers = _env_truthy(os.getenv("STARTUP_REQUIRE_PROVIDERS", "1" if settings.is_production else "0"))
+        if settings.is_production and require_providers and not disable_hooks:
+            providers = await _check_provider_registry()
+            messaging = providers.get("messaging") if isinstance(providers, dict) else None
+            if messaging and not messaging.get("ok", False):
+                raise RuntimeError("email_provider_not_configured")
+    except Exception as e:
+        logger.error("startup provider validation failed: %s", e)
+        raise
     try:
         run_startup_side_effects(settings)
     except Exception as e:

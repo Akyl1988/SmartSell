@@ -9,6 +9,7 @@ from app.core.provider_registry import ProviderRegistry
 from app.integrations.errors import ProviderNotConfiguredError
 from app.integrations.ports.messaging import MessagingProvider
 from app.integrations.providers.noop.messaging import NoOpMessagingProvider
+from app.integrations.providers.smtp.messaging import SmtpMessagingProvider
 from app.integrations.providers.webhook.messaging import WebhookMessagingProvider
 from app.services.provider_configs import ProviderConfigService
 
@@ -39,6 +40,9 @@ class MessagingProviderResolver:
 
         if normalized.startswith("noop"):
             return NoOpMessagingProvider(name=name, config=config, version=version)
+
+        if normalized in {"smtp", "email-smtp", "smtp-email"}:
+            return SmtpMessagingProvider(name=name, config=config, version=version)
 
         if normalized.startswith("webhook"):
             return WebhookMessagingProvider(name=name, config=config, version=version)
