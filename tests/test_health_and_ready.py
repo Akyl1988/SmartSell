@@ -1,5 +1,8 @@
 import pytest
 
+from app import main as main_mod
+from app.core.config import settings
+
 
 @pytest.mark.asyncio
 async def test_health_ok(client):
@@ -15,6 +18,22 @@ async def test_ready_relaxed_200(client, monkeypatch):
     r = await client.get("/ready")
     assert r.status_code == 200
     assert "ready" in r.json()
+
+
+@pytest.mark.asyncio
+async def test_ready_strict_db_down_returns_503(client, monkeypatch):
+    monkeypatch.setenv("READINESS_STRICT", "1")
+    monkeypatch.setattr(settings, "ENVIRONMENT", "production")
+    monkeypatch.setattr(settings, "DATABASE_URL", "postgresql://user:pass@localhost:5432/smartsell")
+
+    async def _fail_pg(*_args, **_kwargs):
+        return False, "db_down", {}
+
+    monkeypatch.setattr(main_mod, "_pg_probe", _fail_pg)
+
+    r = await client.get("/ready")
+    assert r.status_code == 503
+    assert r.json().get("postgres", {}).get("ok") is False
 
 
 @pytest.mark.asyncio
