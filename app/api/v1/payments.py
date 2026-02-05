@@ -12,6 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.db import get_async_db
 from app.core.security import get_current_user, require_manager, resolve_tenant_company_id
+from app.integrations.errors import ProviderNotConfiguredError
 from app.models.user import User
 from app.services.payment_providers import PaymentProviderResolver
 from app.storage.payments_sql import PaymentIntentsStorageSQL, PaymentsStorageSQL
@@ -27,6 +28,8 @@ async def _auth_user(current_user: User = Depends(get_current_user)) -> User:
 async def _get_payment_storage(db: AsyncSession) -> PaymentsStorageSQL:
     try:
         return PaymentsStorageSQL(db)
+    except ProviderNotConfiguredError as exc:
+        raise HTTPException(status_code=503, detail=exc.code)
     except HTTPException:
         raise
     except Exception as e:
@@ -37,6 +40,8 @@ async def _get_payment_storage(db: AsyncSession) -> PaymentsStorageSQL:
 async def _get_wallet_storage(db: AsyncSession) -> WalletStorageSQL:
     try:
         return WalletStorageSQL(db)
+    except ProviderNotConfiguredError as exc:
+        raise HTTPException(status_code=503, detail=exc.code)
     except HTTPException:
         raise
     except Exception as e:
@@ -47,6 +52,8 @@ async def _get_wallet_storage(db: AsyncSession) -> WalletStorageSQL:
 async def _get_intents_storage(db: AsyncSession) -> PaymentIntentsStorageSQL:
     try:
         return PaymentIntentsStorageSQL(db)
+    except ProviderNotConfiguredError as exc:
+        raise HTTPException(status_code=503, detail=exc.code)
     except HTTPException:
         raise
     except Exception as e:
@@ -373,6 +380,9 @@ async def create_payment_intent(
             metadata=row.get("metadata", {}),
             created_at=row["created_at"],
         )
+    except ProviderNotConfiguredError as exc:
+        await db.rollback()
+        raise HTTPException(status_code=503, detail=exc.code)
     except HTTPException:
         raise
     except Exception as e:

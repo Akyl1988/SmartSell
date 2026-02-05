@@ -4,7 +4,13 @@ from decimal import Decimal
 from typing import Any
 from uuid import uuid4
 
+from app.core.config import settings
+from app.core.logging import get_logger
+from app.integrations.errors import ProviderNotConfiguredError
 from app.integrations.ports.payments import PaymentGateway, PaymentIntent
+
+
+log = get_logger(__name__)
 
 
 class NoOpPaymentGateway(PaymentGateway):
@@ -29,6 +35,9 @@ class NoOpPaymentGateway(PaymentGateway):
         return self.version
 
     async def healthcheck(self) -> dict[str, Any]:
+        if settings.is_production:
+            raise ProviderNotConfiguredError("payment_provider_not_configured")
+        log.warning("Using noop payment gateway (non-production)")
         return {
             "status": "ok",
             "provider": self.name,
@@ -42,6 +51,9 @@ class NoOpPaymentGateway(PaymentGateway):
         customer_id: str,
         metadata: dict[str, Any] | None = None,
     ) -> PaymentIntent:
+        if settings.is_production:
+            raise ProviderNotConfiguredError("payment_provider_not_configured")
+        log.warning("Using noop payment gateway (non-production)")
         intent_id = uuid4().hex
         return PaymentIntent(
             id=intent_id,
@@ -62,6 +74,9 @@ class NoOpPaymentGateway(PaymentGateway):
         reason: str | None = None,
         metadata: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
+        if settings.is_production:
+            raise ProviderNotConfiguredError("payment_provider_not_configured")
+        log.warning("Using noop payment gateway (non-production)")
         return {
             "status": "noop",
             "provider": self.name,

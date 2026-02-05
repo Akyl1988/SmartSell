@@ -2,7 +2,13 @@ from __future__ import annotations
 
 from typing import Any
 
+from app.core.config import settings
+from app.core.logging import get_logger
+from app.integrations.errors import ProviderNotConfiguredError
 from app.integrations.ports.otp import OtpProvider
+
+
+log = get_logger(__name__)
 
 
 class NoOpOtpProvider(OtpProvider):
@@ -23,6 +29,9 @@ class NoOpOtpProvider(OtpProvider):
         ttl_seconds: int,
         metadata: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
+        if settings.is_production:
+            raise ProviderNotConfiguredError("otp_provider_not_configured")
+        log.warning("Using noop OTP provider (non-production)")
         return {
             "status": "noop",
             "provider": self.name,
@@ -40,6 +49,9 @@ class NoOpOtpProvider(OtpProvider):
         code: str,
         metadata: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
+        if settings.is_production:
+            raise ProviderNotConfiguredError("otp_provider_not_configured")
+        log.warning("Using noop OTP provider (non-production)")
         return {
             "status": "noop",
             "provider": self.name,
