@@ -46,9 +46,11 @@ def send_sms_otp(phone: str, code: str) -> bool:
     """Send SMS OTP code using Mobizon API."""
     try:
         if settings.is_production:
-            logger.warning("OTP provider not configured; refusing to send in production")
+            logger.warning(
+                "OTP provider not configured; refusing to send in production", extra={"phone": mask_phone(phone)}
+            )
             return False
-        logger.warning("Using stub OTP sender (non-production)")
+        logger.warning("Using stub OTP sender (non-production)", extra={"phone": mask_phone(phone)})
         # TODO: Implement actual Mobizon API call
         logger.info("Sending OTP to %s", mask_phone(phone))
 
@@ -71,9 +73,11 @@ def send_email_notification(email: str, subject: str, body: str) -> bool:
     """Send email notification."""
     try:
         if settings.is_production:
-            logger.warning("Email provider not configured; refusing to send in production")
+            logger.warning(
+                "Email provider not configured; refusing to send in production", extra={"email": mask_email(email)}
+            )
             return False
-        logger.warning("Using stub email sender (non-production)")
+        logger.warning("Using stub email sender (non-production)", extra={"email": mask_email(email)})
         # TODO: Implement email sending
         logger.info("Sending email to %s: %s", mask_email(email), subject)
 
@@ -120,6 +124,9 @@ def process_image_upload(image_url: str, product_id: int) -> dict:
 def sync_product_to_kaspi(product_id: int) -> bool:
     """Sync product to Kaspi marketplace."""
     try:
+        if settings.is_production:
+            logger.warning("Kaspi provider not configured; refusing to sync in production")
+            return False
         # TODO: Implement Kaspi API integration
         logger.info(f"Syncing product {product_id} to Kaspi")
 
