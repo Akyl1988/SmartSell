@@ -14,6 +14,7 @@ from app.core.logging import get_logger
 from app.core.subscriptions.plan_catalog import get_plan_display_name, normalize_plan_id
 from app.models import AuditLog, Company, OtpAttempt, Product, ProductStock, User
 from app.services import EmailService, KaspiService
+from app.services.subscriptions import renew_if_due
 from app.utils.idempotency import cleanup_idempotency_records
 
 logger = get_logger(__name__)
@@ -41,6 +42,7 @@ class TaskManager:
             asyncio.create_task(self._send_notifications_task()),
             asyncio.create_task(self._update_stock_levels_task()),
             asyncio.create_task(self._process_scheduled_campaigns_task()),
+            asyncio.create_task(self._renew_subscriptions_task()),
         ]
 
         logger.info("Background tasks started")
@@ -196,6 +198,23 @@ class TaskManager:
 
             except Exception as e:
                 logger.error(f"Campaigns task error: {e}")
+
+    async def _renew_subscriptions_task(self):
+        """Periodic task to renew subscriptions from wallet balance."""
+
+        while self.running:
+            try:
+                await asyncio.sleep(86400)  # Run daily
+
+                async with async_session_maker() as db:
+                    processed = await renew_if_due(db)
+                    if processed:
+                        await db.commit()
+                        logger.info("Subscription renewals processed", extra={"count": processed})
+                    else:
+                        await db.rollback()
+            except Exception as e:
+                logger.error(f"Subscription renewal task error: {e}")
 
     async def _send_low_stock_alerts(self, db: AsyncSession):
         """Send low stock alerts to company admins"""
