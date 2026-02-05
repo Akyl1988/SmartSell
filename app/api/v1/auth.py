@@ -28,7 +28,7 @@ import time
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
-from fastapi import APIRouter, Depends, Query, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel, Field
 from sqlalchemy import select, update
@@ -63,6 +63,7 @@ from app.core.security import (
     revoke_token,
     verify_password,
 )
+from app.integrations.errors import ProviderNotConfiguredError
 from app.integrations.ports.otp import OtpProvider
 from app.models.company import Company
 from app.models.invitation import InvitationToken, PasswordResetToken
@@ -779,6 +780,8 @@ async def request_otp(
         )
         provider_name = (send_result or {}).get("provider") or getattr(otp_service, "name", None)
         provider_version = (send_result or {}).get("version") or getattr(otp_service, "version", None)
+    except ProviderNotConfiguredError as exc:
+        raise HTTPException(status_code=503, detail=exc.code)
     except Exception as exc:
         provider_name = getattr(otp_service, "name", None) or "noop"
         provider_version = getattr(otp_service, "version", None)
@@ -1104,6 +1107,8 @@ async def phone_change_request(
         )
         provider_name = (send_result or {}).get("provider") or getattr(otp_service, "name", None)
         provider_version = (send_result or {}).get("version") or getattr(otp_service, "version", None)
+    except ProviderNotConfiguredError as exc:
+        raise HTTPException(status_code=503, detail=exc.code)
     except Exception as exc:
         provider_name = getattr(otp_service, "name", None) or "noop"
         provider_version = getattr(otp_service, "version", None)

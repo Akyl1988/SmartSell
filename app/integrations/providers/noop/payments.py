@@ -4,10 +4,9 @@ from decimal import Decimal
 from typing import Any
 from uuid import uuid4
 
-from fastapi import HTTPException, status
-
 from app.core.config import settings
 from app.core.logging import get_logger
+from app.integrations.errors import ProviderNotConfiguredError
 from app.integrations.ports.payments import PaymentGateway, PaymentIntent
 
 
@@ -37,7 +36,7 @@ class NoOpPaymentGateway(PaymentGateway):
 
     async def healthcheck(self) -> dict[str, Any]:
         if settings.is_production:
-            raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, "payment_provider_not_configured")
+            raise ProviderNotConfiguredError("payment_provider_not_configured")
         log.warning("Using noop payment gateway (non-production)")
         return {
             "status": "ok",
@@ -53,7 +52,7 @@ class NoOpPaymentGateway(PaymentGateway):
         metadata: dict[str, Any] | None = None,
     ) -> PaymentIntent:
         if settings.is_production:
-            raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, "payment_provider_not_configured")
+            raise ProviderNotConfiguredError("payment_provider_not_configured")
         log.warning("Using noop payment gateway (non-production)")
         intent_id = uuid4().hex
         return PaymentIntent(
@@ -76,7 +75,7 @@ class NoOpPaymentGateway(PaymentGateway):
         metadata: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         if settings.is_production:
-            raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, "payment_provider_not_configured")
+            raise ProviderNotConfiguredError("payment_provider_not_configured")
         log.warning("Using noop payment gateway (non-production)")
         return {
             "status": "noop",

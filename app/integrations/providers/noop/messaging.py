@@ -2,10 +2,9 @@ from __future__ import annotations
 
 from typing import Any
 
-from fastapi import HTTPException, status
-
 from app.core.config import settings
 from app.core.logging import get_logger
+from app.integrations.errors import ProviderNotConfiguredError
 from app.integrations.ports.messaging import MessagingProvider
 
 
@@ -30,7 +29,7 @@ class NoOpMessagingProvider(MessagingProvider):
         metadata: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         if settings.is_production:
-            raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, "messaging_provider_not_configured")
+            raise ProviderNotConfiguredError("messaging_provider_not_configured")
         log.warning("Using noop messaging provider (non-production)")
         return {
             "status": "noop",
