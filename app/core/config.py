@@ -665,6 +665,15 @@ class Settings(BaseSettings):
     # ---- Провайдеры
     MOBIZON_API_KEY: str | None = Field(default=None, description="Mobizon API key", validation_alias="MOBIZON_API_KEY")
     MOBIZON_API_URL: str = Field(default="https://api.mobizon.kz", description="Mobizon API URL")
+    MOBIZON_BASE_URL: str | None = Field(
+        default=None, description="Mobizon base URL", validation_alias="MOBIZON_BASE_URL"
+    )
+    MOBIZON_SENDER: str | None = Field(
+        default=None, description="Mobizon sender name", validation_alias="MOBIZON_SENDER"
+    )
+    MOBIZON_TIMEOUT_SEC: float = Field(
+        default=5.0, description="Mobizon HTTP timeout", validation_alias="MOBIZON_TIMEOUT_SEC"
+    )
 
     CLOUDINARY_CLOUD_NAME: str | None = Field(
         default=None, description="Cloudinary cloud name", validation_alias="CLOUDINARY_CLOUD_NAME"

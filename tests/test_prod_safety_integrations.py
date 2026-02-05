@@ -172,3 +172,22 @@ async def test_ready_fails_when_smtp_missing_in_prod(async_client, monkeypatch):
     assert resp.status_code == 503, resp.text
     payload = resp.json()
     assert payload.get("providers", {}).get("details", {}).get("messaging", {}).get("detail") == "smtp_missing_config"
+
+
+@pytest.mark.asyncio
+async def test_ready_fails_when_mobizon_missing_in_prod(async_client, monkeypatch):
+    monkeypatch.setattr(settings, "ENVIRONMENT", "production")
+    monkeypatch.setenv("READINESS_STRICT", "1")
+    monkeypatch.setenv("READINESS_REQUIRE_PROVIDERS", "1")
+    monkeypatch.setattr(settings, "MOBIZON_API_KEY", "", raising=False)
+    monkeypatch.setattr(settings, "MOBIZON_SENDER", "", raising=False)
+
+    async def _mobizon_provider(*_args, **_kwargs):
+        return CachedProvider(provider="mobizon", config={}, version=1, cached_at=time.monotonic())
+
+    monkeypatch.setattr(ProviderRegistry, "get_active_provider", _mobizon_provider)
+
+    resp = await async_client.get("/ready")
+    assert resp.status_code == 503, resp.text
+    payload = resp.json()
+    assert payload.get("providers", {}).get("details", {}).get("otp", {}).get("detail") == "mobizon_missing_config"
