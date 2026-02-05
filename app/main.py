@@ -674,6 +674,15 @@ async def _check_provider_registry() -> dict[str, dict[str, Any]]:
                 if not provider_name or provider_name.startswith("noop"):
                     results[domain] = {"ok": False, "detail": "provider_noop"}
                     continue
+                if domain == "otp" and provider_name in {"mobizon", "otp-mobizon", "mobizon-otp"}:
+                    missing: list[str] = []
+                    if not settings.MOBIZON_API_KEY:
+                        missing.append("MOBIZON_API_KEY")
+                    if not settings.MOBIZON_SENDER:
+                        missing.append("MOBIZON_SENDER")
+                    if missing:
+                        results[domain] = {"ok": False, "detail": "mobizon_missing_config", "missing": missing}
+                        continue
                 if domain == "messaging" and provider_name in {"smtp", "email-smtp", "smtp-email"}:
                     missing: list[str] = []
                     if not settings.SMTP_HOST:
@@ -951,9 +960,16 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:  # type: ignore[overrid
     if disable_hooks:
         logger.info("Startup hooks disabled (tests/CI flag)")
     try:
-        require_providers = _env_truthy(os.getenv("STARTUP_REQUIRE_PROVIDERS", "1" if settings.is_production else "0"))
-        if settings.is_production and require_providers and not disable_hooks:
+        startup_require_raw = os.getenv("STARTUP_REQUIRE_PROVIDERS")
+        require_providers = _env_truthy(startup_require_raw, settings.is_production)
+        should_validate_providers = settings.is_production and require_providers and (
+            (not disable_hooks) or (startup_require_raw is not None)
+        )
+        if should_validate_providers:
             providers = await _check_provider_registry()
+            otp = providers.get("otp") if isinstance(providers, dict) else None
+            if otp and not otp.get("ok", False):
+                raise RuntimeError("otp_provider_not_configured")
             messaging = providers.get("messaging") if isinstance(providers, dict) else None
             if messaging and not messaging.get("ok", False):
                 raise RuntimeError("email_provider_not_configured")
@@ -974,9 +990,13 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:  # type: ignore[overrid
             raise RuntimeError("DATABASE_URL is required for non-local environments")
     except Exception as e:
         if isinstance(e, RuntimeError):
-            raise
-        logger.debug("DB URL startup guard skipped: %s", e)
-
+            if isinstance(providers, dict):
+                otp = providers.get("otp")
+                messaging = providers.get("messaging")
+                if otp and not otp.get("ok", False):
+                    raise RuntimeError("otp_provider_not_configured")
+                if messaging and not messaging.get("ok", False):
+                    raise RuntimeError("email_provider_not_configured")
     _import_models_once()
     try:
         from app.api.routes import get_mount_diagnostics as _get_mount_diagnostics

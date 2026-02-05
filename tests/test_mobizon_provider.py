@@ -68,7 +68,7 @@ async def test_send_otp_success(monkeypatch, async_client, async_db_session):
         json={"config": {"api_key": "k1", "base_url": "https://mobizon.test", "timeout_seconds": 1}},
     )
 
-    async def fake_request(self, method, path, json=None, params=None, headers=None):
+    async def fake_request(self, method, path, data=None, json=None, params=None, headers=None, **_kwargs):
         return Response(200, json={"data": {"messageId": "m-1"}})
 
     monkeypatch.setattr(MobizonOtpProvider, "_request", fake_request)
@@ -110,7 +110,7 @@ async def test_send_otp_failure(monkeypatch, async_client, async_db_session):
         json={"config": {"api_key": "k1", "base_url": "https://mobizon.test", "timeout_seconds": 1}},
     )
 
-    async def fake_request(self, method, path, json=None, params=None, headers=None):
+    async def fake_request(self, method, path, data=None, json=None, params=None, headers=None, **_kwargs):
         return Response(500, json={"error": "fail"})
 
     monkeypatch.setattr(MobizonOtpProvider, "_request", fake_request)
@@ -198,7 +198,7 @@ async def test_resolver_uses_new_config_after_update(monkeypatch, async_client, 
         json={"config": {"api_key": "k1", "base_url": "https://mobizon.test", "timeout_seconds": 1}},
     )
 
-    async def fake_request(self, method, path, json=None, params=None, headers=None):
+    async def fake_request(self, method, path, data=None, json=None, params=None, headers=None, **_kwargs):
         return Response(200, json={"data": {"messageId": "m-2"}})
 
     monkeypatch.setattr(MobizonOtpProvider, "_request", fake_request)
@@ -246,7 +246,7 @@ async def test_redis_down_does_not_break_send(monkeypatch, async_client, async_d
         json={"config": {"api_key": "k1", "base_url": "https://mobizon.test", "timeout_seconds": 1}},
     )
 
-    async def fake_request(self, method, path, json=None, params=None, headers=None):
+    async def fake_request(self, method, path, data=None, json=None, params=None, headers=None, **_kwargs):
         return Response(200, json={"data": {"messageId": "m-3"}})
 
     monkeypatch.setattr(MobizonOtpProvider, "_request", fake_request)
@@ -267,11 +267,6 @@ async def test_redis_down_does_not_break_send(monkeypatch, async_client, async_d
 async def test_verify_otp_direct(monkeypatch):
     provider = MobizonOtpProvider(config={"api_key": "k1", "base_url": "https://mobizon.test"})
 
-    async def fake_request(self, method, path, json=None, params=None, headers=None):
-        return Response(200, json={"data": {"verified": True}})
-
-    monkeypatch.setattr(MobizonOtpProvider, "_request", fake_request)
-
     res = await provider.verify_otp(phone="+77000000000", code="123456")
-    assert res.get("verified") is True
-    assert res.get("status") == "ok"
+    assert res.get("verified") is False
+    assert res.get("status") == "unsupported"

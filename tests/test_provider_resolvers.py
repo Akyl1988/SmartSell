@@ -6,9 +6,11 @@ import pytest
 
 from app.core.config import settings
 from app.core.provider_registry import CachedProvider, ProviderRegistry
+from app.integrations.providers.mobizon.otp import MobizonOtpProvider
 from app.integrations.providers.noop import NoOpMessagingProvider, NoOpPaymentGateway
 from app.integrations.providers.smtp.messaging import SmtpMessagingProvider
 from app.services.messaging_providers import MessagingProviderResolver
+from app.services.otp_providers import OtpProviderResolver
 from app.services.payment_providers import PaymentProviderResolver
 from app.services.provider_configs import ProviderConfigService
 
@@ -17,9 +19,11 @@ from app.services.provider_configs import ProviderConfigService
 async def _reset_resolvers():
     MessagingProviderResolver.reset_cache()
     PaymentProviderResolver.reset_cache()
+    OtpProviderResolver.reset_cache()
     yield
     MessagingProviderResolver.reset_cache()
     PaymentProviderResolver.reset_cache()
+    OtpProviderResolver.reset_cache()
 
 
 @pytest.mark.asyncio
@@ -76,6 +80,30 @@ async def test_messaging_provider_noop_allowed_in_dev(monkeypatch):
 
     provider = await MessagingProviderResolver.resolve(None, domain="messaging")
     assert isinstance(provider, NoOpMessagingProvider)
+
+
+@pytest.mark.asyncio
+async def test_otp_provider_mobizon_resolution(monkeypatch):
+    monkeypatch.setattr(settings, "ENVIRONMENT", "development", raising=False)
+    mobizon_config = {"api_key": "key", "sender": "SENDER"}
+
+    async def fake_get_active(db, domain):
+        return CachedProvider(
+            provider="mobizon",
+            config=mobizon_config,
+            version=1,
+            cached_at=time.monotonic(),
+        )
+
+    async def fake_get_config(*_args, **_kwargs):
+        return mobizon_config
+
+    monkeypatch.setattr(ProviderRegistry, "get_active_provider", staticmethod(fake_get_active))
+    monkeypatch.setattr(ProviderConfigService, "get_provider_config", staticmethod(fake_get_config))
+
+    provider = await OtpProviderResolver.resolve(None, domain="otp")
+    assert isinstance(provider, MobizonOtpProvider)
+    assert provider.api_key == "key"
 
 
 @pytest.mark.asyncio

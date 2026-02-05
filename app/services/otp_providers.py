@@ -96,6 +96,19 @@ class OtpProviderResolver:
                         error="provider_config_missing",
                     )
                     provider_config = {}
+                    if settings.is_production:
+                        raise ProviderNotConfiguredError("otp_provider_not_configured")
+                    log.warning("OTP provider config missing; using noop")
+                    instance = NoOpOtpProvider(name="noop", config={}, version=0)
+                    async with cls._lock:
+                        cached_now = cls._cache.get(cache_key)
+                        if cached_now:
+                            return cached_now
+                        cls._cache[cache_key] = instance
+                        for key in list(cls._cache.keys()):
+                            if key[0] == domain_key and key != cache_key:
+                                cls._cache.pop(key, None)
+                    return instance
             except Exception as exc:  # pragma: no cover - runtime guard
                 log.warning("OTP provider config fetch failed; using noop", exc_info=exc)
                 provider_config = {}
