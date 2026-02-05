@@ -3,7 +3,7 @@ Background tasks for SmartSell3 using asyncio.
 """
 
 import asyncio
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from sqlalchemy import and_, select
@@ -200,22 +200,25 @@ class TaskManager:
                 logger.error(f"Campaigns task error: {e}")
 
     async def _renew_subscriptions_task(self):
-        """Periodic task to renew subscriptions from wallet balance."""
+        """Renew subscriptions daily (runs immediately on start)."""
 
         while self.running:
             try:
-                await asyncio.sleep(86400)  # Run daily
-
                 async with async_session_maker() as db:
-                    processed = await renew_if_due(db)
-                    if processed:
-                        await db.commit()
-                        logger.info("Subscription renewals processed", extra={"count": processed})
-                    else:
+                    try:
+                        processed = await renew_if_due(db, now=datetime.now(UTC))
+                        if processed:
+                            await db.commit()
+                            logger.info("Subscription renewals processed", extra={"count": processed})
+                        else:
+                            await db.rollback()
+                    except Exception as e:
                         await db.rollback()
+                        logger.error(f"Subscription renewal error: {e}")
             except Exception as e:
                 logger.error(f"Subscription renewal task error: {e}")
 
+            await asyncio.sleep(86400)
     async def _send_low_stock_alerts(self, db: AsyncSession):
         """Send low stock alerts to company admins"""
 

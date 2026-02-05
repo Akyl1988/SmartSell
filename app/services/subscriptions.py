@@ -1,18 +1,16 @@
 from __future__ import annotations
 
 from calendar import monthrange
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
 from sqlalchemy import desc, nullslast, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.logging import audit_logger
 from app.core.subscriptions.plan_catalog import get_plan, normalize_plan_id
-from app.models.billing import Subscription, WalletBalance
+from app.models.billing import Subscription, WalletBalance, WalletTransaction
 
 _SUB_ACTIVE = {"active", "trialing"}
-_SUB_INACTIVE = {"canceled", "frozen", "past_due"}
 _STATUS_ALIASES = {
     "trial": "trialing",
     "overdue": "past_due",
@@ -25,6 +23,37 @@ def _normalize_status(status: str | None) -> str:
     return _STATUS_ALIASES.get(val, val)
 
 
+def _anchor_day_from_subscription(subscription: Subscription, *, fallback: datetime) -> int:
+    anchor = getattr(subscription, "billing_anchor_day", None)
+    if anchor:
+        return int(anchor)
+    started_at = getattr(subscription, "started_at", None)
+    if started_at:
+        return int(started_at.day)
+    period_end = getattr(subscription, "period_end", None)
+    if period_end:
+        return int(period_end.day)
+    return int(fallback.day)
+
+
+def _add_months_anchor(dt: datetime, anchor_day: int, months: int) -> datetime:
+    month_index = (dt.month - 1) + months
+    year = dt.year + (month_index // 12)
+    month = (month_index % 12) + 1
+    last_day = monthrange(year, month)[1]
+    day = min(max(anchor_day, 1), last_day)
+    return dt.replace(year=year, month=month, day=day)
+
+
+def _ceil_to_midnight_utc(dt: datetime) -> datetime:
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=UTC)
+    midnight = dt.replace(hour=0, minute=0, second=0, microsecond=0)
+    if dt > midnight:
+        midnight = midnight + timedelta(days=1)
+    return midnight
+
+
 def is_subscription_active(subscription: Subscription | None, now: datetime | None = None) -> bool:
     if not subscription:
         return False
@@ -34,8 +63,6 @@ def is_subscription_active(subscription: Subscription | None, now: datetime | No
     now = now or datetime.now(UTC)
     status = _normalize_status(getattr(subscription, "status", None))
 
-    if status in _SUB_INACTIVE:
-        return False
     if getattr(subscription, "canceled_at", None):
         return False
 
@@ -45,14 +72,13 @@ def is_subscription_active(subscription: Subscription | None, now: datetime | No
         return False
 
     period_end = getattr(subscription, "period_end", None)
-    if period_end and now > period_end:
-        return False
+    grace_until = getattr(subscription, "grace_until", None)
 
     if status in _SUB_ACTIVE:
-        return True
+        return period_end is None or now <= period_end
 
-    if status == "active":
-        return True
+    if status == "past_due":
+        return grace_until is not None and now < grace_until
 
     return False
 
@@ -71,16 +97,6 @@ async def get_company_subscription(db: AsyncSession, company_id: int) -> Subscri
     return res.scalar_one_or_none()
 
 
-def _add_months_anniversary(dt: datetime, months: int = 1) -> datetime:
-    if months == 0:
-        return dt
-    year = dt.year + (dt.month - 1 + months) // 12
-    month = (dt.month - 1 + months) % 12 + 1
-    last_day = monthrange(year, month)[1]
-    day = min(dt.day, last_day)
-    return dt.replace(year=year, month=month, day=day)
-
-
 async def activate_plan(
     db: AsyncSession,
     *,
@@ -89,125 +105,122 @@ async def activate_plan(
     now: datetime | None = None,
 ) -> Subscription:
     now = now or datetime.now(UTC)
-    plan_id = normalize_plan_id(plan_code, default=None)
-    plan = get_plan(plan_id, default=None)
-    if not plan_id or plan is None:
-        raise ValueError("plan_not_found")
+    plan = get_plan(normalize_plan_id(plan_code))
+    if plan is None:
+        raise ValueError("Unknown plan")
 
-    wallet = await WalletBalance.get_for_company_async(db, company_id, create_if_missing=True, currency=plan.currency)
-    if wallet.currency != plan.currency:
-        raise ValueError("wallet_currency_mismatch")
+    wallet = await WalletBalance.get_for_company_async(
+        db,
+        company_id,
+        create_if_missing=True,
+        currency=plan.currency,
+    )
 
-    sub = await get_company_subscription(db, company_id)
-    if sub is None:
-        sub = Subscription(
-            company_id=company_id,
-            plan=plan_id,
-            status="active",
-            billing_cycle="monthly",
-            price=plan.price,
-            currency=plan.currency,
-            started_at=now,
-        )
-        db.add(sub)
-        await db.flush()
-    else:
-        sub.plan = plan_id
-        sub.status = "active"
-        sub.billing_cycle = "monthly"
-        sub.price = plan.price
-        sub.currency = plan.currency
-        if not sub.started_at:
-            sub.started_at = now
+    if (wallet.currency or "").upper() != (plan.currency or "").upper():
+        raise ValueError("Wallet currency mismatch")
 
-    if plan.price > Decimal("0"):
-        if (wallet.balance or Decimal("0")) < plan.price:
-            raise ValueError("insufficient_wallet_balance")
+    amount = Decimal(plan.price)
+    if amount > 0:
         await wallet.debit_safe_async(
             db,
-            plan.price,
-            description="subscription_charge",
+            amount,
+            description="subscription_activation",
             reference_type="subscription",
-            reference_id=sub.id,
+            reference_id=None,
         )
 
-    sub.period_start = now
-    sub.period_end = _add_months_anniversary(now, 1)
-    sub.next_billing_date = sub.period_end
+    anchor_day = now.day
+    period_end = _add_months_anchor(now, anchor_day, 1)
 
-    audit_logger.log_system_event(
-        level="info",
-        event="subscription_activated",
-        message="Subscription activated",
-        meta={
-            "company_id": company_id,
-            "plan": plan_id,
-            "price": str(plan.price),
-            "currency": plan.currency,
-        },
+    sub = Subscription(
+        company_id=company_id,
+        plan=plan.plan_id,
+        status="active",
+        billing_cycle="monthly",
+        price=amount,
+        currency=plan.currency,
+        started_at=now,
+        period_start=now,
+        period_end=period_end,
+        next_billing_date=period_end,
+        billing_anchor_day=anchor_day,
+        grace_until=None,
     )
-
+    db.add(sub)
     await db.flush()
     return sub
-
-
-async def renew_if_due(db: AsyncSession, *, now: datetime | None = None) -> int:
+async def renew_if_due(
+    db: AsyncSession,
+    *,
+    now: datetime | None = None,
+    grace_days: int = 3,
+) -> int:
     now = now or datetime.now(UTC)
-    stmt = (
+    due_stmt = (
         select(Subscription)
         .where(Subscription.deleted_at.is_(None))
-        .where(Subscription.period_end.isnot(None))
+        .where(Subscription.period_end.is_not(None))
         .where(Subscription.period_end <= now)
+        .where(Subscription.status.in_(["active", "past_due", "trialing"]))
     )
-    rows = (await db.execute(stmt)).scalars().all()
+    rows = (await db.execute(due_stmt)).scalars().all()
     processed = 0
     for sub in rows:
-        plan_id = normalize_plan_id(sub.plan, default=None)
-        plan = get_plan(plan_id, default=None)
-        if not plan_id or plan is None:
+        processed += 1
+        anchor_day = _anchor_day_from_subscription(sub, fallback=now)
+        if not sub.billing_anchor_day:
+            sub.billing_anchor_day = anchor_day
+
+        base_period_end = sub.period_end or now
+        plan = get_plan(normalize_plan_id(sub.plan))
+        price = Decimal(plan.price) if plan else Decimal(sub.price or 0)
+        currency = plan.currency if plan else (sub.currency or "KZT")
+
+        wallet = (
+            await db.execute(select(WalletBalance).where(WalletBalance.company_id == sub.company_id).limit(1))
+        ).scalar_one_or_none()
+
+        if wallet is None or (wallet.currency or "").upper() != (currency or "").upper():
             sub.status = "past_due"
-            processed += 1
+            sub.grace_until = _ceil_to_midnight_utc(base_period_end + timedelta(days=grace_days))
             continue
 
         try:
-            wallet = await WalletBalance.get_for_company_async(
-                db, sub.company_id, create_if_missing=False, currency=plan.currency
-            )
-        except Exception:
+            if price > 0:
+                before = wallet.balance or Decimal("0")
+                if before < price:
+                    raise ValueError("Insufficient wallet balance")
+                after = before - price
+                wallet.balance = after
+                trx = WalletTransaction(
+                    wallet_id=wallet.id,
+                    transaction_type="debit",
+                    amount=price,
+                    balance_before=before,
+                    balance_after=after,
+                    description="subscription_renewal",
+                    reference_type="subscription",
+                    reference_id=sub.id,
+                )
+                db.add(trx)
+                await db.flush()
+        except ValueError:
             sub.status = "past_due"
-            processed += 1
+            sub.grace_until = _ceil_to_midnight_utc(base_period_end + timedelta(days=grace_days))
             continue
-        if wallet.currency != plan.currency:
-            sub.status = "past_due"
-            processed += 1
-            continue
-
-        if plan.price > Decimal("0"):
-            if (wallet.balance or Decimal("0")) < plan.price:
-                sub.status = "past_due"
-                processed += 1
-                continue
-            await wallet.debit_safe_async(
-                db,
-                plan.price,
-                description="subscription_renewal",
-                reference_type="subscription",
-                reference_id=sub.id,
-            )
 
         sub.status = "active"
-        anchor = sub.period_end or now
-        sub.period_start = anchor
-        sub.period_end = _add_months_anniversary(anchor, 1)
+        sub.grace_until = None
+        sub.period_start = base_period_end
+        sub.period_end = _add_months_anchor(base_period_end, anchor_day, 1)
         sub.next_billing_date = sub.period_end
-        processed += 1
 
     return processed
 
 
 __all__ = [
+    "activate_plan",
     "get_company_subscription",
     "is_subscription_active",
-    "activate_plan",
     "renew_if_due",
 ]

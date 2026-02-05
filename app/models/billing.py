@@ -477,6 +477,8 @@ class Subscription(BaseModel, SoftDeleteMixin):
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     period_start: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     period_end: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
+    billing_anchor_day: Mapped[int | None] = mapped_column(Integer)
+    grace_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
     expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
     cancel_at_period_end: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     canceled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
@@ -510,6 +512,10 @@ class Subscription(BaseModel, SoftDeleteMixin):
         ),
         CheckConstraint("price >= 0", name="ck_subscription_price_nonneg"),
         CheckConstraint("grace_period_days >= 0", name="ck_subscription_grace_nonneg"),
+        CheckConstraint(
+            "billing_anchor_day IS NULL OR (billing_anchor_day >= 1 AND billing_anchor_day <= 31)",
+            name="ck_subscription_anchor_day",
+        ),
         {"extend_existing": True},
     )
 
@@ -2048,7 +2054,13 @@ class WalletTransaction(BaseModel, SoftDeleteMixin):
 
     __table_args__ = (
         Index("ix_wallet_transaction_wallet_type", "wallet_id", "transaction_type"),
-        Index("ix_wallet_transaction_wallet_client_request", "wallet_id", "client_request_id"),
+        Index(
+            "uq_wallet_transaction_wallet_client_request",
+            "wallet_id",
+            "client_request_id",
+            unique=True,
+            postgresql_where=text("client_request_id IS NOT NULL"),
+        ),
         CheckConstraint("amount >= 0", name="ck_wallet_trx_amount_nonneg"),
         CheckConstraint("balance_before >= 0", name="ck_wallet_trx_before_nonneg"),
         CheckConstraint("balance_after >= 0", name="ck_wallet_trx_after_nonneg"),
