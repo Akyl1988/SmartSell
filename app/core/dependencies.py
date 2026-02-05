@@ -655,6 +655,15 @@ async def _apply_idempotency(
     if not raw_key:
         return True
 
+    redis_client = get_redis()
+    if settings.is_production:
+        if redis_client is None:
+            raise HTTPException(status_code=503, detail="idempotency_unavailable")
+        try:
+            await redis_client.ping()  # type: ignore[attr-defined]
+        except Exception:
+            raise HTTPException(status_code=503, detail="idempotency_unavailable")
+
     ttl_header = request.headers.get("Idempotency-TTL")
     try:
         ttl_seconds = int(ttl_header) if ttl_header else _idem_default_ttl
