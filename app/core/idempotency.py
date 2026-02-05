@@ -10,6 +10,7 @@ from sqlalchemy import delete, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.config import settings
 from app.models.idempotency_key import IdempotencyKey
 
 log = logging.getLogger(__name__)
@@ -30,6 +31,15 @@ class IdempotencyEnforcer:
         self.default_ttl = max(1, int(default_ttl or 1))
         self.env = env or "dev"
         self._mem: dict[str, tuple[int, float]] = {}
+
+    def _is_production(self) -> bool:
+        try:
+            return bool(settings.is_production) or self.env.lower() == "production"
+        except Exception:
+            return self.env.lower() == "production"
+
+    def _key(self, key: str) -> str:
+        return f"{self.env}:{self.prefix}:{key}"
 
     async def reserve(
         self,
@@ -106,6 +116,14 @@ class IdempotencyEnforcer:
         ttl_seconds = kwargs.get("ttl_seconds")
         if key is None or status_code is None:
             return
+        if self.redis is not None:
+            try:
+                await self._set_result_redis(str(key), int(status_code), ttl_seconds=ttl_seconds)
+                return
+            except Exception as exc:
+                log.error("Idempotency redis error", extra={"error": str(exc)})
+                if self._is_production():
+                    return
         await self._set_result_mem(str(key), int(status_code), ttl_seconds=ttl_seconds)
 
     async def _insert_processing(
@@ -150,6 +168,33 @@ class IdempotencyEnforcer:
         ttl = max(1, int(ttl_seconds or self.default_ttl))
         self._mem[key] = (int(status_code), time.time() + ttl)
 
+    async def _reserve_redis(self, key: str, ttl_seconds: int) -> tuple[bool, Optional[int]]:
+        ttl = max(1, int(ttl_seconds))
+        rkey = self._key(key)
+        existing = await self.redis.get(rkey)  # type: ignore[attr-defined]
+        if existing is not None:
+            try:
+                return False, int(existing)
+            except Exception:
+                return False, None
+
+        inserted = await self.redis.set(rkey, "102", nx=True, ex=ttl)  # type: ignore[attr-defined]
+        if inserted:
+            return True, None
+
+        existing = await self.redis.get(rkey)  # type: ignore[attr-defined]
+        if existing is not None:
+            try:
+                return False, int(existing)
+            except Exception:
+                return False, None
+        return True, None
+
+    async def _set_result_redis(self, key: str, status_code: int, ttl_seconds: Optional[int] = None) -> None:
+        ttl = max(1, int(ttl_seconds or self.default_ttl))
+        rkey = self._key(key)
+        await self.redis.set(rkey, str(int(status_code)), ex=ttl)  # type: ignore[attr-defined]
+
     def dependency(self, allow_replay: bool = False):
         async def dep(request: Request, response: Response):
             method = request.method.upper()
@@ -166,7 +211,20 @@ class IdempotencyEnforcer:
             except Exception:
                 ttl_seconds = self.default_ttl
 
-            allowed, processed_status = await self._reserve_mem(key, ttl_seconds)
+            try:
+                if self.redis is not None:
+                    allowed, processed_status = await self._reserve_redis(key, ttl_seconds)
+                else:
+                    if self._is_production():
+                        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, "idempotency_unavailable")
+                    allowed, processed_status = await self._reserve_mem(key, ttl_seconds)
+            except HTTPException:
+                raise
+            except Exception as exc:
+                log.error("Idempotency redis error", extra={"error": str(exc)})
+                if self._is_production():
+                    raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, "idempotency_unavailable")
+                allowed, processed_status = await self._reserve_mem(key, ttl_seconds)
             if not allowed:
                 if processed_status is not None and allow_replay:
                     request.state.idempotency_key = key
