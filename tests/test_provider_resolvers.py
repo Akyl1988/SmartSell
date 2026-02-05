@@ -6,8 +6,8 @@ import pytest
 
 from app.core.config import settings
 from app.core.provider_registry import CachedProvider, ProviderRegistry
-from app.integrations.providers.mobizon.otp import MobizonOtpProvider
 from app.integrations.errors import ProviderNotConfiguredError
+from app.integrations.providers.mobizon.otp import MobizonOtpProvider
 from app.integrations.providers.noop import NoOpMessagingProvider, NoOpPaymentGateway
 from app.integrations.providers.placeholder.payments import PlaceholderPaymentGateway
 from app.integrations.providers.smtp.messaging import SmtpMessagingProvider
