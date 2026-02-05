@@ -16,6 +16,12 @@ from app.services.otp_providers import is_otp_active
 from app.utils.otp import hash_otp_code
 
 
+STRONG_PW = "S3cure!Passw0rd-2026"
+STRONG_OLD_PW = "T3st!OldPass-2026"
+STRONG_NEW_PW = "T3st!NewPass-2026"
+STRONG_WRONG_PW = "Wr0ng!Pass-2026"
+
+
 def _enable_otp_provider(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("OTP_PROVIDER", "mobizon")
     monkeypatch.setenv("OTP_ENABLED", "1")
@@ -35,7 +41,7 @@ class TestAuth:
 
         user_data = {
             "phone": "+77001234567",
-            "password": "password123",
+            "password": STRONG_PW,
             "first_name": "Test",
             "last_name": "User",
             "company_name": "Test Company",
@@ -60,7 +66,7 @@ class TestAuth:
         _enable_otp_provider(monkeypatch)
         user_data = {
             "phone": "+77009876543",
-            "password": "securepassword123",
+            "password": STRONG_PW,
             "company_name": "My Test Store",
         }
 
@@ -98,7 +104,7 @@ class TestAuth:
         _enable_otp_provider(monkeypatch)
         user_data = {
             "phone": "+77008765432",
-            "password": "securepassword456",
+            "password": STRONG_PW,
             # no company_name provided
         }
 
@@ -136,7 +142,7 @@ class TestAuth:
         user = User(
             company_id=company.id,
             phone="+77001234567",
-            hashed_password=get_password_hash("password123"),
+            hashed_password=get_password_hash(STRONG_PW),
             role="admin",
         )
         async_db_session.add(user)
@@ -145,7 +151,7 @@ class TestAuth:
         # Try to register with same phone
         user_data = {
             "phone": "+77001234567",
-            "password": "newpassword",
+            "password": STRONG_PW,
             "company_name": "New Company",
         }
 
@@ -167,14 +173,14 @@ class TestAuth:
         user = User(
             company_id=company.id,
             phone="+77001234567",
-            hashed_password=get_password_hash("password123"),
+            hashed_password=get_password_hash(STRONG_PW),
             role="admin",
         )
         async_db_session.add(user)
         await async_db_session.commit()
 
         # Login
-        login_data = {"identifier": "+77001234567", "password": "password123"}
+        login_data = {"identifier": "+77001234567", "password": STRONG_PW}
 
         response = await async_client.post("/api/auth/login", json=login_data)
 
@@ -196,14 +202,14 @@ class TestAuth:
         user = User(
             company_id=company.id,
             phone="+77001234567",
-            hashed_password=get_password_hash("password123"),
+            hashed_password=get_password_hash(STRONG_PW),
             role="admin",
         )
         async_db_session.add(user)
         await async_db_session.commit()
 
         # Login with wrong password
-        login_data = {"identifier": "+77001234567", "password": "wrongpassword"}
+        login_data = {"identifier": "+77001234567", "password": STRONG_WRONG_PW}
 
         response = await async_client.post("/api/auth/login", json=login_data)
 
@@ -248,13 +254,13 @@ class TestAuth:
             company_id=company.id,
             phone="+77001112222",
             email="user@example.com",
-            hashed_password=get_password_hash("password123"),
+            hashed_password=get_password_hash(STRONG_PW),
             role="admin",
         )
         async_db_session.add(user)
         await async_db_session.commit()
 
-        login_data = {"identifier": "user@example.com", "password": "password123"}
+        login_data = {"identifier": "user@example.com", "password": STRONG_PW}
         response = await async_client.post("/api/auth/login", json=login_data)
         assert response.status_code == 200, response.text
         data = response.json()
@@ -276,7 +282,7 @@ class TestAuth:
                 company_id=company.id,
                 phone="77001119999",
                 email="reset-url@example.com",
-                hashed_password=get_password_hash("Password123!"),
+                hashed_password=get_password_hash(STRONG_PW),
                 role="admin",
                 is_active=True,
                 is_verified=True,
@@ -351,7 +357,7 @@ class TestAuth:
         taken = User(
             company_id=company.id,
             phone="77008887766",
-            hashed_password=get_password_hash("Secret123!"),
+            hashed_password=get_password_hash(STRONG_PW),
             role="admin",
             is_active=True,
             is_verified=True,
@@ -436,14 +442,14 @@ class TestAuth:
         user = User(
             company_id=company.id,
             phone="+77001234567",
-            hashed_password=get_password_hash("password123"),
+            hashed_password=get_password_hash(STRONG_PW),
             role="admin",
         )
         async_db_session.add(user)
         await async_db_session.commit()
 
         # Login to get tokens
-        login_data = {"identifier": "+77001234567", "password": "password123"}
+        login_data = {"identifier": "+77001234567", "password": STRONG_PW}
 
         login_response = await async_client.post("/api/auth/login", json=login_data)
         assert login_response.status_code == 200, login_response.text
@@ -470,13 +476,13 @@ class TestAuth:
         user = User(
             company_id=company.id,
             phone="+77001234567",
-            hashed_password=get_password_hash("password123"),
+            hashed_password=get_password_hash(STRONG_PW),
             role="admin",
         )
         async_db_session.add(user)
         await async_db_session.commit()
 
-        login_data = {"identifier": "+77001234567", "password": "password123"}
+        login_data = {"identifier": "+77001234567", "password": STRONG_PW}
         login_response = await async_client.post("/api/auth/login", json=login_data)
         assert login_response.status_code == 200, login_response.text
         tokens = login_response.json()
@@ -513,13 +519,13 @@ class TestAuth:
         user = User(
             company_id=company.id,
             phone="+77001234567",
-            hashed_password=get_password_hash("password123"),
+            hashed_password=get_password_hash(STRONG_PW),
             role="admin",
         )
         async_db_session.add(user)
         await async_db_session.commit()
 
-        login_data = {"identifier": "+77001234567", "password": "password123"}
+        login_data = {"identifier": "+77001234567", "password": STRONG_PW}
         login_response = await async_client.post("/api/auth/login", json=login_data)
         assert login_response.status_code == 200, login_response.text
         tokens = login_response.json()
@@ -548,13 +554,13 @@ class TestAuth:
         user = User(
             company_id=company.id,
             phone="+77001234567",
-            hashed_password=get_password_hash("password123"),
+            hashed_password=get_password_hash(STRONG_PW),
             role="admin",
         )
         async_db_session.add(user)
         await async_db_session.commit()
 
-        login_data = {"identifier": "+77001234567", "password": "password123"}
+        login_data = {"identifier": "+77001234567", "password": STRONG_PW}
         login_response = await async_client.post("/api/auth/login", json=login_data)
         assert login_response.status_code == 200, login_response.text
         tokens = login_response.json()
@@ -578,13 +584,13 @@ class TestAuth:
         user = User(
             company_id=company.id,
             phone="+77001234567",
-            hashed_password=get_password_hash("password123"),
+            hashed_password=get_password_hash(STRONG_PW),
             role="admin",
         )
         async_db_session.add(user)
         await async_db_session.commit()
 
-        login_data = {"identifier": "+77001234567", "password": "password123"}
+        login_data = {"identifier": "+77001234567", "password": STRONG_PW}
         login_response = await async_client.post("/api/v1/auth/login", json=login_data)
         assert login_response.status_code == 200, login_response.text
         tokens = login_response.json()
@@ -609,13 +615,13 @@ class TestAuth:
         user = User(
             company_id=company.id,
             phone="+77001234567",
-            hashed_password=get_password_hash("password123"),
+            hashed_password=get_password_hash(STRONG_PW),
             role="admin",
         )
         async_db_session.add(user)
         await async_db_session.commit()
 
-        login_data = {"identifier": "+77001234567", "password": "password123"}
+        login_data = {"identifier": "+77001234567", "password": STRONG_PW}
         login_response = await async_client.post("/api/v1/auth/login", json=login_data)
         assert login_response.status_code == 200, login_response.text
         tokens = login_response.json()
@@ -639,7 +645,7 @@ class TestAuth:
         user = User(
             company_id=company.id,
             phone="+77001234567",
-            hashed_password=get_password_hash("password123"),
+            hashed_password=get_password_hash(STRONG_PW),
             role="admin",
             first_name="Test",
             last_name="User",
@@ -648,7 +654,7 @@ class TestAuth:
         await async_db_session.commit()
 
         # Login to get token
-        login_data = {"identifier": "+77001234567", "password": "password123"}
+        login_data = {"identifier": "+77001234567", "password": STRONG_PW}
 
         login_response = await async_client.post("/api/auth/login", json=login_data)
         assert login_response.status_code == 200, login_response.text
@@ -679,7 +685,7 @@ class TestAuth:
         user = User(
             company_id=company.id,
             phone="+77001234567",
-            hashed_password=get_password_hash("password123"),
+            hashed_password=get_password_hash(STRONG_PW),
             role="admin",
         )
         async_db_session.add(user)
@@ -704,14 +710,14 @@ class TestAuth:
         user = User(
             company_id=company.id,
             phone="+77001234567",
-            hashed_password=get_password_hash("oldpassword"),
+            hashed_password=get_password_hash(STRONG_OLD_PW),
             role="admin",
         )
         async_db_session.add(user)
         await async_db_session.commit()
 
         # Login to get token
-        login_data = {"identifier": "+77001234567", "password": "oldpassword"}
+        login_data = {"identifier": "+77001234567", "password": STRONG_OLD_PW}
 
         login_response = await async_client.post("/api/auth/login", json=login_data)
         assert login_response.status_code == 200, login_response.text
@@ -720,8 +726,8 @@ class TestAuth:
         # Change password
         headers = {"Authorization": f"Bearer {tokens['access_token']}"}
         password_data = {
-            "current_password": "oldpassword",
-            "new_password": "newpassword123",
+            "current_password": STRONG_OLD_PW,
+            "new_password": STRONG_NEW_PW,
         }
 
         response = await async_client.post("/api/auth/change-password", json=password_data, headers=headers)
@@ -729,7 +735,7 @@ class TestAuth:
         assert response.status_code == 200, response.text
 
         # Verify new password works
-        login_data = {"identifier": "+77001234567", "password": "newpassword123"}
+        login_data = {"identifier": "+77001234567", "password": STRONG_NEW_PW}
 
         response = await async_client.post("/api/auth/login", json=login_data)
 
@@ -769,7 +775,7 @@ def create_test_company(name: str = "Test Company") -> Company:
 def create_test_user(
     company_id: int,
     phone: str = "+77001234567",
-    password: str = "password123",
+    password: str = STRONG_PW,
     role: str = "admin",
 ) -> User:
     """Create test user (detached, must be added to session by caller)."""
