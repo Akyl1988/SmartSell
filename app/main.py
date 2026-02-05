@@ -274,6 +274,12 @@ def _server_timing_value(ms: int) -> str:
 
 
 _SECRET_KEYS = ("SECRET", "PASSWORD", "TOKEN", "KEY", "PASS", "PRIVATE", "CREDENTIAL", "AUTH")
+_REDACT_KEYS_EXACT = {
+    "DATABASE_URL",
+    "DB_URL",
+    "REDIS_URL",
+    "SQLALCHEMY_DATABASE_URI",
+}
 
 
 def _redact(value: Any) -> Any:
@@ -293,7 +299,8 @@ def _redact(value: Any) -> Any:
 def _redact_dict(d: dict[str, Any]) -> dict[str, Any]:
     out: dict[str, Any] = {}
     for k, v in d.items():
-        if any(part in str(k).upper() for part in _SECRET_KEYS):
+        key_upper = str(k).upper()
+        if key_upper in _REDACT_KEYS_EXACT or any(part in key_upper for part in _SECRET_KEYS):
             out[k] = _redact(v)
         else:
             out[k] = v
@@ -1482,7 +1489,8 @@ def _create_app() -> FastAPI:
 
     @app.get("/ready", response_model=None)
     async def readiness() -> JSONResponse:
-        if os.getenv("PYTEST_CURRENT_TEST") or os.getenv("TESTING"):
+        strict = _env_truthy(os.getenv("READINESS_STRICT", "1" if settings.is_production else "0"))
+        if (os.getenv("PYTEST_CURRENT_TEST") or os.getenv("TESTING")) and not strict:
             return JSONResponse(status_code=200, content={"ready": True, "checks": {}})
         require_redis = _env_truthy(os.getenv("READINESS_REQUIRE_REDIS", "0"))
         require_smtp = _env_truthy(os.getenv("READINESS_REQUIRE_SMTP", "0"))
@@ -1567,7 +1575,6 @@ def _create_app() -> FastAPI:
             "build_info": _build_info(),
         }
 
-        strict = _env_truthy(os.getenv("READINESS_STRICT", "0"))
         status_code = 200 if (ok or not strict) else 503
         return JSONResponse(status_code=status_code, content=payload)
 

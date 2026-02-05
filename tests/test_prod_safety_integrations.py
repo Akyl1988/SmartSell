@@ -3,6 +3,7 @@ from __future__ import annotations
 import time
 
 import pytest
+import json
 
 from app.core.config import settings
 from app.services import background_tasks
@@ -45,6 +46,20 @@ def test_email_logs_masked_email(monkeypatch, caplog):
 
     assert email not in caplog.text
     assert mask_email(email) in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_env_endpoint_redacts_database_url(async_client, monkeypatch):
+    monkeypatch.setenv("ALLOW_ENV_ENDPOINT", "1")
+    monkeypatch.setenv("DATABASE_URL", "postgresql://user:pass@localhost:5432/smartsell")
+
+    resp = await async_client.get("/env")
+    assert resp.status_code == 200
+
+    payload = resp.json()
+    raw = "postgresql://user:pass@localhost:5432/smartsell"
+    assert raw not in json.dumps(payload)
+    assert payload.get("env", {}).get("DATABASE_URL") not in (None, raw)
 
 
 @pytest.mark.asyncio
