@@ -629,7 +629,12 @@ def _resolve_idempotency_scope(current_user: Any | None, key: str) -> tuple[int 
         from app.core.security import resolve_tenant_company_id  # type: ignore
 
         company_id = resolve_tenant_company_id(current_user, not_found_detail="Company not set")
-        return int(company_id), key
+        company_id_int = int(company_id)
+        scoped_key = key
+        prefix = f"company:{company_id_int}:"
+        if not scoped_key.startswith(prefix):
+            scoped_key = f"{prefix}{key}"
+        return company_id_int, scoped_key
     except Exception:
         pass
 
