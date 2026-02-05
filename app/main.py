@@ -973,6 +973,9 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:  # type: ignore[overrid
             messaging = providers.get("messaging") if isinstance(providers, dict) else None
             if messaging and not messaging.get("ok", False):
                 raise RuntimeError("email_provider_not_configured")
+            payments = providers.get("payments") if isinstance(providers, dict) else None
+            if payments and not payments.get("ok", False):
+                raise RuntimeError("payment_provider_not_configured")
     except Exception as e:
         logger.error("startup provider validation failed: %s", e)
         raise

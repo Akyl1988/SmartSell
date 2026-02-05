@@ -7,6 +7,7 @@ import pytest
 
 from app import main as main_mod
 from app.core.config import settings
+from app.core.logging import configure_logging
 from app.core.provider_registry import CachedProvider, ProviderRegistry
 from app.services import background_tasks
 from app.services.otp_providers import OtpProviderResolver
@@ -29,7 +30,8 @@ def test_stub_tasks_fail_in_prod_without_provider(monkeypatch):
     assert background_tasks.generate_daily_report()["error"] == "report_provider_not_configured"
 
 
-def test_sms_otp_logs_masked_phone(monkeypatch, caplog):
+def test_sms_otp_logs_masked_phone(monkeypatch, caplog, capsys):
+    configure_logging()
     monkeypatch.setattr(settings, "ENVIRONMENT", "development")
     monkeypatch.setattr(time, "sleep", lambda *_args, **_kwargs: None)
     caplog.set_level("INFO")
@@ -37,11 +39,14 @@ def test_sms_otp_logs_masked_phone(monkeypatch, caplog):
     phone = "+77001234567"
     background_tasks.send_sms_otp(phone, "1234")
 
-    assert phone not in caplog.text
-    assert mask_phone(phone) in caplog.text
+    captured = caplog.text or capsys.readouterr().out
+
+    assert phone not in captured
+    assert mask_phone(phone) in captured
 
 
-def test_email_logs_masked_email(monkeypatch, caplog):
+def test_email_logs_masked_email(monkeypatch, caplog, capsys):
+    configure_logging()
     monkeypatch.setattr(settings, "ENVIRONMENT", "development")
     monkeypatch.setattr(time, "sleep", lambda *_args, **_kwargs: None)
     caplog.set_level("INFO")
@@ -49,8 +54,10 @@ def test_email_logs_masked_email(monkeypatch, caplog):
     email = "user@example.com"
     background_tasks.send_email_notification(email, "Hello", "Body")
 
-    assert email not in caplog.text
-    assert mask_email(email) in caplog.text
+    captured = caplog.text or capsys.readouterr().out
+
+    assert email not in captured
+    assert mask_email(email) in captured
 
 
 @pytest.mark.asyncio
@@ -151,6 +158,27 @@ async def test_ready_fails_when_noop_providers_in_prod(async_client, monkeypatch
     assert resp.status_code == 503, resp.text
     payload = resp.json()
     assert payload.get("providers", {}).get("ok") is False
+
+
+@pytest.mark.asyncio
+async def test_ready_fails_when_payments_noop_in_prod(async_client, monkeypatch):
+    monkeypatch.setattr(settings, "ENVIRONMENT", "production")
+    monkeypatch.setenv("READINESS_STRICT", "1")
+    monkeypatch.setenv("READINESS_REQUIRE_PROVIDERS", "1")
+
+    async def _providers():
+        return {
+            "otp": {"ok": True, "detail": "ok"},
+            "messaging": {"ok": True, "detail": "ok"},
+            "payments": {"ok": False, "detail": "provider_noop"},
+        }
+
+    monkeypatch.setattr(main_mod, "_check_provider_registry", _providers)
+
+    resp = await async_client.get("/ready")
+    assert resp.status_code == 503, resp.text
+    payload = resp.json()
+    assert payload.get("providers", {}).get("details", {}).get("payments", {}).get("detail") == "provider_noop"
 
 
 @pytest.mark.asyncio

@@ -7,7 +7,9 @@ import pytest
 from app.core.config import settings
 from app.core.provider_registry import CachedProvider, ProviderRegistry
 from app.integrations.providers.mobizon.otp import MobizonOtpProvider
+from app.integrations.errors import ProviderNotConfiguredError
 from app.integrations.providers.noop import NoOpMessagingProvider, NoOpPaymentGateway
+from app.integrations.providers.placeholder.payments import PlaceholderPaymentGateway
 from app.integrations.providers.smtp.messaging import SmtpMessagingProvider
 from app.services.messaging_providers import MessagingProviderResolver
 from app.services.otp_providers import OtpProviderResolver
@@ -179,3 +181,39 @@ async def test_payment_provider_fallback(monkeypatch):
     provider = await PaymentProviderResolver.resolve(None, domain="payments")
     assert isinstance(provider, NoOpPaymentGateway)
     assert provider.name == "noop"
+
+
+@pytest.mark.asyncio
+async def test_payment_provider_placeholder_resolution(monkeypatch):
+    monkeypatch.setattr(settings, "ENVIRONMENT", "development", raising=False)
+
+    async def fake_get_active(db, domain):
+        return CachedProvider(
+            provider="placeholder",
+            config={},
+            version=1,
+            cached_at=time.monotonic(),
+        )
+
+    monkeypatch.setattr(ProviderRegistry, "get_active_provider", staticmethod(fake_get_active))
+
+    provider = await PaymentProviderResolver.resolve(None, domain="payments")
+    assert isinstance(provider, PlaceholderPaymentGateway)
+
+
+@pytest.mark.asyncio
+async def test_payment_provider_noop_disallowed_in_prod(monkeypatch):
+    monkeypatch.setattr(settings, "ENVIRONMENT", "production", raising=False)
+
+    async def fake_get_active(db, domain):
+        return CachedProvider(
+            provider="noop",
+            config={},
+            version=1,
+            cached_at=time.monotonic(),
+        )
+
+    monkeypatch.setattr(ProviderRegistry, "get_active_provider", staticmethod(fake_get_active))
+
+    with pytest.raises(ProviderNotConfiguredError, match="payment_provider_not_configured"):
+        await PaymentProviderResolver.resolve(None, domain="payments")

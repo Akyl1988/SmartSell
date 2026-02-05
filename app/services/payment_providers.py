@@ -9,6 +9,7 @@ from app.core.provider_registry import ProviderRegistry
 from app.integrations.errors import ProviderNotConfiguredError
 from app.integrations.ports.payments import PaymentGateway
 from app.integrations.providers.noop.payments import NoOpPaymentGateway
+from app.integrations.providers.placeholder.payments import PlaceholderPaymentGateway
 from app.services.provider_configs import ProviderConfigService
 
 log = get_logger(__name__)
@@ -39,6 +40,10 @@ class PaymentProviderResolver:
         if normalized.startswith("noop"):
             return NoOpPaymentGateway(name=name, config=config, version=version)
 
+        if normalized in {"placeholder", "payment-placeholder", "payments-placeholder", "stub", "dummy"}:
+            return PlaceholderPaymentGateway(name=name, config=config, version=version)
+        if settings.is_production:
+            raise ProviderNotConfiguredError("payment_provider_not_configured")
         log.warning("Unknown payment provider '%s', using noop", name)
         return NoOpPaymentGateway(name=name, config=config, version=version)
 
@@ -116,14 +121,15 @@ class PaymentProviderResolver:
             instance = cls._build_provider(entry.provider, provider_config, int(entry.version or 0))
         except Exception as exc:  # pragma: no cover - runtime guard
             log.warning("Payment provider build failed; using noop", exc_info=exc)
-            await ProviderConfigService.record_event(
-                db,
-                domain=resolved_domain,
-                provider=entry.provider,
-                action="provider_build_failed",
-                status="error",
-                error=str(exc),
-            )
+            if db is not None:
+                await ProviderConfigService.record_event(
+                    db,
+                    domain=resolved_domain,
+                    provider=entry.provider,
+                    action="provider_build_failed",
+                    status="error",
+                    error=str(exc),
+                )
             if settings.is_production:
                 raise ProviderNotConfiguredError("payment_provider_not_configured")
             instance = NoOpPaymentGateway(name="noop", config={}, version=0)
