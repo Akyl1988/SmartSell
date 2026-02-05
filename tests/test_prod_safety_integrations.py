@@ -23,6 +23,7 @@ def test_stub_tasks_fail_in_prod_without_provider(monkeypatch):
         background_tasks.process_image_upload("https://example.com/a.jpg", 1)["error"]
         == "media_provider_not_configured"
     )
+    assert background_tasks.sync_product_to_kaspi(42) is False
     assert background_tasks.process_payment_webhook({"invoice_id": "inv-1"}) is False
     assert background_tasks.generate_daily_report()["error"] == "report_provider_not_configured"
 

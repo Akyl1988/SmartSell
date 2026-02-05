@@ -5,6 +5,8 @@ from __future__ import annotations
 import os
 from typing import Any
 
+from app.utils.pii import mask_email
+
 try:
     from app.core.config import settings  # type: ignore
 except Exception:  # pragma: no cover
@@ -53,5 +55,5 @@ async def send_email(*, to: str, subject: str, body: str, meta: dict[str, Any] |
     if _env() == "production" and not provider:
         raise MessagingConfigError("Email provider is not configured")
 
-    log.info("email.send", to=to, subject=subject, provider=provider or "noop", meta=meta or {})
+    log.info("email.send", to=mask_email(to), subject=subject, provider=provider or "noop", meta=meta or {})
     return {"success": True, "provider": provider or "noop"}
