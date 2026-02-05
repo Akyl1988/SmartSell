@@ -5,6 +5,7 @@ import time
 
 import pytest
 
+from app import main as main_mod
 from app.core.config import settings
 from app.core.provider_registry import ProviderRegistry
 from app.services import background_tasks
@@ -129,3 +130,24 @@ async def test_payment_intent_returns_503_in_prod(async_client, company_a_manage
 
     assert resp.status_code == 503, resp.text
     assert resp.json().get("detail") == "payment_provider_not_configured"
+
+
+@pytest.mark.asyncio
+async def test_ready_fails_when_noop_providers_in_prod(async_client, monkeypatch):
+    monkeypatch.setattr(settings, "ENVIRONMENT", "production")
+    monkeypatch.setenv("READINESS_STRICT", "1")
+    monkeypatch.setenv("READINESS_REQUIRE_PROVIDERS", "1")
+
+    async def _noop_providers():
+        return {
+            "otp": {"ok": False, "detail": "provider_noop"},
+            "messaging": {"ok": False, "detail": "provider_noop"},
+            "payments": {"ok": False, "detail": "provider_noop"},
+        }
+
+    monkeypatch.setattr(main_mod, "_check_provider_registry", _noop_providers)
+
+    resp = await async_client.get("/ready")
+    assert resp.status_code == 503, resp.text
+    payload = resp.json()
+    assert payload.get("providers", {}).get("ok") is False

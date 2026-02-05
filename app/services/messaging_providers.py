@@ -3,8 +3,10 @@ from __future__ import annotations
 import asyncio
 from typing import Any
 
+from app.core.config import settings
 from app.core.logging import get_logger
 from app.core.provider_registry import ProviderRegistry
+from app.integrations.errors import ProviderNotConfiguredError
 from app.integrations.ports.messaging import MessagingProvider
 from app.integrations.providers.noop.messaging import NoOpMessagingProvider
 from app.integrations.providers.webhook.messaging import WebhookMessagingProvider
@@ -52,6 +54,8 @@ class MessagingProviderResolver:
             entry = await ProviderRegistry.get_active_provider(db, domain_key)
         except Exception as exc:  # pragma: no cover - runtime guard
             log.warning("Messaging provider resolution failed; using fallback noop", exc_info=exc)
+            if settings.is_production:
+                raise ProviderNotConfiguredError("messaging_provider_not_configured")
             fallback = NoOpMessagingProvider(name="noop", config={}, version=0)
             async with cls._lock:
                 cls._cache[cls._cache_key(domain_key, 0, "noop")] = fallback
@@ -64,6 +68,8 @@ class MessagingProviderResolver:
             return cached
 
         if not entry:
+            if settings.is_production:
+                raise ProviderNotConfiguredError("messaging_provider_not_configured")
             log.warning("Messaging provider not configured for domain '%s'; using noop", domain_key)
             instance = NoOpMessagingProvider(name="noop", config={}, version=0)
             async with cls._lock:
@@ -92,6 +98,8 @@ class MessagingProviderResolver:
                 provider_config = {}
 
         try:
+            if settings.is_production and (provider_name or "noop").lower().startswith("noop"):
+                raise ProviderNotConfiguredError("messaging_provider_not_configured")
             instance = cls._build_provider(entry.provider, provider_config, int(entry.version or 0))
         except Exception as exc:  # pragma: no cover - runtime guard
             log.warning("Messaging provider build failed; using noop", exc_info=exc)
@@ -103,6 +111,8 @@ class MessagingProviderResolver:
                 status="error",
                 error=str(exc),
             )
+            if settings.is_production:
+                raise ProviderNotConfiguredError("messaging_provider_not_configured")
             instance = NoOpMessagingProvider(name="noop", config={}, version=0)
 
         async with cls._lock:

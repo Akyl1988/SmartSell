@@ -761,6 +761,8 @@ async def get_payment_gateway(db=Depends(get_db)):
     try:
         return await PaymentProviderResolver.resolve(db, domain="payments")
     except Exception as exc:  # pragma: no cover - runtime guard
+        if settings.is_production:
+            raise HTTPException(status_code=503, detail="payment_provider_not_configured")
         log.warning("Payment gateway resolution failed; using noop", exc_info=exc)
         return NoOpPaymentGateway()
 
@@ -775,6 +777,8 @@ async def get_otp_service(db=Depends(get_db)):
     try:
         return await OtpProviderResolver.resolve(db, domain="otp")
     except Exception as exc:  # pragma: no cover - runtime guard
+        if settings.is_production:
+            raise HTTPException(status_code=503, detail="otp_provider_not_configured")
         log.warning("OTP service resolution failed; using noop", exc_info=exc)
         from app.integrations.providers.noop import NoOpOtpProvider
 
@@ -791,6 +795,8 @@ async def get_messaging_provider(db=Depends(get_db)):
     try:
         return await MessagingProviderResolver.resolve(db, domain="messaging")
     except Exception as exc:  # pragma: no cover - runtime guard
+        if settings.is_production:
+            raise HTTPException(status_code=503, detail="messaging_provider_not_configured")
         log.warning("Messaging provider resolution failed; using noop", exc_info=exc)
         return NoOpMessagingProvider()
 

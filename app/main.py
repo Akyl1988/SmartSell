@@ -657,6 +657,36 @@ async def _check_integrations() -> dict[str, dict[str, Any]]:
     return results
 
 
+async def _check_provider_registry() -> dict[str, dict[str, Any]]:
+    results: dict[str, dict[str, Any]] = {}
+    domains = ["otp", "messaging", "payments"]
+    try:
+        from app.core.db import async_session_maker
+        from app.core.provider_registry import ProviderRegistry
+
+        async with async_session_maker() as db:
+            for domain in domains:
+                entry = await ProviderRegistry.get_active_provider(db, domain)
+                if not entry:
+                    results[domain] = {"ok": False, "detail": "provider_missing"}
+                    continue
+                provider_name = (entry.provider or "").strip().lower()
+                if not provider_name or provider_name.startswith("noop"):
+                    results[domain] = {"ok": False, "detail": "provider_noop"}
+                    continue
+                results[domain] = {
+                    "ok": True,
+                    "detail": "ok",
+                    "provider": entry.provider,
+                    "version": entry.version,
+                }
+    except Exception as exc:
+        err = f"provider_check_error:{exc!s}"
+        for domain in domains:
+            results[domain] = {"ok": False, "detail": err}
+    return results
+
+
 # ======================================================================================
 # Sliding p99 response time
 # ======================================================================================
@@ -1496,6 +1526,9 @@ def _create_app() -> FastAPI:
         require_smtp = _env_truthy(os.getenv("READINESS_REQUIRE_SMTP", "0"))
         require_celery = _env_truthy(os.getenv("READINESS_REQUIRE_CELERY", "0"))
         require_integrations = _env_truthy(os.getenv("READINESS_REQUIRE_INTEGRATIONS", "0"))
+        require_providers = _env_truthy(
+            os.getenv("READINESS_REQUIRE_PROVIDERS", "1" if settings.is_production else "0")
+        )
 
         require_secret = _env_truthy(os.getenv("READINESS_REQUIRE_SECRET", "0"))
         secret_present = bool(os.getenv("SESSION_SECRET_KEY") or os.getenv("SECRET_KEY") or os.getenv("APP_SECRET"))
@@ -1520,13 +1553,17 @@ def _create_app() -> FastAPI:
         check_int_f: Awaitable[dict[str, dict[str, Any]]] = (
             _check_integrations() if require_integrations else asyncio.sleep(0, result={})
         )
+        check_providers_f: Awaitable[dict[str, dict[str, Any]]] = (
+            _check_provider_registry() if require_providers else asyncio.sleep(0, result={})
+        )
 
         (
             (redis_ok, redis_msg),
             (smtp_ok, smtp_msg),
             (cel_ok, cel_msg, cel_info),
             integrations,
-        ) = await asyncio.gather(check_redis_f, check_smtp_f, check_celery_f, check_int_f)
+            providers,
+        ) = await asyncio.gather(check_redis_f, check_smtp_f, check_celery_f, check_int_f, check_providers_f)
 
         integrations_ok = True
         if isinstance(integrations, dict):
@@ -1535,12 +1572,20 @@ def _create_app() -> FastAPI:
                     integrations_ok = False
                     break
 
+        providers_ok = True
+        if isinstance(providers, dict):
+            for v in providers.values():
+                if not v.get("ok", False):
+                    providers_ok = False
+                    break
+
         ok = (
             pg_ok
             and (redis_ok if require_redis else True)
             and (smtp_ok if require_smtp else True)
             and (cel_ok if require_celery else True)
             and (integrations_ok if require_integrations else True)
+            and (providers_ok if require_providers else True)
             and (secret_present if require_secret else True)
         )
         payload: dict[str, Any] = {
@@ -1567,6 +1612,11 @@ def _create_app() -> FastAPI:
                 "ok": integrations_ok if require_integrations else True,
                 "details": integrations if require_integrations else {},
                 "required": bool(require_integrations),
+            },
+            "providers": {
+                "ok": providers_ok if require_providers else True,
+                "details": providers if require_providers else {},
+                "required": bool(require_providers),
             },
             "secrets": {
                 "ok": secret_present if require_secret else True,
