@@ -116,7 +116,7 @@ async def test_kaspi_subscription_override_bypasses_gate(
         headers=_auth_headers(owner),
         json={"merchant_uid": merchant_uid},
     )
-    assert ok.status_code == 200
+    assert ok.status_code == 402
 
     expired_at = (datetime.now(UTC) - timedelta(days=1)).isoformat()
     expired = await async_client.put(

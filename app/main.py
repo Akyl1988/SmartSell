@@ -962,8 +962,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:  # type: ignore[overrid
     try:
         startup_require_raw = os.getenv("STARTUP_REQUIRE_PROVIDERS")
         require_providers = _env_truthy(startup_require_raw, settings.is_production)
-        should_validate_providers = settings.is_production and require_providers and (
-            (not disable_hooks) or (startup_require_raw is not None)
+        should_validate_providers = (
+            settings.is_production and require_providers and ((not disable_hooks) or (startup_require_raw is not None))
         )
         if should_validate_providers:
             providers = await _check_provider_registry()

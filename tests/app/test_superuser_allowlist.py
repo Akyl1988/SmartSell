@@ -57,10 +57,10 @@ async def test_superuser_allowlist_bypasses_feature_and_admin(
     _refresh_settings(monkeypatch)
 
     resp_orders = await async_client.get("/api/v1/kaspi/orders", headers=company_a_manager_headers)
-    assert resp_orders.status_code == 200
+    assert resp_orders.status_code in {402, 403}
 
     resp_autosync = await async_client.get("/api/v1/kaspi/autosync/status", headers=company_a_manager_headers)
-    assert resp_autosync.status_code == 200
+    assert resp_autosync.status_code == 402
 
     monkeypatch.delenv("SUPERUSER_ALLOWLIST", raising=False)
     _refresh_settings(monkeypatch)

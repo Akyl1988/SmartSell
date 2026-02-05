@@ -4,17 +4,14 @@ from collections.abc import Iterable
 from typing import Any
 
 from fastapi import Depends, Request
-from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.db import get_async_db
 from app.core.exceptions import AuthorizationError
 from app.core.logging import get_logger
-from app.core.security import get_current_user, is_superuser, resolve_tenant_company_id
+from app.core.security import get_current_user, resolve_tenant_company_id
 from app.core.subscriptions.plan_catalog import get_plan_features as _catalog_plan_features
 from app.core.subscriptions.plan_catalog import normalize_plan_id
-from app.models.company import Company
-from app.services.subscription_overrides import is_subscription_override_active
 from app.services.subscriptions import get_company_subscription, is_subscription_active
 
 logger = get_logger(__name__)
@@ -30,10 +27,12 @@ async def _resolve_plan(db: AsyncSession, company_id: int) -> str:
     subscription = await get_company_subscription(db, company_id)
     if subscription and is_subscription_active(subscription):
         return normalize_plan_id(getattr(subscription, "plan", None)) or "start"
-
-    res = await db.execute(select(Company.subscription_plan).where(Company.id == company_id))
-    plan = res.scalar_one_or_none()
-    return normalize_plan_id(plan) or "start"
+    raise AuthorizationError(
+        "subscription_required",
+        code="subscription_required",
+        http_status=402,
+        extra={"company_id": company_id},
+    )
 
 
 def _has_feature(plan: str, feature: str) -> bool:
@@ -70,24 +69,12 @@ def require_feature(feature: str) -> Any:
         current_user=Depends(get_current_user),  # noqa: B008
         db: AsyncSession = Depends(get_async_db),  # noqa: B008
     ) -> Any:
-        if is_superuser(current_user):
+        role = (getattr(current_user, "role", "") or "").lower()
+        if getattr(current_user, "is_superuser", False) or role in {"platform_admin", "superadmin"}:
             return current_user
         company_id = resolve_tenant_company_id(current_user, not_found_detail="Company not set")
         plan = await _resolve_plan(db, company_id)
         if not _has_feature(plan, feature):
-            if feature.startswith("kaspi."):
-                merchant_uid = await _extract_merchant_uid(request)
-                if merchant_uid:
-                    if await is_subscription_override_active(db, company_id, "kaspi", merchant_uid):
-                        logger.info(
-                            "Feature override allowed",
-                            extra={
-                                "feature": feature,
-                                "company_id": company_id,
-                                "merchant_uid": merchant_uid,
-                            },
-                        )
-                        return current_user
             logger.info("Feature blocked", extra={"feature": feature, "plan": plan, "company_id": company_id})
             raise AuthorizationError(
                 "subscription_required",

@@ -1296,7 +1296,7 @@ class WalletBalance(BaseModel, SoftDeleteMixin):
             reference_type=reference_type,
             reference_id=reference_id,
         )
-        self.transactions.append(trx)
+        session.add(trx)
         await session.flush()
         return trx
 
@@ -1373,7 +1373,7 @@ class WalletBalance(BaseModel, SoftDeleteMixin):
             reference_type=reference_type,
             reference_id=reference_id,
         )
-        self.transactions.append(trx)
+        session.add(trx)
         await session.flush()
         return trx
 
@@ -1472,7 +1472,7 @@ class WalletBalance(BaseModel, SoftDeleteMixin):
                         reference_type=reference_type,
                         reference_id=reference_id,
                     )
-                    self.transactions.append(trx)
+                    session.add(trx)
                     await session.flush()
                     return trx
             except Exception as e:
@@ -1875,7 +1875,7 @@ class WalletBalance(BaseModel, SoftDeleteMixin):
                             reference_type="settle",
                             reference_id=None,
                         )
-                        self.transactions.append(trx)
+                        session.add(trx)
                         await session.flush()
 
                     if missing > 0:
@@ -2057,7 +2057,7 @@ class WalletTransaction(BaseModel, SoftDeleteMixin):
 
     @validates("transaction_type")
     def _validate_type(self, _k: str, v: str) -> str:
-        allowed = {"credit", "debit", "adjustment"}
+        allowed = {"credit", "debit", "adjustment", "manual_topup"}
         vv = (v or "").strip().lower()
         if vv not in allowed:
             raise ValueError(f"Invalid transaction_type: {vv}")
