@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib
+import os
 import subprocess
 import sys
 
@@ -21,7 +22,10 @@ def test_imports_produce_no_output(capsys) -> None:
 
 def _run_import_subprocess(module_name: str) -> tuple[str, str, int]:
     cmd = [sys.executable, "-c", f"import {module_name}; print('ok')"]
-    result = subprocess.run(cmd, capture_output=True, text=True, check=False)
+    env = dict(**os.environ)
+    env.setdefault("ENVIRONMENT", "development")
+    env.setdefault("TESTING", "1")
+    result = subprocess.run(cmd, capture_output=True, text=True, check=False, env=env)
     return result.stdout, result.stderr, result.returncode
 
 

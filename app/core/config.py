@@ -1032,6 +1032,17 @@ class Settings(BaseSettings):
         if len(reset_secret) < 32:
             raise ValueError("reset_token_secret_required_in_prod")
 
+    def check_otp_secret(self) -> None:
+        if not self.is_production:
+            return
+        val = (os.getenv("OTP_SECRET") or "").strip()
+        if not val:
+            raise ValueError("otp_secret_required_in_prod")
+        if val == "dev-only-default-please-override-in-prod":
+            raise ValueError("otp_secret_required_in_prod")
+        if len(val) < 32:
+            raise ValueError("otp_secret_required_in_prod")
+
     def _is_postgres_url(self, url: str) -> bool:
         try:
             parsed = urlparse(url)
@@ -2034,6 +2045,7 @@ def validate_prod_secrets(s: Settings | None = None) -> None:
     if s.is_production:
         s.check_secret_key()
         s.check_token_secrets()
+        s.check_otp_secret()
 
 
 settings = get_settings()

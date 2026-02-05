@@ -91,8 +91,9 @@ except Exception:
     _HAS_SQLA = False
 
 try:
-    from app.core.db import engine as _SYNC_ENGINE  # type: ignore
+    from app.core.db import _get_sync_engine  # type: ignore
 
+    _SYNC_ENGINE = _get_sync_engine()
     _SYNC_ENGINE_AVAILABLE = True
 except Exception:
     _SYNC_ENGINE_AVAILABLE = False
@@ -387,6 +388,9 @@ def rotate_active_kid(new_kid: str) -> None:
 
 def _pick_signing_key(alg: str | None = None) -> tuple[str | bytes, str, str | None]:
     algorithm = alg or getattr(settings, "ALGORITHM", "HS256")
+    env_kid = (os.getenv("JWT_ACTIVE_KID") or "").strip()
+    if settings.is_production and env_kid and not _KID_KEYS:
+        raise RuntimeError("kid_key_material_required_in_prod")
     kid = get_active_kid()
     if _KID_KEYS and kid:
         mat = _KID_KEYS[kid]
@@ -667,6 +671,11 @@ def _build_denylist_backend() -> DenylistBackend:
             return RedisDenylist(url, prefix=prefix)
         except Exception:
             pass
+    require_backend = bool(settings.is_production and not (settings.is_testing or os.getenv("PYTEST_CURRENT_TEST")))
+    if os.getenv("DENYLIST_REQUIRE_BACKEND", "").strip().lower() in {"1", "true", "yes", "on"}:
+        require_backend = True
+    if require_backend:
+        raise RuntimeError("denylist_backend_required_in_prod")
     return InMemoryDenylist()
 
 
