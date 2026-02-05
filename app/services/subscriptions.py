@@ -149,8 +149,6 @@ async def activate_plan(
     db.add(sub)
     await db.flush()
     return sub
-
-
 async def renew_if_due(
     db: AsyncSession,
     *,

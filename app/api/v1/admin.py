@@ -45,11 +45,11 @@ class SubscriptionOverrideOut(BaseModel):
 
 
 class WalletTopupIn(BaseModel):
-    companyId: int
+    companyId: int = Field(..., ge=1)
     amount: Decimal = Field(..., gt=0)
-    currency: str = Field(default="KZT", min_length=3, max_length=8)
+    currency: str = Field(..., min_length=3, max_length=8)
     external_reference: str | None = Field(default=None, max_length=128)
-    comment: str | None = Field(default=None, max_length=255)
+    comment: str | None = Field(default=None, max_length=500)
 
 
 class WalletTopupOut(BaseModel):
@@ -111,7 +111,6 @@ async def manual_wallet_topup(
         raise AuthorizationError("wallet_currency_mismatch", code="wallet_currency_mismatch", http_status=400)
 
     amount = Decimal(str(payload.amount))
-
     if payload.external_reference:
         existing_stmt = select(WalletTransaction).where(
             WalletTransaction.wallet_id == wallet.id,
@@ -127,7 +126,6 @@ async def manual_wallet_topup(
                 balance=str(existing.balance_after),
                 amount=str(existing.amount),
             )
-
     before = wallet.balance or Decimal("0")
     after = before + amount
     wallet.balance = after

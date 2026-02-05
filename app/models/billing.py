@@ -1881,7 +1881,7 @@ class WalletBalance(BaseModel, SoftDeleteMixin):
                             reference_type="settle",
                             reference_id=None,
                         )
-                        self.transactions.append(trx)
+                        session.add(trx)
                         await session.flush()
 
                     if missing > 0:

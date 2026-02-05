@@ -9,7 +9,7 @@ import sqlalchemy as sa
 from app.core.subscriptions import plan_catalog
 from app.models.billing import Subscription, WalletBalance, WalletTransaction
 from app.models.company import Company
-from app.services.subscriptions import renew_if_due
+from app.services.subscriptions import activate_plan, renew_if_due
 
 pytestmark = pytest.mark.asyncio
 
@@ -32,8 +32,45 @@ async def _ensure_company(async_db_session, company_id: int, *, plan: str = "sta
     return company
 
 
-async def test_manual_topup_idempotent(async_client, async_db_session, auth_headers):
+async def test_manual_topup_increases_balance_and_records_ledger(
+    async_client,
+    async_db_session,
+    auth_headers,
+):
     company = Company(id=9001, name="Topup Co")
+    async_db_session.add(company)
+    await async_db_session.commit()
+    await async_db_session.refresh(company)
+
+    resp = await async_client.post(
+        "/api/v1/admin/wallet/topup",
+        headers=auth_headers,
+        json={
+            "companyId": company.id,
+            "amount": "100.00",
+            "currency": "KZT",
+            "external_reference": "topup-001",
+            "comment": "manual credit",
+        },
+    )
+    assert resp.status_code == 200, resp.text
+
+    wallet = await WalletBalance.get_for_company_async(async_db_session, company.id)
+    await async_db_session.refresh(wallet)
+    assert wallet.balance == Decimal("100.00")
+
+    row = (
+        (await async_db_session.execute(sa.select(WalletTransaction).where(WalletTransaction.wallet_id == wallet.id)))
+        .scalars()
+        .first()
+    )
+    assert row is not None
+    assert row.transaction_type == "manual_topup"
+    assert row.client_request_id == "topup-001"
+
+
+async def test_manual_topup_idempotent(async_client, async_db_session, auth_headers):
+    company = Company(id=9002, name="Topup Idempotent Co")
     async_db_session.add(company)
     await async_db_session.commit()
 
@@ -41,7 +78,7 @@ async def test_manual_topup_idempotent(async_client, async_db_session, auth_head
         "companyId": company.id,
         "amount": "100.00",
         "currency": "KZT",
-        "external_reference": "topup-001",
+        "external_reference": "topup-002",
         "comment": "manual credit",
     }
 
@@ -60,6 +97,40 @@ async def test_manual_topup_idempotent(async_client, async_db_session, auth_head
         await async_db_session.execute(sa.select(WalletBalance).where(WalletBalance.company_id == company.id))
     ).scalar_one()
     assert str(wallet.balance) == "100.00"
+
+
+async def test_activate_plan_charges_wallet_and_sets_period(async_db_session, monkeypatch):
+    monkeypatch.setitem(
+        plan_catalog.PLAN_CATALOG,
+        "business",
+        plan_catalog.PlanCatalogEntry(
+            plan_id="business",
+            display_name="Business",
+            price=Decimal("50.00"),
+            currency="KZT",
+        ),
+    )
+
+    company = Company(id=9003, name="Billing Co")
+    async_db_session.add(company)
+    await async_db_session.commit()
+    await async_db_session.refresh(company)
+
+    wallet = WalletBalance(company_id=company.id, balance=Decimal("100.00"), currency="KZT")
+    async_db_session.add(wallet)
+    await async_db_session.commit()
+    await async_db_session.refresh(wallet)
+
+    now = datetime(2026, 2, 5, 12, 0, tzinfo=UTC)
+    sub = await activate_plan(async_db_session, company_id=company.id, plan_code="business", now=now)
+    await async_db_session.commit()
+    await async_db_session.refresh(sub)
+    await async_db_session.refresh(wallet)
+
+    assert sub.status == "active"
+    assert sub.period_start == now
+    assert sub.period_end == datetime(2026, 3, 5, 12, 0, tzinfo=UTC)
+    assert wallet.balance == Decimal("50.00")
 
 
 async def test_past_due_within_grace_allows_access(
@@ -144,7 +215,7 @@ async def test_renewal_within_grace_reactivates_and_extends(async_db_session, mo
         ),
     )
 
-    company = Company(id=9002, name="Grace Renew Co")
+    company = Company(id=9004, name="Grace Renew Co")
     async_db_session.add(company)
     await async_db_session.flush()
 
@@ -176,7 +247,6 @@ async def test_renewal_within_grace_reactivates_and_extends(async_db_session, mo
     assert processed == 1
 
     await async_db_session.commit()
-
     await async_db_session.refresh(sub)
     await async_db_session.refresh(wallet)
 
@@ -185,9 +255,96 @@ async def test_renewal_within_grace_reactivates_and_extends(async_db_session, mo
     assert sub.period_end == datetime(2026, 2, 28, 0, 0, tzinfo=UTC)
     assert str(wallet.balance) == "70.00"
 
-    tx = (
-        (await async_db_session.execute(sa.select(WalletTransaction).where(WalletTransaction.wallet_id == wallet.id)))
-        .scalars()
-        .all()
+
+async def test_anchor_day_rolls_to_month_end(async_db_session, monkeypatch):
+    monkeypatch.setitem(
+        plan_catalog.PLAN_CATALOG,
+        "business",
+        plan_catalog.PlanCatalogEntry(
+            plan_id="business",
+            display_name="Business",
+            price=Decimal("30.00"),
+            currency="KZT",
+        ),
     )
-    assert tx
+
+    company = Company(id=9005, name="Anchor Co")
+    async_db_session.add(company)
+    await async_db_session.flush()
+
+    wallet = WalletBalance(company_id=company.id, balance=Decimal("100.00"), currency="KZT")
+    async_db_session.add(wallet)
+    await async_db_session.flush()
+
+    period_end = datetime(2026, 1, 31, 0, 0, tzinfo=UTC)
+    sub = Subscription(
+        company_id=company.id,
+        plan="business",
+        status="active",
+        billing_cycle="monthly",
+        price=Decimal("30.00"),
+        currency="KZT",
+        started_at=period_end - timedelta(days=30),
+        period_start=period_end - timedelta(days=30),
+        period_end=period_end,
+        next_billing_date=period_end,
+        billing_anchor_day=31,
+        grace_until=None,
+    )
+    async_db_session.add(sub)
+    await async_db_session.commit()
+
+    processed = await renew_if_due(async_db_session, now=datetime(2026, 2, 1, 0, 0, tzinfo=UTC))
+    assert processed == 1
+
+    await async_db_session.commit()
+    await async_db_session.refresh(sub)
+
+    assert sub.period_end == datetime(2026, 2, 28, 0, 0, tzinfo=UTC)
+
+
+async def test_renewal_marks_past_due_sets_grace(async_db_session, monkeypatch):
+    monkeypatch.setitem(
+        plan_catalog.PLAN_CATALOG,
+        "business",
+        plan_catalog.PlanCatalogEntry(
+            plan_id="business",
+            display_name="Business",
+            price=Decimal("30.00"),
+            currency="KZT",
+        ),
+    )
+
+    company = Company(id=9006, name="Past Due Co")
+    async_db_session.add(company)
+    await async_db_session.commit()
+    await async_db_session.refresh(company)
+
+    wallet = WalletBalance(company_id=company.id, balance=Decimal("10.00"), currency="KZT")
+    async_db_session.add(wallet)
+    await async_db_session.flush()
+
+    period_end = datetime(2026, 2, 1, 0, 0, tzinfo=UTC)
+    sub = Subscription(
+        company_id=company.id,
+        plan="business",
+        status="active",
+        billing_cycle="monthly",
+        price=Decimal("30.00"),
+        currency="KZT",
+        started_at=period_end - timedelta(days=30),
+        period_start=period_end - timedelta(days=30),
+        period_end=period_end,
+        next_billing_date=period_end,
+        billing_anchor_day=period_end.day,
+    )
+    async_db_session.add(sub)
+    await async_db_session.commit()
+
+    processed = await renew_if_due(async_db_session, now=datetime(2026, 2, 5, 0, 0, tzinfo=UTC))
+    await async_db_session.commit()
+    await async_db_session.refresh(sub)
+
+    assert processed == 1
+    assert sub.status == "past_due"
+    assert sub.grace_until == _ceil_midnight(period_end + timedelta(days=3))

@@ -442,10 +442,11 @@ async def require_active_subscription(
     if current_user is None:
         return None
 
-    from app.core.security import is_superuser, resolve_tenant_company_id  # type: ignore
+    from app.core.security import resolve_tenant_company_id  # type: ignore
     from app.services.subscriptions import get_company_subscription, is_subscription_active  # type: ignore
 
-    if is_superuser(current_user):
+    role = (getattr(current_user, "role", "") or "").lower()
+    if getattr(current_user, "is_superuser", False) or role in {"platform_admin", "superadmin"}:
         return current_user
 
     company_id = resolve_tenant_company_id(current_user, not_found_detail="Company not set")

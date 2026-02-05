@@ -219,7 +219,13 @@ class ProviderConfigService:
                         from app.integrations.providers.noop.payments import NoOpPaymentGateway
 
                         provider_inst = NoOpPaymentGateway(config=cfg, name=provider, version=0)
-                    elif provider.lower() in {"placeholder", "payment-placeholder", "payments-placeholder", "stub", "dummy"}:
+                    elif provider.lower() in {
+                        "placeholder",
+                        "payment-placeholder",
+                        "payments-placeholder",
+                        "stub",
+                        "dummy",
+                    }:
                         from app.integrations.providers.placeholder.payments import PlaceholderPaymentGateway
 
                         provider_inst = PlaceholderPaymentGateway(config=cfg, name=provider, version=0)
