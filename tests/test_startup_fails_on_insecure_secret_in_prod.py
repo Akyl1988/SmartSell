@@ -32,6 +32,8 @@ async def test_startup_allows_secure_secret_in_prod(monkeypatch):
     monkeypatch.setenv("ENVIRONMENT", "production")
     monkeypatch.setenv("DEBUG", "0")
     monkeypatch.setenv("SECRET_KEY", "x" * 48)
+    monkeypatch.setenv("INVITE_TOKEN_SECRET", "x" * 48)
+    monkeypatch.setenv("RESET_TOKEN_SECRET", "x" * 48)
     monkeypatch.setenv("DISABLE_APP_STARTUP_HOOKS", "1")
 
     config.get_settings.cache_clear()
@@ -41,6 +43,8 @@ async def test_startup_allows_secure_secret_in_prod(monkeypatch):
     monkeypatch.setattr(config.settings, "ENVIRONMENT", "production", raising=False)
     monkeypatch.setattr(config.settings, "DEBUG", False, raising=False)
     monkeypatch.setattr(config.settings, "SECRET_KEY", "x" * 48, raising=False)
+    monkeypatch.setattr(config.settings, "INVITE_TOKEN_SECRET", "x" * 48, raising=False)
+    monkeypatch.setattr(config.settings, "RESET_TOKEN_SECRET", "x" * 48, raising=False)
 
     app = create_app()
 

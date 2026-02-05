@@ -472,6 +472,12 @@ class Settings(BaseSettings):
 
     # ---- security/JWT
     SECRET_KEY: str = Field(default="changeme", description="JWT secret key", validation_alias="SECRET_KEY")
+    INVITE_TOKEN_SECRET: str | None = Field(
+        default=None, description="Invitation token secret", validation_alias="INVITE_TOKEN_SECRET"
+    )
+    RESET_TOKEN_SECRET: str | None = Field(
+        default=None, description="Reset token secret", validation_alias="RESET_TOKEN_SECRET"
+    )
     ACCESS_TOKEN_EXPIRE_MINUTES: int = Field(
         default=30,
         description="Access token expiry",
@@ -1005,6 +1011,26 @@ class Settings(BaseSettings):
             raise ValueError("Set a secure SECRET_KEY in production!")
         if len(value) < 32:
             raise ValueError("SECRET_KEY must be at least 32 characters in production!")
+
+    def check_token_secrets(self) -> None:
+        if not self.is_production:
+            return
+        invite_secret = (self.INVITE_TOKEN_SECRET or "").strip()
+        reset_secret = (self.RESET_TOKEN_SECRET or "").strip()
+
+        if not invite_secret:
+            raise ValueError("invite_token_secret_required_in_prod")
+        if invite_secret.lower() in {"changeme", "secret", "password"}:
+            raise ValueError("invite_token_secret_required_in_prod")
+        if len(invite_secret) < 32:
+            raise ValueError("invite_token_secret_required_in_prod")
+
+        if not reset_secret:
+            raise ValueError("reset_token_secret_required_in_prod")
+        if reset_secret.lower() in {"changeme", "secret", "password"}:
+            raise ValueError("reset_token_secret_required_in_prod")
+        if len(reset_secret) < 32:
+            raise ValueError("reset_token_secret_required_in_prod")
     def _is_postgres_url(self, url: str) -> bool:
         try:
             parsed = urlparse(url)
@@ -2006,6 +2032,7 @@ def validate_prod_secrets(s: Settings | None = None) -> None:
     s = s or get_settings()
     if s.is_production:
         s.check_secret_key()
+        s.check_token_secrets()
 
 
 settings = get_settings()
