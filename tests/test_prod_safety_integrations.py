@@ -7,7 +7,7 @@ import pytest
 
 from app import main as main_mod
 from app.core.config import settings
-from app.core.provider_registry import ProviderRegistry
+from app.core.provider_registry import CachedProvider, ProviderRegistry
 from app.services import background_tasks
 from app.services.otp_providers import OtpProviderResolver
 from app.services.payment_providers import PaymentProviderResolver
@@ -151,3 +151,24 @@ async def test_ready_fails_when_noop_providers_in_prod(async_client, monkeypatch
     assert resp.status_code == 503, resp.text
     payload = resp.json()
     assert payload.get("providers", {}).get("ok") is False
+
+
+@pytest.mark.asyncio
+async def test_ready_fails_when_smtp_missing_in_prod(async_client, monkeypatch):
+    monkeypatch.setattr(settings, "ENVIRONMENT", "production")
+    monkeypatch.setenv("READINESS_STRICT", "1")
+    monkeypatch.setenv("READINESS_REQUIRE_PROVIDERS", "1")
+    monkeypatch.setattr(settings, "SMTP_HOST", "", raising=False)
+    monkeypatch.setattr(settings, "SMTP_USER", "", raising=False)
+    monkeypatch.setattr(settings, "SMTP_PASSWORD", "", raising=False)
+    monkeypatch.setattr(settings, "SMTP_FROM_EMAIL", "", raising=False)
+
+    async def _smtp_provider(*_args, **_kwargs):
+        return CachedProvider(provider="smtp", config={}, version=1, cached_at=time.monotonic())
+
+    monkeypatch.setattr(ProviderRegistry, "get_active_provider", _smtp_provider)
+
+    resp = await async_client.get("/ready")
+    assert resp.status_code == 503, resp.text
+    payload = resp.json()
+    assert payload.get("providers", {}).get("details", {}).get("messaging", {}).get("detail") == "smtp_missing_config"

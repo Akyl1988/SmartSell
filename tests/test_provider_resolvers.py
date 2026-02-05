@@ -4,10 +4,13 @@ import time
 
 import pytest
 
+from app.core.config import settings
 from app.core.provider_registry import CachedProvider, ProviderRegistry
 from app.integrations.providers.noop import NoOpMessagingProvider, NoOpPaymentGateway
+from app.integrations.providers.smtp.messaging import SmtpMessagingProvider
 from app.services.messaging_providers import MessagingProviderResolver
 from app.services.payment_providers import PaymentProviderResolver
+from app.services.provider_configs import ProviderConfigService
 
 
 @pytest.fixture(autouse=True)
@@ -60,6 +63,51 @@ async def test_messaging_provider_fallback(monkeypatch):
     provider = await MessagingProviderResolver.resolve(None, domain="messaging")
     assert isinstance(provider, NoOpMessagingProvider)
     assert provider.name == "noop"
+
+
+@pytest.mark.asyncio
+async def test_messaging_provider_noop_allowed_in_dev(monkeypatch):
+    monkeypatch.setattr(settings, "ENVIRONMENT", "development", raising=False)
+
+    async def no_provider(db, domain):
+        return None
+
+    monkeypatch.setattr(ProviderRegistry, "get_active_provider", staticmethod(no_provider))
+
+    provider = await MessagingProviderResolver.resolve(None, domain="messaging")
+    assert isinstance(provider, NoOpMessagingProvider)
+
+
+@pytest.mark.asyncio
+async def test_messaging_provider_smtp_resolution(monkeypatch):
+    monkeypatch.setattr(settings, "ENVIRONMENT", "development", raising=False)
+    smtp_config = {
+        "host": "smtp.example.com",
+        "port": 587,
+        "user": "user",
+        "password": "pass",
+        "from_email": "noreply@example.com",
+        "tls": True,
+    }
+
+    async def fake_get_active(db, domain):
+        return CachedProvider(
+            provider="smtp",
+            config=smtp_config,
+            version=1,
+            cached_at=time.monotonic(),
+        )
+
+    monkeypatch.setattr(ProviderRegistry, "get_active_provider", staticmethod(fake_get_active))
+
+    async def fake_get_config(*_args, **_kwargs):
+        return smtp_config
+
+    monkeypatch.setattr(ProviderConfigService, "get_provider_config", staticmethod(fake_get_config))
+
+    provider = await MessagingProviderResolver.resolve(None, domain="messaging")
+    assert isinstance(provider, SmtpMessagingProvider)
+    assert provider.host == "smtp.example.com"
 
 
 @pytest.mark.asyncio
