@@ -21,7 +21,11 @@ except Exception:  # pragma: no cover
 
 
 def _default_secret(preferred: Optional[str] = None) -> str:
-    return preferred or getattr(settings, "SECRET_KEY", "dev-secret")
+    if preferred:
+        return preferred
+    if getattr(settings, "is_production", False):
+        raise RuntimeError("token_secret_required_in_prod")
+    return getattr(settings, "SECRET_KEY", "dev-secret")
 
 
 def generate_token(length: int = 32) -> str:
