@@ -15,7 +15,6 @@ from app.models import Company, OtpAttempt, User, UserSession
 from app.services.otp_providers import is_otp_active
 from app.utils.otp import hash_otp_code
 
-
 STRONG_PW = "S3cure!Passw0rd-2026"
 STRONG_OLD_PW = "T3st!OldPass-2026"
 STRONG_NEW_PW = "T3st!NewPass-2026"

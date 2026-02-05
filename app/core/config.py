@@ -1031,6 +1031,7 @@ class Settings(BaseSettings):
             raise ValueError("reset_token_secret_required_in_prod")
         if len(reset_secret) < 32:
             raise ValueError("reset_token_secret_required_in_prod")
+
     def _is_postgres_url(self, url: str) -> bool:
         try:
             parsed = urlparse(url)

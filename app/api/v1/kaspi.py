@@ -132,7 +132,7 @@ def _ci_diag_enabled() -> bool:
 
 
 try:  # pragma: no cover - py<3.11 compatibility
-    ExceptionGroup
+    _ = ExceptionGroup  # type: ignore[name-defined]
     _HAS_EXCEPTION_GROUP = True
 except NameError:  # pragma: no cover
     _HAS_EXCEPTION_GROUP = False
@@ -2796,6 +2796,7 @@ async def kaspi_sync_now(
         if "phase" not in payload:
             payload["phase"] = phase
         return payload
+
     started_mono = time.perf_counter()
     outcome: str | None = None
     http_status: int | None = None
@@ -3058,7 +3059,9 @@ async def kaspi_sync_now(
                                 },
                             }
                         )
-                        return JSONResponse(status_code=status.HTTP_200_OK, content=payload, headers={"X-Request-ID": rid})
+                        return JSONResponse(
+                            status_code=status.HTTP_200_OK, content=payload, headers={"X-Request-ID": rid}
+                        )
 
                 phase = "goods_import"
                 company = await session.get(Company, company_id)

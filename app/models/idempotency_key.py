@@ -12,9 +12,7 @@ class IdempotencyKey(BaseModel):
     """Persistent idempotency key storage (tenant-scoped)."""
 
     __tablename__ = "idempotency_keys"
-    __table_args__ = (
-        UniqueConstraint("company_id", "key", name="uq__idempotency_keys__company_id__key"),
-    )
+    __table_args__ = (UniqueConstraint("company_id", "key", name="uq__idempotency_keys__company_id__key"),)
 
     company_id: Mapped[int] = mapped_column(Integer, nullable=False, index=True)
     key: Mapped[str] = mapped_column(String(length=200), nullable=False)

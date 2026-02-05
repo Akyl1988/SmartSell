@@ -13,8 +13,8 @@ from jinja2 import Environment, FileSystemLoader
 
 from app.core.config import settings
 from app.core.logging import get_logger
-from app.utils.pii import mask_email
 from app.models import Company, Order
+from app.utils.pii import mask_email
 
 logger = get_logger(__name__)
 

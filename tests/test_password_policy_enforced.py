@@ -9,7 +9,6 @@ from app.core.security import create_access_token, get_password_hash
 from app.models import Company, InvitationToken, PasswordResetToken, User
 from app.utils.tokens import hash_token
 
-
 WEAK_PASSWORD = "password1234"
 STRONG_PASSWORD = "StrongPass123!"
 
@@ -44,9 +43,7 @@ async def test_password_policy_enforced_on_register(
 
 
 @pytest.mark.asyncio
-async def test_password_policy_enforced_on_password_change(
-    async_client: AsyncClient, async_db_session: AsyncSession
-):
+async def test_password_policy_enforced_on_password_change(async_client: AsyncClient, async_db_session: AsyncSession):
     company = Company(name="Change Pw Co")
     async_db_session.add(company)
     await async_db_session.flush()
@@ -77,9 +74,7 @@ async def test_password_policy_enforced_on_password_change(
 
 
 @pytest.mark.asyncio
-async def test_password_policy_enforced_on_invite_accept(
-    async_client: AsyncClient, async_db_session: AsyncSession
-):
+async def test_password_policy_enforced_on_invite_accept(async_client: AsyncClient, async_db_session: AsyncSession):
     company = Company(name="Invite Policy Co")
     async_db_session.add(company)
     await async_db_session.flush()

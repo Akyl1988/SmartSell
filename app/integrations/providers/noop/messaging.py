@@ -7,7 +7,6 @@ from app.core.logging import get_logger
 from app.integrations.errors import ProviderNotConfiguredError
 from app.integrations.ports.messaging import MessagingProvider
 
-
 log = get_logger(__name__)
 
 
