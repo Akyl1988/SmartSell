@@ -699,25 +699,32 @@ async def logout(
     client_info = get_client_info(request)
     payload = None
     user_id = 0
+    token_invalid = False
+    rate_limit_applied = False
     if token:
-        payload = decode_and_validate(token, expected_type="access")
+        token_hash = hashlib.sha256(token.encode()).hexdigest()
+        await _enforce_logout_rate_limit(f"logout:token:{token_hash}")
+        rate_limit_applied = True
         try:
-            user_id = int(payload.get("sub", 0))
+            payload = decode_and_validate(token, expected_type="access")
+            try:
+                user_id = int(payload.get("sub", 0))
+            except Exception:
+                user_id = 0
+
+            key = denylist_key_for_token(token, payload)
+            exp = payload.get("exp")
+            if key:
+                ttl_seconds = None
+                if exp is not None:
+                    try:
+                        ttl_seconds = max(1, int(float(exp) - time.time()))
+                    except Exception:
+                        ttl_seconds = None
+                revoke_token(key, ttl_seconds=ttl_seconds)
         except Exception:
-            user_id = 0
-
-        await _enforce_logout_rate_limit(f"user:{user_id}" if user_id > 0 else client_info["ip_address"])
-
-        key = denylist_key_for_token(token, payload)
-        exp = payload.get("exp")
-        if key:
-            ttl_seconds = None
-            if exp is not None:
-                try:
-                    ttl_seconds = max(1, int(float(exp) - time.time()))
-                except Exception:
-                    ttl_seconds = None
-            revoke_token(key, ttl_seconds=ttl_seconds)
+            token_invalid = True
+            token = None
 
     if refresh_data and refresh_data.refresh_token:
         raw_refresh = (refresh_data.refresh_token or "").strip()
@@ -745,7 +752,10 @@ async def logout(
         return SuccessResponse(message="Logged out successfully")
 
     if not token:
-        await _enforce_logout_rate_limit(client_info["ip_address"])
+        if not rate_limit_applied:
+            await _enforce_logout_rate_limit(client_info["ip_address"])
+        if token_invalid:
+            return SuccessResponse(message="Logged out successfully")
         raise AuthenticationError("Authentication required", "AUTH_REQUIRED")
 
     if user_id > 0:
