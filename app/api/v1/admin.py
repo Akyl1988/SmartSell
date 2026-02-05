@@ -3,11 +3,12 @@ from __future__ import annotations
 import json
 from datetime import UTC, datetime
 from decimal import Decimal
-from typing import Any
 
 import sqlalchemy as sa
 from fastapi import APIRouter, Depends, Query
 from pydantic import BaseModel, ConfigDict, Field
+from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.db import get_async_db
@@ -92,7 +93,7 @@ async def _resolve_company(
 )
 async def manual_wallet_topup(
     payload: WalletTopupIn,
-    admin: Any = Depends(require_platform_admin),
+    admin: User = Depends(require_platform_admin),
     db: AsyncSession = Depends(get_async_db),
 ) -> WalletTopupOut:
     _ = admin
@@ -110,6 +111,21 @@ async def manual_wallet_topup(
         raise AuthorizationError("wallet_currency_mismatch", code="wallet_currency_mismatch", http_status=400)
 
     amount = Decimal(str(payload.amount))
+    if payload.external_reference:
+        existing_stmt = select(WalletTransaction).where(
+            WalletTransaction.wallet_id == wallet.id,
+            WalletTransaction.client_request_id == payload.external_reference,
+        )
+        existing = (await db.execute(existing_stmt)).scalar_one_or_none()
+        if existing:
+            return WalletTopupOut(
+                company_id=payload.companyId,
+                wallet_id=wallet.id,
+                transaction_id=existing.id,
+                currency=wallet.currency,
+                balance=str(existing.balance_after),
+                amount=str(existing.amount),
+            )
     before = wallet.balance or Decimal("0")
     after = before + amount
     wallet.balance = after
@@ -131,8 +147,27 @@ async def manual_wallet_topup(
         ),
     )
     db.add(trx)
-    await db.flush()
-    await db.commit()
+    try:
+        await db.flush()
+        await db.commit()
+    except IntegrityError:
+        await db.rollback()
+        if payload.external_reference:
+            existing_stmt = select(WalletTransaction).where(
+                WalletTransaction.wallet_id == wallet.id,
+                WalletTransaction.client_request_id == payload.external_reference,
+            )
+            existing = (await db.execute(existing_stmt)).scalar_one_or_none()
+            if existing:
+                return WalletTopupOut(
+                    company_id=payload.companyId,
+                    wallet_id=wallet.id,
+                    transaction_id=existing.id,
+                    currency=wallet.currency,
+                    balance=str(existing.balance_after),
+                    amount=str(existing.amount),
+                )
+        raise
 
     audit_logger.log_system_event(
         level="info",
