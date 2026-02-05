@@ -10,6 +10,7 @@ from fastapi import HTTPException, status
 from app.core.config import settings
 from app.core.logging import audit_logger, get_logger
 from app.core.provider_registry import ProviderRegistry
+from app.integrations.errors import ProviderNotConfiguredError
 from app.integrations.ports.otp import OtpProvider
 from app.integrations.providers.noop.otp import NoOpOtpProvider
 from app.services.provider_configs import ProviderConfigService
@@ -56,6 +57,8 @@ class OtpProviderResolver:
             entry = await ProviderRegistry.get_active_provider(db, domain_key)
         except Exception as exc:  # pragma: no cover - runtime guard
             log.warning("OTP provider resolution failed; using fallback noop", exc_info=exc)
+            if settings.is_production:
+                raise ProviderNotConfiguredError("otp_provider_not_configured")
             fallback = NoOpOtpProvider(name="noop", config={}, version=0)
             async with cls._lock:
                 cls._cache[cls._cache_key(domain_key, 0, "noop")] = fallback
@@ -68,6 +71,8 @@ class OtpProviderResolver:
             return cached
 
         if not entry:
+            if settings.is_production:
+                raise ProviderNotConfiguredError("otp_provider_not_configured")
             log.warning("OTP provider not configured for domain '%s'; using noop", domain_key)
             instance = NoOpOtpProvider(name="noop", config={}, version=0)
             async with cls._lock:
@@ -96,6 +101,8 @@ class OtpProviderResolver:
                 provider_config = {}
 
         try:
+            if settings.is_production and (provider_name or "noop").lower().startswith("noop"):
+                raise ProviderNotConfiguredError("otp_provider_not_configured")
             instance = cls._build_provider(entry.provider, provider_config, int(entry.version or 0))
         except Exception as exc:  # pragma: no cover - runtime guard
             log.warning("OTP provider build failed; using noop", exc_info=exc)
@@ -107,6 +114,8 @@ class OtpProviderResolver:
                 status="error",
                 error=str(exc),
             )
+            if settings.is_production:
+                raise ProviderNotConfiguredError("otp_provider_not_configured")
             instance = NoOpOtpProvider(name="noop", config={}, version=0)
 
         async with cls._lock:
