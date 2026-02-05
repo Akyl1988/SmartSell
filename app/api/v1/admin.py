@@ -14,6 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.db import get_async_db
 from app.core.dependencies import require_platform_admin
 from app.core.exceptions import AuthorizationError, NotFoundError
+from app.core.logging import audit_logger
 from app.core.security import get_current_user, resolve_tenant_company_id
 from app.models.billing import WalletBalance, WalletTransaction
 from app.models.company import Company
@@ -169,6 +170,19 @@ async def manual_wallet_topup(
                     amount=str(existing.amount),
                 )
         raise
+
+    audit_logger.log_system_event(
+        level="info",
+        event="wallet_manual_topup",
+        message="Wallet credited manually",
+        meta={
+            "company_id": payload.companyId,
+            "wallet_id": wallet.id,
+            "amount": str(amount),
+            "currency": payload.currency,
+            "transaction_id": trx.id,
+        },
+    )
 
     return WalletTopupOut(
         company_id=payload.companyId,
