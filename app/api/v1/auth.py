@@ -40,6 +40,7 @@ from app.core.config import settings
 from app.core.db import get_async_db
 from app.core.dependencies import (
     auth_rate_limit,
+    enforce_rate_limit,
     get_client_info,
     get_current_user,
     get_otp_service,
@@ -167,6 +168,38 @@ def _looks_like_email(value: str) -> bool:
 
 def _normalize_purpose(v: str | None) -> str:
     return (v or "").strip().lower() or "login"
+
+
+def _env_int(name: str, default: int) -> int:
+    try:
+        raw = os.getenv(name)
+        return int(raw) if raw is not None else int(default)
+    except Exception:
+        return int(default)
+
+
+async def _enforce_otp_phone_rate_limit(phone: str) -> None:
+    if not phone:
+        return
+    await enforce_rate_limit(
+        tag="otp_phone",
+        ident=f"otp:phone:{phone}",
+        max_requests=_env_int("OTP_PHONE_RATE_LIMIT", 5),
+        window_seconds=_env_int("OTP_PHONE_RATE_WINDOW", 60),
+        detail="otp_phone_rate_limited",
+    )
+
+
+async def _enforce_login_identifier_rate_limit(identifier: str) -> None:
+    if not identifier:
+        return
+    await enforce_rate_limit(
+        tag="login_ident",
+        ident=f"login:identifier:{identifier}",
+        max_requests=_env_int("LOGIN_IDENTIFIER_RATE_LIMIT", 10),
+        window_seconds=_env_int("LOGIN_IDENTIFIER_RATE_WINDOW", 60),
+        detail="login_rate_limited",
+    )
 
 
 def _gen_otp_code(length: int = OTP_CODE_LEN) -> str:
@@ -439,6 +472,9 @@ async def login(login_data: UserLogin, request: Request, db: AsyncSession = Depe
     email = identifier.lower() if is_email else ""
     otp_code = (login_data.otp_code or "").strip()
     via_otp = bool(otp_code)
+
+    identifier_norm = email or phone or identifier.lower()
+    await _enforce_login_identifier_rate_limit(identifier_norm)
 
     user = await (_get_user_by_email(db, email) if is_email else _get_user_by_phone(db, phone))
 
@@ -721,6 +757,8 @@ async def request_otp(
     """
     phone = _normalize_phone(otp_request.phone)
     purpose = _normalize_purpose(otp_request.purpose)
+
+    await _enforce_otp_phone_rate_limit(phone)
 
     now = _utcnow_naive()
     ttl = timedelta(minutes=OTP_TTL_MINUTES)
@@ -1076,6 +1114,8 @@ async def phone_change_request(
 ):
     phone = _normalize_phone(payload.new_phone)
     variants = _phone_variants(phone)
+
+    await _enforce_otp_phone_rate_limit(phone)
 
     if any(v == current_user.phone for v in variants):
         raise SmartSellValidationError("Phone is unchanged", "PHONE_UNCHANGED")

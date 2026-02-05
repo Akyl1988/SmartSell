@@ -563,6 +563,27 @@ def rate_limit(max_requests: int = 100, window_seconds: int = 60, tag: str = "ap
     return _wrapped
 
 
+async def enforce_rate_limit(
+    *,
+    tag: str,
+    ident: str,
+    max_requests: int,
+    window_seconds: int,
+    detail: str,
+):
+    if not _RATE_ENABLED or not _rate_limiter:
+        return True
+    allowed, retry = await _rate_limiter.allow(tag, ident, max_requests, window_seconds)
+    if not allowed:
+        headers = {
+            "Retry-After": str(retry),
+            "X-RateLimit-Limit": str(max_requests),
+            "X-RateLimit-Window": str(window_seconds),
+        }
+        raise HTTPException(status_code=status.HTTP_429_TOO_MANY_REQUESTS, detail=detail, headers=headers)
+    return True
+
+
 _auth_rl = _limit_dep("auth", _AUTH_RATE_LIMIT, _AUTH_RATE_WINDOW)
 _api_rl = _limit_dep("api", _API_RATE_LIMIT, _API_RATE_WINDOW)
 _otp_rl = _limit_dep("otp", _OTP_RATE_LIMIT, _OTP_RATE_WINDOW)
@@ -787,6 +808,7 @@ __all__ = [
     "otp_rate_limit",
     "auth_rate_limit_dep",  # keep aliases
     "api_rate_limit_dep",
+    "enforce_rate_limit",
     # pagination
     "Pagination",
     "get_pagination",
