@@ -762,7 +762,23 @@ def clear_refresh_cookie(response) -> None:
 # =============================================================================
 # CSRF helpers (для cookie-based схем)
 # =============================================================================
-_CSRF_SECRET = os.getenv("CSRF_SECRET") or settings.SECRET_KEY
+
+
+def _resolve_csrf_secret() -> str:
+    csrf_secret = (os.getenv("CSRF_SECRET") or getattr(settings, "CSRF_SECRET", "") or "").strip()
+    secret_key = (settings.SECRET_KEY or "").strip()
+
+    if settings.is_production:
+        if not csrf_secret:
+            raise RuntimeError("csrf_secret_required_in_prod")
+        if csrf_secret == secret_key:
+            raise RuntimeError("csrf_secret_must_differ_from_secret_key")
+        return csrf_secret
+
+    return csrf_secret or secret_key
+
+
+_CSRF_SECRET = _resolve_csrf_secret()
 
 
 def generate_csrf_token(session_id: str) -> str:
