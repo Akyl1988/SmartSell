@@ -62,6 +62,7 @@ from app.core.security import (
     get_password_hash,
     resolve_tenant_company_id,
     revoke_token,
+    validate_password_policy,
     verify_password,
 )
 from app.integrations.errors import ProviderNotConfiguredError
@@ -176,6 +177,18 @@ def _env_int(name: str, default: int) -> int:
         return int(raw) if raw is not None else int(default)
     except Exception:
         return int(default)
+
+
+def _enforce_password_policy(password: str, *, username: str | None = None, email: str | None = None) -> None:
+    ok, errors = validate_password_policy(password, username=username, email=email)
+    if ok:
+        return
+    raise SmartSellValidationError(
+        "password_policy_violation",
+        "password_policy_violation",
+        http_status=400,
+        extra={"errors": errors},
+    )
 
 
 async def _enforce_otp_phone_rate_limit(phone: str) -> None:
@@ -392,6 +405,7 @@ async def register(user_data: UserCreate, request: Request, db: AsyncSession = D
             raise ConflictError("User with this email already exists", "EMAIL_EXISTS")
 
     try:
+        _enforce_password_policy(user_data.password, username=phone or None, email=email)
         hashed_password = get_password_hash(user_data.password)
 
         # Create draft Company (tenant) for the new user
@@ -763,6 +777,7 @@ async def change_password(
     if payload.current_password == payload.new_password:
         raise SmartSellValidationError("New password must be different", "PASSWORD_SAME")
 
+    _enforce_password_policy(payload.new_password, username=current_user.phone, email=current_user.email)
     new_hash = get_password_hash(payload.new_password)
 
     # Persist password change + reset counters in a single UPDATE to avoid stale identity issues
@@ -1076,6 +1091,7 @@ async def accept_invitation(payload: InvitationAccept, db: AsyncSession = Depend
             if res_e.scalars().first():
                 raise SmartSellValidationError("User already exists", "USER_EXISTS")
 
+        _enforce_password_policy(payload.password, username=invite.phone, email=invite.email)
         user = User(
             company_id=invite.company_id,
             phone=invite.phone,
@@ -1132,6 +1148,7 @@ async def reset_password(reset_data: PasswordReset, db: AsyncSession = Depends(g
     if not user:
         raise AuthenticationError("User not found", "USER_NOT_FOUND")
 
+    _enforce_password_policy(reset_data.new_password, username=user.phone, email=user.email)
     user.hashed_password = get_password_hash(reset_data.new_password)
     user.failed_login_attempts = 0
     user.locked_until = None
@@ -1375,6 +1392,7 @@ async def password_reset_confirm(
         if not user:
             raise SmartSellValidationError("Invalid or expired token", "RESET_TOKEN_INVALID")
 
+        _enforce_password_policy(payload.new_password, username=user.phone, email=user.email)
         user.hashed_password = get_password_hash(payload.new_password)
         user.failed_login_attempts = 0
         user.locked_until = None
