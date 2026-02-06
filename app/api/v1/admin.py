@@ -11,6 +11,7 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.api.admin.integrations import router as integrations_router
 from app.core.db import get_async_db
 from app.core.dependencies import require_platform_admin
 from app.core.exceptions import AuthorizationError, NotFoundError, _ensure_request_id
@@ -27,6 +28,7 @@ from app.models.user import User
 from app.services.subscriptions import activate_plan, renew_if_due
 
 router = APIRouter(prefix="/api/v1/admin", tags=["admin"])
+router.include_router(integrations_router)
 
 
 class SubscriptionOverrideIn(BaseModel):

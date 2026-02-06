@@ -434,7 +434,7 @@ async def require_active_subscription(
     path = (request.url.path or "").lower()
     if "/health" in path or "/_debug" in path:
         return current_user
-    if path.startswith("/api/admin") or path.startswith("/api/v1/auth"):
+    if path.startswith("/api/admin/integrations") or path.startswith("/api/v1/auth"):
         return current_user
     if path.startswith("/api/v1/wallet") or path.startswith("/api/v1/payments"):
         return current_user
