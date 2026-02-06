@@ -365,3 +365,9 @@ scripts/**
 docs/audit/
 docs/SMARTSELL_TZ_v2_*.md
 docs/План работы.txt
+
+# local-only scripts
+scripts/*.local.ps1
+scripts/smoke-*.local.ps1
+
+

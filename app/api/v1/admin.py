@@ -5,7 +5,7 @@ from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
 import sqlalchemy as sa
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, Query, Request
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
@@ -13,7 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.db import get_async_db
 from app.core.dependencies import require_platform_admin
-from app.core.exceptions import AuthorizationError, NotFoundError
+from app.core.exceptions import AuthorizationError, NotFoundError, _ensure_request_id
 from app.core.logging import audit_logger
 from app.core.security import get_current_user, resolve_tenant_company_id
 from app.core.subscriptions.plan_catalog import get_plan, normalize_plan_id
@@ -24,7 +24,7 @@ from app.models.kaspi_offer import KaspiOffer
 from app.models.kaspi_trial_grant import KaspiTrialGrant
 from app.models.subscription_override import SubscriptionOverride
 from app.models.user import User
-from app.services.subscriptions import activate_plan
+from app.services.subscriptions import activate_plan, renew_if_due
 
 router = APIRouter(prefix="/api/v1/admin", tags=["admin"])
 
@@ -77,6 +77,25 @@ class SubscriptionKaspiTrialIn(BaseModel):
     merchant_uid: str = Field(..., min_length=1, max_length=128)
     plan: str = Field(default="pro", min_length=2, max_length=32)
     trial_days: int = Field(default=15, ge=1, le=15)
+
+
+@router.post(
+    "/tasks/subscriptions/renew/run",
+    summary="Run subscription renewal task (platform admin)",
+)
+async def run_subscription_renew_task(
+    request: Request,
+    admin: User = Depends(require_platform_admin),
+    db: AsyncSession = Depends(get_async_db),
+) -> dict:
+    _ = admin
+    processed = await renew_if_due(db, now=datetime.now(UTC))
+    if processed:
+        await db.commit()
+    else:
+        await db.rollback()
+    rid = _ensure_request_id(request)
+    return {"ok": True, "processed": processed, "request_id": rid}
 
 
 class SubscriptionActivateIn(BaseModel):
