@@ -15,6 +15,7 @@ def _reload_tokens():
 
 def _set_env(monkeypatch: pytest.MonkeyPatch, *, env: str, invite_secret: str | None, reset_secret: str | None):
     monkeypatch.setattr(config_mod.settings, "ENVIRONMENT", env)
+    monkeypatch.setattr(config_mod.settings, "SECRET_KEY", "x" * 64)
     monkeypatch.setattr(config_mod.settings, "INVITE_TOKEN_SECRET", invite_secret)
     monkeypatch.setattr(config_mod.settings, "RESET_TOKEN_SECRET", reset_secret)
 
