@@ -12,6 +12,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.db import get_async_db
+from app.core.exceptions import NotFoundError
 from app.core.security import get_current_user, require_company_admin, require_manager, resolve_tenant_company_id
 from app.models.user import User
 from app.storage.wallet_sql import WalletStorageSQL
@@ -35,7 +36,7 @@ async def _auth_user(current_user: User = Depends(get_current_user)) -> User:
 def _norm_ccy(code: str | None) -> str:
     v = (code or "").strip().upper()
     if not (3 <= len(v) <= 10):
-        raise HTTPException(status_code=422, detail="currency must be 3..10 chars")
+        raise HTTPException(status_code=400, detail="invalid_currency")
     return v
 
 
@@ -85,6 +86,13 @@ async def _ensure_user_in_company(
     if getattr(user, "company_id", None) != resolved_company_id:
         raise HTTPException(status_code=404, detail=not_found_detail)
     return user
+
+
+def _is_privileged_wallet_user(user: User) -> bool:
+    if bool(getattr(user, "is_superuser", False)):
+        return True
+    role = str(getattr(user, "role", "") or "").lower()
+    return role in {"admin", "manager", "platform_admin"}
 
 
 async def _load_company_map(db: AsyncSession, user_ids: set[int]) -> dict[int, Any]:
@@ -418,27 +426,6 @@ async def list_accounts(
 
 
 @router.get(
-    "/accounts/{account_id}",
-    response_model=WalletAccountOut,
-    summary="Получить кошелёк по ID",
-)
-async def get_account(
-    account_id: int = Path(..., ge=1),
-    current_user: User = Depends(_auth_user),
-    db: AsyncSession = Depends(get_async_db),
-) -> WalletAccountOut:
-    try:
-        acc = await _ensure_account_access(account_id, current_user, db)
-        acc["currency"] = _norm_ccy(acc.get("currency", ""))
-        acc["balance"] = _to_dec_str(acc.get("balance", "0"))
-        return WalletAccountOut(**acc)
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(status_code=_pick_http_status(e), detail=str(e))
-
-
-@router.get(
     "/accounts/by-user",
     response_model=WalletAccountOut,
     summary="Получить кошелёк по user_id и валюте",
@@ -449,6 +436,8 @@ async def get_account_by_user_currency(
     current_user: User = Depends(_auth_user),
     db: AsyncSession = Depends(get_async_db),
 ) -> WalletAccountOut:
+    if user_id != int(getattr(current_user, "id", 0) or 0) and not _is_privileged_wallet_user(current_user):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="forbidden")
     await _ensure_user_in_company(user_id, current_user, db)
     storage = await _get_storage(db)
     caps = _storage_caps(storage)
@@ -465,12 +454,35 @@ async def get_account_by_user_currency(
                 r["balance"] = _to_dec_str(r.get("balance", "0"))
                 await _ensure_user_in_company(int(r.get("user_id", 0)), current_user, db)
                 return WalletAccountOut(**r)
-        raise HTTPException(status_code=404, detail="account not found")
+        raise NotFoundError("wallet_account_not_found", code="WALLET_ACCOUNT_NOT_FOUND", http_status=404)
     try:
         acc = await storage.get_account_by_user_currency(user_id=user_id, currency=_norm_ccy(currency))
         if not acc:
-            raise HTTPException(status_code=404, detail="account not found")
+            raise NotFoundError("wallet_account_not_found", code="WALLET_ACCOUNT_NOT_FOUND", http_status=404)
         await _ensure_user_in_company(int(acc.get("user_id", 0)), current_user, db)
+        acc["currency"] = _norm_ccy(acc.get("currency", ""))
+        acc["balance"] = _to_dec_str(acc.get("balance", "0"))
+        return WalletAccountOut(**acc)
+    except HTTPException:
+        raise
+    except NotFoundError:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=_pick_http_status(e), detail=str(e))
+
+
+@router.get(
+    "/accounts/{account_id}",
+    response_model=WalletAccountOut,
+    summary="Получить кошелёк по ID",
+)
+async def get_account(
+    account_id: int = Path(..., ge=1),
+    current_user: User = Depends(_auth_user),
+    db: AsyncSession = Depends(get_async_db),
+) -> WalletAccountOut:
+    try:
+        acc = await _ensure_account_access(account_id, current_user, db)
         acc["currency"] = _norm_ccy(acc.get("currency", ""))
         acc["balance"] = _to_dec_str(acc.get("balance", "0"))
         return WalletAccountOut(**acc)
