@@ -215,13 +215,29 @@ class ProviderConfigService:
                     error = str(exc)
             elif domain_norm == "payments":
                 try:
-                    from app.integrations.providers.noop.payments import NoOpPaymentGateway
+                    if provider.lower().startswith("noop"):
+                        from app.integrations.providers.noop.payments import NoOpPaymentGateway
 
-                    provider_inst = NoOpPaymentGateway(config=cfg, name=provider, version=0)
-                    hc = await provider_inst.healthcheck()
-                    if hc.get("status") != "ok":
+                        provider_inst = NoOpPaymentGateway(config=cfg, name=provider, version=0)
+                    elif provider.lower() in {
+                        "placeholder",
+                        "payment-placeholder",
+                        "payments-placeholder",
+                        "stub",
+                        "dummy",
+                    }:
+                        from app.integrations.providers.placeholder.payments import PlaceholderPaymentGateway
+
+                        provider_inst = PlaceholderPaymentGateway(config=cfg, name=provider, version=0)
+                    else:
                         status = "error"
-                        error = hc.get("provider_error") or "healthcheck_failed"
+                        error = "unsupported_provider"
+                        provider_inst = None
+                    if provider_inst is not None:
+                        hc = await provider_inst.healthcheck()
+                        if hc.get("status") != "ok":
+                            status = "error"
+                            error = hc.get("provider_error") or "healthcheck_failed"
                 except Exception as exc:  # pragma: no cover - defensive guard
                     status = "error"
                     error = str(exc)

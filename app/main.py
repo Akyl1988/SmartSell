@@ -27,7 +27,7 @@ from starlette.staticfiles import StaticFiles
 
 from app.api.routes import mount_v1
 from app.core import config as core_config
-from app.core.config import run_startup_side_effects, settings, should_disable_startup_hooks
+from app.core.config import run_startup_side_effects, settings, should_disable_startup_hooks, validate_prod_secrets
 from app.core.exceptions import register_exception_handlers
 
 try:
@@ -274,6 +274,12 @@ def _server_timing_value(ms: int) -> str:
 
 
 _SECRET_KEYS = ("SECRET", "PASSWORD", "TOKEN", "KEY", "PASS", "PRIVATE", "CREDENTIAL", "AUTH")
+_REDACT_KEYS_EXACT = {
+    "DATABASE_URL",
+    "DB_URL",
+    "REDIS_URL",
+    "SQLALCHEMY_DATABASE_URI",
+}
 
 
 def _redact(value: Any) -> Any:
@@ -293,7 +299,8 @@ def _redact(value: Any) -> Any:
 def _redact_dict(d: dict[str, Any]) -> dict[str, Any]:
     out: dict[str, Any] = {}
     for k, v in d.items():
-        if any(part in str(k).upper() for part in _SECRET_KEYS):
+        key_upper = str(k).upper()
+        if key_upper in _REDACT_KEYS_EXACT or any(part in key_upper for part in _SECRET_KEYS):
             out[k] = _redact(v)
         else:
             out[k] = v
@@ -650,6 +657,58 @@ async def _check_integrations() -> dict[str, dict[str, Any]]:
     return results
 
 
+async def _check_provider_registry() -> dict[str, dict[str, Any]]:
+    results: dict[str, dict[str, Any]] = {}
+    domains = ["otp", "messaging", "payments"]
+    try:
+        from app.core.db import async_session_maker
+        from app.core.provider_registry import ProviderRegistry
+
+        async with async_session_maker() as db:
+            for domain in domains:
+                entry = await ProviderRegistry.get_active_provider(db, domain)
+                if not entry:
+                    results[domain] = {"ok": False, "detail": "provider_missing"}
+                    continue
+                provider_name = (entry.provider or "").strip().lower()
+                if not provider_name or provider_name.startswith("noop"):
+                    results[domain] = {"ok": False, "detail": "provider_noop"}
+                    continue
+                if domain == "otp" and provider_name in {"mobizon", "otp-mobizon", "mobizon-otp"}:
+                    missing: list[str] = []
+                    if not settings.MOBIZON_API_KEY:
+                        missing.append("MOBIZON_API_KEY")
+                    if not settings.MOBIZON_SENDER:
+                        missing.append("MOBIZON_SENDER")
+                    if missing:
+                        results[domain] = {"ok": False, "detail": "mobizon_missing_config", "missing": missing}
+                        continue
+                if domain == "messaging" and provider_name in {"smtp", "email-smtp", "smtp-email"}:
+                    missing: list[str] = []
+                    if not settings.SMTP_HOST:
+                        missing.append("SMTP_HOST")
+                    if not settings.SMTP_USER:
+                        missing.append("SMTP_USER")
+                    if not settings.SMTP_PASSWORD:
+                        missing.append("SMTP_PASSWORD")
+                    if not settings.SMTP_FROM_EMAIL:
+                        missing.append("SMTP_FROM_EMAIL")
+                    if missing:
+                        results[domain] = {"ok": False, "detail": "smtp_missing_config", "missing": missing}
+                        continue
+                results[domain] = {
+                    "ok": True,
+                    "detail": "ok",
+                    "provider": entry.provider,
+                    "version": entry.version,
+                }
+    except Exception as exc:
+        err = f"provider_check_error:{exc!s}"
+        for domain in domains:
+            results[domain] = {"ok": False, "detail": err}
+    return results
+
+
 # ======================================================================================
 # Sliding p99 response time
 # ======================================================================================
@@ -892,9 +951,34 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:  # type: ignore[overrid
     # ---- Startup
     _configure_base_logging()
     logger.info("Application startup… env=%s version=%s", settings.ENVIRONMENT, settings.VERSION)
+    try:
+        validate_prod_secrets(settings)
+    except Exception as e:
+        logger.error("startup secret validation failed: %s", e)
+        raise
     disable_hooks = should_disable_startup_hooks()
     if disable_hooks:
         logger.info("Startup hooks disabled (tests/CI flag)")
+    try:
+        startup_require_raw = os.getenv("STARTUP_REQUIRE_PROVIDERS")
+        require_providers = _env_truthy(startup_require_raw, settings.is_production)
+        should_validate_providers = (
+            settings.is_production and require_providers and ((not disable_hooks) or (startup_require_raw is not None))
+        )
+        if should_validate_providers:
+            providers = await _check_provider_registry()
+            otp = providers.get("otp") if isinstance(providers, dict) else None
+            if otp and not otp.get("ok", False):
+                raise RuntimeError("otp_provider_not_configured")
+            messaging = providers.get("messaging") if isinstance(providers, dict) else None
+            if messaging and not messaging.get("ok", False):
+                raise RuntimeError("email_provider_not_configured")
+            payments = providers.get("payments") if isinstance(providers, dict) else None
+            if payments and not payments.get("ok", False):
+                raise RuntimeError("payment_provider_not_configured")
+    except Exception as e:
+        logger.error("startup provider validation failed: %s", e)
+        raise
     try:
         run_startup_side_effects(settings)
     except Exception as e:
@@ -909,9 +993,13 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:  # type: ignore[overrid
             raise RuntimeError("DATABASE_URL is required for non-local environments")
     except Exception as e:
         if isinstance(e, RuntimeError):
-            raise
-        logger.debug("DB URL startup guard skipped: %s", e)
-
+            if isinstance(providers, dict):
+                otp = providers.get("otp")
+                messaging = providers.get("messaging")
+                if otp and not otp.get("ok", False):
+                    raise RuntimeError("otp_provider_not_configured")
+                if messaging and not messaging.get("ok", False):
+                    raise RuntimeError("email_provider_not_configured")
     _import_models_once()
     try:
         from app.api.routes import get_mount_diagnostics as _get_mount_diagnostics
@@ -1477,12 +1565,16 @@ def _create_app() -> FastAPI:
 
     @app.get("/ready", response_model=None)
     async def readiness() -> JSONResponse:
-        if os.getenv("PYTEST_CURRENT_TEST") or os.getenv("TESTING"):
+        strict = _env_truthy(os.getenv("READINESS_STRICT", "1" if settings.is_production else "0"))
+        if (os.getenv("PYTEST_CURRENT_TEST") or os.getenv("TESTING")) and not strict:
             return JSONResponse(status_code=200, content={"ready": True, "checks": {}})
         require_redis = _env_truthy(os.getenv("READINESS_REQUIRE_REDIS", "0"))
         require_smtp = _env_truthy(os.getenv("READINESS_REQUIRE_SMTP", "0"))
         require_celery = _env_truthy(os.getenv("READINESS_REQUIRE_CELERY", "0"))
         require_integrations = _env_truthy(os.getenv("READINESS_REQUIRE_INTEGRATIONS", "0"))
+        require_providers = _env_truthy(
+            os.getenv("READINESS_REQUIRE_PROVIDERS", "1" if settings.is_production else "0")
+        )
 
         require_secret = _env_truthy(os.getenv("READINESS_REQUIRE_SECRET", "0"))
         secret_present = bool(os.getenv("SESSION_SECRET_KEY") or os.getenv("SECRET_KEY") or os.getenv("APP_SECRET"))
@@ -1507,13 +1599,17 @@ def _create_app() -> FastAPI:
         check_int_f: Awaitable[dict[str, dict[str, Any]]] = (
             _check_integrations() if require_integrations else asyncio.sleep(0, result={})
         )
+        check_providers_f: Awaitable[dict[str, dict[str, Any]]] = (
+            _check_provider_registry() if require_providers else asyncio.sleep(0, result={})
+        )
 
         (
             (redis_ok, redis_msg),
             (smtp_ok, smtp_msg),
             (cel_ok, cel_msg, cel_info),
             integrations,
-        ) = await asyncio.gather(check_redis_f, check_smtp_f, check_celery_f, check_int_f)
+            providers,
+        ) = await asyncio.gather(check_redis_f, check_smtp_f, check_celery_f, check_int_f, check_providers_f)
 
         integrations_ok = True
         if isinstance(integrations, dict):
@@ -1522,12 +1618,20 @@ def _create_app() -> FastAPI:
                     integrations_ok = False
                     break
 
+        providers_ok = True
+        if isinstance(providers, dict):
+            for v in providers.values():
+                if not v.get("ok", False):
+                    providers_ok = False
+                    break
+
         ok = (
             pg_ok
             and (redis_ok if require_redis else True)
             and (smtp_ok if require_smtp else True)
             and (cel_ok if require_celery else True)
             and (integrations_ok if require_integrations else True)
+            and (providers_ok if require_providers else True)
             and (secret_present if require_secret else True)
         )
         payload: dict[str, Any] = {
@@ -1555,6 +1659,11 @@ def _create_app() -> FastAPI:
                 "details": integrations if require_integrations else {},
                 "required": bool(require_integrations),
             },
+            "providers": {
+                "ok": providers_ok if require_providers else True,
+                "details": providers if require_providers else {},
+                "required": bool(require_providers),
+            },
             "secrets": {
                 "ok": secret_present if require_secret else True,
                 "required": bool(require_secret),
@@ -1562,7 +1671,6 @@ def _create_app() -> FastAPI:
             "build_info": _build_info(),
         }
 
-        strict = _env_truthy(os.getenv("READINESS_STRICT", "0"))
         status_code = 200 if (ok or not strict) else 503
         return JSONResponse(status_code=status_code, content=payload)
 

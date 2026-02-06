@@ -28,7 +28,7 @@ import time
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
-from fastapi import APIRouter, Depends, Query, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel, Field
 from sqlalchemy import select, update
@@ -40,6 +40,7 @@ from app.core.config import settings
 from app.core.db import get_async_db
 from app.core.dependencies import (
     auth_rate_limit,
+    enforce_rate_limit,
     get_client_info,
     get_current_user,
     get_otp_service,
@@ -61,8 +62,10 @@ from app.core.security import (
     get_password_hash,
     resolve_tenant_company_id,
     revoke_token,
+    validate_password_policy,
     verify_password,
 )
+from app.integrations.errors import ProviderNotConfiguredError
 from app.integrations.ports.otp import OtpProvider
 from app.models.company import Company
 from app.models.invitation import InvitationToken, PasswordResetToken
@@ -166,6 +169,74 @@ def _looks_like_email(value: str) -> bool:
 
 def _normalize_purpose(v: str | None) -> str:
     return (v or "").strip().lower() or "login"
+
+
+def _env_int(name: str, default: int) -> int:
+    try:
+        raw = os.getenv(name)
+        return int(raw) if raw is not None else int(default)
+    except Exception:
+        return int(default)
+
+
+def _enforce_password_policy(password: str, *, username: str | None = None, email: str | None = None) -> None:
+    ok, errors = validate_password_policy(password, username=username, email=email)
+    if ok:
+        return
+    raise SmartSellValidationError(
+        "password_policy_violation",
+        "password_policy_violation",
+        http_status=400,
+        extra={"errors": errors},
+    )
+
+
+async def _enforce_otp_phone_rate_limit(phone: str) -> None:
+    if not phone:
+        return
+    await enforce_rate_limit(
+        tag="otp_phone",
+        ident=f"otp:phone:{phone}",
+        max_requests=_env_int("OTP_PHONE_RATE_LIMIT", 5),
+        window_seconds=_env_int("OTP_PHONE_RATE_WINDOW", 60),
+        detail="otp_phone_rate_limited",
+    )
+
+
+async def _enforce_login_identifier_rate_limit(identifier: str) -> None:
+    if not identifier:
+        return
+    await enforce_rate_limit(
+        tag="login_ident",
+        ident=f"login:identifier:{identifier}",
+        max_requests=_env_int("LOGIN_IDENTIFIER_RATE_LIMIT", 10),
+        window_seconds=_env_int("LOGIN_IDENTIFIER_RATE_WINDOW", 60),
+        detail="login_rate_limited",
+    )
+
+
+async def _enforce_refresh_rate_limit(ident: str) -> None:
+    if not ident:
+        return
+    await enforce_rate_limit(
+        tag="refresh",
+        ident=ident,
+        max_requests=_env_int("REFRESH_RATE_LIMIT", 20),
+        window_seconds=_env_int("REFRESH_RATE_WINDOW", 60),
+        detail="auth_refresh_rate_limited",
+    )
+
+
+async def _enforce_logout_rate_limit(ident: str) -> None:
+    if not ident:
+        return
+    await enforce_rate_limit(
+        tag="logout",
+        ident=ident,
+        max_requests=_env_int("LOGOUT_RATE_LIMIT", 30),
+        window_seconds=_env_int("LOGOUT_RATE_WINDOW", 60),
+        detail="auth_logout_rate_limited",
+    )
 
 
 def _gen_otp_code(length: int = OTP_CODE_LEN) -> str:
@@ -334,6 +405,7 @@ async def register(user_data: UserCreate, request: Request, db: AsyncSession = D
             raise ConflictError("User with this email already exists", "EMAIL_EXISTS")
 
     try:
+        _enforce_password_policy(user_data.password, username=phone or None, email=email)
         hashed_password = get_password_hash(user_data.password)
 
         # Create draft Company (tenant) for the new user
@@ -439,6 +511,9 @@ async def login(login_data: UserLogin, request: Request, db: AsyncSession = Depe
     otp_code = (login_data.otp_code or "").strip()
     via_otp = bool(otp_code)
 
+    identifier_norm = email or phone or identifier.lower()
+    await _enforce_login_identifier_rate_limit(identifier_norm)
+
     user = await (_get_user_by_email(db, email) if is_email else _get_user_by_phone(db, phone))
 
     # Блокировка по неудачным попыткам
@@ -517,12 +592,23 @@ async def login(login_data: UserLogin, request: Request, db: AsyncSession = Depe
 
 
 @router.post("/refresh", response_model=TokenResponse)
-async def refresh_token(refresh_data: RefreshTokenRequest, db: AsyncSession = Depends(get_async_db)):
+async def refresh_token(
+    refresh_data: RefreshTokenRequest,
+    request: Request,
+    db: AsyncSession = Depends(get_async_db),
+):
     """
     Обновляет access-токен по действующему refresh-токену.
     Refresh при этом ротируется (one-time use).
     """
-    token_hash = _hash_refresh_token(refresh_data.refresh_token)
+    client_info = get_client_info(request)
+    raw_refresh = (refresh_data.refresh_token or "").strip()
+    if not raw_refresh:
+        await _enforce_refresh_rate_limit(client_info["ip_address"])
+        raise AuthenticationError("refresh_invalid", "INVALID_REFRESH_TOKEN")
+
+    token_hash = _hash_refresh_token(raw_refresh)
+    await _enforce_refresh_rate_limit(f"refresh:token:{token_hash}")
     now = _utcnow_naive()
 
     res = await db.execute(
@@ -534,7 +620,12 @@ async def refresh_token(refresh_data: RefreshTokenRequest, db: AsyncSession = De
     session = res.scalars().first()
 
     if not session:
+        await _enforce_refresh_rate_limit(client_info["ip_address"])
         raise AuthenticationError("refresh_invalid", "INVALID_REFRESH_TOKEN")
+
+    session_id = getattr(session, "id", None)
+    ident = f"refresh:session:{session_id}" if session_id is not None else f"refresh:user:{session.user_id}"
+    await _enforce_refresh_rate_limit(ident)
 
     if not session.is_active:
         await db.execute(
@@ -579,9 +670,13 @@ async def refresh_token(refresh_data: RefreshTokenRequest, db: AsyncSession = De
 
 
 @router.post("/token/refresh", response_model=TokenResponse)
-async def refresh_token_alias(refresh_data: RefreshTokenRequest, db: AsyncSession = Depends(get_async_db)):
+async def refresh_token_alias(
+    refresh_data: RefreshTokenRequest,
+    request: Request,
+    db: AsyncSession = Depends(get_async_db),
+):
     """Legacy alias for /auth/refresh used by tests/older clients."""
-    return await refresh_token(refresh_data, db)
+    return await refresh_token(refresh_data, request, db)
 
 
 @router.post("/logout", response_model=SuccessResponse)
@@ -601,28 +696,39 @@ async def logout(
             token = header_val.split(" ", 1)[1].strip()
     if not token:
         token = request.cookies.get("access_token")
+    client_info = get_client_info(request)
     payload = None
     user_id = 0
+    token_invalid = False
+    rate_limit_applied = False
     if token:
-        payload = decode_and_validate(token, expected_type="access")
-        key = denylist_key_for_token(token, payload)
-        exp = payload.get("exp")
-        if key:
-            ttl_seconds = None
-            if exp is not None:
-                try:
-                    ttl_seconds = max(1, int(float(exp) - time.time()))
-                except Exception:
-                    ttl_seconds = None
-            revoke_token(key, ttl_seconds=ttl_seconds)
-
+        token_hash = hashlib.sha256(token.encode()).hexdigest()
+        await _enforce_logout_rate_limit(f"logout:token:{token_hash}")
+        rate_limit_applied = True
         try:
-            user_id = int(payload.get("sub", 0))
+            payload = decode_and_validate(token, expected_type="access")
+            try:
+                user_id = int(payload.get("sub", 0))
+            except Exception:
+                user_id = 0
+
+            key = denylist_key_for_token(token, payload)
+            exp = payload.get("exp")
+            if key:
+                ttl_seconds = None
+                if exp is not None:
+                    try:
+                        ttl_seconds = max(1, int(float(exp) - time.time()))
+                    except Exception:
+                        ttl_seconds = None
+                revoke_token(key, ttl_seconds=ttl_seconds)
         except Exception:
-            user_id = 0
+            token_invalid = True
+            token = None
 
     if refresh_data and refresh_data.refresh_token:
-        token_hash = _hash_refresh_token(refresh_data.refresh_token)
+        raw_refresh = (refresh_data.refresh_token or "").strip()
+        token_hash = _hash_refresh_token(raw_refresh) if raw_refresh else ""
         res = await db.execute(
             select(UserSession).where(
                 UserSession.refresh_token == token_hash,
@@ -632,6 +738,13 @@ async def logout(
         session = res.scalars().first()
 
         if session:
+            await _enforce_logout_rate_limit(f"user:{session.user_id}")
+        else:
+            await _enforce_logout_rate_limit(
+                f"logout:refresh:{token_hash}" if token_hash else client_info["ip_address"]
+            )
+
+        if session:
             session.is_active = False
             session.terminated_at = _utcnow_naive()
             await db.commit()
@@ -639,6 +752,10 @@ async def logout(
         return SuccessResponse(message="Logged out successfully")
 
     if not token:
+        if not rate_limit_applied:
+            await _enforce_logout_rate_limit(client_info["ip_address"])
+        if token_invalid:
+            return SuccessResponse(message="Logged out successfully")
         raise AuthenticationError("Authentication required", "AUTH_REQUIRED")
 
     if user_id > 0:
@@ -670,6 +787,7 @@ async def change_password(
     if payload.current_password == payload.new_password:
         raise SmartSellValidationError("New password must be different", "PASSWORD_SAME")
 
+    _enforce_password_policy(payload.new_password, username=current_user.phone, email=current_user.email)
     new_hash = get_password_hash(payload.new_password)
 
     # Persist password change + reset counters in a single UPDATE to avoid stale identity issues
@@ -720,6 +838,8 @@ async def request_otp(
     """
     phone = _normalize_phone(otp_request.phone)
     purpose = _normalize_purpose(otp_request.purpose)
+
+    await _enforce_otp_phone_rate_limit(phone)
 
     now = _utcnow_naive()
     ttl = timedelta(minutes=OTP_TTL_MINUTES)
@@ -779,6 +899,8 @@ async def request_otp(
         )
         provider_name = (send_result or {}).get("provider") or getattr(otp_service, "name", None)
         provider_version = (send_result or {}).get("version") or getattr(otp_service, "version", None)
+    except ProviderNotConfiguredError as exc:
+        raise HTTPException(status_code=503, detail=exc.code)
     except Exception as exc:
         provider_name = getattr(otp_service, "name", None) or "noop"
         provider_version = getattr(otp_service, "version", None)
@@ -979,6 +1101,7 @@ async def accept_invitation(payload: InvitationAccept, db: AsyncSession = Depend
             if res_e.scalars().first():
                 raise SmartSellValidationError("User already exists", "USER_EXISTS")
 
+        _enforce_password_policy(payload.password, username=invite.phone, email=invite.email)
         user = User(
             company_id=invite.company_id,
             phone=invite.phone,
@@ -1035,6 +1158,7 @@ async def reset_password(reset_data: PasswordReset, db: AsyncSession = Depends(g
     if not user:
         raise AuthenticationError("User not found", "USER_NOT_FOUND")
 
+    _enforce_password_policy(reset_data.new_password, username=user.phone, email=user.email)
     user.hashed_password = get_password_hash(reset_data.new_password)
     user.failed_login_attempts = 0
     user.locked_until = None
@@ -1074,6 +1198,8 @@ async def phone_change_request(
     phone = _normalize_phone(payload.new_phone)
     variants = _phone_variants(phone)
 
+    await _enforce_otp_phone_rate_limit(phone)
+
     if any(v == current_user.phone for v in variants):
         raise SmartSellValidationError("Phone is unchanged", "PHONE_UNCHANGED")
 
@@ -1104,6 +1230,8 @@ async def phone_change_request(
         )
         provider_name = (send_result or {}).get("provider") or getattr(otp_service, "name", None)
         provider_version = (send_result or {}).get("version") or getattr(otp_service, "version", None)
+    except ProviderNotConfiguredError as exc:
+        raise HTTPException(status_code=503, detail=exc.code)
     except Exception as exc:
         provider_name = getattr(otp_service, "name", None) or "noop"
         provider_version = getattr(otp_service, "version", None)
@@ -1274,6 +1402,7 @@ async def password_reset_confirm(
         if not user:
             raise SmartSellValidationError("Invalid or expired token", "RESET_TOKEN_INVALID")
 
+        _enforce_password_policy(payload.new_password, username=user.phone, email=user.email)
         user.hashed_password = get_password_hash(payload.new_password)
         user.failed_login_attempts = 0
         user.locked_until = None

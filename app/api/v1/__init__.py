@@ -49,6 +49,7 @@ DEFAULT_ROUTER_MODULES: Final[list[str]] = [
     "app.api.v1.users",
     "app.api.v1.products",
     "app.api.v1.campaigns",
+    "app.api.v1.admin",
     "app.api.v1.wallet",
     "app.api.v1.payments",
     "app.api.v1.subscriptions",

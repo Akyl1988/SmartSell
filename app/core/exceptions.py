@@ -221,13 +221,20 @@ def _json_error_response(
     detail: Any,
     code: str,
     headers: dict[str, str] | None = None,
+    errors: Any | None = None,
 ) -> JSONResponse:
     rid = _ensure_request_id(request)
+    if isinstance(detail, dict | list):
+        detail_value: Any = detail
+    else:
+        detail_value = _stringify_detail(detail)
     payload = {
-        "detail": _stringify_detail(detail),
+        "detail": detail_value,
         "code": code,
         "request_id": rid,
     }
+    if errors is not None:
+        payload["errors"] = _json_safe_errors(errors)
     response_headers = dict(headers or {})
     response_headers.setdefault("X-Request-ID", rid)
     return JSONResponse(status_code=status_code, content=payload, headers=response_headers)
@@ -383,6 +390,7 @@ async def validation_exception_handler(request: Request, exc: ValidationError) -
         status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
         detail="One or more fields failed validation",
         code="VALIDATION_ERROR",
+        errors=errs,
     )
 
 
@@ -416,6 +424,7 @@ async def request_validation_exception_handler(request: Request, exc) -> JSONRes
         status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
         detail="Request validation failed",
         code="REQUEST_VALIDATION_ERROR",
+        errors=errs,
     )
 
 

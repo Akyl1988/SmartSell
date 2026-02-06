@@ -4,16 +4,14 @@ Email service for sending notifications and documents.
 
 import html
 import os
-import smtplib
-from email.mime.application import MIMEApplication
-from email.mime.multipart import MIMEMultipart
-from email.mime.text import MIMEText
 
 from jinja2 import Environment, FileSystemLoader
 
 from app.core.config import settings
 from app.core.logging import get_logger
 from app.models import Company, Order
+from app.services.messaging import send_email as send_provider_email
+from app.utils.pii import mask_email
 
 logger = get_logger(__name__)
 
@@ -43,56 +41,24 @@ class EmailService:
         bcc: list[str] | None = None,
     ) -> bool:
         """Send email via SMTP"""
-
         try:
-            # Create message
-            msg = MIMEMultipart("alternative")
-            msg["From"] = self.from_email
-            msg["To"] = to_email
-            msg["Subject"] = subject
-
-            if cc:
-                msg["Cc"] = ", ".join(cc)
-
-            # Add text body
-            text_part = MIMEText(body, "plain", "utf-8")
-            msg.attach(text_part)
-
-            # Add HTML body if provided
-            if html_body:
-                html_part = MIMEText(html_body, "html", "utf-8")
-                msg.attach(html_part)
-
-            # Add attachments
-            if attachments:
-                for file_path in attachments:
-                    if os.path.exists(file_path):
-                        with open(file_path, "rb") as f:
-                            attachment = MIMEApplication(f.read())
-                            attachment.add_header(
-                                "Content-Disposition",
-                                "attachment",
-                                filename=os.path.basename(file_path),
-                            )
-                            msg.attach(attachment)
-
-            # Send email
-            recipients = [to_email]
-            if cc:
-                recipients.extend(cc)
-            if bcc:
-                recipients.extend(bcc)
-
-            with smtplib.SMTP(self.smtp_host, self.smtp_port) as server:
-                server.starttls()
-                server.login(self.smtp_user, self.smtp_password)
-                server.send_message(msg, to_addrs=recipients)
-
-            logger.info(f"Email sent successfully to {to_email}")
-            return True
-
+            result = await send_provider_email(
+                to=to_email,
+                subject=subject,
+                body=body,
+                html_body=html_body,
+                attachments=attachments,
+                cc=cc,
+                bcc=bcc,
+                from_email=self.from_email,
+            )
+            if result.get("success"):
+                logger.info("Email sent successfully to %s", mask_email(to_email))
+                return True
+            logger.error("Failed to send email to %s", mask_email(to_email))
+            return False
         except Exception as e:
-            logger.error(f"Failed to send email to {to_email}: {e}")
+            logger.error("Failed to send email to %s: %s", mask_email(to_email), e)
             return False
 
     async def send_order_confirmation(self, to_email: str, order: Order, company: Company) -> bool:

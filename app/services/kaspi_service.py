@@ -83,6 +83,20 @@ def _cdata(s: Optional[str]) -> str:
     return f"<![CDATA[{safe}]]>"
 
 
+def _safe_httpx_request(exc: Exception) -> httpx.Request | None:
+    try:
+        return getattr(exc, "request", None)
+    except RuntimeError:
+        return None
+
+
+def _safe_httpx_response(exc: Exception) -> httpx.Response | None:
+    try:
+        return getattr(exc, "response", None)
+    except RuntimeError:
+        return None
+
+
 # ---------------------- resilient HTTP client ---------------------- #
 
 
@@ -192,7 +206,7 @@ class KaspiService:
         if total_sec is not None:
             total = max(1.0, float(total_sec))
             connect = min(3.0, total)
-            rw_pool = max(1.0, min(6.0, total - 0.5))
+            rw_pool = max(1.0, total - 0.5)
             return httpx.Timeout(connect=connect, read=rw_pool, write=rw_pool, pool=rw_pool)
 
         connect = float(getattr(settings, "KASPI_ORDERS_CONNECT_TIMEOUT_SEC", 3) or 3)
@@ -218,6 +232,7 @@ class KaspiService:
         limit: int,
         include_entries: bool,
         request_id: str | None,
+        timeout_seconds: float | None = None,
     ) -> dict[str, Any]:
         orders_url = "https://kaspi.kz/shop/api/v2/orders"
         params: dict[str, Any] = {
@@ -237,7 +252,15 @@ class KaspiService:
             "Accept": "application/vnd.api+json",
         }
 
-        timeout = httpx.Timeout(connect=3.0, read=5.0, write=5.0, pool=5.0)
+        timeout = self._orders_timeout(timeout_seconds)
+        logger.info(
+            "Kaspi list_orders timeout: timeout_sec=%s connect=%s read=%s write=%s pool=%s",
+            timeout_seconds,
+            getattr(timeout, "connect", None),
+            getattr(timeout, "read", None),
+            getattr(timeout, "write", None),
+            getattr(timeout, "pool", None),
+        )
         try:
             async with httpx.AsyncClient(timeout=timeout) as client:
                 resp = await client.get(orders_url, headers=headers, params=params)
@@ -498,6 +521,18 @@ class KaspiService:
         updated = 0
         started_at = perf_counter()
         timeout_seconds = float(timeout_seconds or self._sync_timeout_seconds or 30)
+
+        timeout_obj = self._orders_timeout(timeout_seconds)
+        logger.info(
+            "Kaspi orders sync timeout budget: company_id=%s request_id=%s timeout_sec=%s connect=%s read=%s write=%s pool=%s",
+            company_id,
+            request_id,
+            timeout_seconds,
+            getattr(timeout_obj, "connect", None),
+            getattr(timeout_obj, "read", None),
+            getattr(timeout_obj, "write", None),
+            getattr(timeout_obj, "pool", None),
+        )
 
         logger.info("Kaspi orders sync start: company_id=%s request_id=%s", company_id, request_id)
         if _diag_enabled():
@@ -1139,11 +1174,26 @@ class KaspiService:
                 transient = code in {429, 500, 502, 503, 504} or isinstance(
                     e, asyncio.TimeoutError | httpx.TimeoutException | httpx.NetworkError
                 )
+                req_obj = _safe_httpx_request(e)
+                resp_obj = _safe_httpx_response(e)
+                method = getattr(req_obj, "method", None)
+                url = getattr(req_obj, "url", None)
+                status_code = getattr(resp_obj, "status_code", None)
+                exc_type = type(e).__name__
+                exc_repr = repr(e)
                 if not transient or is_last:
-                    logger.error("Kaspi get_orders failed after retries: %s", e)
+                    logger.error(
+                        "Kaspi get_orders failed after retries: %s | exc_type=%s exc_repr=%s attempt=%s method=%s url=%s status_code=%s",
+                        e,
+                        exc_type,
+                        exc_repr,
+                        attempt + 1,
+                        method,
+                        url,
+                        status_code,
+                    )
                     raise
                 retry_after_header = None
-                resp_obj = getattr(e, "response", None)
                 if isinstance(e, httpx.HTTPStatusError) and code == 429 and resp_obj is not None:
                     try:
                         retry_after_header = resp_obj.headers.get("Retry-After")
@@ -1163,13 +1213,18 @@ class KaspiService:
                     except Exception:
                         correlation_id = None
                 logger.warning(
-                    "Kaspi get_orders transient code=%s attempt=%s delay=%.2fs page=%s company_id=%s corr=%s",
+                    "Kaspi get_orders transient code=%s attempt=%s delay=%.2fs page=%s company_id=%s corr=%s exc_type=%s exc_repr=%s method=%s url=%s status_code=%s",
                     code or type(e).__name__,
                     attempt + 1,
                     delay,
                     page,
                     company_id,
                     correlation_id,
+                    exc_type,
+                    exc_repr,
+                    method,
+                    url,
+                    status_code,
                 )
                 await asyncio.sleep(delay)
 

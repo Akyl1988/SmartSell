@@ -1,10 +1,15 @@
 import pytest
+import sqlalchemy as sa
+
+from app.models.billing import Subscription
 
 BASE = "/api/v1/subscriptions"
 
 
 @pytest.mark.asyncio
-async def test_create_subscription_trial_ok(client, company_a_admin_headers):
+async def test_create_subscription_trial_ok(client, auth_headers, async_db_session):
+    await async_db_session.execute(sa.delete(Subscription).where(Subscription.company_id == 1))
+    await async_db_session.commit()
     r = await client.post(
         BASE,
         json={
@@ -14,14 +19,66 @@ async def test_create_subscription_trial_ok(client, company_a_admin_headers):
             "currency": "KZT",
             "trial_days": 7,
         },
-        headers=company_a_admin_headers,
+        headers=auth_headers,
     )
     assert r.status_code == 201, r.text
     data = r.json()
-    assert data["company_id"] == 1001
+    assert data["company_id"] == 1
     assert data["plan"] == "Pro"
     assert data["status"] in ("trial", "active")
     assert data["next_billing_date"]
+
+
+@pytest.mark.asyncio
+async def test_create_subscription_trial_blocked_for_non_admin(client, company_a_admin_headers):
+    r = await client.post(
+        BASE,
+        json={
+            "plan": "Pro",
+            "billing_cycle": "monthly",
+            "price": "24900.00",
+            "currency": "KZT",
+            "trial_days": 15,
+        },
+        headers=company_a_admin_headers,
+    )
+    assert r.status_code == 422, r.text
+    payload = r.json()
+    assert payload.get("detail") == "trial_days is not allowed here; trial is granted via Kaspi merchant_uid"
+
+
+@pytest.mark.asyncio
+async def test_create_subscription_without_trial_ok(client, company_a_admin_headers, auth_headers, async_db_session):
+    r = await client.post(
+        BASE,
+        json={
+            "plan": "Start",
+            "billing_cycle": "monthly",
+            "price": "0.00",
+            "currency": "KZT",
+            "trial_days": 0,
+        },
+        headers=company_a_admin_headers,
+    )
+    assert r.status_code == 201, r.text
+    assert r.json().get("status") == "active"
+
+    await async_db_session.execute(sa.delete(Subscription).where(Subscription.company_id == 1))
+    await async_db_session.commit()
+
+    admin = await client.post(
+        BASE,
+        json={
+            "plan": "Pro",
+            "billing_cycle": "monthly",
+            "price": "24900.00",
+            "currency": "KZT",
+            "trial_days": 15,
+        },
+        headers=auth_headers,
+    )
+    assert admin.status_code == 201, admin.text
+    assert admin.json().get("status") == "trial"
 
 
 @pytest.mark.asyncio

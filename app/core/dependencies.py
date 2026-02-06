@@ -8,7 +8,7 @@ Enterprise-grade FastAPI dependencies:
 - Audit logging hooks
 - Rate limiting: Redis token-bucket (Lua) -> in-memory sliding window fallback
 - Pagination
-- Idempotency via Idempotency-Key (Redis -> memory)
+- Idempotency via Idempotency-Key (PostgreSQL)
 - Client context (ip, ua, request/trace/span ids)
 
 ENV (optional):
@@ -26,9 +26,11 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from typing import Any
 
-from fastapi import Depends, HTTPException, Request, Response
+from fastapi import Depends, HTTPException, Request, Response, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy import select
+
+from app.core.rbac import is_platform_admin, is_store_admin
 
 # ------------------------------------------------------------------------------
 # Config (robust import with fallbacks)
@@ -443,12 +445,17 @@ async def require_active_subscription(
         return None
 
     from app.core.security import resolve_tenant_company_id  # type: ignore
+    from app.core.subscriptions.errors import build_subscription_required_payload  # type: ignore
     from app.services.subscriptions import get_company_subscription, is_subscription_active  # type: ignore
+
+    if is_platform_admin(current_user):
+        return current_user
 
     company_id = resolve_tenant_company_id(current_user, not_found_detail="Company not set")
     subscription = await get_company_subscription(db, company_id)
     if not is_subscription_active(subscription):
-        raise HTTPException(status_code=402, detail="subscription_required")
+        payload = await build_subscription_required_payload(db, current_user)
+        raise HTTPException(status_code=402, detail=payload)
     return current_user
 
 
@@ -459,8 +466,13 @@ async def get_current_superuser(current_user: Any = Depends(get_current_user)) -
 
 
 async def require_platform_admin(current_user: Any = Depends(get_current_user)) -> Any:
-    role = getattr(current_user, "role", "") or ""
-    if role not in {"platform_admin", "superadmin"}:
+    if not is_platform_admin(current_user):
+        raise AuthorizationError("Admin role required", "ADMIN_REQUIRED")
+    return current_user
+
+
+async def require_store_admin(current_user: Any = Depends(get_current_user)) -> Any:
+    if not is_store_admin(current_user):
         raise AuthorizationError("Admin role required", "ADMIN_REQUIRED")
     return current_user
 
@@ -560,6 +572,27 @@ def rate_limit(max_requests: int = 100, window_seconds: int = 60, tag: str = "ap
     return _wrapped
 
 
+async def enforce_rate_limit(
+    *,
+    tag: str,
+    ident: str,
+    max_requests: int,
+    window_seconds: int,
+    detail: str,
+):
+    if not _RATE_ENABLED or not _rate_limiter:
+        return True
+    allowed, retry = await _rate_limiter.allow(tag, ident, max_requests, window_seconds)
+    if not allowed:
+        headers = {
+            "Retry-After": str(retry),
+            "X-RateLimit-Limit": str(max_requests),
+            "X-RateLimit-Window": str(window_seconds),
+        }
+        raise HTTPException(status_code=status.HTTP_429_TOO_MANY_REQUESTS, detail=detail, headers=headers)
+    return True
+
+
 _auth_rl = _limit_dep("auth", _AUTH_RATE_LIMIT, _AUTH_RATE_WINDOW)
 _api_rl = _limit_dep("api", _API_RATE_LIMIT, _API_RATE_WINDOW)
 _otp_rl = _limit_dep("otp", _OTP_RATE_LIMIT, _OTP_RATE_WINDOW)
@@ -582,19 +615,149 @@ auth_rate_limit_dep = auth_rate_limit
 api_rate_limit_dep = api_rate_limit
 
 # ------------------------------------------------------------------------------
-# Idempotency via Idempotency-Key
+# Idempotency via Idempotency-Key (PostgreSQL)
 # ------------------------------------------------------------------------------
 _idem_cfg = getattr(settings, "idempotency_settings", {}) or {}
-_idem_prefix = _idem_cfg.get("prefix", getattr(settings, "IDEMPOTENCY_CACHE_PREFIX", "idemp"))
 _idem_default_ttl = _int_setting(_idem_cfg.get("default_ttl", getattr(settings, "IDEMPOTENCY_DEFAULT_TTL", 900)), 900)
 
-_idempotency_enforcer = IdempotencyEnforcer(
-    redis=get_redis(), prefix=_idem_prefix, default_ttl=_idem_default_ttl, env=_env_tag
-)
+_idempotency_enforcer = IdempotencyEnforcer(default_ttl=_idem_default_ttl, env=_env_tag)
 
-ensure_idempotency = _idempotency_enforcer.dependency()
-ensure_idempotency_replay = _idempotency_enforcer.dependency(allow_replay=True)
-set_idempotency_result = _idempotency_enforcer.set_result
+
+async def _get_idempotency_db():
+    if not get_async_db:
+        raise RuntimeError("Async DB session is required for idempotency")
+    async for db in get_async_db():
+        yield db
+
+
+def _resolve_idempotency_scope(current_user: Any | None, key: str) -> tuple[int | None, str]:
+    if current_user is None:
+        return None, key
+
+    try:
+        from app.core.security import resolve_tenant_company_id  # type: ignore
+
+        company_id = resolve_tenant_company_id(current_user, not_found_detail="Company not set")
+        company_id_int = int(company_id)
+        scoped_key = key
+        prefix = f"company:{company_id_int}:"
+        if not scoped_key.startswith(prefix):
+            scoped_key = f"{prefix}{key}"
+        return company_id_int, scoped_key
+    except Exception:
+        pass
+
+    user_id = getattr(current_user, "id", None)
+    if user_id:
+        return 0, f"user:{int(user_id)}:{key}"
+    return None, key
+
+
+async def _apply_idempotency(
+    request: Request,
+    response: Response,
+    current_user: Any | None,
+    db,
+    *,
+    allow_replay: bool,
+):
+    method = request.method.upper()
+    if method not in ("POST", "PUT", "PATCH"):
+        return True
+
+    raw_key = request.headers.get("Idempotency-Key")
+    if not raw_key:
+        return True
+
+    redis_client = get_redis()
+    if settings.is_production:
+        if redis_client is None:
+            raise HTTPException(status_code=503, detail="idempotency_unavailable")
+        try:
+            await redis_client.ping()  # type: ignore[attr-defined]
+        except Exception:
+            raise HTTPException(status_code=503, detail="idempotency_unavailable")
+
+    ttl_header = request.headers.get("Idempotency-TTL")
+    try:
+        ttl_seconds = int(ttl_header) if ttl_header else _idem_default_ttl
+    except Exception:
+        ttl_seconds = _idem_default_ttl
+
+    company_id, scoped_key = _resolve_idempotency_scope(current_user, raw_key)
+    if company_id is None:
+        return True
+
+    try:
+        allowed, processed_status = await _idempotency_enforcer.reserve(
+            db, company_id=company_id, key=scoped_key, ttl_seconds=ttl_seconds
+        )
+    except Exception as exc:
+        log.error("Idempotency DB error", extra={"error": str(exc)})
+        raise HTTPException(status_code=503, detail="Idempotency storage unavailable")
+
+    if not allowed:
+        if processed_status is not None and allow_replay:
+            request.state.idempotency_key = scoped_key
+            request.state.idempotency_ttl = ttl_seconds
+            request.state.idempotency_company_id = company_id
+            response.headers["Idempotency-Key"] = raw_key
+            response.status_code = processed_status
+            return True
+        detail = "Request already processed" if processed_status is not None else "Request is being processed"
+        raise HTTPException(status.HTTP_409_CONFLICT, detail)
+
+    request.state.idempotency_key = scoped_key
+    request.state.idempotency_ttl = ttl_seconds
+    request.state.idempotency_company_id = company_id
+    response.headers["Idempotency-Key"] = raw_key
+    return True
+
+
+async def ensure_idempotency(
+    request: Request,
+    response: Response,
+    current_user: Any | None = Depends(get_current_user_optional),
+    db=Depends(_get_idempotency_db, use_cache=False),
+):
+    return await _apply_idempotency(request, response, current_user, db, allow_replay=False)
+
+
+async def ensure_idempotency_replay(
+    request: Request,
+    response: Response,
+    current_user: Any | None = Depends(get_current_user_optional),
+    db=Depends(_get_idempotency_db, use_cache=False),
+):
+    return await _apply_idempotency(request, response, current_user, db, allow_replay=True)
+
+
+async def set_idempotency_result(
+    key: str,
+    *,
+    status_code: int,
+    ttl_seconds: int | None = None,
+    request: Request | None = None,
+    company_id: int | None = None,
+):
+    scoped_company_id = company_id
+    scoped_key = key
+    if request is not None:
+        scoped_key = getattr(getattr(request, "state", None), "idempotency_key", scoped_key)
+        scoped_company_id = getattr(getattr(request, "state", None), "idempotency_company_id", scoped_company_id)
+
+    if scoped_company_id is None:
+        return
+
+    async for db in _get_idempotency_db():
+        await _idempotency_enforcer.set_result(
+            db,
+            company_id=int(scoped_company_id),
+            key=scoped_key,
+            status_code=int(status_code),
+            ttl_seconds=ttl_seconds,
+        )
+        return
 
 
 # ------------------------------------------------------------------------------
@@ -607,6 +770,8 @@ async def get_payment_gateway(db=Depends(get_db)):
     try:
         return await PaymentProviderResolver.resolve(db, domain="payments")
     except Exception as exc:  # pragma: no cover - runtime guard
+        if settings.is_production:
+            raise HTTPException(status_code=503, detail="payment_provider_not_configured")
         log.warning("Payment gateway resolution failed; using noop", exc_info=exc)
         return NoOpPaymentGateway()
 
@@ -621,6 +786,8 @@ async def get_otp_service(db=Depends(get_db)):
     try:
         return await OtpProviderResolver.resolve(db, domain="otp")
     except Exception as exc:  # pragma: no cover - runtime guard
+        if settings.is_production:
+            raise HTTPException(status_code=503, detail="otp_provider_not_configured")
         log.warning("OTP service resolution failed; using noop", exc_info=exc)
         from app.integrations.providers.noop import NoOpOtpProvider
 
@@ -637,6 +804,8 @@ async def get_messaging_provider(db=Depends(get_db)):
     try:
         return await MessagingProviderResolver.resolve(db, domain="messaging")
     except Exception as exc:  # pragma: no cover - runtime guard
+        if settings.is_production:
+            raise HTTPException(status_code=503, detail="messaging_provider_not_configured")
         log.warning("Messaging provider resolution failed; using noop", exc_info=exc)
         return NoOpMessagingProvider()
 
@@ -660,6 +829,7 @@ __all__ = [
     "require_active_subscription",
     "get_current_superuser",
     "require_platform_admin",
+    "require_store_admin",
     "require_scopes",
     # rate limit
     "rate_limit",
@@ -668,6 +838,7 @@ __all__ = [
     "otp_rate_limit",
     "auth_rate_limit_dep",  # keep aliases
     "api_rate_limit_dep",
+    "enforce_rate_limit",
     # pagination
     "Pagination",
     "get_pagination",

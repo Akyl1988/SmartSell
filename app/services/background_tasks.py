@@ -5,23 +5,14 @@ Background task services using Celery for async operations.
 from __future__ import annotations
 
 import os
-import re
 
 from celery import Celery
 
 from app.core.config import settings
 from app.core.logging import get_logger
+from app.utils.pii import mask_email, mask_phone
 
 logger = get_logger(__name__)
-
-
-def _mask_phone(value: str) -> str:
-    digits = re.sub(r"\D", "", value or "")
-    if not digits:
-        return ""
-    if len(digits) <= 4:
-        return "*" * len(digits)
-    return "*" * (len(digits) - 2) + digits[-2:]
 
 
 def _should_log_otp_debug() -> bool:
@@ -54,8 +45,14 @@ celery_app.conf.update(
 def send_sms_otp(phone: str, code: str) -> bool:
     """Send SMS OTP code using Mobizon API."""
     try:
+        if settings.is_production:
+            logger.warning(
+                "OTP provider not configured; refusing to send in production", extra={"phone": mask_phone(phone)}
+            )
+            return False
+        logger.warning("Using stub OTP sender (non-production)", extra={"phone": mask_phone(phone)})
         # TODO: Implement actual Mobizon API call
-        logger.info(f"Sending OTP to {_mask_phone(phone)}")
+        logger.info("Sending OTP to %s", mask_phone(phone))
 
         # Simulate API call delay
         import time
@@ -63,11 +60,11 @@ def send_sms_otp(phone: str, code: str) -> bool:
         time.sleep(1)
 
         if _should_log_otp_debug():
-            logger.info(f"OTP requested for phone {_mask_phone(phone)}")
+            logger.info("OTP requested for phone %s", mask_phone(phone))
 
         return True
     except Exception as e:
-        logger.error(f"Failed to send OTP to {phone}: {e}")
+        logger.error("Failed to send OTP to %s: %s", mask_phone(phone), e)
         return False
 
 
@@ -75,8 +72,14 @@ def send_sms_otp(phone: str, code: str) -> bool:
 def send_email_notification(email: str, subject: str, body: str) -> bool:
     """Send email notification."""
     try:
+        if settings.is_production:
+            logger.warning(
+                "Email provider not configured; refusing to send in production", extra={"email": mask_email(email)}
+            )
+            return False
+        logger.warning("Using stub email sender (non-production)", extra={"email": mask_email(email)})
         # TODO: Implement email sending
-        logger.info(f"Sending email to {email}: {subject}")
+        logger.info("Sending email to %s: %s", mask_email(email), subject)
 
         # Simulate email sending
         import time
@@ -85,7 +88,7 @@ def send_email_notification(email: str, subject: str, body: str) -> bool:
 
         return True
     except Exception as e:
-        logger.error(f"Failed to send email to {email}: {e}")
+        logger.error("Failed to send email to %s: %s", mask_email(email), e)
         return False
 
 
@@ -93,6 +96,10 @@ def send_email_notification(email: str, subject: str, body: str) -> bool:
 def process_image_upload(image_url: str, product_id: int) -> dict:
     """Process image upload to Cloudinary."""
     try:
+        if settings.is_production:
+            logger.warning("Media provider not configured; refusing to process in production")
+            return {"error": "media_provider_not_configured"}
+        logger.warning("Using stub media processor (non-production)")
         # TODO: Implement Cloudinary upload
         logger.info(f"Processing image upload for product {product_id}")
 
@@ -117,6 +124,9 @@ def process_image_upload(image_url: str, product_id: int) -> dict:
 def sync_product_to_kaspi(product_id: int) -> bool:
     """Sync product to Kaspi marketplace."""
     try:
+        if settings.is_production:
+            logger.warning("Kaspi provider not configured; refusing to sync in production")
+            return False
         # TODO: Implement Kaspi API integration
         logger.info(f"Syncing product {product_id} to Kaspi")
 
@@ -135,6 +145,10 @@ def sync_product_to_kaspi(product_id: int) -> bool:
 def process_payment_webhook(webhook_data: dict) -> bool:
     """Process payment webhook from TipTop Pay."""
     try:
+        if settings.is_production:
+            logger.warning("Payment provider not configured; refusing to process in production")
+            return False
+        logger.warning("Using stub payment processor (non-production)")
         # TODO: Implement payment processing
         logger.info(f"Processing payment webhook: {webhook_data.get('invoice_id')}")
 
@@ -153,6 +167,10 @@ def process_payment_webhook(webhook_data: dict) -> bool:
 def generate_daily_report() -> dict:
     """Generate daily sales report."""
     try:
+        if settings.is_production:
+            logger.warning("Report generator not configured; refusing to generate in production")
+            return {"error": "report_provider_not_configured"}
+        logger.warning("Using stub report generator (non-production)")
         logger.info("Generating daily report")
 
         # TODO: Implement report generation

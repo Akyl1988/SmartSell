@@ -91,8 +91,9 @@ except Exception:
     _HAS_SQLA = False
 
 try:
-    from app.core.db import engine as _SYNC_ENGINE  # type: ignore
+    from app.core.db import _get_sync_engine  # type: ignore
 
+    _SYNC_ENGINE = _get_sync_engine()
     _SYNC_ENGINE_AVAILABLE = True
 except Exception:
     _SYNC_ENGINE_AVAILABLE = False
@@ -387,6 +388,9 @@ def rotate_active_kid(new_kid: str) -> None:
 
 def _pick_signing_key(alg: str | None = None) -> tuple[str | bytes, str, str | None]:
     algorithm = alg or getattr(settings, "ALGORITHM", "HS256")
+    env_kid = (os.getenv("JWT_ACTIVE_KID") or "").strip()
+    if settings.is_production and env_kid and not _KID_KEYS:
+        raise RuntimeError("kid_key_material_required_in_prod")
     kid = get_active_kid()
     if _KID_KEYS and kid:
         mat = _KID_KEYS[kid]
@@ -667,6 +671,11 @@ def _build_denylist_backend() -> DenylistBackend:
             return RedisDenylist(url, prefix=prefix)
         except Exception:
             pass
+    require_backend = bool(settings.is_production and not (settings.is_testing or os.getenv("PYTEST_CURRENT_TEST")))
+    if os.getenv("DENYLIST_REQUIRE_BACKEND", "").strip().lower() in {"1", "true", "yes", "on"}:
+        require_backend = True
+    if require_backend:
+        raise RuntimeError("denylist_backend_required_in_prod")
     return InMemoryDenylist()
 
 
@@ -762,7 +771,23 @@ def clear_refresh_cookie(response) -> None:
 # =============================================================================
 # CSRF helpers (для cookie-based схем)
 # =============================================================================
-_CSRF_SECRET = os.getenv("CSRF_SECRET") or settings.SECRET_KEY
+
+
+def _resolve_csrf_secret() -> str:
+    csrf_secret = (os.getenv("CSRF_SECRET") or getattr(settings, "CSRF_SECRET", "") or "").strip()
+    secret_key = (settings.SECRET_KEY or "").strip()
+
+    if settings.is_production:
+        if not csrf_secret:
+            raise RuntimeError("csrf_secret_required_in_prod")
+        if csrf_secret == secret_key:
+            raise RuntimeError("csrf_secret_must_differ_from_secret_key")
+        return csrf_secret
+
+    return csrf_secret or secret_key
+
+
+_CSRF_SECRET = _resolve_csrf_secret()
 
 
 def generate_csrf_token(session_id: str) -> str:
@@ -898,6 +923,24 @@ if _HAS_FASTAPI:
             return str(getattr(user, "role", "") or "").lower()
         except Exception:
             return ""
+
+    def is_superuser(user: User | None) -> bool:
+        if user is None:
+            return False
+        if bool(getattr(user, "is_superuser", False)):
+            return True
+        allowlist = getattr(settings, "SUPERUSER_ALLOWLIST", None) or []
+        normalized = {str(item).strip() for item in allowlist if str(item).strip()}
+        if not normalized:
+            return False
+        user_id = str(getattr(user, "id", "") or "").strip()
+        if user_id and user_id in normalized:
+            return True
+        for attr in ("email", "username", "phone"):
+            value = str(getattr(user, attr, "") or "").strip()
+            if value and value in normalized:
+                return True
+        return False
 
     def is_platform_admin(user: User | None) -> bool:
         try:

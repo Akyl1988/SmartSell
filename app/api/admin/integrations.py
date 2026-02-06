@@ -309,7 +309,7 @@ async def set_active_provider(
     await ProviderRegistry.notify_change(active.domain, active.version or 1)
 
     if idem_key:
-        await set_idempotency_result(idem_key, status_code=200, ttl_seconds=None)  # type: ignore[arg-type]
+        await set_idempotency_result(idem_key, status_code=200, ttl_seconds=None, request=request)
 
     return ActiveProviderOut(
         domain=active.domain,
@@ -415,7 +415,7 @@ async def set_provider_config(
         actor_email=getattr(admin, "email", None),
     )
     if idem_key:
-        await set_idempotency_result(idem_key, status_code=200, ttl_seconds=None)  # type: ignore[arg-type]
+        await set_idempotency_result(idem_key, status_code=200, ttl_seconds=None, request=request)
     cfg = await ProviderConfigService.get_redacted_config(db, domain=item.domain, provider=item.provider)
     return ProviderConfigOut(
         domain=item.domain,
@@ -540,7 +540,7 @@ async def set_messaging_config(
         actor_email=getattr(admin, "email", None),
     )
     if idem_key:
-        await set_idempotency_result(idem_key, status_code=200, ttl_seconds=None)  # type: ignore[arg-type]
+        await set_idempotency_result(idem_key, status_code=200, ttl_seconds=None, request=request)
     cfg = await ProviderConfigService.get_redacted_config(db, domain=item.domain, provider=item.provider)
     return ProviderConfigOut(
         domain=item.domain,
@@ -655,7 +655,7 @@ async def set_payment_config(
         actor_user_id=getattr(admin, "id", None),
     )
     if idem_key:
-        await set_idempotency_result(idem_key, status_code=200, ttl_seconds=None)  # type: ignore[arg-type]
+        await set_idempotency_result(idem_key, status_code=200, ttl_seconds=None, request=request)
     cfg = await ProviderConfigService.get_redacted_config(db, domain=item.domain, provider=item.provider)
     return ProviderConfigOut(
         domain=item.domain,

@@ -90,6 +90,7 @@ invoices = _try_import("app.api.v1.invoices")
 kaspi_mod = _try_import("app.api.v1.kaspi")  # ⬅ добавлено
 integrations_mod = _try_import("app.api.v1.integrations")
 debug_db_mod = _try_import("app.api.v1.debug_db")
+admin_mod = _try_import("app.api.v1.admin")
 
 # Переэкспорт удобных имён/алиасов (для внешнего кода)
 auth = auth_mod
@@ -168,6 +169,8 @@ if integrations_mod and _router_or_none(integrations_mod):
     V1_ROUTERS.append(("integrations", integrations_mod.router, True))
 if debug_db_mod and _router_or_none(debug_db_mod):
     V1_ROUTERS.append(("debug_db", debug_db_mod.router, True))
+if admin_mod and _router_or_none(admin_mod):
+    V1_ROUTERS.append(("admin", admin_mod.router, True))
 
 
 def register_v1_router(name: str, router: APIRouter, is_absolute: bool = False) -> None:

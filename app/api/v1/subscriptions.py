@@ -21,6 +21,7 @@ from app.core.security import (
     resolve_tenant_company_id,
 )
 from app.core.subscriptions.plan_catalog import (
+    get_plan,
     get_plan_display_name,
     list_plans,
     normalize_plan_id,
@@ -124,6 +125,13 @@ def utc_now() -> datetime:
 
 def next_billing_from(now: datetime, cycle: str) -> datetime:
     return now + (timedelta(days=365) if cycle == "yearly" else timedelta(days=31))
+
+
+def _ceil_to_midnight_utc(dt: datetime) -> datetime:
+    midnight = dt.replace(hour=0, minute=0, second=0, microsecond=0)
+    if dt > midnight:
+        midnight = midnight + timedelta(days=1)
+    return midnight
 
 
 async def ensure_company(db: AsyncSession, company_id: int) -> Company:
@@ -349,20 +357,42 @@ async def create_subscription(
         await forbid_multiple_active(db, resolved_company_id)
 
         now = utc_now()
-        period_end = next_billing_from(now, payload.billing_cycle)
         normalized_plan = normalize_plan_id(payload.plan, default=payload.plan)
+        plan = get_plan(normalized_plan, default=None)
+
+        role = (getattr(user, "role", "") or "").lower()
+        is_platform_admin = role in {"platform_admin", "superadmin"}
+        if payload.trial_days > 0 and not is_platform_admin:
+            raise HTTPException(
+                status_code=422,
+                detail="trial_days is not allowed here; trial is granted via Kaspi merchant_uid",
+            )
+        if payload.trial_days < 0 or payload.trial_days > 15:
+            raise HTTPException(status_code=400, detail="trial_days_invalid")
+
+        if payload.trial_days:
+            period_end = now + timedelta(days=15)
+            grace_until = _ceil_to_midnight_utc(period_end + timedelta(days=3))
+            status_value = "trial"
+        else:
+            period_end = next_billing_from(now, payload.billing_cycle)
+            grace_until = None
+            status_value = "active"
+
         sub = Subscription(
             company_id=resolved_company_id,
             plan=normalized_plan,
-            status="trial" if payload.trial_days > 0 else "active",
+            status=status_value,
             billing_cycle=payload.billing_cycle,
-            price=Decimal(payload.price),
-            currency=payload.currency,
+            price=Decimal(plan.price) if plan else Decimal(payload.price),
+            currency=plan.currency if plan else payload.currency,
             started_at=now,
             period_start=now,
             period_end=period_end,
-            expires_at=(now + timedelta(days=payload.trial_days)) if payload.trial_days else None,
+            expires_at=period_end if payload.trial_days else None,
             next_billing_date=period_end,
+            billing_anchor_day=now.day,
+            grace_until=grace_until,
         )
         db.add(sub)
         await db.commit()

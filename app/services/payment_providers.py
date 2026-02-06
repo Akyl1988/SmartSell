@@ -3,10 +3,13 @@ from __future__ import annotations
 import asyncio
 from typing import Any
 
+from app.core.config import settings
 from app.core.logging import get_logger
 from app.core.provider_registry import ProviderRegistry
+from app.integrations.errors import ProviderNotConfiguredError
 from app.integrations.ports.payments import PaymentGateway
 from app.integrations.providers.noop.payments import NoOpPaymentGateway
+from app.integrations.providers.placeholder.payments import PlaceholderPaymentGateway
 from app.services.provider_configs import ProviderConfigService
 
 log = get_logger(__name__)
@@ -37,6 +40,10 @@ class PaymentProviderResolver:
         if normalized.startswith("noop"):
             return NoOpPaymentGateway(name=name, config=config, version=version)
 
+        if normalized in {"placeholder", "payment-placeholder", "payments-placeholder", "stub", "dummy"}:
+            return PlaceholderPaymentGateway(name=name, config=config, version=version)
+        if settings.is_production:
+            raise ProviderNotConfiguredError("payment_provider_not_configured")
         log.warning("Unknown payment provider '%s', using noop", name)
         return NoOpPaymentGateway(name=name, config=config, version=version)
 
@@ -63,6 +70,8 @@ class PaymentProviderResolver:
                     break
         except Exception as exc:  # pragma: no cover - runtime guard
             log.warning("Payment provider resolution failed; using fallback noop", exc_info=exc)
+            if settings.is_production:
+                raise ProviderNotConfiguredError("payment_provider_not_configured")
             fallback = NoOpPaymentGateway(name="noop", config={}, version=0)
             async with cls._lock:
                 cls._cache[cls._cache_key(domain_key, 0, "noop")] = fallback
@@ -77,6 +86,8 @@ class PaymentProviderResolver:
             return cached
 
         if not entry:
+            if settings.is_production:
+                raise ProviderNotConfiguredError("payment_provider_not_configured")
             log.warning("Payment provider not configured for domain '%s'; using noop", domain_key)
             instance = NoOpPaymentGateway(name="noop", config={}, version=0)
             async with cls._lock:
@@ -105,17 +116,22 @@ class PaymentProviderResolver:
                 provider_config = {}
 
         try:
+            if settings.is_production and (provider_name or "noop").lower().startswith("noop"):
+                raise ProviderNotConfiguredError("payment_provider_not_configured")
             instance = cls._build_provider(entry.provider, provider_config, int(entry.version or 0))
         except Exception as exc:  # pragma: no cover - runtime guard
             log.warning("Payment provider build failed; using noop", exc_info=exc)
-            await ProviderConfigService.record_event(
-                db,
-                domain=resolved_domain,
-                provider=entry.provider,
-                action="provider_build_failed",
-                status="error",
-                error=str(exc),
-            )
+            if db is not None:
+                await ProviderConfigService.record_event(
+                    db,
+                    domain=resolved_domain,
+                    provider=entry.provider,
+                    action="provider_build_failed",
+                    status="error",
+                    error=str(exc),
+                )
+            if settings.is_production:
+                raise ProviderNotConfiguredError("payment_provider_not_configured")
             instance = NoOpPaymentGateway(name="noop", config={}, version=0)
 
         async with cls._lock:

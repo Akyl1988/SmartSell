@@ -389,6 +389,9 @@ def run_startup_side_effects(s: Settings | None = None) -> None:
     if should_disable_startup_hooks():
         return
 
+    if s.is_production:
+        validate_prod_secrets(s)
+
     try:
         if s.EAGER_SIDE_EFFECTS:
             s.ensure_dirs()
@@ -401,6 +404,8 @@ def run_startup_side_effects(s: Settings | None = None) -> None:
             s.init_sentry()
             s.init_opentelemetry()
     except Exception:
+        if s.is_production:
+            raise
         pass
 
     if s.is_development and (s.STARTUP_LOG_SUMMARY or s.DEBUG_CONFIG_DUMP):
@@ -467,6 +472,12 @@ class Settings(BaseSettings):
 
     # ---- security/JWT
     SECRET_KEY: str = Field(default="changeme", description="JWT secret key", validation_alias="SECRET_KEY")
+    INVITE_TOKEN_SECRET: str | None = Field(
+        default=None, description="Invitation token secret", validation_alias="INVITE_TOKEN_SECRET"
+    )
+    RESET_TOKEN_SECRET: str | None = Field(
+        default=None, description="Reset token secret", validation_alias="RESET_TOKEN_SECRET"
+    )
     ACCESS_TOKEN_EXPIRE_MINUTES: int = Field(
         default=30,
         description="Access token expiry",
@@ -479,6 +490,11 @@ class Settings(BaseSettings):
     MAX_LOGIN_ATTEMPTS: int = Field(default=5, description="Max login attempts", validation_alias="MAX_LOGIN_ATTEMPTS")
     PASSWORD_MIN_LENGTH: int = Field(
         default=8, description="Password min length", validation_alias="PASSWORD_MIN_LENGTH"
+    )
+    SUPERUSER_ALLOWLIST: list[str] = Field(
+        default_factory=list,
+        description="Comma-separated superuser allowlist identifiers",
+        validation_alias="SUPERUSER_ALLOWLIST",
     )
 
     # ---- БД
@@ -649,6 +665,15 @@ class Settings(BaseSettings):
     # ---- Провайдеры
     MOBIZON_API_KEY: str | None = Field(default=None, description="Mobizon API key", validation_alias="MOBIZON_API_KEY")
     MOBIZON_API_URL: str = Field(default="https://api.mobizon.kz", description="Mobizon API URL")
+    MOBIZON_BASE_URL: str | None = Field(
+        default=None, description="Mobizon base URL", validation_alias="MOBIZON_BASE_URL"
+    )
+    MOBIZON_SENDER: str | None = Field(
+        default=None, description="Mobizon sender name", validation_alias="MOBIZON_SENDER"
+    )
+    MOBIZON_TIMEOUT_SEC: float = Field(
+        default=5.0, description="Mobizon HTTP timeout", validation_alias="MOBIZON_TIMEOUT_SEC"
+    )
 
     CLOUDINARY_CLOUD_NAME: str | None = Field(
         default=None, description="Cloudinary cloud name", validation_alias="CLOUDINARY_CLOUD_NAME"
@@ -840,6 +865,17 @@ class Settings(BaseSettings):
     def _bcors(cls, v: Any) -> Any:
         return _parse_list_like(v)
 
+    @field_validator("SUPERUSER_ALLOWLIST", mode="before")
+    def _superuser_allowlist(cls, v: Any) -> Any:
+        if v is None:
+            return []
+        if isinstance(v, list | tuple | set):
+            return [str(item).strip() for item in v if str(item).strip()]
+        parsed = _parse_list_like(v)
+        if isinstance(parsed, list):
+            return [str(item).strip() for item in parsed if str(item).strip()]
+        return [str(parsed).strip()] if str(parsed).strip() else []
+
     @field_validator("SMTP_FROM_EMAIL", mode="before")
     def empty_email_is_none(cls, v: Any) -> Any:
         if v is None:
@@ -975,14 +1011,46 @@ class Settings(BaseSettings):
                 logging.getLogger(__name__).warning(f"Directory not writable: {p}")
 
     def check_secret_key(self) -> None:
-        localish = _is_local_env(self.ENVIRONMENT, bool(self.DEBUG))
-        if not localish:
-            if not self.SECRET_KEY or self.SECRET_KEY.strip().lower() in {
-                "changeme",
-                "secret",
-                "password",
-            }:
-                raise ValueError("Set a secure SECRET_KEY in non-local environments!")
+        if not self.is_production:
+            return
+        value = (self.SECRET_KEY or "").strip()
+        if not value:
+            raise ValueError("Set a secure SECRET_KEY in production!")
+        if value.lower() in {"changeme", "secret", "password"}:
+            raise ValueError("Set a secure SECRET_KEY in production!")
+        if len(value) < 32:
+            raise ValueError("SECRET_KEY must be at least 32 characters in production!")
+
+    def check_token_secrets(self) -> None:
+        if not self.is_production:
+            return
+        invite_secret = (self.INVITE_TOKEN_SECRET or "").strip()
+        reset_secret = (self.RESET_TOKEN_SECRET or "").strip()
+
+        if not invite_secret:
+            raise ValueError("invite_token_secret_required_in_prod")
+        if invite_secret.lower() in {"changeme", "secret", "password"}:
+            raise ValueError("invite_token_secret_required_in_prod")
+        if len(invite_secret) < 32:
+            raise ValueError("invite_token_secret_required_in_prod")
+
+        if not reset_secret:
+            raise ValueError("reset_token_secret_required_in_prod")
+        if reset_secret.lower() in {"changeme", "secret", "password"}:
+            raise ValueError("reset_token_secret_required_in_prod")
+        if len(reset_secret) < 32:
+            raise ValueError("reset_token_secret_required_in_prod")
+
+    def check_otp_secret(self) -> None:
+        if not self.is_production:
+            return
+        val = (os.getenv("OTP_SECRET") or "").strip()
+        if not val:
+            raise ValueError("otp_secret_required_in_prod")
+        if val == "dev-only-default-please-override-in-prod":
+            raise ValueError("otp_secret_required_in_prod")
+        if len(val) < 32:
+            raise ValueError("otp_secret_required_in_prod")
 
     def _is_postgres_url(self, url: str) -> bool:
         try:
@@ -1981,6 +2049,14 @@ def get_settings() -> Settings:
     return s
 
 
+def validate_prod_secrets(s: Settings | None = None) -> None:
+    s = s or get_settings()
+    if s.is_production:
+        s.check_secret_key()
+        s.check_token_secrets()
+        s.check_otp_secret()
+
+
 settings = get_settings()
 
 __all__ = [
@@ -1989,6 +2065,7 @@ __all__ = [
     "settings",
     "should_disable_startup_hooks",
     "run_startup_side_effects",
+    "validate_prod_secrets",
     "db_url_fingerprint",
     "db_connection_fingerprint",
     "JSONAPI_MIME",
