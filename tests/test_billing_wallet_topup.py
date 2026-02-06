@@ -210,7 +210,9 @@ async def test_after_grace_access_denied(
     resp = await async_client.get("/api/v1/kaspi/autosync/status", headers=company_a_admin_headers)
     assert resp.status_code == 402, resp.text
     payload = resp.json()
-    assert payload.get("detail") == "subscription_required"
+    detail = payload.get("detail")
+    assert isinstance(detail, dict)
+    assert detail.get("code") == "SUBSCRIPTION_REQUIRED"
 
 
 async def test_renewal_within_grace_reactivates_and_extends(async_db_session, monkeypatch):

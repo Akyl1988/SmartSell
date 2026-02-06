@@ -150,4 +150,6 @@ async def test_campaign_subscription_inactive_blocks_access(
         json={"title": "Subscription Inactive"},
     )
     assert resp.status_code == 402
-    assert resp.json().get("detail") == "subscription_required"
+    detail = resp.json().get("detail")
+    assert isinstance(detail, dict)
+    assert detail.get("code") == "SUBSCRIPTION_REQUIRED"

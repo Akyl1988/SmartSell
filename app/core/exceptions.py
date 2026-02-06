@@ -223,8 +223,12 @@ def _json_error_response(
     headers: dict[str, str] | None = None,
 ) -> JSONResponse:
     rid = _ensure_request_id(request)
+    if isinstance(detail, (dict, list)):
+        detail_value: Any = detail
+    else:
+        detail_value = _stringify_detail(detail)
     payload = {
-        "detail": _stringify_detail(detail),
+        "detail": detail_value,
         "code": code,
         "request_id": rid,
     }

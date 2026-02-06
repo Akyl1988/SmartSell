@@ -97,9 +97,14 @@ async def test_kaspi_enforcement_admin_missing_feature(
     resp = await request(path, headers=company_a_admin_headers, json=payload)
     assert resp.status_code == 402
     data = resp.json()
-    assert data.get("detail") == "subscription_required"
-    assert data.get("code") == "subscription_required"
-    assert data.get("request_id")
+    detail = data.get("detail")
+    assert isinstance(detail, dict)
+    assert detail.get("code") == "SUBSCRIPTION_REQUIRED"
+    assert detail.get("company_id") == 1001
+    assert "subscription" in detail
+    assert "wallet" in detail
+    actions = detail.get("actions") or []
+    assert any(action.get("type") == "TOPUP_WALLET" for action in actions)
 
 
 async def test_kaspi_enforcement_admin_allowed_plan_goods_imports_list(
