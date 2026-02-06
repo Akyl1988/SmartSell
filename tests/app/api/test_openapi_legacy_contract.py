@@ -18,6 +18,9 @@ async def test_openapi_hides_legacy_api_and_exposes_v1(async_client):
     assert "/api/wallet/health" not in paths
     assert "/api/v1/wallet/health" in paths
 
+    admin_topup = paths.get("/api/v1/admin/wallet/topup", {})
+    assert "post" in admin_topup
+
 
 @pytest.mark.asyncio
 async def test_openapi_kaspi_catalog_template_has_binary_types(async_client):
