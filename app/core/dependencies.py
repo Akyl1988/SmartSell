@@ -30,6 +30,8 @@ from fastapi import Depends, HTTPException, Request, Response, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy import select
 
+from app.core.rbac import is_platform_admin, is_store_admin
+
 # ------------------------------------------------------------------------------
 # Config (robust import with fallbacks)
 # ------------------------------------------------------------------------------
@@ -446,8 +448,7 @@ async def require_active_subscription(
     from app.core.subscriptions.errors import build_subscription_required_payload  # type: ignore
     from app.services.subscriptions import get_company_subscription, is_subscription_active  # type: ignore
 
-    role = (getattr(current_user, "role", "") or "").lower()
-    if getattr(current_user, "is_superuser", False) or role in {"platform_admin", "superadmin"}:
+    if is_platform_admin(current_user):
         return current_user
 
     company_id = resolve_tenant_company_id(current_user, not_found_detail="Company not set")
@@ -465,9 +466,13 @@ async def get_current_superuser(current_user: Any = Depends(get_current_user)) -
 
 
 async def require_platform_admin(current_user: Any = Depends(get_current_user)) -> Any:
-    role = (getattr(current_user, "role", "") or "").lower()
-    is_admin = getattr(current_user, "is_admin", lambda: False)()
-    if not (is_admin or role in {"platform_admin", "superadmin"}):
+    if not is_platform_admin(current_user):
+        raise AuthorizationError("Admin role required", "ADMIN_REQUIRED")
+    return current_user
+
+
+async def require_store_admin(current_user: Any = Depends(get_current_user)) -> Any:
+    if not is_store_admin(current_user):
         raise AuthorizationError("Admin role required", "ADMIN_REQUIRED")
     return current_user
 
@@ -824,6 +829,7 @@ __all__ = [
     "require_active_subscription",
     "get_current_superuser",
     "require_platform_admin",
+    "require_store_admin",
     "require_scopes",
     # rate limit
     "rate_limit",
