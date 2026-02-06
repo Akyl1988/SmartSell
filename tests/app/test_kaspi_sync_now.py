@@ -111,8 +111,9 @@ async def test_kaspi_sync_now_trial_requires_subscription(
     )
     assert resp.status_code == 402
     payload = resp.json()
-    assert payload.get("detail") == "subscription_required"
-    assert payload.get("code") == "subscription_required"
+    detail = payload.get("detail")
+    assert isinstance(detail, dict)
+    assert detail.get("code") == "SUBSCRIPTION_REQUIRED"
     assert payload.get("request_id")
 
 

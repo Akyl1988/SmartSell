@@ -81,7 +81,9 @@ async def test_analytics_subscription_inactive_blocked(
 
     resp = await async_client.get("/api/v1/analytics/dashboard", headers=company_a_admin_headers)
     assert resp.status_code == 402
-    assert resp.json().get("detail") == "subscription_required"
+    detail = resp.json().get("detail")
+    assert isinstance(detail, dict)
+    assert detail.get("code") == "SUBSCRIPTION_REQUIRED"
 
 
 @pytest.mark.asyncio

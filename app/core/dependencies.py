@@ -443,6 +443,7 @@ async def require_active_subscription(
         return None
 
     from app.core.security import resolve_tenant_company_id  # type: ignore
+    from app.core.subscriptions.errors import build_subscription_required_payload  # type: ignore
     from app.services.subscriptions import get_company_subscription, is_subscription_active  # type: ignore
 
     role = (getattr(current_user, "role", "") or "").lower()
@@ -452,7 +453,8 @@ async def require_active_subscription(
     company_id = resolve_tenant_company_id(current_user, not_found_detail="Company not set")
     subscription = await get_company_subscription(db, company_id)
     if not is_subscription_active(subscription):
-        raise HTTPException(status_code=402, detail="subscription_required")
+        payload = await build_subscription_required_payload(db, current_user)
+        raise HTTPException(status_code=402, detail=payload)
     return current_user
 
 

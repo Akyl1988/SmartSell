@@ -3,13 +3,16 @@ from __future__ import annotations
 from collections.abc import Iterable
 from typing import Any
 
-from fastapi import Depends, Request
+from fastapi import Depends, HTTPException, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.db import get_async_db
-from app.core.exceptions import AuthorizationError
 from app.core.logging import get_logger
 from app.core.security import get_current_user, resolve_tenant_company_id
+from app.core.subscriptions.errors import (
+    build_subscription_required_payload,
+    build_subscription_required_payload_for_company,
+)
 from app.core.subscriptions.plan_catalog import get_plan_features as _catalog_plan_features
 from app.core.subscriptions.plan_catalog import normalize_plan_id
 from app.services.subscriptions import get_company_subscription, is_subscription_active
@@ -27,12 +30,8 @@ async def _resolve_plan(db: AsyncSession, company_id: int) -> str:
     subscription = await get_company_subscription(db, company_id)
     if subscription and is_subscription_active(subscription):
         return normalize_plan_id(getattr(subscription, "plan", None)) or "start"
-    raise AuthorizationError(
-        "subscription_required",
-        code="subscription_required",
-        http_status=402,
-        extra={"company_id": company_id},
-    )
+    payload = await build_subscription_required_payload_for_company(db, company_id)
+    raise HTTPException(status_code=402, detail=payload)
 
 
 def _has_feature(plan: str, feature: str) -> bool:
@@ -76,12 +75,8 @@ def require_feature(feature: str) -> Any:
         plan = await _resolve_plan(db, company_id)
         if not _has_feature(plan, feature):
             logger.info("Feature blocked", extra={"feature": feature, "plan": plan, "company_id": company_id})
-            raise AuthorizationError(
-                "subscription_required",
-                code="subscription_required",
-                http_status=402,
-                extra={"feature": feature, "plan": plan, "company_id": company_id},
-            )
+            payload = await build_subscription_required_payload(db, current_user)
+            raise HTTPException(status_code=402, detail=payload)
         return current_user
 
     return _dep

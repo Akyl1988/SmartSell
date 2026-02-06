@@ -51,7 +51,9 @@ async def test_superuser_allowlist_bypasses_feature_and_admin(
     resp_subscription = await async_client.get("/api/v1/kaspi/autosync/status", headers=company_a_manager_headers)
     assert resp_subscription.status_code == 402
     payload = resp_subscription.json()
-    assert payload.get("detail") == "subscription_required"
+    detail = payload.get("detail")
+    assert isinstance(detail, dict)
+    assert detail.get("code") == "SUBSCRIPTION_REQUIRED"
 
     monkeypatch.setenv("SUPERUSER_ALLOWLIST", str(user.id))
     _refresh_settings(monkeypatch)
@@ -84,5 +86,6 @@ async def test_kaspi_sync_now_subscription_required_for_normal_user(
     )
     assert resp.status_code == 402
     payload = resp.json()
-    assert payload.get("detail") == "subscription_required"
-    assert payload.get("code") == "subscription_required"
+    detail = payload.get("detail")
+    assert isinstance(detail, dict)
+    assert detail.get("code") == "SUBSCRIPTION_REQUIRED"

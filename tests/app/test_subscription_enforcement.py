@@ -12,7 +12,9 @@ async def test_subscription_required_blocks_protected_endpoint(
 ):
     resp = await async_client.get("/api/v1/products", headers=company_a_admin_headers)
     assert resp.status_code == 402
-    assert resp.json().get("detail") == "subscription_required"
+    detail = resp.json().get("detail")
+    assert isinstance(detail, dict)
+    assert detail.get("code") == "SUBSCRIPTION_REQUIRED"
 
 
 @pytest.mark.asyncio
@@ -60,4 +62,6 @@ async def test_cross_tenant_subscription_does_not_grant_access(
 
     foreign = await async_client.get("/api/v1/products", headers=company_b_admin_headers)
     assert foreign.status_code == 402
-    assert foreign.json().get("detail") == "subscription_required"
+    detail = foreign.json().get("detail")
+    assert isinstance(detail, dict)
+    assert detail.get("code") == "SUBSCRIPTION_REQUIRED"
