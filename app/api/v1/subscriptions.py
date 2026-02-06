@@ -360,6 +360,13 @@ async def create_subscription(
         normalized_plan = normalize_plan_id(payload.plan, default=payload.plan)
         plan = get_plan(normalized_plan, default=None)
 
+        role = (getattr(user, "role", "") or "").lower()
+        is_platform_admin = role in {"platform_admin", "superadmin"}
+        if payload.trial_days > 0 and not is_platform_admin:
+            raise HTTPException(
+                status_code=422,
+                detail="trial_days is not allowed here; trial is granted via Kaspi merchant_uid",
+            )
         if payload.trial_days < 0 or payload.trial_days > 15:
             raise HTTPException(status_code=400, detail="trial_days_invalid")
 
