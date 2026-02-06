@@ -219,6 +219,7 @@ class TaskManager:
                 logger.error(f"Subscription renewal task error: {e}")
 
             await asyncio.sleep(86400)
+
     async def _send_low_stock_alerts(self, db: AsyncSession):
         """Send low stock alerts to company admins"""
 
