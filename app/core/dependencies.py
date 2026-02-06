@@ -465,8 +465,9 @@ async def get_current_superuser(current_user: Any = Depends(get_current_user)) -
 
 
 async def require_platform_admin(current_user: Any = Depends(get_current_user)) -> Any:
-    role = getattr(current_user, "role", "") or ""
-    if role not in {"platform_admin", "superadmin"}:
+    role = (getattr(current_user, "role", "") or "").lower()
+    is_admin = getattr(current_user, "is_admin", lambda: False)()
+    if not (is_admin or role in {"platform_admin", "superadmin"}):
         raise AuthorizationError("Admin role required", "ADMIN_REQUIRED")
     return current_user
 
