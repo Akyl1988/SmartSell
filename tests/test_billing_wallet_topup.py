@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from calendar import monthrange
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
@@ -19,6 +20,15 @@ def _ceil_midnight(dt: datetime) -> datetime:
     if dt > midnight:
         midnight = midnight + timedelta(days=1)
     return midnight
+
+
+def _add_months_anchor(dt: datetime, anchor_day: int, months: int) -> datetime:
+    month_index = (dt.month - 1) + months
+    year = dt.year + (month_index // 12)
+    month = (month_index % 12) + 1
+    last_day = monthrange(year, month)[1]
+    day = min(max(anchor_day, 1), last_day)
+    return dt.replace(year=year, month=month, day=day)
 
 
 async def _ensure_company(async_db_session, company_id: int, *, plan: str = "start") -> Company:
@@ -348,3 +358,54 @@ async def test_renewal_marks_past_due_sets_grace(async_db_session, monkeypatch):
     assert processed == 1
     assert sub.status == "past_due"
     assert sub.grace_until == _ceil_midnight(period_end + timedelta(days=3))
+
+
+async def test_admin_trial_then_wallet_renewal(async_client, async_db_session, auth_headers, monkeypatch):
+    monkeypatch.setitem(
+        plan_catalog.PLAN_CATALOG,
+        "pro",
+        plan_catalog.PlanCatalogEntry(
+            plan_id="pro",
+            display_name="Pro",
+            price=Decimal("30.00"),
+            currency="KZT",
+        ),
+    )
+
+    company = Company(id=9007, name="Trial Co")
+    async_db_session.add(company)
+    await async_db_session.commit()
+
+    wallet = WalletBalance(company_id=company.id, balance=Decimal("100.00"), currency="KZT")
+    async_db_session.add(wallet)
+    await async_db_session.commit()
+
+    started_at = datetime.now(UTC)
+    resp = await async_client.post(
+        "/api/v1/admin/subscriptions/trial",
+        headers=auth_headers,
+        json={"companyId": company.id, "plan": "pro", "trial_days": 15},
+    )
+    assert resp.status_code == 200, resp.text
+
+    sub = (
+        await async_db_session.execute(sa.select(Subscription).where(Subscription.company_id == company.id))
+    ).scalar_one()
+
+    expected_end = started_at + timedelta(days=15)
+    assert sub.period_end is not None
+    assert abs((sub.period_end - expected_end).total_seconds()) < 5
+    assert sub.grace_until == _ceil_midnight(sub.period_end + timedelta(days=3))
+
+    anchor_day = sub.billing_anchor_day or started_at.day
+    previous_period_end = sub.period_end
+    renew_now = sub.period_end + timedelta(days=1)
+    processed = await renew_if_due(async_db_session, now=renew_now)
+    await async_db_session.commit()
+    await async_db_session.refresh(sub)
+    await async_db_session.refresh(wallet)
+
+    assert processed == 1
+    assert sub.status == "active"
+    assert sub.period_end == _add_months_anchor(previous_period_end, anchor_day, 1)
+    assert wallet.balance == Decimal("70.00")
