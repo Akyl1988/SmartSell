@@ -56,9 +56,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
 from app.core.db import get_async_db  # noqa — для совместимости импорт-алиас
+from app.core.dependencies import require_store_admin
 from app.core.errors import safe_error_message
 from app.core.logging import get_logger
-from app.core.security import get_current_user, is_superuser, resolve_tenant_company_id
+from app.core.security import get_current_user, resolve_tenant_company_id
 from app.core.subscriptions import (
     FEATURE_KASPI_AUTOSYNC,
     FEATURE_KASPI_FEED_UPLOADS,
@@ -196,18 +197,12 @@ def _resolve_company_id(current_user: User) -> int:
     return resolve_tenant_company_id(current_user, not_found_detail="Company not set")
 
 
-def _require_admin(current_user: User) -> None:
-    if not (is_superuser(current_user) or current_user.role == "admin"):
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="forbidden")
-
-
-def require_admin_then_feature(feature: str) -> Any:
+def require_store_admin_then_feature(feature: str) -> Any:
     async def _dep(
         request: Request,
-        current_user: User = Depends(get_current_user),  # noqa: B008
+        current_user: User = Depends(require_store_admin),  # noqa: B008
         db: AsyncSession = Depends(get_async_db),  # noqa: B008
     ) -> User:
-        _require_admin(current_user)
         await require_feature(feature)(request=request, current_user=current_user, db=db)
         return current_user
 
@@ -1298,7 +1293,7 @@ async def kaspi_orders_list(
     offset: int | None = Query(None, ge=0),
     limit: int = Query(50, ge=1, le=200),
     sort: Literal["created_at_desc", "created_at_asc"] = Query("created_at_desc"),
-    current_user: User = Depends(require_admin_then_feature(FEATURE_KASPI_ORDERS_LIST)),
+    current_user: User = Depends(require_store_admin_then_feature(FEATURE_KASPI_ORDERS_LIST)),
     session: AsyncSession = Depends(get_async_db),
 ):
     company_id = _resolve_company_id(current_user)
@@ -1416,7 +1411,7 @@ async def kaspi_orders_list(
 async def kaspi_order_detail(
     order_id: int,
     request: Request,
-    current_user: User = Depends(require_admin_then_feature(FEATURE_KASPI_ORDERS_LIST)),
+    current_user: User = Depends(require_store_admin_then_feature(FEATURE_KASPI_ORDERS_LIST)),
     session: AsyncSession = Depends(get_async_db),
 ):
     company_id = _resolve_company_id(current_user)
@@ -2538,7 +2533,7 @@ async def kaspi_goods_import_result(
 )
 async def kaspi_goods_import_create(
     body: KaspiGoodsImportCreateIn,
-    current_user: User = Depends(require_admin_then_feature(FEATURE_KASPI_GOODS_IMPORTS)),
+    current_user: User = Depends(require_store_admin_then_feature(FEATURE_KASPI_GOODS_IMPORTS)),
     session: AsyncSession = Depends(get_async_db),
 ):
     merchant_uid = (body.merchant_uid or "").strip()
@@ -2631,7 +2626,7 @@ async def kaspi_goods_import_create(
 async def kaspi_goods_import_list(
     limit: int = Query(50, ge=1, le=200),
     offset: int = Query(0, ge=0),
-    current_user: User = Depends(require_admin_then_feature(FEATURE_KASPI_GOODS_IMPORTS)),
+    current_user: User = Depends(require_store_admin_then_feature(FEATURE_KASPI_GOODS_IMPORTS)),
     session: AsyncSession = Depends(get_async_db),
 ):
     company_id = _resolve_company_id(current_user)
@@ -2654,7 +2649,7 @@ async def kaspi_goods_import_list(
 )
 async def kaspi_goods_import_get(
     import_id: str,
-    current_user: User = Depends(require_admin_then_feature(FEATURE_KASPI_GOODS_IMPORTS)),
+    current_user: User = Depends(require_store_admin_then_feature(FEATURE_KASPI_GOODS_IMPORTS)),
     session: AsyncSession = Depends(get_async_db),
 ):
     company_id = _resolve_company_id(current_user)
@@ -2684,7 +2679,7 @@ async def kaspi_goods_import_get(
 async def kaspi_goods_import_refresh(
     import_id: str,
     request: Request,
-    current_user: User = Depends(require_admin_then_feature(FEATURE_KASPI_GOODS_IMPORTS)),
+    current_user: User = Depends(require_store_admin_then_feature(FEATURE_KASPI_GOODS_IMPORTS)),
     session: AsyncSession = Depends(get_async_db),
 ):
     company_id = _resolve_company_id(current_user)
@@ -2765,7 +2760,7 @@ async def kaspi_sync_now(
     body: KaspiSyncNowIn,
     timeout_sec: float = Query(SYNC_NOW_TIMEOUT_SEC, ge=0.1, le=60.0),
     hard: int = Query(0, ge=0, le=1),
-    current_user: User = Depends(require_admin_then_feature(FEATURE_KASPI_SYNC_NOW)),
+    current_user: User = Depends(require_store_admin_then_feature(FEATURE_KASPI_SYNC_NOW)),
     session: AsyncSession = Depends(get_async_db),
 ):
     insp = sa_inspect(current_user)
@@ -3667,7 +3662,7 @@ async def kaspi_catalog_import(
     current_user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_async_db),
 ):
-    _require_admin(current_user)
+    await require_store_admin(current_user)
 
     if not merchant_uid or not merchant_uid.strip():
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="missing_merchant_uid")
@@ -3879,7 +3874,7 @@ async def kaspi_mc_session_upsert(
     current_user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_async_db),
 ):
-    _require_admin(current_user)
+    await require_store_admin(current_user)
     company_id = _resolve_company_id(current_user)
 
     merchant_uid = (payload.merchant_uid or "").strip()
@@ -3916,7 +3911,7 @@ async def kaspi_mc_session_status(
     current_user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_async_db),
 ):
-    _require_admin(current_user)
+    await require_store_admin(current_user)
     company_id = _resolve_company_id(current_user)
 
     q = sa.select(KaspiMcSession).where(KaspiMcSession.company_id == company_id)
@@ -3962,7 +3957,7 @@ async def kaspi_catalog_sync_mc(
     current_user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_async_db),
 ):
-    _require_admin(current_user)
+    await require_store_admin(current_user)
     company_id = _resolve_company_id(current_user)
 
     if not merchant_uid or not merchant_uid.strip():
@@ -4032,7 +4027,7 @@ async def kaspi_catalog_import_batches(
     current_user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_async_db),
 ):
-    _require_admin(current_user)
+    await require_store_admin(current_user)
     company_id = _resolve_company_id(current_user)
 
     result = await session.execute(
@@ -4072,7 +4067,7 @@ async def kaspi_catalog_import_batch_detail(
     current_user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_async_db),
 ):
-    _require_admin(current_user)
+    await require_store_admin(current_user)
     company_id = _resolve_company_id(current_user)
 
     result = await session.execute(
@@ -4117,7 +4112,7 @@ async def kaspi_catalog_import_batch_errors(
     current_user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_async_db),
 ):
-    _require_admin(current_user)
+    await require_store_admin(current_user)
     company_id = _resolve_company_id(current_user)
 
     batch = (
@@ -4174,7 +4169,7 @@ async def kaspi_offers_list(
     current_user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_async_db),
 ):
-    _require_admin(current_user)
+    await require_store_admin(current_user)
     company_id = _resolve_company_id(current_user)
 
     conditions = [KaspiOffer.company_id == company_id]
@@ -4246,7 +4241,7 @@ LEGACY_CSV_RESPONSES = {
 async def kaspi_catalog_import_template_csv(
     current_user: User = Depends(get_current_user),
 ):
-    _require_admin(current_user)
+    await require_store_admin(current_user)
     content = _kaspi_catalog_template_csv()
     headers = {"Content-Disposition": "attachment; filename=kaspi_catalog_template.csv"}
     return Response(content=content, media_type="text/csv; charset=utf-8", headers=headers)
@@ -4305,7 +4300,7 @@ async def kaspi_catalog_import_template(
     format: Literal["csv", "xlsx"] = Query("xlsx"),
     current_user: User = Depends(get_current_user),
 ):
-    _require_admin(current_user)
+    await require_store_admin(current_user)
     if format == "csv":
         content = _kaspi_catalog_template_csv()
         headers = {"Content-Disposition": "attachment; filename=kaspi_catalog_template.csv"}
@@ -4493,7 +4488,7 @@ async def kaspi_feed_export_create(
     current_user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_async_db),
 ):
-    _require_admin(current_user)
+    await require_store_admin(current_user)
     if not merchant_uid or not merchant_uid.strip():
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="missing_merchant_uid")
 
@@ -4562,7 +4557,7 @@ async def kaspi_feed_exports_list(
     current_user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_async_db),
 ):
-    _require_admin(current_user)
+    await require_store_admin(current_user)
     company_id = _resolve_company_id(current_user)
 
     limit = max(1, min(limit, 200))
@@ -4587,7 +4582,7 @@ async def kaspi_feed_exports_list(
 async def kaspi_feed_upload_create(
     request: Request,
     body: KaspiFeedUploadIn,
-    current_user: User = Depends(require_admin_then_feature(FEATURE_KASPI_FEED_UPLOADS)),
+    current_user: User = Depends(require_store_admin_then_feature(FEATURE_KASPI_FEED_UPLOADS)),
     session: AsyncSession = Depends(get_async_db),
 ):
     merchant_uid = (body.merchant_uid or "").strip()
@@ -4794,7 +4789,7 @@ async def kaspi_feed_upload_create(
 async def kaspi_feed_uploads_list(
     limit: int = 50,
     offset: int = 0,
-    current_user: User = Depends(require_admin_then_feature(FEATURE_KASPI_FEED_UPLOADS)),
+    current_user: User = Depends(require_store_admin_then_feature(FEATURE_KASPI_FEED_UPLOADS)),
     session: AsyncSession = Depends(get_async_db),
 ):
     company_id = _resolve_company_id(current_user)
@@ -4820,7 +4815,7 @@ async def kaspi_feed_uploads_list(
 )
 async def kaspi_feed_upload_get(
     upload_id: UUID,
-    current_user: User = Depends(require_admin_then_feature(FEATURE_KASPI_FEED_UPLOADS)),
+    current_user: User = Depends(require_store_admin_then_feature(FEATURE_KASPI_FEED_UPLOADS)),
     session: AsyncSession = Depends(get_async_db),
 ):
     company_id = _resolve_company_id(current_user)
@@ -4850,7 +4845,7 @@ async def kaspi_feed_upload_get(
 async def kaspi_feed_upload_refresh(
     request: Request,
     upload_id: UUID,
-    current_user: User = Depends(require_admin_then_feature(FEATURE_KASPI_FEED_UPLOADS)),
+    current_user: User = Depends(require_store_admin_then_feature(FEATURE_KASPI_FEED_UPLOADS)),
     session: AsyncSession = Depends(get_async_db),
 ):
     company_id = _resolve_company_id(current_user)
@@ -4968,7 +4963,7 @@ async def kaspi_feed_upload_refresh(
 async def kaspi_feed_upload_refresh_compat(
     request: Request,
     upload_id: UUID,
-    current_user: User = Depends(require_admin_then_feature(FEATURE_KASPI_FEED_UPLOADS)),
+    current_user: User = Depends(require_store_admin_then_feature(FEATURE_KASPI_FEED_UPLOADS)),
     session: AsyncSession = Depends(get_async_db),
 ):
     return await kaspi_feed_upload_refresh(
@@ -4987,7 +4982,7 @@ async def kaspi_feed_upload_refresh_compat(
 async def kaspi_feed_upload_publish(
     request: Request,
     upload_id: UUID,
-    current_user: User = Depends(require_admin_then_feature(FEATURE_KASPI_FEED_UPLOADS)),
+    current_user: User = Depends(require_store_admin_then_feature(FEATURE_KASPI_FEED_UPLOADS)),
     session: AsyncSession = Depends(get_async_db),
 ):
     company_id = _resolve_company_id(current_user)
@@ -5128,7 +5123,7 @@ async def kaspi_feed_export_detail(
     current_user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_async_db),
 ):
-    _require_admin(current_user)
+    await require_store_admin(current_user)
     company_id = _resolve_company_id(current_user)
 
     export = (
@@ -5158,7 +5153,7 @@ async def kaspi_feed_export_download(
     current_user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_async_db),
 ):
-    _require_admin(current_user)
+    await require_store_admin(current_user)
     company_id = _resolve_company_id(current_user)
 
     export = (
@@ -5205,7 +5200,7 @@ async def kaspi_feed_public_token_create(
     current_user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_async_db),
 ):
-    _require_admin(current_user)
+    await require_store_admin(current_user)
     company_id = _resolve_company_id(current_user)
     env_is_dev = settings.is_development or settings.is_testing
 
@@ -5263,7 +5258,7 @@ async def kaspi_feed_public_tokens_list(
     current_user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_async_db),
 ):
-    _require_admin(current_user)
+    await require_store_admin(current_user)
     company_id = _resolve_company_id(current_user)
 
     result = await session.execute(
@@ -5298,7 +5293,7 @@ async def kaspi_feed_public_token_revoke(
     current_user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_async_db),
 ):
-    _require_admin(current_user)
+    await require_store_admin(current_user)
     company_id = _resolve_company_id(current_user)
 
     token_row = (

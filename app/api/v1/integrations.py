@@ -4,12 +4,13 @@ from datetime import datetime
 from typing import Any
 
 import sqlalchemy as sa
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, Query
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.db import get_async_db
-from app.core.security import get_current_user, resolve_tenant_company_id
+from app.core.dependencies import require_store_admin
+from app.core.security import resolve_tenant_company_id
 from app.models.integration_event import IntegrationEvent
 from app.models.user import User
 
@@ -29,11 +30,6 @@ class IntegrationEventOut(BaseModel):
     meta_json: dict[str, Any] | None = None
 
 
-def _require_admin(current_user: User) -> None:
-    if not (current_user.is_superuser or current_user.role == "admin"):
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="forbidden")
-
-
 @router.get(
     "/events",
     summary="List integration events",
@@ -42,10 +38,9 @@ def _require_admin(current_user: User) -> None:
 async def list_integration_events(
     kind: str | None = Query(None),
     limit: int = Query(100, ge=1, le=200),
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_store_admin),
     session: AsyncSession = Depends(get_async_db),
 ) -> list[IntegrationEventOut]:
-    _require_admin(current_user)
     company_id = resolve_tenant_company_id(current_user, not_found_detail="Company not set")
 
     stmt = sa.select(IntegrationEvent).where(IntegrationEvent.company_id == company_id)
