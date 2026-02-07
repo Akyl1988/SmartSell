@@ -1,7 +1,37 @@
-"""RBAC helpers for platform- vs store-level admin checks."""
+"""RBAC v2 helpers for platform vs store access control."""
 from __future__ import annotations
 
+from enum import Enum
 from typing import Any
+
+from app.core.exceptions import AuthorizationError
+from app.core.security import resolve_tenant_company_id
+
+
+class Role(str, Enum):
+    PLATFORM_ADMIN = "platform_admin"
+    PLATFORM_MANAGER = "platform_manager"
+    STORE_ADMIN = "admin"
+    STORE_MANAGER = "manager"
+    STORE_EMPLOYEE = "employee"
+
+
+ROLE_ALIASES: dict[str, str] = {
+    "superadmin": Role.PLATFORM_ADMIN.value,
+    "super_admin": Role.PLATFORM_ADMIN.value,
+    "platform_admin": Role.PLATFORM_ADMIN.value,
+    "platform_manager": Role.PLATFORM_MANAGER.value,
+    "admin": Role.STORE_ADMIN.value,
+    "store_admin": Role.STORE_ADMIN.value,
+    "manager": Role.STORE_MANAGER.value,
+    "store_manager": Role.STORE_MANAGER.value,
+    "employee": Role.STORE_EMPLOYEE.value,
+    "store_employee": Role.STORE_EMPLOYEE.value,
+    "staff": Role.STORE_EMPLOYEE.value,
+}
+
+PLATFORM_ROLES = {Role.PLATFORM_ADMIN.value, Role.PLATFORM_MANAGER.value}
+STORE_ROLES = {Role.STORE_ADMIN.value, Role.STORE_MANAGER.value, Role.STORE_EMPLOYEE.value}
 
 
 def is_platform_admin(user: Any) -> bool:
@@ -9,8 +39,7 @@ def is_platform_admin(user: Any) -> bool:
         return False
     if getattr(user, "is_superuser", False):
         return True
-    role = (getattr(user, "role", "") or "").lower()
-    return role in {"platform_admin", "superadmin"}
+    return has_role(user, Role.PLATFORM_ADMIN.value)
 
 
 def is_store_admin(user: Any) -> bool:
@@ -18,9 +47,93 @@ def is_store_admin(user: Any) -> bool:
         return False
     is_admin = getattr(user, "is_admin", None)
     if callable(is_admin):
-        return bool(is_admin())
-    role = (getattr(user, "role", "") or "").lower()
-    return role == "admin" or getattr(user, "is_superuser", False)
+        if normalize_role(getattr(user, "role", "")) == Role.STORE_ADMIN.value:
+            return bool(is_admin())
+        return False
+    return has_role(user, Role.STORE_ADMIN.value)
 
 
-__all__ = ["is_platform_admin", "is_store_admin"]
+def is_store_manager(user: Any) -> bool:
+    return has_role(user, Role.STORE_MANAGER.value)
+
+
+def is_store_employee(user: Any) -> bool:
+    return has_role(user, Role.STORE_EMPLOYEE.value)
+
+
+def normalize_role(role: str | None) -> str:
+    if not role:
+        return ""
+    return ROLE_ALIASES.get(str(role).strip().lower(), str(role).strip().lower())
+
+
+def get_user_roles(user: Any) -> set[str]:
+    if user is None:
+        return set()
+    roles: set[str] = set()
+    role_value = getattr(user, "role", None)
+    if role_value:
+        roles.add(normalize_role(role_value))
+    extra_roles = getattr(user, "roles", None)
+    if isinstance(extra_roles, list | set | tuple):
+        roles.update(normalize_role(r) for r in extra_roles if r)
+    if getattr(user, "is_superuser", False):
+        roles.add(Role.PLATFORM_ADMIN.value)
+    return {r for r in roles if r}
+
+
+def has_role(user: Any, role: str) -> bool:
+    if not user:
+        return False
+    normalized = normalize_role(role)
+    return normalized in get_user_roles(user)
+
+
+def has_any_role(user: Any, roles: set[str]) -> bool:
+    if not user:
+        return False
+    normalized = {normalize_role(r) for r in roles if r}
+    return bool(get_user_roles(user) & normalized)
+
+
+def require_platform_admin(user: Any) -> Any:
+    if not is_platform_admin(user):
+        raise AuthorizationError("Admin role required", "ADMIN_REQUIRED")
+    return user
+
+
+def require_store_admin(user: Any) -> Any:
+    if not is_store_admin(user):
+        raise AuthorizationError("Admin role required", "ADMIN_REQUIRED")
+    return user
+
+
+def require_roles(user: Any, *roles: str) -> Any:
+    allowed = {normalize_role(r) for r in roles if r}
+    if not allowed or not has_any_role(user, allowed):
+        raise AuthorizationError("Insufficient role", "FORBIDDEN")
+    return user
+
+
+def get_company_id(user: Any, *, not_found_detail: str = "Company not set") -> int:
+    return resolve_tenant_company_id(user, not_found_detail=not_found_detail)
+
+
+__all__ = [
+    "Role",
+    "ROLE_ALIASES",
+    "PLATFORM_ROLES",
+    "STORE_ROLES",
+    "normalize_role",
+    "get_user_roles",
+    "has_role",
+    "has_any_role",
+    "is_platform_admin",
+    "is_store_admin",
+    "is_store_manager",
+    "is_store_employee",
+    "require_platform_admin",
+    "require_store_admin",
+    "require_roles",
+    "get_company_id",
+]

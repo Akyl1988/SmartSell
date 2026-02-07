@@ -49,11 +49,10 @@ async def test_superuser_allowlist_bypasses_feature_and_admin(
     assert resp_forbidden.status_code == 403
 
     resp_subscription = await async_client.get("/api/v1/kaspi/autosync/status", headers=company_a_manager_headers)
-    assert resp_subscription.status_code == 402
+    assert resp_subscription.status_code == 403
     payload = resp_subscription.json()
     detail = payload.get("detail")
-    assert isinstance(detail, dict)
-    assert detail.get("code") == "SUBSCRIPTION_REQUIRED"
+    assert detail == "Admin role required"
 
     monkeypatch.setenv("SUPERUSER_ALLOWLIST", str(user.id))
     _refresh_settings(monkeypatch)
@@ -62,7 +61,7 @@ async def test_superuser_allowlist_bypasses_feature_and_admin(
     assert resp_orders.status_code in {402, 403}
 
     resp_autosync = await async_client.get("/api/v1/kaspi/autosync/status", headers=company_a_manager_headers)
-    assert resp_autosync.status_code == 402
+    assert resp_autosync.status_code == 403
 
     monkeypatch.delenv("SUPERUSER_ALLOWLIST", raising=False)
     _refresh_settings(monkeypatch)

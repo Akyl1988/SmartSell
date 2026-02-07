@@ -30,7 +30,20 @@ from fastapi import Depends, HTTPException, Request, Response, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy import select
 
-from app.core.rbac import is_platform_admin, is_store_admin
+from app.core.rbac import (
+    has_any_role,
+    is_platform_admin,
+    normalize_role,
+)
+from app.core.rbac import (
+    require_platform_admin as _require_platform_admin,
+)
+from app.core.rbac import (
+    require_roles as _require_roles,
+)
+from app.core.rbac import (
+    require_store_admin as _require_store_admin,
+)
 
 # ------------------------------------------------------------------------------
 # Config (robust import with fallbacks)
@@ -466,31 +479,25 @@ async def get_current_superuser(current_user: Any = Depends(get_current_user)) -
 
 
 async def require_platform_admin(current_user: Any = Depends(get_current_user)) -> Any:
-    if not is_platform_admin(current_user):
-        raise AuthorizationError("Admin role required", "ADMIN_REQUIRED")
-    return current_user
+    return _require_platform_admin(current_user)
 
 
 def require_roles_strict(*roles: str) -> Callable[..., Any]:
-    allowed = {r.lower() for r in roles if r}
+    allowed = {normalize_role(r) for r in roles if r}
 
     async def _dep(current_user: Any = Depends(get_current_user)) -> Any:
-        role = (getattr(current_user, "role", "") or "").lower()
-        if role not in allowed:
-            raise AuthorizationError("Insufficient role", "FORBIDDEN")
-        return current_user
+        return _require_roles(current_user, *allowed)
 
     return _dep
 
 
 def require_store_roles(*roles: str) -> Callable[..., Any]:
-    allowed = {r.lower() for r in roles if r}
+    allowed = {normalize_role(r) for r in roles if r}
 
     async def _dep(current_user: Any = Depends(get_current_user)) -> Any:
+        if not has_any_role(current_user, allowed):
+            raise AuthorizationError("Insufficient role", "FORBIDDEN")
         if is_platform_admin(current_user):
-            return current_user
-        role = (getattr(current_user, "role", "") or "").lower()
-        if role not in allowed:
             raise AuthorizationError("Insufficient role", "FORBIDDEN")
         return current_user
 
@@ -498,9 +505,7 @@ def require_store_roles(*roles: str) -> Callable[..., Any]:
 
 
 async def require_store_admin(current_user: Any = Depends(get_current_user)) -> Any:
-    if not (is_store_admin(current_user) or is_platform_admin(current_user)):
-        raise AuthorizationError("Admin role required", "ADMIN_REQUIRED")
-    return current_user
+    return _require_store_admin(current_user)
 
 
 def require_scopes(required: Sequence[str]) -> Callable[..., Any]:

@@ -15,6 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
 from app.core.db import get_async_db
+from app.core.dependencies import require_store_admin
 from app.core.idempotency import IdempotencyEnforcer
 from app.core.security import get_current_user, require_manager, resolve_tenant_company_id
 from app.integrations.errors import ProviderNotConfiguredError
@@ -27,6 +28,7 @@ logger = logging.getLogger(__name__)
 
 
 async def _auth_user(current_user: User = Depends(get_current_user)) -> User:
+    await require_store_admin(current_user)
     return current_user
 
 

@@ -70,4 +70,4 @@ async def test_wallet_by_user_forbidden_for_non_admin_mismatch(
     )
     assert resp.status_code == 403, resp.text
     payload = resp.json()
-    assert payload.get("code") == "HTTP_403"
+    assert payload.get("code") == "FORBIDDEN"
