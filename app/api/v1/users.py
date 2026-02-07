@@ -14,7 +14,7 @@ from app.core.db import get_async_db
 from app.core.dependencies import api_rate_limit, get_current_user, get_current_verified_user
 from app.core.exceptions import AuthenticationError, AuthorizationError, NotFoundError, SmartSellValidationError
 from app.core.logging import audit_logger
-from app.core.rbac import is_platform_admin, is_store_admin
+from app.core.rbac import is_store_admin
 from app.core.security import get_password_hash, resolve_tenant_company_id, verify_password
 from app.models.company import Company
 from app.models.user import User, UserSession
@@ -38,7 +38,7 @@ async def _get_company_and_owner(db: AsyncSession, company_id: int) -> Company |
 
 def _require_owner_or_admin(*, current_user: User, company: Company | None) -> bool:
     is_owner = bool(company and company.owner_id == current_user.id)
-    if is_owner or is_store_admin(current_user) or is_platform_admin(current_user):
+    if is_owner or is_store_admin(current_user):
         return is_owner
     raise AuthorizationError("Insufficient permissions", "FORBIDDEN")
 

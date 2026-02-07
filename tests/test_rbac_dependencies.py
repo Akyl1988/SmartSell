@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from app.core.dependencies import require_roles
+from app.core.dependencies import require_roles_strict, require_store_roles
 from app.core.exceptions import AuthorizationError
 
 
@@ -13,24 +13,32 @@ class _User:
 
 
 @pytest.mark.asyncio
-async def test_require_roles_allows_platform_admin():
-    dep = require_roles("admin")
+async def test_require_store_roles_allows_platform_admin():
+    dep = require_store_roles("admin")
     user = _User("platform_admin")
     result = await dep(current_user=user)
     assert result is user
 
 
 @pytest.mark.asyncio
-async def test_require_roles_allows_admin():
-    dep = require_roles("admin")
+async def test_require_store_roles_allows_admin():
+    dep = require_store_roles("admin")
     user = _User("admin")
     result = await dep(current_user=user)
     assert result is user
 
 
 @pytest.mark.asyncio
-async def test_require_roles_blocks_manager():
-    dep = require_roles("admin")
+async def test_require_store_roles_blocks_manager():
+    dep = require_store_roles("admin")
     user = _User("manager")
+    with pytest.raises(AuthorizationError):
+        await dep(current_user=user)
+
+
+@pytest.mark.asyncio
+async def test_require_roles_strict_blocks_platform_admin():
+    dep = require_roles_strict("admin")
+    user = _User("platform_admin")
     with pytest.raises(AuthorizationError):
         await dep(current_user=user)

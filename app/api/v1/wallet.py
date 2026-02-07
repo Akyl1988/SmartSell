@@ -12,7 +12,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.db import get_async_db
-from app.core.dependencies import get_current_user, require_roles, require_store_admin
+from app.core.dependencies import get_current_user, require_store_admin, require_store_roles
 from app.core.exceptions import NotFoundError
 from app.core.rbac import is_platform_admin, is_store_admin
 from app.core.security import resolve_tenant_company_id
@@ -332,7 +332,7 @@ async def stats(db: AsyncSession = Depends(get_async_db)) -> StatsOut:
 async def create_account(
     req: WalletAccountCreate,
     x_request_id: str | None = Header(default=None, alias="X-Request-Id"),
-    current_user: User = Depends(require_roles("admin", "manager")),
+    current_user: User = Depends(require_store_roles("admin", "manager")),
     db: AsyncSession = Depends(get_async_db),
 ) -> WalletAccountOut:
     try:
@@ -536,7 +536,7 @@ async def deposit(
     account_id: int = Path(..., ge=1),
     req: WalletDeposit = ...,
     x_request_id: str | None = Header(default=None, alias="X-Request-Id"),
-    current_user: User = Depends(require_roles("admin", "manager")),
+    current_user: User = Depends(require_store_roles("admin", "manager")),
     db: AsyncSession = Depends(get_async_db),
 ) -> WalletTransactionOut:
     try:
@@ -573,7 +573,7 @@ async def withdraw(
     account_id: int = Path(..., ge=1),
     req: WalletWithdraw = ...,
     x_request_id: str | None = Header(default=None, alias="X-Request-Id"),
-    current_user: User = Depends(require_roles("admin", "manager")),
+    current_user: User = Depends(require_store_roles("admin", "manager")),
     db: AsyncSession = Depends(get_async_db),
 ) -> WalletTransactionOut:
     try:
@@ -609,7 +609,7 @@ async def withdraw(
 async def transfer(
     req: WalletTransfer,
     x_request_id: str | None = Header(default=None, alias="X-Request-Id"),
-    current_user: User = Depends(require_roles("admin", "manager")),
+    current_user: User = Depends(require_store_roles("admin", "manager")),
     db: AsyncSession = Depends(get_async_db),
 ) -> WalletTransferOut:
     if req.source_account_id == req.destination_account_id:

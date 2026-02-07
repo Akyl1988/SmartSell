@@ -471,7 +471,19 @@ async def require_platform_admin(current_user: Any = Depends(get_current_user)) 
     return current_user
 
 
-def require_roles(*roles: str) -> Callable[..., Any]:
+def require_roles_strict(*roles: str) -> Callable[..., Any]:
+    allowed = {r.lower() for r in roles if r}
+
+    async def _dep(current_user: Any = Depends(get_current_user)) -> Any:
+        role = (getattr(current_user, "role", "") or "").lower()
+        if role not in allowed:
+            raise AuthorizationError("Insufficient role", "FORBIDDEN")
+        return current_user
+
+    return _dep
+
+
+def require_store_roles(*roles: str) -> Callable[..., Any]:
     allowed = {r.lower() for r in roles if r}
 
     async def _dep(current_user: Any = Depends(get_current_user)) -> Any:
@@ -856,7 +868,8 @@ __all__ = [
     "require_active_subscription",
     "get_current_superuser",
     "require_platform_admin",
-    "require_roles",
+    "require_roles_strict",
+    "require_store_roles",
     "require_store_admin",
     "require_scopes",
     # rate limit

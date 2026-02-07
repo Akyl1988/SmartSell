@@ -28,7 +28,7 @@ from app.core.dependencies import (
     get_current_verified_user,
     get_pagination,
     require_active_subscription,
-    require_roles,
+    require_store_roles,
 )
 from app.core.exceptions import ConflictError, NotFoundError, SmartSellValidationError
 from app.core.logging import audit_logger
@@ -195,7 +195,7 @@ async def _get_product_or_404(db: AsyncSession, product_id: int, user: User) -> 
 @router.get(
     "",
     response_model=PaginatedResponse[ProductResponse],
-    dependencies=[Depends(require_roles(*_PRODUCT_READ_ROLES))],
+    dependencies=[Depends(require_store_roles(*_PRODUCT_READ_ROLES))],
 )
 async def list_products(
     filters: ProductSearchFilters = Depends(),
@@ -220,7 +220,7 @@ async def list_products(
 @router.get(
     "/{product_id}",
     response_model=ProductResponse,
-    dependencies=[Depends(require_roles(*_PRODUCT_READ_ROLES))],
+    dependencies=[Depends(require_store_roles(*_PRODUCT_READ_ROLES))],
 )
 async def get_product(
     product_id: int = Path(..., ge=1),
@@ -231,7 +231,7 @@ async def get_product(
     return await _get_product_or_404(db, product_id, current_user)
 
 
-@router.post("", response_model=ProductResponse, dependencies=[Depends(require_roles(*_PRODUCT_WRITE_ROLES))])
+@router.post("", response_model=ProductResponse, dependencies=[Depends(require_store_roles(*_PRODUCT_WRITE_ROLES))])
 async def create_product(
     product_data: ProductCreate,
     current_user: User = Depends(get_current_verified_user),
@@ -278,7 +278,7 @@ async def create_product(
 @router.put(
     "/{product_id}",
     response_model=ProductResponse,
-    dependencies=[Depends(require_roles(*_PRODUCT_WRITE_ROLES))],
+    dependencies=[Depends(require_store_roles(*_PRODUCT_WRITE_ROLES))],
 )
 async def update_product(
     product_id: int,
@@ -327,7 +327,7 @@ async def update_product(
 @router.delete(
     "/{product_id}",
     response_model=SuccessResponse,
-    dependencies=[Depends(require_roles(*_PRODUCT_WRITE_ROLES))],
+    dependencies=[Depends(require_store_roles(*_PRODUCT_WRITE_ROLES))],
 )
 async def delete_product(
     product_id: int,
@@ -363,7 +363,7 @@ async def delete_product(
 @router.get(
     "/{product_id}/stock",
     response_model=dict,
-    dependencies=[Depends(require_roles(*_PRODUCT_READ_ROLES))],
+    dependencies=[Depends(require_store_roles(*_PRODUCT_READ_ROLES))],
 )
 async def get_product_stock(
     product_id: int,
@@ -390,7 +390,7 @@ async def get_product_stock(
 @router.put(
     "/{product_id}/stock",
     response_model=SuccessResponse,
-    dependencies=[Depends(require_roles(*_STOCK_WRITE_ROLES))],
+    dependencies=[Depends(require_store_roles(*_STOCK_WRITE_ROLES))],
 )
 async def update_product_stock(
     product_id: int,
@@ -424,7 +424,7 @@ async def update_product_stock(
 @router.post(
     "/{product_id}/feature",
     response_model=SuccessResponse,
-    dependencies=[Depends(require_roles(*_PRODUCT_WRITE_ROLES))],
+    dependencies=[Depends(require_store_roles(*_PRODUCT_WRITE_ROLES))],
 )
 async def set_featured(
     product_id: int,
@@ -455,7 +455,7 @@ async def set_featured(
 @router.post(
     "/{product_id}/activate",
     response_model=SuccessResponse,
-    dependencies=[Depends(require_roles(*_PRODUCT_WRITE_ROLES))],
+    dependencies=[Depends(require_store_roles(*_PRODUCT_WRITE_ROLES))],
 )
 async def activate_product(
     product_id: int,
@@ -484,7 +484,7 @@ async def activate_product(
 @router.post(
     "/{product_id}/deactivate",
     response_model=SuccessResponse,
-    dependencies=[Depends(require_roles(*_PRODUCT_WRITE_ROLES))],
+    dependencies=[Depends(require_store_roles(*_PRODUCT_WRITE_ROLES))],
 )
 async def deactivate_product(
     product_id: int,
@@ -518,7 +518,7 @@ async def deactivate_product(
 @router.post(
     "/bulk/create",
     response_model=SuccessResponse,
-    dependencies=[Depends(require_roles(*_PRODUCT_WRITE_ROLES))],
+    dependencies=[Depends(require_store_roles(*_PRODUCT_WRITE_ROLES))],
 )
 async def bulk_create_products(
     payload: list[ProductCreate],
@@ -569,7 +569,7 @@ async def bulk_create_products(
 @router.post(
     "/bulk/update",
     response_model=SuccessResponse,
-    dependencies=[Depends(require_roles(*_PRODUCT_WRITE_ROLES))],
+    dependencies=[Depends(require_store_roles(*_PRODUCT_WRITE_ROLES))],
 )
 async def bulk_update_products(
     payload: list[dict[str, Any]],
@@ -632,7 +632,7 @@ async def bulk_update_products(
 @router.post(
     "/bulk/activate",
     response_model=SuccessResponse,
-    dependencies=[Depends(require_roles(*_PRODUCT_WRITE_ROLES))],
+    dependencies=[Depends(require_store_roles(*_PRODUCT_WRITE_ROLES))],
 )
 async def bulk_activate_products(
     ids: list[int],
@@ -663,7 +663,7 @@ async def bulk_activate_products(
 @router.post(
     "/bulk/deactivate",
     response_model=SuccessResponse,
-    dependencies=[Depends(require_roles(*_PRODUCT_WRITE_ROLES))],
+    dependencies=[Depends(require_store_roles(*_PRODUCT_WRITE_ROLES))],
 )
 async def bulk_deactivate_products(
     ids: list[int],
@@ -881,7 +881,7 @@ async def set_repricing_config(
 @router.post(
     "/{product_id}/repricing/tick",
     response_model=RepricingTickOut,
-    dependencies=[Depends(require_roles("admin"))],
+    dependencies=[Depends(require_store_roles("admin"))],
 )
 async def repricing_tick(
     product_id: int,
