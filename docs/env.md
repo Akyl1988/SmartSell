@@ -54,6 +54,9 @@
 | SMTP_HOST          | smtp.gmail.com                              |
 | SMTP_PORT          | 587                                         |
 | SMTP_USER          | your-email@gmail.com                        |
+| CLOUDINARY_CLOUD_NAME | your-cloud-name                          |
+| CLOUDINARY_API_KEY | your-cloudinary-api-key                     |
+| CLOUDINARY_API_SECRET | your-cloudinary-api-secret               |
 
 > **Используйте только те переменные, которые реально требуются вашему окружению и коду.**
 
