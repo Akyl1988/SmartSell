@@ -1019,12 +1019,9 @@ async def create_invitation(
     res_company = await db.execute(select(Company).where(Company.id == company_id))
     company = res_company.scalars().first()
     is_owner = bool(company and company.owner_id and company.owner_id == current_user.id)
-    is_admin = False
-    try:
-        is_admin = current_user.is_admin()
-    except Exception:
-        role = (getattr(current_user, "role", "") or "").lower()
-        is_admin = role == "admin"
+    from app.core.rbac import Role, is_store_admin, normalize_role
+
+    is_admin = is_store_admin(current_user)
 
     if is_otp_active():
         if not is_admin:
@@ -1039,10 +1036,10 @@ async def create_invitation(
     email = (payload.email or "").strip().lower()
     phone = _normalize_phone(payload.phone)
     variants = _phone_variants(phone)
-    role = (payload.role or "employee").strip().lower()
-    if role not in {"admin", "employee"}:
+    role = normalize_role(payload.role or Role.STORE_EMPLOYEE.value)
+    if role not in {Role.STORE_ADMIN.value, Role.STORE_EMPLOYEE.value}:
         raise SmartSellValidationError("Invalid role", "INVALID_ROLE")
-    if not is_owner and role == "admin":
+    if not is_owner and role == Role.STORE_ADMIN.value:
         raise AuthorizationError("Only owner can invite admins", "OWNER_REQUIRED")
 
     # Ensure no existing user for this company (phone/email uniqueness assumed global)

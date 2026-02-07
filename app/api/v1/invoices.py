@@ -13,7 +13,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.db import get_async_db
-from app.core.dependencies import require_active_subscription
+from app.core.dependencies import require_active_subscription, require_store_admin
 from app.core.exceptions import ConflictError
 from app.core.security import decode_and_validate, is_token_revoked, resolve_tenant_company_id
 from app.models.billing import Invoice, WalletBalance, WalletTransaction
@@ -117,6 +117,7 @@ async def _auth_user(
     user = await db.get(User, user_id)
     if not user:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Not authenticated")
+    await require_store_admin(user)
     return user
 
 

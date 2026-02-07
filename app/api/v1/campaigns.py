@@ -15,7 +15,7 @@ from pydantic import BaseModel, Field, ValidationError, field_validator
 
 from app.core.dependencies import require_active_subscription, require_store_roles
 from app.core.exceptions import ConflictError
-from app.core.rbac import is_platform_admin, is_store_admin
+from app.core.rbac import is_store_admin, is_store_manager
 from app.core.security import get_current_user
 from app.models.user import User
 
@@ -340,7 +340,7 @@ def debounce_dep(bucket: str, seconds: int):
 
 
 def ensure_owner_or_admin(camp_owner: str | None, user: User) -> None:
-    if is_platform_admin(user) or is_store_admin(user):
+    if is_store_admin(user) or is_store_manager(user):
         return
     if (getattr(user, "role", None) or "").lower() != "admin":
         if (camp_owner or "").lower() != (getattr(user, "username", "") or "").lower():

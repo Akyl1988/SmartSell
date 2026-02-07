@@ -13,11 +13,11 @@ class _User:
 
 
 @pytest.mark.asyncio
-async def test_require_store_roles_allows_platform_admin():
+async def test_require_store_roles_blocks_platform_admin():
     dep = require_store_roles("admin")
     user = _User("platform_admin")
-    result = await dep(current_user=user)
-    assert result is user
+    with pytest.raises(AuthorizationError):
+        await dep(current_user=user)
 
 
 @pytest.mark.asyncio

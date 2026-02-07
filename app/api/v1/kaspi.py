@@ -1829,7 +1829,7 @@ class KaspiAutoSyncStatusOut(BaseModel):
 )
 async def kaspi_autosync_status(
     request: Request,
-    current_user: User = Depends(require_feature(FEATURE_KASPI_AUTOSYNC)),
+    current_user: User = Depends(require_store_admin_then_feature(FEATURE_KASPI_AUTOSYNC)),
 ):
     """
     Возвращает статус последнего запуска автоматической синхронизации заказов Kaspi
@@ -1937,7 +1937,7 @@ async def kaspi_autosync_status(
     response_model=KaspiAutoSyncStatusOut,
 )
 async def kaspi_autosync_trigger(
-    current_user: User = Depends(require_feature(FEATURE_KASPI_AUTOSYNC)),
+    current_user: User = Depends(require_store_admin_then_feature(FEATURE_KASPI_AUTOSYNC)),
 ):
     """
     Запускает синхронизацию заказов Kaspi для всех активных компаний вручную.

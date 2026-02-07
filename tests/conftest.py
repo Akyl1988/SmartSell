@@ -1280,6 +1280,11 @@ def company_a_manager_headers() -> dict[str, str]:
 
 
 @pytest.fixture
+def company_a_employee_headers() -> dict[str, str]:
+    return _make_company_headers(company_id=1001, role="employee", phone="+70000010005")
+
+
+@pytest.fixture
 def company_a_analyst_headers() -> dict[str, str]:
     return _make_company_headers(company_id=1001, role="analyst", phone="+70000010003")
 

@@ -274,9 +274,7 @@ async def test_payments_list_scoped_by_token(
     assert all(it.get("id") != payment_id for it in foreign_items)
 
     platform = await client.get("/api/v1/payments/", headers=auth_headers)
-    assert platform.status_code == 200, platform.text
-    platform_items = platform.json().get("items") or platform.json().get("data") or []
-    assert all(it.get("id") != payment_id for it in platform_items)
+    assert platform.status_code == 403, platform.text
 
 
 @pytest.mark.asyncio
@@ -304,6 +302,4 @@ async def test_wallet_list_scoped_by_token(
     assert all(it.get("id") != account_id for it in foreign_items)
 
     platform = await client.get("/api/v1/wallet/accounts", headers=auth_headers)
-    assert platform.status_code == 200, platform.text
-    platform_items = platform.json().get("items") or platform.json().get("data") or []
-    assert all(it.get("id") != account_id for it in platform_items)
+    assert platform.status_code == 403, platform.text

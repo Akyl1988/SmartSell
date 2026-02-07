@@ -12,9 +12,9 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.db import get_async_db
-from app.core.dependencies import get_current_user, require_store_admin, require_store_roles
+from app.core.dependencies import require_store_admin, require_store_roles
 from app.core.exceptions import NotFoundError
-from app.core.rbac import is_platform_admin, is_store_admin
+from app.core.rbac import is_store_admin, is_store_manager
 from app.core.security import resolve_tenant_company_id
 from app.models.user import User
 from app.storage.wallet_sql import WalletStorageSQL
@@ -28,7 +28,7 @@ logger = logging.getLogger(__name__)
 T = TypeVar("T")
 
 
-async def _auth_user(current_user: User = Depends(get_current_user)) -> User:
+async def _auth_user(current_user: User = Depends(require_store_roles("admin", "manager"))) -> User:
     return current_user
 
 
@@ -91,10 +91,9 @@ async def _ensure_user_in_company(
 
 
 def _is_privileged_wallet_user(user: User) -> bool:
-    if is_platform_admin(user) or is_store_admin(user):
+    if is_store_admin(user) or is_store_manager(user):
         return True
-    role = str(getattr(user, "role", "") or "").lower()
-    return role == "manager"
+    return False
 
 
 async def _load_company_map(db: AsyncSession, user_ids: set[int]) -> dict[int, Any]:

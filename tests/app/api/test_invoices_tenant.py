@@ -47,9 +47,6 @@ async def test_invoices_list_other_company_forbidden(
 
 @pytest.mark.asyncio
 async def test_invoices_list_platform_admin_forbidden(client, db_session, company_a_admin_headers, auth_headers):
-    user_a = _get_user_by_phone(db_session, "+70000010001")
-    company_a_id = user_a.company_id
-
     created = await client.post(
         "/api/v1/invoices",
         json={"amount": "200.00", "currency": "KZT", "status": "draft"},
@@ -58,6 +55,4 @@ async def test_invoices_list_platform_admin_forbidden(client, db_session, compan
     assert created.status_code == 201, created.text
 
     platform = await client.get("/api/v1/invoices", headers=auth_headers)
-    assert platform.status_code == 200, platform.text
-    items = platform.json()
-    assert all(inv.get("company_id") != company_a_id for inv in items)
+    assert platform.status_code == 403, platform.text

@@ -104,7 +104,7 @@ def _ensure_list_or_items_meta(resp_json):
 
 # ------------------ MODULE FIXTURES ------------------
 @pytest.fixture(scope="function")
-def seeded_campaign_id(client, auth_headers) -> int | None:
+def seeded_campaign_id(client, company_a_admin_headers) -> int | None:
     """
     Создаёт кампанию через публичный API и возвращает её id.
     Если ручка недоступна (404), вернём None — тесты с действиями будут skip.
@@ -123,13 +123,13 @@ def seeded_campaign_id(client, auth_headers) -> int | None:
         "tags": ["test", "seed"],
         "active": True,
     }
-    resp = client.post("/api/v1/campaigns/", json=payload, headers=auth_headers)
+    resp = client.post("/api/v1/campaigns/", json=payload, headers=company_a_admin_headers)
     if not _is_ok(resp, (200, 201)):
         return None
     try:
         cid = resp.json().get("id")
         if not cid:
-            lst = client.get("/api/v1/campaigns/", headers=auth_headers).json()
+            lst = client.get("/api/v1/campaigns/", headers=company_a_admin_headers).json()
             items, _ = _ensure_list_or_items_meta(lst)
             cid = items[0]["id"] if items else None
         return cid
@@ -139,7 +139,7 @@ def seeded_campaign_id(client, auth_headers) -> int | None:
 
 # ------------------ CAMPAIGN CRUD ------------------
 @pytest.mark.parametrize("title", ["Test Campaign", "Promo Campaign"])
-def test_create_campaign(title, client, auth_headers):
+def test_create_campaign(title, client, company_a_admin_headers):
     payload = {
         "title": title,
         "description": f"{title} description",
@@ -154,7 +154,7 @@ def test_create_campaign(title, client, auth_headers):
         "tags": ["test"],
         "active": True,
     }
-    resp = client.post("/api/v1/campaigns/", json=payload, headers=auth_headers)
+    resp = client.post("/api/v1/campaigns/", json=payload, headers=company_a_admin_headers)
     assert _is_ok(resp, (200, 201)), resp.text
     data = resp.json()
     assert data.get("title") == payload["title"]
@@ -164,8 +164,8 @@ def test_create_campaign(title, client, auth_headers):
     assert msgs[0].get("status") == MessageStatus.PENDING.value
 
 
-def test_get_campaigns(client, auth_headers):
-    resp = client.get("/api/v1/campaigns/", headers=auth_headers)
+def test_get_campaigns(client, company_a_admin_headers):
+    resp = client.get("/api/v1/campaigns/", headers=company_a_admin_headers)
     assert resp.status_code == 200, resp.text
     items, meta = _ensure_list_or_items_meta(resp.json())
     if meta:
@@ -173,16 +173,16 @@ def test_get_campaigns(client, auth_headers):
     assert isinstance(items, list)
 
 
-def test_get_campaign_by_id(seeded_campaign_id, client, auth_headers):
+def test_get_campaign_by_id(seeded_campaign_id, client, company_a_admin_headers):
     if not seeded_campaign_id:
         pytest.skip("Campaign create/list API is not available")
-    resp = client.get(f"/api/v1/campaigns/{seeded_campaign_id}", headers=auth_headers)
+    resp = client.get(f"/api/v1/campaigns/{seeded_campaign_id}", headers=company_a_admin_headers)
     assert resp.status_code == 200, resp.text
     data = resp.json()
     assert "title" in data and "description" in data
 
 
-def test_update_campaign(seeded_campaign_id, client, auth_headers):
+def test_update_campaign(seeded_campaign_id, client, company_a_admin_headers):
     if not seeded_campaign_id:
         pytest.skip("Campaign PUT API not available or campaign missing")
     payload = {
@@ -192,14 +192,14 @@ def test_update_campaign(seeded_campaign_id, client, auth_headers):
         "tags": [],
         "active": True,
     }
-    resp = client.put(f"/api/v1/campaigns/{seeded_campaign_id}", json=payload, headers=auth_headers)
+    resp = client.put(f"/api/v1/campaigns/{seeded_campaign_id}", json=payload, headers=company_a_admin_headers)
     assert resp.status_code == 200, resp.text
     data = resp.json()
     assert data.get("title") == payload["title"]
     assert data.get("description") == payload["description"]
 
 
-def test_delete_campaign_independent(client, auth_headers):
+def test_delete_campaign_independent(client, company_a_admin_headers):
     """
     Удаляем НЕ seeded-кампанию, чтобы не ломать остальные тесты.
     """
@@ -210,28 +210,32 @@ def test_delete_campaign_independent(client, auth_headers):
         "tags": ["temp"],
         "active": True,
     }
-    create_resp = client.post("/api/v1/campaigns/", json=payload, headers=auth_headers)
+    create_resp = client.post("/api/v1/campaigns/", json=payload, headers=company_a_admin_headers)
     assert _is_ok(create_resp, (200, 201)), create_resp.text
     temp_id = create_resp.json().get("id")
     assert temp_id, "API must return campaign id"
-    resp = client.delete(f"/api/v1/campaigns/{temp_id}", headers=auth_headers)
+    resp = client.delete(f"/api/v1/campaigns/{temp_id}", headers=company_a_admin_headers)
     assert _is_ok(resp, (200, 204)), resp.text
 
 
 # ------------------ TAGS / MESSAGES / STATS ------------------
-def test_campaign_tags(seeded_campaign_id, client, auth_headers):
+def test_campaign_tags(seeded_campaign_id, client, company_a_admin_headers):
     if not seeded_campaign_id:
         pytest.skip("Tags API not implemented for this campaign")
     payload = {"tag": "promo"}
-    resp = client.post(f"/api/v1/campaigns/{seeded_campaign_id}/tags", json=payload, headers=auth_headers)
+    resp = client.post(
+        f"/api/v1/campaigns/{seeded_campaign_id}/tags",
+        json=payload,
+        headers=company_a_admin_headers,
+    )
     assert _is_ok(resp, (200, 201)), resp.text
     # Проверяем, что тег появился
-    resp_get = client.get(f"/api/v1/campaigns/{seeded_campaign_id}", headers=auth_headers)
+    resp_get = client.get(f"/api/v1/campaigns/{seeded_campaign_id}", headers=company_a_admin_headers)
     tags = (resp_get.json() or {}).get("tags", []) or []
     assert "promo" in [t.lower() for t in tags]
 
 
-def test_add_message_to_campaign(seeded_campaign_id, client, auth_headers):
+def test_add_message_to_campaign(seeded_campaign_id, client, company_a_admin_headers):
     if not seeded_campaign_id:
         pytest.skip("Messages API not implemented for this campaign")
     payload = {
@@ -240,23 +244,27 @@ def test_add_message_to_campaign(seeded_campaign_id, client, auth_headers):
         "status": MessageStatus.PENDING.value,
         "channel": "email",
     }
-    resp = client.post(f"/api/v1/campaigns/{seeded_campaign_id}/messages", json=payload, headers=auth_headers)
+    resp = client.post(
+        f"/api/v1/campaigns/{seeded_campaign_id}/messages",
+        json=payload,
+        headers=company_a_admin_headers,
+    )
     assert _is_ok(resp, (200, 201)), resp.text
 
 
-def test_list_campaign_messages(seeded_campaign_id, client, auth_headers):
+def test_list_campaign_messages(seeded_campaign_id, client, company_a_admin_headers):
     if not seeded_campaign_id:
         pytest.skip("Messages listing not implemented for this campaign")
-    resp = client.get(f"/api/v1/campaigns/{seeded_campaign_id}/messages", headers=auth_headers)
+    resp = client.get(f"/api/v1/campaigns/{seeded_campaign_id}/messages", headers=company_a_admin_headers)
     assert resp.status_code == 200, resp.text
     body = resp.json()
     assert isinstance(body, list) or (isinstance(body, dict) and "items" in body)
 
 
-def test_get_campaign_stats(seeded_campaign_id, client, auth_headers):
+def test_get_campaign_stats(seeded_campaign_id, client, company_a_admin_headers):
     if not seeded_campaign_id:
         pytest.skip("Stats not implemented for this campaign")
-    resp = client.get(f"/api/v1/campaigns/{seeded_campaign_id}/stats", headers=auth_headers)
+    resp = client.get(f"/api/v1/campaigns/{seeded_campaign_id}/stats", headers=company_a_admin_headers)
     assert resp.status_code == 200, resp.text
     stats = resp.json()
     assert isinstance(stats, dict)

@@ -14,7 +14,7 @@ from app.core.db import get_async_db
 from app.core.dependencies import api_rate_limit, get_current_user, get_current_verified_user
 from app.core.exceptions import AuthenticationError, AuthorizationError, NotFoundError, SmartSellValidationError
 from app.core.logging import audit_logger
-from app.core.rbac import is_store_admin
+from app.core.rbac import Role, is_store_admin, normalize_role
 from app.core.security import get_password_hash, resolve_tenant_company_id, verify_password
 from app.models.company import Company
 from app.models.user import User, UserSession
@@ -150,8 +150,8 @@ async def deactivate_user(
     if company and company.owner_id == user.id:
         raise AuthorizationError("Cannot deactivate owner", "OWNER_PROTECTED")
 
-    target_role = (getattr(user, "role", "") or "").lower()
-    if is_admin and not is_owner and target_role != "employee":
+    target_role = normalize_role(getattr(user, "role", ""))
+    if is_admin and not is_owner and target_role != Role.STORE_EMPLOYEE.value:
         raise AuthorizationError("Admin can deactivate only employees", "FORBIDDEN")
 
     user.is_active = False
@@ -192,8 +192,8 @@ async def activate_user(
     if company and company.owner_id == user.id:
         raise AuthorizationError("Cannot modify owner", "OWNER_PROTECTED")
 
-    target_role = (getattr(user, "role", "") or "").lower()
-    if is_admin and not is_owner and target_role != "employee":
+    target_role = normalize_role(getattr(user, "role", ""))
+    if is_admin and not is_owner and target_role != Role.STORE_EMPLOYEE.value:
         raise AuthorizationError("Admin can activate only employees", "FORBIDDEN")
 
     user.is_active = True
@@ -234,10 +234,10 @@ async def change_user_role(
     if company and company.owner_id == user.id:
         raise AuthorizationError("Cannot change owner role", "OWNER_PROTECTED")
 
-    target_role = (payload.role or "").lower()
-    if target_role == "admin" and not is_owner:
+    target_role = normalize_role(payload.role)
+    if target_role == Role.STORE_ADMIN.value and not is_owner:
         raise AuthorizationError("Only owner can assign admin", "OWNER_REQUIRED")
-    if is_admin and not is_owner and target_role in {"admin", "platform_admin"}:
+    if is_admin and not is_owner and target_role in {Role.STORE_ADMIN.value, Role.PLATFORM_ADMIN.value}:
         raise AuthorizationError("Admin cannot assign this role", "FORBIDDEN")
 
     user.role = target_role
