@@ -10,7 +10,6 @@ from app.models.campaign import Campaign, CampaignStatus, ChannelType, Message, 
 from app.models.company import Company
 from app.services.campaign_runner import run_campaigns
 
-pytestmark = pytest.mark.asyncio
 
 
 async def _seed_campaign(async_db_session, *, company_id: int, status: CampaignStatus, scheduled_at=None):
