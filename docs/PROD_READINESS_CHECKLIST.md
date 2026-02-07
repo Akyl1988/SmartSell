@@ -11,6 +11,7 @@
 ## P1
 - [ ] Pin dependency versions in lockfile; document upgrade path for FastAPI/Starlette/AnyIO/Trio.
 - [ ] Add CI steps: `pip check`, `pytest -q`, `alembic upgrade head --sql` dry-run.
+- [x] CI security audit: `pip-audit -r requirements.txt --strict` (fails on vulnerabilities).
 - [ ] Address Pydantic config deprecation warnings; update models/config accordingly.
 - [ ] Document asyncio-only support or add trio backend coverage; monitor asyncpg compatibility.
 - [ ] Consolidate httpx version (runtime vs dev) to avoid drift.

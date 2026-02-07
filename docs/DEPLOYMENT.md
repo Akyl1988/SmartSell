@@ -82,6 +82,52 @@ gunicorn app.main:app \
   -b 0.0.0.0:8000
 ```
 
+## Production via Docker Compose
+
+This is the recommended production path using Docker Compose.
+
+### 1) Prepare environment
+
+Create a .env file (do not commit secrets). Minimum required keys:
+
+- SECRET_KEY
+- DATABASE_URL (optional override; compose defaults to postgres service)
+- REDIS_URL (optional override)
+- ENVIRONMENT=production
+
+Example:
+
+```env
+ENVIRONMENT=production
+SECRET_KEY=change-me
+DATABASE_URL=postgresql+psycopg://postgres:postgres@postgres:5432/smartsell
+REDIS_URL=redis://redis:6379/0
+```
+
+### 2) Build image
+
+```bash
+docker build -t smartsell:prod .
+```
+
+### 3) Start production stack
+
+```bash
+docker compose -f docker-compose.prod.yml up -d
+```
+
+### 4) Run migrations
+
+```bash
+docker compose -f docker-compose.prod.yml run --rm app alembic upgrade head
+```
+
+### 5) Health check
+
+```bash
+curl -fsS http://localhost:8000/api/v1/health
+```
+
 ## systemd unit (gunicorn)
 
 ```ini
