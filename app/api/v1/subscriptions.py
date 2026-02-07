@@ -168,11 +168,6 @@ def ensure_company_access(user, company: Company) -> None:
     raise HTTPException(status_code=404, detail="Company not found")
 
 
-def ensure_platform_admin(user: User) -> None:
-    if getattr(user, "role", None) not in {"platform_admin", "superadmin"}:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="forbidden")
-
-
 async def _get_subscription_scoped(
     db: AsyncSession,
     user: User,
@@ -261,7 +256,7 @@ async def _auth_user(
 async def list_plan_catalog(
     user: User = Depends(_auth_user),
 ):
-    ensure_platform_admin(user)
+    _ = user
     return list_plans()
 
 

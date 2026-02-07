@@ -16,8 +16,6 @@ from app.core.db import get_async_db
 from app.core.dependencies import require_platform_admin
 from app.core.exceptions import AuthorizationError, NotFoundError, _ensure_request_id
 from app.core.logging import audit_logger
-from app.core.rbac import is_platform_admin
-from app.core.security import get_current_user, resolve_tenant_company_id
 from app.core.subscriptions.plan_catalog import get_plan, normalize_plan_id
 from app.models.billing import Subscription, WalletBalance, WalletTransaction
 from app.models.company import Company
@@ -228,26 +226,16 @@ async def _grant_trial_subscription(
     return sub
 
 
-def _require_owner_or_superuser(*, current_user: User, company: Company | None) -> None:
-    if not company:
-        raise NotFoundError("company_not_found", code="company_not_found", http_status=404)
-    if is_platform_admin(current_user):
-        return
-    if getattr(current_user, "is_superuser", False):
-        return
-    if company.owner_id != current_user.id:
-        raise AuthorizationError("forbidden", code="forbidden", http_status=403)
-
-
 async def _resolve_company(
     *,
     db: AsyncSession,
-    current_user: User,
     company_id: int | None,
 ) -> Company:
-    resolved_id = company_id or resolve_tenant_company_id(current_user, not_found_detail="Company not set")
-    company = await db.get(Company, resolved_id)
-    _require_owner_or_superuser(current_user=current_user, company=company)
+    if company_id is None:
+        raise NotFoundError("company_id_required", code="company_id_required", http_status=400)
+    company = await db.get(Company, company_id)
+    if not company:
+        raise NotFoundError("company_not_found", code="company_not_found", http_status=404)
     return company
 
 
@@ -543,10 +531,11 @@ async def grant_kaspi_trial_subscription(
 async def list_subscription_overrides(
     provider: str = Query("kaspi"),
     companyId: int | None = Query(None),
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_platform_admin),
     db: AsyncSession = Depends(get_async_db),
 ) -> list[SubscriptionOverrideOut]:
-    company = await _resolve_company(db=db, current_user=current_user, company_id=companyId)
+    _ = current_user
+    company = await _resolve_company(db=db, company_id=companyId)
     stmt = sa.select(SubscriptionOverride).where(
         SubscriptionOverride.company_id == company.id,
         SubscriptionOverride.provider == provider,
@@ -563,10 +552,10 @@ async def list_subscription_overrides(
 async def upsert_subscription_override_kaspi(
     merchant_uid: str,
     payload: SubscriptionOverrideIn,
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_platform_admin),
     db: AsyncSession = Depends(get_async_db),
 ) -> SubscriptionOverrideOut:
-    company = await _resolve_company(db=db, current_user=current_user, company_id=payload.company_id)
+    company = await _resolve_company(db=db, company_id=payload.company_id)
     merchant = merchant_uid.strip()
     stmt = sa.select(SubscriptionOverride).where(
         SubscriptionOverride.company_id == company.id,
@@ -600,10 +589,11 @@ async def upsert_subscription_override_kaspi(
 async def revoke_subscription_override_kaspi(
     merchant_uid: str,
     companyId: int | None = Query(None),
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_platform_admin),
     db: AsyncSession = Depends(get_async_db),
 ) -> dict[str, str]:
-    company = await _resolve_company(db=db, current_user=current_user, company_id=companyId)
+    _ = current_user
+    company = await _resolve_company(db=db, company_id=companyId)
     stmt = sa.select(SubscriptionOverride).where(
         SubscriptionOverride.company_id == company.id,
         SubscriptionOverride.provider == "kaspi",

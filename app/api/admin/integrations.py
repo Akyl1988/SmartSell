@@ -12,7 +12,11 @@ from app.core.provider_registry import ProviderRegistry
 from app.services.integration_providers import IntegrationProviderService
 from app.services.provider_configs import ProviderConfigService
 
-router = APIRouter(prefix="/integrations", tags=["admin-integrations"])
+router = APIRouter(
+    prefix="/integrations",
+    tags=["admin-integrations"],
+    dependencies=[Depends(require_platform_admin)],
+)
 
 ProviderDomain = Literal["payments", "otp", "messaging"]
 

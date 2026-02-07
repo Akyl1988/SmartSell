@@ -28,8 +28,9 @@ from app.core.dependencies import (
     get_current_verified_user,
     get_pagination,
     require_active_subscription,
+    require_store_roles,
 )
-from app.core.exceptions import AuthorizationError, ConflictError, NotFoundError, SmartSellValidationError
+from app.core.exceptions import ConflictError, NotFoundError, SmartSellValidationError
 from app.core.logging import audit_logger
 from app.core.security import resolve_tenant_company_id
 from app.models.product import Category, Product
@@ -165,28 +166,9 @@ def _apply_sorting(stmt, sort_by: str, sort_order: str):
     return stmt.order_by(column.asc() if sort_order.lower() == "asc" else column.desc())
 
 
-def _is_admin(user: User) -> bool:
-    """
-    Универсальная проверка «админ» без знания точной модели ролей.
-    Поддерживает поля: is_superuser, is_admin, role in ('admin','owner','superuser').
-    """
-    if getattr(user, "is_superuser", False) or getattr(user, "is_admin", False):
-        return True
-    role = getattr(user, "role", None)
-    if isinstance(role, str) and role.lower() in {"admin", "owner", "superuser"}:
-        return True
-    return False
-
-
 _PRODUCT_READ_ROLES = {"admin", "manager", "analyst", "storekeeper", "platform_admin"}
 _PRODUCT_WRITE_ROLES = {"admin", "manager", "platform_admin"}
 _STOCK_WRITE_ROLES = {"admin", "manager", "storekeeper", "platform_admin"}
-
-
-def _ensure_role(user: User, allowed: set[str]) -> None:
-    role = (getattr(user, "role", "") or "").lower()
-    if role not in allowed:
-        raise AuthorizationError("Insufficient permissions", "INSUFFICIENT_PERMISSIONS")
 
 
 def _filter_company(stmt, user: User):
@@ -210,7 +192,11 @@ async def _get_product_or_404(db: AsyncSession, product_id: int, user: User) -> 
 # ---------------------------------------------------------------------------
 
 
-@router.get("", response_model=PaginatedResponse[ProductResponse])
+@router.get(
+    "",
+    response_model=PaginatedResponse[ProductResponse],
+    dependencies=[Depends(require_store_roles(*_PRODUCT_READ_ROLES))],
+)
 async def list_products(
     filters: ProductSearchFilters = Depends(),
     pagination: Pagination = Depends(get_pagination),
@@ -220,8 +206,6 @@ async def list_products(
     db: AsyncSession = Depends(get_async_db),
 ):
     """List products with filtering, sorting and pagination."""
-    _ensure_role(current_user, _PRODUCT_READ_ROLES)
-
     stmt = select(Product)
     stmt = _filter_company(stmt, current_user)
     stmt = _apply_filters(stmt, filters)
@@ -233,25 +217,27 @@ async def list_products(
     return PaginatedResponse.create(items=products, total=total, page=pagination.page, per_page=pagination.per_page)
 
 
-@router.get("/{product_id}", response_model=ProductResponse)
+@router.get(
+    "/{product_id}",
+    response_model=ProductResponse,
+    dependencies=[Depends(require_store_roles(*_PRODUCT_READ_ROLES))],
+)
 async def get_product(
     product_id: int = Path(..., ge=1),
     current_user: User = Depends(get_current_verified_user),
     db: AsyncSession = Depends(get_async_db),
 ):
     """Get product by ID."""
-    _ensure_role(current_user, _PRODUCT_READ_ROLES)
     return await _get_product_or_404(db, product_id, current_user)
 
 
-@router.post("", response_model=ProductResponse)
+@router.post("", response_model=ProductResponse, dependencies=[Depends(require_store_roles(*_PRODUCT_WRITE_ROLES))])
 async def create_product(
     product_data: ProductCreate,
     current_user: User = Depends(get_current_verified_user),
     db: AsyncSession = Depends(get_async_db),
 ):
     """Create a new product."""
-    _ensure_role(current_user, _PRODUCT_WRITE_ROLES)
     try:
         if product_data.category_id:
             category = await db.get(Category, product_data.category_id)
@@ -289,7 +275,11 @@ async def create_product(
         raise ConflictError("Product creation failed due to data conflict", "CREATION_FAILED", http_status=409)
 
 
-@router.put("/{product_id}", response_model=ProductResponse)
+@router.put(
+    "/{product_id}",
+    response_model=ProductResponse,
+    dependencies=[Depends(require_store_roles(*_PRODUCT_WRITE_ROLES))],
+)
 async def update_product(
     product_id: int,
     product_update: ProductUpdate,
@@ -297,7 +287,6 @@ async def update_product(
     db: AsyncSession = Depends(get_async_db),
 ):
     """Update product by ID."""
-    _ensure_role(current_user, _PRODUCT_WRITE_ROLES)
     product = await _get_product_or_404(db, product_id, current_user)
 
     try:
@@ -335,14 +324,17 @@ async def update_product(
         raise ConflictError("Product update failed due to data conflict", "UPDATE_FAILED", http_status=409)
 
 
-@router.delete("/{product_id}", response_model=SuccessResponse)
+@router.delete(
+    "/{product_id}",
+    response_model=SuccessResponse,
+    dependencies=[Depends(require_store_roles(*_PRODUCT_WRITE_ROLES))],
+)
 async def delete_product(
     product_id: int,
     current_user: User = Depends(get_current_verified_user),
     db: AsyncSession = Depends(get_async_db),
 ):
     """Soft delete product by setting is_active=False."""
-    _ensure_role(current_user, _PRODUCT_WRITE_ROLES)
     product = await _get_product_or_404(db, product_id, current_user)
 
     if not product.is_active:
@@ -368,14 +360,17 @@ async def delete_product(
 # ---------------------------------------------------------------------------
 
 
-@router.get("/{product_id}/stock", response_model=dict)
+@router.get(
+    "/{product_id}/stock",
+    response_model=dict,
+    dependencies=[Depends(require_store_roles(*_PRODUCT_READ_ROLES))],
+)
 async def get_product_stock(
     product_id: int,
     current_user: User = Depends(get_current_verified_user),
     db: AsyncSession = Depends(get_async_db),
 ):
     """Get product stock information."""
-    _ensure_role(current_user, _PRODUCT_READ_ROLES)
     product = await _get_product_or_404(db, product_id, current_user)
 
     return {
@@ -392,7 +387,11 @@ async def get_product_stock(
     }
 
 
-@router.put("/{product_id}/stock", response_model=SuccessResponse)
+@router.put(
+    "/{product_id}/stock",
+    response_model=SuccessResponse,
+    dependencies=[Depends(require_store_roles(*_STOCK_WRITE_ROLES))],
+)
 async def update_product_stock(
     product_id: int,
     stock_quantity: int = Query(..., ge=0, description="New stock quantity"),
@@ -400,7 +399,6 @@ async def update_product_stock(
     db: AsyncSession = Depends(get_async_db),
 ):
     """Update product stock quantity."""
-    _ensure_role(current_user, _STOCK_WRITE_ROLES)
     product = await _get_product_or_404(db, product_id, current_user)
 
     old_quantity = product.stock_quantity
@@ -423,7 +421,11 @@ async def update_product_stock(
 # ---------------------------------------------------------------------------
 
 
-@router.post("/{product_id}/feature", response_model=SuccessResponse)
+@router.post(
+    "/{product_id}/feature",
+    response_model=SuccessResponse,
+    dependencies=[Depends(require_store_roles(*_PRODUCT_WRITE_ROLES))],
+)
 async def set_featured(
     product_id: int,
     featured: bool = Query(..., description="Set featured flag"),
@@ -431,7 +433,6 @@ async def set_featured(
     db: AsyncSession = Depends(get_async_db),
 ):
     """Set or unset product's featured flag."""
-    _ensure_role(current_user, _PRODUCT_WRITE_ROLES)
     product = await _get_product_or_404(db, product_id, current_user)
 
     old = product.is_featured
@@ -451,14 +452,17 @@ async def set_featured(
     return SuccessResponse(message="Updated", data={"featured": featured})
 
 
-@router.post("/{product_id}/activate", response_model=SuccessResponse)
+@router.post(
+    "/{product_id}/activate",
+    response_model=SuccessResponse,
+    dependencies=[Depends(require_store_roles(*_PRODUCT_WRITE_ROLES))],
+)
 async def activate_product(
     product_id: int,
     current_user: User = Depends(get_current_verified_user),
     db: AsyncSession = Depends(get_async_db),
 ):
     """Activate a product (is_active=True)."""
-    _ensure_role(current_user, _PRODUCT_WRITE_ROLES)
     product = await _get_product_or_404(db, product_id, current_user)
     if product.is_active:
         return SuccessResponse(message="Product already active")
@@ -477,14 +481,17 @@ async def activate_product(
     return SuccessResponse(message="Product activated")
 
 
-@router.post("/{product_id}/deactivate", response_model=SuccessResponse)
+@router.post(
+    "/{product_id}/deactivate",
+    response_model=SuccessResponse,
+    dependencies=[Depends(require_store_roles(*_PRODUCT_WRITE_ROLES))],
+)
 async def deactivate_product(
     product_id: int,
     current_user: User = Depends(get_current_verified_user),
     db: AsyncSession = Depends(get_async_db),
 ):
     """Deactivate a product (is_active=False)."""
-    _ensure_role(current_user, _PRODUCT_WRITE_ROLES)
     product = await _get_product_or_404(db, product_id, current_user)
     if not product.is_active:
         return SuccessResponse(message="Product already inactive")
@@ -508,14 +515,17 @@ async def deactivate_product(
 # ---------------------------------------------------------------------------
 
 
-@router.post("/bulk/create", response_model=SuccessResponse)
+@router.post(
+    "/bulk/create",
+    response_model=SuccessResponse,
+    dependencies=[Depends(require_store_roles(*_PRODUCT_WRITE_ROLES))],
+)
 async def bulk_create_products(
     payload: list[ProductCreate],
     current_user: User = Depends(get_current_verified_user),
     db: AsyncSession = Depends(get_async_db),
 ):
     """Bulk create products. Возвращает счётчики и ошибки по индексам."""
-    _ensure_role(current_user, _PRODUCT_WRITE_ROLES)
     created = 0
     errors: list[dict[str, Any]] = []
 
@@ -556,7 +566,11 @@ async def bulk_create_products(
     return SuccessResponse(message="Bulk create finished", data={"created": created, "errors": errors})
 
 
-@router.post("/bulk/update", response_model=SuccessResponse)
+@router.post(
+    "/bulk/update",
+    response_model=SuccessResponse,
+    dependencies=[Depends(require_store_roles(*_PRODUCT_WRITE_ROLES))],
+)
 async def bulk_update_products(
     payload: list[dict[str, Any]],
     current_user: User = Depends(get_current_verified_user),
@@ -615,7 +629,11 @@ async def bulk_update_products(
     return SuccessResponse(message="Bulk update finished", data={"updated": updated, "errors": errors})
 
 
-@router.post("/bulk/activate", response_model=SuccessResponse)
+@router.post(
+    "/bulk/activate",
+    response_model=SuccessResponse,
+    dependencies=[Depends(require_store_roles(*_PRODUCT_WRITE_ROLES))],
+)
 async def bulk_activate_products(
     ids: list[int],
     current_user: User = Depends(get_current_verified_user),
@@ -642,7 +660,11 @@ async def bulk_activate_products(
     return SuccessResponse(message="Bulk activate finished", data={"activated": affected})
 
 
-@router.post("/bulk/deactivate", response_model=SuccessResponse)
+@router.post(
+    "/bulk/deactivate",
+    response_model=SuccessResponse,
+    dependencies=[Depends(require_store_roles(*_PRODUCT_WRITE_ROLES))],
+)
 async def bulk_deactivate_products(
     ids: list[int],
     current_user: User = Depends(get_current_verified_user),
@@ -856,7 +878,11 @@ async def set_repricing_config(
     return RepricingConfigOut(**saved_cfg.model_dump())
 
 
-@router.post("/{product_id}/repricing/tick", response_model=RepricingTickOut)
+@router.post(
+    "/{product_id}/repricing/tick",
+    response_model=RepricingTickOut,
+    dependencies=[Depends(require_store_roles("admin"))],
+)
 async def repricing_tick(
     product_id: int,
     apply: bool = Query(False, description="Применить рассчитанную цену сразу к товару"),
@@ -868,9 +894,6 @@ async def repricing_tick(
     Возвращает: текущую цену, целевую, лучшего конкурента, причину.
     Если apply=True — применяет рассчитанную цену.
     """
-    if not _is_admin(current_user):
-        raise SmartSellValidationError("Forbidden: admin only", "FORBIDDEN")
-
     product = await db.get(Product, product_id)
     if not product:
         raise NotFoundError("Product not found", "PRODUCT_NOT_FOUND")

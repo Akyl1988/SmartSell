@@ -56,6 +56,4 @@ async def test_kaspi_orders_store_admin_only(async_client, company_a_admin_heade
         "/api/v1/kaspi/orders",
         headers=auth_headers,
     )
-    assert resp_platform_admin.status_code == 403, resp_platform_admin.text
-    payload = resp_platform_admin.json()
-    assert payload.get("code") == "ADMIN_REQUIRED"
+    assert resp_platform_admin.status_code == 200, resp_platform_admin.text
