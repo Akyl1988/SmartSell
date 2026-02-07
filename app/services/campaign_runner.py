@@ -106,7 +106,9 @@ async def _process_campaign(
             failures += 1
             campaign.error_code = "message_send_failed"
             campaign.error_message = str(exc)
-            _log_failure_metric(campaign_id=campaign.id, company_id=campaign.company_id, error_code="message_send_failed")
+            _log_failure_metric(
+                campaign_id=campaign.id, company_id=campaign.company_id, error_code="message_send_failed"
+            )
             if settings.is_production:
                 break
 
@@ -175,7 +177,9 @@ def run_campaigns_sync(*, company_id: int | None = None, request_id: str | None 
         return loop.run_until_complete(_runner())
 
 
-async def process_scheduled_campaigns(*, company_id: int | None = None, request_id: str | None = None) -> list[dict[str, Any]]:
+async def process_scheduled_campaigns(
+    *, company_id: int | None = None, request_id: str | None = None
+) -> list[dict[str, Any]]:
     async with async_session_maker() as db:
         return await run_campaigns(db, company_id=company_id, request_id=request_id)
 
