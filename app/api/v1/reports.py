@@ -1,11 +1,11 @@
 from __future__ import annotations
 
-from datetime import UTC, date, datetime, time
-from io import BytesIO
 import os
 import re
-from typing import Any
+from datetime import UTC, date, datetime, time
 from decimal import Decimal
+from io import BytesIO
+from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from fastapi.responses import StreamingResponse
@@ -22,8 +22,8 @@ from app.core.dependencies import require_store_admin
 from app.core.security import resolve_tenant_company_id
 from app.models.billing import BillingInvoice
 from app.models.order import Order, OrderItem
-from app.utils.pii import mask_phone
 from app.services.reports.sales_pdf import build_sales_pdf
+from app.utils.pii import mask_phone
 
 router = APIRouter(prefix="/reports", tags=["reports"])
 
