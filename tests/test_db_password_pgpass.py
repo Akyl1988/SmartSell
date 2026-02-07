@@ -56,16 +56,17 @@ def test_password_borrowed_from_database_url(monkeypatch):
 
 def test_masked_password_is_replaced_by_db_password(monkeypatch):
     _clear_db_env(monkeypatch)
-    monkeypatch.setenv("ENVIRONMENT", "local")
+    monkeypatch.setenv("ENVIRONMENT", "testing")
+    monkeypatch.setenv("DATABASE_URL", "postgresql+asyncpg://user:***@localhost:5432/dbname")
+    monkeypatch.setenv("TEST_DATABASE_URL", "postgresql+asyncpg://user:***@localhost:5432/dbname")
+    monkeypatch.setenv("DB_PASSWORD", "secret123")
 
-    masked_url = "postgresql://postgres:***@localhost:5432/smartsell"
-    monkeypatch.setenv("DATABASE_URL", masked_url)
-    monkeypatch.setenv("DB_PASSWORD", "real_pw")
+    from app.core.config import Settings, resolve_database_url
 
     url, source, _ = resolve_database_url(Settings())
-    parsed = urlparse(url)
 
-    assert parsed.password
+    assert "secret123" in url
+    assert ":***@" not in url
     assert source
 
 
