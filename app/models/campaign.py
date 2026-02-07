@@ -99,6 +99,11 @@ class CampaignStatus(str, enum.Enum):
     ACTIVE = "active"
     PAUSED = "paused"
     COMPLETED = "completed"
+    READY = "ready"
+    SCHEDULED = "scheduled"
+    RUNNING = "running"
+    SUCCESS = "success"
+    FAILED = "failed"
 
 
 class MessageStatus(str, enum.Enum):
@@ -154,6 +159,10 @@ class Campaign(SoftDeleteMixin, Base):
     sent_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     delivered_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     failed_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+
+    error_code: Mapped[str | None] = mapped_column(String(MAX_ERROR_CODE_LEN), nullable=True, index=True)
+    error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    request_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
 
     messages: Mapped[list[Message]] = relationship(
         "Message",
