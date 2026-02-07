@@ -5,7 +5,7 @@ from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
 import sqlalchemy as sa
-from fastapi import APIRouter, Depends, Query, Request
+from fastapi import APIRouter, Body, Depends, Query, Request
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
@@ -25,6 +25,7 @@ from app.models.kaspi_offer import KaspiOffer
 from app.models.kaspi_trial_grant import KaspiTrialGrant
 from app.models.subscription_override import SubscriptionOverride
 from app.models.user import User
+from app.services.campaign_runner import run_campaigns_with_claim
 from app.services.subscriptions import activate_plan, renew_if_due
 
 router = APIRouter(prefix="/api/v1/admin", tags=["admin"])
@@ -98,6 +99,52 @@ async def run_subscription_renew_task(
         await db.rollback()
     rid = _ensure_request_id(request)
     return {"ok": True, "processed": processed, "request_id": rid}
+
+
+class CampaignRunIn(BaseModel):
+    limit: int | None = Field(default=100, ge=1)
+    companyId: int | None = Field(default=None, ge=1, alias="company_id")
+    dry_run: bool = False
+
+    model_config = ConfigDict(populate_by_name=True)
+
+
+@router.post(
+    "/tasks/campaigns/run",
+    summary="Run campaign processing task (platform admin)",
+)
+async def run_campaigns_task(
+    request: Request,
+    payload: CampaignRunIn | None = Body(default=None),
+    limit: int = Query(100, ge=1),
+    company_id_param: int | None = Query(default=None, ge=1, alias="company_id"),
+    dry_run: bool = Query(False),
+    admin: User = Depends(require_platform_admin),
+    db: AsyncSession = Depends(get_async_db),
+) -> dict:
+    _ = admin
+    resolved_limit = payload.limit if payload and payload.limit is not None else limit
+    resolved_company_id = payload.companyId if payload else company_id_param
+    resolved_dry_run = payload.dry_run if payload else dry_run
+
+    rid = _ensure_request_id(request)
+    result = await run_campaigns_with_claim(
+        db,
+        company_id=resolved_company_id,
+        request_id=rid,
+        limit=resolved_limit,
+        dry_run=resolved_dry_run,
+    )
+    return {
+        "ok": True,
+        "dry_run": resolved_dry_run,
+        "limit": resolved_limit,
+        "company_id": resolved_company_id,
+        "found": result["found"],
+        "started": result["started"],
+        "skipped": result["skipped"],
+        "details": result["details"],
+    }
 
 
 class SubscriptionActivateIn(BaseModel):
