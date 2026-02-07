@@ -1,12 +1,14 @@
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime, time
 from io import BytesIO
 import os
 import re
 from typing import Any
+from decimal import Decimal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Response
+from fastapi.responses import StreamingResponse
 from reportlab.lib import colors
 from reportlab.lib.pagesizes import A4
 from reportlab.lib.styles import getSampleStyleSheet
@@ -21,6 +23,7 @@ from app.core.security import resolve_tenant_company_id
 from app.models.billing import BillingInvoice
 from app.models.order import Order, OrderItem
 from app.utils.pii import mask_phone
+from app.services.reports.sales_pdf import build_sales_pdf
 
 router = APIRouter(prefix="/reports", tags=["reports"])
 
@@ -38,6 +41,21 @@ def _parse_dt(value: str | None, field: str) -> datetime | None:
     if dt.tzinfo is not None:
         dt = dt.astimezone(UTC).replace(tzinfo=None)
     return dt
+
+
+def _parse_date(value: str | None, field: str) -> date | None:
+    if not value:
+        return None
+    try:
+        return date.fromisoformat(value.strip())
+    except Exception as exc:
+        raise HTTPException(status_code=422, detail=f"{field} must be YYYY-MM-DD") from exc
+
+
+def _date_bounds(date_from: date | None, date_to: date | None) -> tuple[datetime | None, datetime | None]:
+    start_dt = datetime.combine(date_from, time.min) if date_from else None
+    end_dt = datetime.combine(date_to, time.max) if date_to else None
+    return start_dt, end_dt
 
 
 async def _fetch_orders(
@@ -92,6 +110,59 @@ async def _fetch_orders(
             }
         )
     return results
+
+
+async def _fetch_sales_metrics(
+    db: AsyncSession,
+    *,
+    company_id: int,
+    date_from: datetime | None,
+    date_to: datetime | None,
+) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    base_stmt = select(
+        func.count(Order.id).label("total_orders"),
+        func.coalesce(func.sum(Order.total_amount), 0).label("total_revenue"),
+    ).where(Order.company_id == company_id)
+    if date_from:
+        base_stmt = base_stmt.where(Order.created_at >= date_from)
+    if date_to:
+        base_stmt = base_stmt.where(Order.created_at <= date_to)
+
+    total_orders, total_revenue = (await db.execute(base_stmt)).one()
+    total_orders = int(total_orders or 0)
+    total_revenue = total_revenue if total_revenue is not None else Decimal("0")
+    avg_order_value = (total_revenue / total_orders) if total_orders else Decimal("0")
+
+    items_stmt = select(func.coalesce(func.sum(OrderItem.quantity), 0)).join(Order, OrderItem.order_id == Order.id)
+    items_stmt = items_stmt.where(Order.company_id == company_id)
+    if date_from:
+        items_stmt = items_stmt.where(Order.created_at >= date_from)
+    if date_to:
+        items_stmt = items_stmt.where(Order.created_at <= date_to)
+    items_sold_total = (await db.execute(items_stmt)).scalar_one()
+
+    top_stmt = (
+        select(OrderItem.sku, func.sum(OrderItem.quantity).label("qty"))
+        .join(Order, OrderItem.order_id == Order.id)
+        .where(Order.company_id == company_id)
+        .group_by(OrderItem.sku)
+        .order_by(func.sum(OrderItem.quantity).desc())
+        .limit(5)
+    )
+    if date_from:
+        top_stmt = top_stmt.where(Order.created_at >= date_from)
+    if date_to:
+        top_stmt = top_stmt.where(Order.created_at <= date_to)
+    top_rows = (await db.execute(top_stmt)).all()
+
+    top_skus = [{"sku": sku or "", "qty": int(qty or 0)} for sku, qty in top_rows]
+    metrics = {
+        "total_orders": total_orders,
+        "total_revenue": total_revenue,
+        "avg_order_value": avg_order_value,
+        "items_sold_total": int(items_sold_total or 0),
+    }
+    return metrics, top_skus
 
 
 @router.get("/orders.pdf")
@@ -173,4 +244,32 @@ async def report_orders_pdf(
         content=pdf_bytes,
         media_type="application/pdf",
         headers={"Content-Disposition": "attachment; filename=orders.pdf"},
+    )
+
+
+@router.get("/sales.pdf")
+async def report_sales_pdf(
+    date_from: str | None = Query(default=None),
+    date_to: str | None = Query(default=None),
+    limit: int = Query(default=1000, ge=1, le=5000),
+    admin=Depends(require_store_admin),
+    db: AsyncSession = Depends(get_async_db),
+) -> StreamingResponse:
+    _ = admin
+    _ = limit
+    company_id = resolve_tenant_company_id(admin, not_found_detail="Company not set")
+    start_dt, end_dt = _date_bounds(_parse_date(date_from, "date_from"), _parse_date(date_to, "date_to"))
+
+    metrics, top_skus = await _fetch_sales_metrics(db, company_id=company_id, date_from=start_dt, date_to=end_dt)
+    content = build_sales_pdf(
+        metrics=metrics,
+        top_skus=top_skus,
+        date_from=date_from,
+        date_to=date_to,
+    )
+
+    return StreamingResponse(
+        BytesIO(content),
+        media_type="application/pdf",
+        headers={"Content-Disposition": "attachment; filename=sales.pdf"},
     )
