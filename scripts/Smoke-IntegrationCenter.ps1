@@ -13,6 +13,8 @@ Quick smoke tests for Integration Center admin endpoints.
 
 $ErrorActionPreference = "Stop"
 
+$script:Failures = 0
+
 function Write-Result {
     param(
         [string]$Name,
@@ -20,6 +22,7 @@ function Write-Result {
         [string]$Detail = ""
     )
     $status = if ($Ok) { "PASS" } else { "FAIL" }
+    if (-not $Ok) { $script:Failures++ }
     if ($Detail) {
         Write-Host "$status`t$Name`t$Detail"
     } else {
@@ -27,12 +30,23 @@ function Write-Result {
     }
 }
 
+function Get-TokenFromLogin {
+    param(
+        [string]$Identifier,
+        [string]$Password
+    )
+    $payload = @{ identifier = $Identifier; password = $Password }
+    $resp = Invoke-Api -Method POST -Path "/api/v1/auth/login" -Body $payload -NoAuth
+    return $resp.access_token
+}
+
 function Invoke-Api {
     param(
         [string]$Method,
         [string]$Path,
         [hashtable]$Body = $null,
-        [hashtable]$Query = $null
+        [hashtable]$Query = $null,
+        [switch]$NoAuth
     )
     $uriBuilder = New-Object System.UriBuilder("$BaseUrl$Path")
     if ($Query) {
@@ -41,7 +55,7 @@ function Invoke-Api {
     }
 
     $headers = @{ "Content-Type" = "application/json" }
-    if ($Token) { $headers["Authorization"] = "Bearer $Token" }
+    if (-not $NoAuth -and $Token) { $headers["Authorization"] = "Bearer $Token" }
 
     $params = @{
         Method = $Method
@@ -54,11 +68,24 @@ function Invoke-Api {
     return Invoke-RestMethod @params
 }
 
+Write-Host "Platform credentials present: ID=$([bool]$env:SMARTSELL_PLATFORM_IDENTIFIER) PW=$([bool]$env:SMARTSELL_PLATFORM_PASSWORD)"
+
+if (-not $Token) {
+    try {
+        $Token = Get-TokenFromLogin -Identifier $env:SMARTSELL_PLATFORM_IDENTIFIER -Password $env:SMARTSELL_PLATFORM_PASSWORD
+        Write-Result "platform login" $true
+    } catch {
+        Write-Result "platform login" $false $_.Exception.Message
+        Write-Host "FAIL: cannot continue without platform token"
+        exit 1
+    }
+}
+
 # Providers list checks -------------------------------------------------------
 try {
     $domains = @("otp", "payments", "messaging")
     foreach ($d in $domains) {
-        $resp = Invoke-Api -Method GET -Path "/api/admin/integrations/providers" -Query @{ domain = $d; limit = 5; offset = 0 }
+        $resp = Invoke-Api -Method GET -Path "/api/v1/admin/integrations/providers" -Query @{ domain = $d; limit = 5; offset = 0 }
         $count = ($resp | Measure-Object).Count
         Write-Result "providers/$d" ($count -ge 0) "items=$count"
     }
@@ -68,7 +95,7 @@ try {
 
 # Events filter check ---------------------------------------------------------
 try {
-    $evt = Invoke-Api -Method GET -Path "/api/admin/integrations/events" -Query @{ domain = "otp"; provider_to = "noop" }
+    $evt = Invoke-Api -Method GET -Path "/api/v1/admin/integrations/events" -Query @{ domain = "otp"; provider_to = "noop" }
     $first = $evt | Select-Object -First 1
     $actorEmail = $first.meta_json.actor_email
     Write-Result "events/otp" $true "actor_email=$actorEmail"
@@ -79,11 +106,11 @@ try {
 # Config writes (noop + webhook sample) --------------------------------------
 try {
     # OTP noop config
-    Invoke-Api -Method PUT -Path "/api/admin/integrations/providers/otp/noop/config" -Body @{ config = @{ api_key = "masked"; sender = "+100"; timeout_seconds = 1 } }
+    Invoke-Api -Method PUT -Path "/api/v1/admin/integrations/providers/otp/noop/config" -Body @{ config = @{ api_key = "masked"; sender = "+100"; timeout_seconds = 1 } }
     Write-Result "config/otp noop set" $true
 
     # Messaging webhook config
-    Invoke-Api -Method PUT -Path "/api/admin/integrations/messaging/config" -Body @{ provider = "webhook"; config = @{ url = "https://example.invalid/hook"; api_key = "masked"; timeout_s = 2 } }
+    Invoke-Api -Method PUT -Path "/api/v1/admin/integrations/messaging/config" -Body @{ provider = "webhook"; config = @{ url = "https://example.invalid/hook"; api_key = "masked"; timeout_s = 2 } }
     Write-Result "config/messaging webhook set" $true
 } catch {
     Write-Result "config write" $false $_.Exception.Message
@@ -91,11 +118,11 @@ try {
 
 # Config redaction checks -----------------------------------------------------
 try {
-    $cfgOtp = Invoke-Api -Method GET -Path "/api/admin/integrations/providers/otp/noop/config"
+    $cfgOtp = Invoke-Api -Method GET -Path "/api/v1/admin/integrations/providers/otp/noop/config"
     $redacted = $cfgOtp.config.api_key
     Write-Result "config/otp redaction" ($redacted -eq "***") "api_key=$redacted"
 
-    $cfgMsg = Invoke-Api -Method GET -Path "/api/admin/integrations/messaging/config" -Query @{ provider = "webhook" }
+    $cfgMsg = Invoke-Api -Method GET -Path "/api/v1/admin/integrations/messaging/config" -Query @{ provider = "webhook" }
     $redactedMsg = $cfgMsg.config.api_key
     Write-Result "config/messaging redaction" ($redactedMsg -eq "***") "api_key=$redactedMsg"
 } catch {
@@ -104,22 +131,25 @@ try {
 
 # Healthchecks ----------------------------------------------------------------
 try {
-    $hcOtp = Invoke-Api -Method GET -Path "/api/admin/integrations/providers/otp/noop/healthcheck"
+    $hcOtp = Invoke-Api -Method POST -Path "/api/v1/admin/integrations/providers/otp/noop/healthcheck"
     Write-Result "health/otp" $true "status=$($hcOtp.status)"
 } catch {
     Write-Result "health/otp" $false $_.Exception.Message
 }
 
 try {
-    $hcPay = Invoke-Api -Method GET -Path "/api/admin/integrations/providers/payments/noop/healthcheck"
+    $hcPay = Invoke-Api -Method POST -Path "/api/v1/admin/integrations/providers/payments/noop/healthcheck"
     Write-Result "health/payments" $true "status=$($hcPay.status)"
 } catch {
     Write-Result "health/payments" $false $_.Exception.Message
 }
 
 try {
-    $hcMsg = Invoke-Api -Method GET -Path "/api/admin/integrations/messaging/healthcheck" -Query @{ provider = "webhook" }
+    $hcMsg = Invoke-Api -Method GET -Path "/api/v1/admin/integrations/messaging/healthcheck" -Query @{ provider = "webhook" }
     Write-Result "health/messaging" $true "status=$($hcMsg.status)"
 } catch {
     Write-Result "health/messaging" $false $_.Exception.Message
 }
+
+Write-Host "SUMMARY`tFAILURES=$script:Failures"
+if ($script:Failures -gt 0) { exit 1 }

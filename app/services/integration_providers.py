@@ -12,42 +12,18 @@ def _normalize_domain(domain: str | None) -> str:
     return (domain or "").strip().lower()
 
 
-def _is_async(db: Any) -> bool:
-    return isinstance(db, AsyncSession)
+async def _commit(db: AsyncSession) -> None:
+    await db.commit()
 
 
-def _sync_execute(db: Any, stmt):
-    return db.execute(stmt)
-
-
-async def _async_execute(db: AsyncSession, stmt):
-    return await db.execute(stmt)
-
-
-async def _execute(db: Any, stmt):
-    if _is_async(db):
-        return await _async_execute(db, stmt)  # type: ignore[arg-type]
-    return _sync_execute(db, stmt)
-
-
-async def _commit(db: Any) -> None:
-    if _is_async(db):
-        await db.commit()  # type: ignore[attr-defined]
-    else:
-        db.commit()
-
-
-async def _refresh(db: Any, model: Any) -> None:
-    if _is_async(db):
-        await db.refresh(model)  # type: ignore[attr-defined]
-    else:
-        db.refresh(model)
+async def _refresh(db: AsyncSession, model: object) -> None:
+    await db.refresh(model)
 
 
 class IntegrationProviderService:
     @staticmethod
     async def list_providers(
-        db: Any,
+        db: AsyncSession,
         *,
         domain: str | None = None,
         provider: str | None = None,
@@ -72,17 +48,17 @@ class IntegrationProviderService:
         if limit is not None:
             stmt = stmt.limit(max(1, int(limit)))
 
-        res = await _execute(db, stmt)
+        res = await db.execute(stmt)
         return list(res.scalars().all())
 
     @staticmethod
-    async def get_provider(db: Any, provider_id: int) -> IntegrationProvider | None:
+    async def get_provider(db: AsyncSession, provider_id: int) -> IntegrationProvider | None:
         stmt = select(IntegrationProvider).where(IntegrationProvider.id == provider_id)
-        res = await _execute(db, stmt)
+        res = await db.execute(stmt)
         return res.scalar_one_or_none()
 
     @staticmethod
-    async def get_by_pair(db: Any, domain: str, provider: str) -> IntegrationProvider | None:
+    async def get_by_pair(db: AsyncSession, domain: str, provider: str) -> IntegrationProvider | None:
         stmt = (
             select(IntegrationProvider)
             .where(
@@ -91,11 +67,11 @@ class IntegrationProviderService:
             )
             .limit(1)
         )
-        res = await _execute(db, stmt)
+        res = await db.execute(stmt)
         return res.scalar_one_or_none()
 
     @staticmethod
-    async def get_active(db: Any, domain: str) -> IntegrationProvider | None:
+    async def get_active(db: AsyncSession, domain: str) -> IntegrationProvider | None:
         stmt = (
             select(IntegrationProvider)
             .where(
@@ -105,12 +81,12 @@ class IntegrationProviderService:
             )
             .limit(1)
         )
-        res = await _execute(db, stmt)
+        res = await db.execute(stmt)
         return res.scalar_one_or_none()
 
     @staticmethod
     async def list_events(
-        db: Any,
+        db: AsyncSession,
         *,
         domain: str | None = None,
         provider_from: str | None = None,
@@ -135,12 +111,12 @@ class IntegrationProviderService:
         if limit is not None:
             stmt = stmt.limit(max(1, int(limit)))
 
-        res = await _execute(db, stmt)
+        res = await db.execute(stmt)
         return list(res.scalars().all())
 
     @staticmethod
     async def create_provider(
-        db: Any,
+        db: AsyncSession,
         *,
         domain: str,
         provider: str,
@@ -177,7 +153,7 @@ class IntegrationProviderService:
 
     @staticmethod
     async def update_provider(
-        db: Any,
+        db: AsyncSession,
         provider_id: int,
         *,
         config: dict[str, Any] | None = None,
@@ -229,7 +205,7 @@ class IntegrationProviderService:
         return item
 
     @staticmethod
-    async def delete_provider(db: Any, provider_id: int) -> tuple[bool, bool, str | None]:
+    async def delete_provider(db: AsyncSession, provider_id: int) -> tuple[bool, bool, str | None]:
         item = await IntegrationProviderService.get_provider(db, provider_id)
         if not item:
             return False, False, None
@@ -241,7 +217,7 @@ class IntegrationProviderService:
 
     @staticmethod
     async def set_active_provider(
-        db: Any,
+        db: AsyncSession,
         *,
         domain: str,
         provider: str,
@@ -259,11 +235,10 @@ class IntegrationProviderService:
             return current, False, None
 
         # deactivate previously active provider for the domain
-        await _execute(
-            db,
+        await db.execute(
             update(IntegrationProvider)
             .where(IntegrationProvider.domain == domain_key, IntegrationProvider.is_active.is_(True))
-            .values(is_active=False),
+            .values(is_active=False)
         )
 
         target.is_active = True
