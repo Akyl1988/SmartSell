@@ -18,6 +18,11 @@ def _auth_headers(user: User) -> dict[str, str]:
     return {"Authorization": f"Bearer {token}"}
 
 
+def _platform_headers(user: User) -> dict[str, str]:
+    token = create_access_token(subject=user.id, extra={"role": "platform_admin"})
+    return {"Authorization": f"Bearer {token}"}
+
+
 async def _make_user(session, *, company: Company, phone: str, role: str) -> User:
     user = User(
         company_id=company.id,
@@ -50,8 +55,18 @@ async def test_kaspi_subscription_override_bypasses_gate(
     await async_db_session.flush()
 
     owner = await _make_user(async_db_session, company=company, phone="77000050001", role="admin")
+    platform_admin = User(
+        phone="77000900001",
+        company_id=None,
+        hashed_password=get_password_hash("Secret123!"),
+        role="platform_admin",
+        is_active=True,
+        is_verified=True,
+    )
+    async_db_session.add(platform_admin)
     company.owner_id = owner.id
     await async_db_session.commit()
+    await async_db_session.refresh(platform_admin)
 
     await _clear_subscriptions(async_db_session, company.id)
 
@@ -106,8 +121,8 @@ async def test_kaspi_subscription_override_bypasses_gate(
 
     upsert = await async_client.put(
         f"/api/v1/admin/subscription-overrides/kaspi/{merchant_uid}",
-        headers=_auth_headers(owner),
-        json={"note": "override"},
+        headers=_platform_headers(platform_admin),
+        json={"note": "override", "company_id": company.id},
     )
     assert upsert.status_code == 200
 
@@ -121,8 +136,8 @@ async def test_kaspi_subscription_override_bypasses_gate(
     expired_at = (datetime.now(UTC) - timedelta(days=1)).isoformat()
     expired = await async_client.put(
         f"/api/v1/admin/subscription-overrides/kaspi/{merchant_uid}",
-        headers=_auth_headers(owner),
-        json={"active_until": expired_at, "note": "expired"},
+        headers=_platform_headers(platform_admin),
+        json={"active_until": expired_at, "note": "expired", "company_id": company.id},
     )
     assert expired.status_code == 200
 
@@ -167,14 +182,24 @@ async def test_subscription_override_tenant_isolation(async_client, async_db_ses
 
     owner_a = await _make_user(async_db_session, company=company_a, phone="77000050004", role="admin")
     owner_b = await _make_user(async_db_session, company=company_b, phone="77000050005", role="admin")
+    platform_admin = User(
+        phone="77000900002",
+        company_id=None,
+        hashed_password=get_password_hash("Secret123!"),
+        role="platform_admin",
+        is_active=True,
+        is_verified=True,
+    )
+    async_db_session.add(platform_admin)
     company_a.owner_id = owner_a.id
     company_b.owner_id = owner_b.id
     await async_db_session.commit()
+    await async_db_session.refresh(platform_admin)
 
     await async_client.put(
         "/api/v1/admin/subscription-overrides/kaspi/M-OVR-3",
-        headers=_auth_headers(owner_a),
-        json={"note": "tenant-a"},
+        headers=_platform_headers(platform_admin),
+        json={"note": "tenant-a", "company_id": company_a.id},
     )
 
     resp = await async_client.delete(

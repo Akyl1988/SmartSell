@@ -4,6 +4,7 @@ import logging
 from typing import Any
 
 from fastapi import APIRouter
+from sqlalchemy import text
 from sqlalchemy.engine.url import make_url
 from sqlalchemy.exc import SQLAlchemyError
 
@@ -43,7 +44,7 @@ async def debug_db() -> dict[str, Any]:
     try:
         eng = _get_async_engine()
         async with eng.connect() as conn:
-            await conn.execute("SELECT 1")
+            await conn.execute(text("SELECT 1"))
         connectivity = {"status": "ok"}
     except SQLAlchemyError as e:  # pragma: no cover (needs live DB)
         connectivity = {

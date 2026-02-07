@@ -16,6 +16,7 @@ from app.core.db import get_async_db
 from app.core.dependencies import require_platform_admin
 from app.core.exceptions import AuthorizationError, NotFoundError, _ensure_request_id
 from app.core.logging import audit_logger
+from app.core.rbac import is_platform_admin
 from app.core.security import get_current_user, resolve_tenant_company_id
 from app.core.subscriptions.plan_catalog import get_plan, normalize_plan_id
 from app.models.billing import Subscription, WalletBalance, WalletTransaction
@@ -28,7 +29,11 @@ from app.models.user import User
 from app.services.campaign_runner import run_campaigns_with_claim
 from app.services.subscriptions import activate_plan, renew_if_due
 
-router = APIRouter(prefix="/api/v1/admin", tags=["admin"])
+router = APIRouter(
+    prefix="/api/v1/admin",
+    tags=["admin"],
+    dependencies=[Depends(require_platform_admin)],
+)
 router.include_router(integrations_router)
 
 
@@ -226,6 +231,8 @@ async def _grant_trial_subscription(
 def _require_owner_or_superuser(*, current_user: User, company: Company | None) -> None:
     if not company:
         raise NotFoundError("company_not_found", code="company_not_found", http_status=404)
+    if is_platform_admin(current_user):
+        return
     if getattr(current_user, "is_superuser", False):
         return
     if company.owner_id != current_user.id:

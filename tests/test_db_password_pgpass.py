@@ -52,3 +52,20 @@ def test_password_borrowed_from_database_url(monkeypatch):
 
     assert parsed.password == "from_base"
     assert source == "TEST_DATABASE_URL"
+
+
+def test_masked_password_is_replaced_by_db_password(monkeypatch):
+    _clear_db_env(monkeypatch)
+    monkeypatch.setenv("ENVIRONMENT", "production")
+    monkeypatch.delenv("PYTEST_CURRENT_TEST", raising=False)
+    monkeypatch.delenv("TESTING", raising=False)
+
+    masked_url = "postgresql://postgres:***@localhost:5432/smartsell"
+    monkeypatch.setenv("DATABASE_URL", masked_url)
+    monkeypatch.setenv("DB_PASSWORD", "real_pw")
+
+    url, source, _ = resolve_database_url(Settings())
+    parsed = urlparse(url)
+
+    assert parsed.password == "real_pw"
+    assert source == "DATABASE_URL"

@@ -103,10 +103,10 @@ def _mask_db_fp(url: str) -> str:
 
 
 def _inject_password_if_missing(url: str) -> str:
-    """Inject password for local/dev/pytest Postgres URLs when missing.
+    """Inject password when missing or masked in Postgres URLs.
 
-    Priority: DB_PASSWORD -> PGPASSWORD -> password from DATABASE_URL/DB_URL.
-    No-ops for non-Postgres URLs, URLs with password, or non-local/non-pytest envs.
+    Priority: DB_PASSWORD -> PGPASSWORD -> password from DATABASE_URL/DB_URL (local/dev/pytest only).
+    No-ops for non-Postgres URLs or URLs with a real password already present.
     """
 
     try:
@@ -116,25 +116,28 @@ def _inject_password_if_missing(url: str) -> str:
         env = os.environ
         env_name = env.get("ENVIRONMENT", "")
         debug_flag = env.get("DEBUG", "0").lower() in {"1", "true", "yes", "on"}
-        if not (_is_local_env(env_name, debug_flag) or _under_pytest()):
-            return url
-
         parsed = urlparse(url)
         if not parsed.scheme.startswith("postgres"):
             return url
-        if parsed.password or not parsed.username:
+
+        password_is_masked = False
+        if parsed.password is not None:
+            password_is_masked = set(parsed.password) <= {"*"}
+
+        if (parsed.password and not password_is_masked) or not parsed.username:
             return url
 
         password = env.get("DB_PASSWORD") or env.get("PGPASSWORD")
         if not password:
-            base_env_url = env.get("DATABASE_URL") or env.get("DB_URL")
-            try:
-                if base_env_url and base_env_url != url:
-                    base_parsed = urlparse(base_env_url)
-                    if base_parsed.password and (base_parsed.scheme or "").startswith("postgres"):
-                        password = base_parsed.password
-            except Exception:
-                password = None
+            if _is_local_env(env_name, debug_flag) or _under_pytest():
+                base_env_url = env.get("DATABASE_URL") or env.get("DB_URL")
+                try:
+                    if base_env_url and base_env_url != url:
+                        base_parsed = urlparse(base_env_url)
+                        if base_parsed.password and (base_parsed.scheme or "").startswith("postgres"):
+                            password = base_parsed.password
+                except Exception:
+                    password = None
 
         if not password:
             return url
