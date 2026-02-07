@@ -11,7 +11,6 @@ from app.models.company import Company
 from app.services.campaign_runner import run_campaigns
 
 
-
 async def _seed_campaign(async_db_session, *, company_id: int, status: CampaignStatus, scheduled_at=None):
     company = await async_db_session.get(Company, company_id)
     if not company:
