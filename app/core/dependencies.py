@@ -434,7 +434,7 @@ async def require_active_subscription(
     path = (request.url.path or "").lower()
     if "/health" in path or "/_debug" in path:
         return current_user
-    if path.startswith("/api/admin") or path.startswith("/api/v1/auth"):
+    if path.startswith("/api/admin/integrations") or path.startswith("/api/v1/auth"):
         return current_user
     if path.startswith("/api/v1/wallet") or path.startswith("/api/v1/payments"):
         return current_user
@@ -810,6 +810,19 @@ async def get_messaging_provider(db=Depends(get_db)):
         return NoOpMessagingProvider()
 
 
+async def get_media_provider(db=Depends(get_db)):
+    from app.integrations.providers.noop.media import NoOpMediaProvider
+    from app.services.media_providers import MediaProviderResolver
+
+    try:
+        return await MediaProviderResolver.resolve(db, domain="media")
+    except Exception as exc:  # pragma: no cover - runtime guard
+        if settings.is_production:
+            raise HTTPException(status_code=503, detail="media_provider_not_configured")
+        log.warning("Media provider resolution failed; using noop", exc_info=exc)
+        return NoOpMediaProvider()
+
+
 # ------------------------------------------------------------------------------
 # Module alias to support legacy imports: app.core.dependencies -> this module
 # ------------------------------------------------------------------------------
@@ -854,4 +867,5 @@ __all__ = [
     "get_otp_service",
     "get_otp_provider",
     "get_messaging_provider",
+    "get_media_provider",
 ]

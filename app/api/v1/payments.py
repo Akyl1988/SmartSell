@@ -1,21 +1,26 @@
 # app/api/v1/payments.py
 from __future__ import annotations
 
+import hashlib
+import hmac
 import logging
+import time
 from decimal import Decimal
 from typing import Any
 
-from fastapi import APIRouter, Body, Depends, HTTPException, Path, Query, status
+from fastapi import APIRouter, Body, Depends, HTTPException, Path, Query, Request, status
 from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.config import settings
 from app.core.db import get_async_db
+from app.core.idempotency import IdempotencyEnforcer
 from app.core.security import get_current_user, require_manager, resolve_tenant_company_id
 from app.integrations.errors import ProviderNotConfiguredError
 from app.models.user import User
 from app.services.payment_providers import PaymentProviderResolver
-from app.storage.payments_sql import PaymentIntentsStorageSQL, PaymentsStorageSQL
+from app.storage.payments_sql import PaymentIntentsStorageSQL, PaymentsStorageSQL, payment_intents
 from app.storage.wallet_sql import WalletStorageSQL
 
 logger = logging.getLogger(__name__)
@@ -194,6 +199,106 @@ router = APIRouter(prefix="/api/v1/payments", tags=["payments"])
 @router.get("/health")
 async def health():
     return {"status": "ok", "backend": _BACKEND}
+
+
+def _extract_webhook_signature(headers: dict[str, str]) -> str | None:
+    return headers.get("x-tiptop-signature") or headers.get("x-signature")
+
+
+def _extract_webhook_timestamp(headers: dict[str, str]) -> str | None:
+    return headers.get("x-tiptop-timestamp") or headers.get("x-timestamp")
+
+
+def _extract_webhook_event_id(payload: dict[str, Any], body: bytes) -> str:
+    for key in ("event_id", "id", "payment_id", "invoice_id", "refund_id"):
+        value = payload.get(key)
+        if value:
+            return str(value)
+    return hashlib.sha256(body).hexdigest()
+
+
+async def _resolve_webhook_company_id(payload: dict[str, Any], db: AsyncSession) -> int | None:
+    company_id = payload.get("company_id") or payload.get("companyId")
+    if company_id is not None:
+        try:
+            return int(company_id)
+        except Exception:
+            return None
+
+    provider_intent_id = payload.get("provider_intent_id") or payload.get("payment_intent_id")
+    if provider_intent_id:
+        row = (
+            await db.execute(
+                select(payment_intents.c.company_id).where(
+                    payment_intents.c.provider_intent_id == str(provider_intent_id)
+                )
+            )
+        ).scalar_one_or_none()
+        if row is not None:
+            return int(row)
+    return None
+
+
+@router.post("/webhooks/tiptop")
+async def tiptop_webhook(
+    request: Request,
+    db: AsyncSession = Depends(get_async_db),
+):
+    body = await request.body()
+    if not body:
+        raise HTTPException(status_code=400, detail="empty_payload")
+
+    try:
+        payload = await request.json()
+    except Exception:
+        raise HTTPException(status_code=400, detail="invalid_json")
+
+    if settings.is_production and (not settings.TIPTOP_API_SECRET or not settings.TIPTOP_API_KEY):
+        raise HTTPException(status_code=503, detail="payment_provider_not_configured")
+
+    signature = _extract_webhook_signature({k.lower(): v for k, v in request.headers.items()})
+    if not signature:
+        raise HTTPException(status_code=401, detail="missing_signature")
+
+    if not settings.TIPTOP_API_SECRET:
+        raise HTTPException(status_code=503, detail="payment_provider_not_configured")
+
+    expected = hmac.new(settings.TIPTOP_API_SECRET.encode("utf-8"), body, hashlib.sha256).hexdigest()
+    if not hmac.compare_digest(signature, expected):
+        raise HTTPException(status_code=401, detail="invalid_signature")
+
+    ts_header = _extract_webhook_timestamp({k.lower(): v for k, v in request.headers.items()})
+    if ts_header:
+        try:
+            ts = int(ts_header)
+        except Exception:
+            raise HTTPException(status_code=401, detail="invalid_timestamp")
+        if abs(int(time.time()) - ts) > 300:
+            raise HTTPException(status_code=401, detail="invalid_timestamp")
+
+    event_id = _extract_webhook_event_id(payload, body)
+    company_id = await _resolve_webhook_company_id(payload, db)
+    if company_id is None:
+        company_id = 0
+
+    enforcer = IdempotencyEnforcer(prefix="webhook", default_ttl=86400, env=settings.ENVIRONMENT)
+    allowed, processed_status = await enforcer.reserve(
+        db,
+        company_id=int(company_id),
+        key=f"tiptop:{event_id}",
+        ttl_seconds=86400,
+    )
+    if not allowed:
+        return {"ok": True, "duplicate": True, "status_code": processed_status}
+
+    await enforcer.set_result(
+        db,
+        company_id=int(company_id),
+        key=f"tiptop:{event_id}",
+        status_code=200,
+        ttl_seconds=86400,
+    )
+    return {"ok": True}
 
 
 @router.post(

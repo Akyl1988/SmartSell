@@ -1877,13 +1877,18 @@ def _create_app() -> FastAPI:
     except Exception as e:
         logger.warning("Auth compat router not mounted: %s", e)
 
-    # Admin integrations (platform-level)
+    # Admin integrations legacy alias (compat: /api/admin/integrations/*)
     try:
-        from app.api.admin import router as admin_router
+        from app.api.admin.integrations import router as admin_integrations_router
 
-        app.include_router(admin_router)
+        app.include_router(
+            admin_integrations_router,
+            prefix="/api/admin",
+            tags=["admin-integrations-compat"],
+            include_in_schema=False,
+        )
     except Exception as e:
-        logger.warning("Admin router not mounted: %s", e)
+        logger.warning("Admin legacy router not mounted: %s", e)
 
     # 2) Fallback campaigns — только если после mount_v1 префикса нет
     if not _has_path_prefix(app, f"{getattr(settings, 'API_V1_STR', '/api/v1').rstrip('/')}/campaigns"):

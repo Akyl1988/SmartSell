@@ -15,6 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 # --- проектные зависимости (пути проверьте по вашему проекту) ---
 from app.core.db import get_async_db
+from app.core.rbac import is_platform_admin
 from app.core.security import (
     decode_and_validate,
     is_token_revoked,
@@ -279,8 +280,7 @@ async def list_subscriptions(
     _company = await ensure_company(db, resolved_company_id)
     ensure_company_access(user, _company)
 
-    is_admin = getattr(user, "role", None) in {"platform_admin", "superadmin"}
-    include_deleted = include_deleted if is_admin else False
+    include_deleted = include_deleted if is_platform_admin(user) else False
 
     stmt = select(Subscription).where(Subscription.company_id == resolved_company_id)
     if not include_deleted:
@@ -360,9 +360,7 @@ async def create_subscription(
         normalized_plan = normalize_plan_id(payload.plan, default=payload.plan)
         plan = get_plan(normalized_plan, default=None)
 
-        role = (getattr(user, "role", "") or "").lower()
-        is_platform_admin = role in {"platform_admin", "superadmin"}
-        if payload.trial_days > 0 and not is_platform_admin:
+        if payload.trial_days > 0 and not is_platform_admin(user):
             raise HTTPException(
                 status_code=422,
                 detail="trial_days is not allowed here; trial is granted via Kaspi merchant_uid",

@@ -14,6 +14,7 @@ from app.core.logging import get_logger
 from app.core.subscriptions.plan_catalog import get_plan_display_name, normalize_plan_id
 from app.models import AuditLog, Company, OtpAttempt, Product, ProductStock, User
 from app.services import EmailService, KaspiService
+from app.services.campaign_runner import process_scheduled_campaigns
 from app.services.subscriptions import renew_if_due
 from app.utils.idempotency import cleanup_idempotency_records
 
@@ -192,9 +193,7 @@ class TaskManager:
         while self.running:
             try:
                 await asyncio.sleep(60)  # Run every minute
-
-                # TODO: Implement campaign processing
-                # This would handle scheduled WhatsApp/Email campaigns
+                await process_scheduled_campaigns()
 
             except Exception as e:
                 logger.error(f"Campaigns task error: {e}")
