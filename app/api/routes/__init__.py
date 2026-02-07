@@ -82,6 +82,8 @@ users_mod = _try_import("app.api.v1.users")
 products_mod = _try_import("app.api.v1.products")
 campaigns_mod = _try_import("app.api.v1.campaigns")
 analytics_mod = _try_import("app.api.v1.analytics")
+exports_mod = _try_import("app.api.v1.exports")
+reports_mod = _try_import("app.api.v1.reports")
 
 # Опциональные
 wallet = _try_import("app.api.v1.wallet")
@@ -149,6 +151,10 @@ if campaigns_mod and _router_or_none(campaigns_mod):
     V1_ROUTERS.append(("campaigns", campaigns_mod.router, True))
 if analytics_mod and _router_or_none(analytics_mod):
     V1_ROUTERS.append(("analytics", analytics_mod.router, False))
+if exports_mod and _router_or_none(exports_mod):
+    V1_ROUTERS.append(("exports", exports_mod.router, False))
+if reports_mod and _router_or_none(reports_mod):
+    V1_ROUTERS.append(("reports", reports_mod.router, False))
 
 # Поддержка кошелька и платежей, если модули присутствуют
 if wallet and _router_or_none(wallet):
