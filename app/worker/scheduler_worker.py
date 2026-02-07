@@ -32,10 +32,52 @@ from datetime import UTC, datetime
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 
-from apscheduler.events import EVENT_JOB_ERROR, EVENT_JOB_MAX_INSTANCES, EVENT_JOB_MISSED
-from apscheduler.schedulers.background import BackgroundScheduler
-from apscheduler.triggers.date import DateTrigger
-from apscheduler.triggers.interval import IntervalTrigger
+try:
+    from apscheduler.events import EVENT_JOB_ERROR, EVENT_JOB_MAX_INSTANCES, EVENT_JOB_MISSED
+    from apscheduler.schedulers.background import BackgroundScheduler
+    from apscheduler.triggers.date import DateTrigger
+    from apscheduler.triggers.interval import IntervalTrigger
+except ModuleNotFoundError:  # pragma: no cover - optional in tests
+    EVENT_JOB_ERROR = 1
+    EVENT_JOB_MAX_INSTANCES = 2
+    EVENT_JOB_MISSED = 4
+
+    class _StubTrigger:
+        def __init__(self, *args, **kwargs):  # noqa: D401
+            pass
+
+    DateTrigger = _StubTrigger
+    IntervalTrigger = _StubTrigger
+
+    class _StubJob:
+        def __init__(self, job_id: str):
+            self.id = job_id
+
+    class BackgroundScheduler:  # type: ignore[override]
+        def __init__(self, *args, **kwargs):
+            self.running = False
+            self._jobs: dict[str, _StubJob] = {}
+
+        def add_listener(self, *_args, **_kwargs) -> None:
+            return None
+
+        def add_job(self, *_args, id: str | None = None, **_kwargs) -> _StubJob:
+            job_id = id or f"job-{len(self._jobs) + 1}"
+            job = _StubJob(job_id)
+            self._jobs[job_id] = job
+            return job
+
+        def start(self) -> None:
+            self.running = True
+
+        def shutdown(self, wait: bool = True) -> None:
+            self.running = False
+
+        def remove_job(self, job_id: str) -> None:
+            self._jobs.pop(job_id, None)
+
+        def get_jobs(self) -> list[_StubJob]:
+            return list(self._jobs.values())
 
 # -------- Настройки / БД: мягкие импорты под разные проекты -------- #
 
@@ -64,7 +106,8 @@ if SessionLocal is None:
     raise RuntimeError("SessionLocal не найден. Проверьте, что есть app.core.db.SessionLocal")
 
 # Модели
-from app.models.campaign import Campaign, CampaignStatus, Message, MessageStatus
+from app.models.campaign import Campaign, Message, MessageStatus
+from app.services.campaign_runner import run_campaigns_sync
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
@@ -301,53 +344,7 @@ def process_scheduled_campaigns() -> None:
     """
     now = _utcnow_naive()
     logger.info("Проверка кампаний к отправке (%s)", now.isoformat())
-    with db_session() as db:
-        campaigns = (
-            db.query(Campaign)
-            .filter(
-                Campaign.status == CampaignStatus.ACTIVE,
-                Campaign.scheduled_at <= now,
-            )
-            .all()
-        )
-
-        for campaign in campaigns:
-            logger.info("Обработка кампании id=%s title=%r", campaign.id, campaign.title)
-
-            # Берём PENDING сообщения
-            pending = (
-                db.query(Message)
-                .filter(
-                    Message.campaign_id == campaign.id,
-                    Message.status == MessageStatus.PENDING,
-                )
-                .all()
-            )
-
-            if not pending:
-                # Если нечего слать — завершаем кампанию
-                campaign.status = CampaignStatus.COMPLETED
-                logger.info("Кампания id=%s помечена как COMPLETED (нет PENDING сообщений)", campaign.id)
-                continue
-
-            # Ставим каждое сообщение в очередь на ближайший запуск
-            for m in pending:
-                try:
-                    _schedule_message_send(m.id)
-                except Exception as e:
-                    logger.error("Не удалось запланировать message_id=%s: %s", m.id, e)
-                    m.status = MessageStatus.FAILED
-                    m.error_message = f"Scheduling error: {e}"
-
-            # Проверяем, остались ли ещё PENDING в БД (на случай ошибок постановки)
-            still_pending = (
-                db.query(Message)
-                .filter(Message.campaign_id == campaign.id, Message.status == MessageStatus.PENDING)
-                .count()
-            )
-            if still_pending == 0:
-                campaign.status = CampaignStatus.COMPLETED
-                logger.info("Кампания id=%s завершена (все сообщения расписаны)", campaign.id)
+    run_campaigns_sync()
 
 
 # -------- Публичные сервисные функции воркера -------- #
