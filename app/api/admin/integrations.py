@@ -6,12 +6,8 @@ from typing import Any, Literal
 from fastapi import APIRouter, Depends, HTTPException, Path, Query, Request
 from pydantic import BaseModel, ConfigDict, Field
 
-from app.core.dependencies import (
-    ensure_idempotency_replay,
-    get_db,
-    require_platform_admin,
-    set_idempotency_result,
-)
+from app.core.db import get_async_db
+from app.core.dependencies import ensure_idempotency_replay, require_platform_admin, set_idempotency_result
 from app.core.provider_registry import ProviderRegistry
 from app.services.integration_providers import IntegrationProviderService
 from app.services.provider_configs import ProviderConfigService
@@ -151,7 +147,7 @@ async def list_providers(
     is_active: bool | None = None,
     limit: int | None = Query(default=None, ge=1, le=500),
     offset: int | None = Query(default=None, ge=0),
-    db=Depends(get_db),
+    db=Depends(get_async_db),
     admin: Any = Depends(require_platform_admin),
 ) -> list[ProviderOut]:
     _ = admin  # access control only
@@ -186,7 +182,7 @@ async def list_providers(
 @router.post("/providers", response_model=ProviderOut, status_code=201)
 async def create_provider(
     payload: ProviderCreate,
-    db=Depends(get_db),
+    db=Depends(get_async_db),
     admin: Any = Depends(require_platform_admin),
 ) -> ProviderOut:
     item = await IntegrationProviderService.create_provider(
@@ -218,7 +214,7 @@ async def create_provider(
 async def update_provider(
     integration_id: int,
     payload: ProviderUpdate,
-    db=Depends(get_db),
+    db=Depends(get_async_db),
     admin: Any = Depends(require_platform_admin),
 ) -> ProviderOut:
     item = await IntegrationProviderService.update_provider(
@@ -252,7 +248,7 @@ async def update_provider(
 @router.delete("/providers/{integration_id}", status_code=200)
 async def delete_provider(
     integration_id: int,
-    db=Depends(get_db),
+    db=Depends(get_async_db),
     admin: Any = Depends(require_platform_admin),
 ) -> dict[str, Any]:
     _ = admin
@@ -267,7 +263,7 @@ async def delete_provider(
 @router.get("/active/{domain}", response_model=ActiveProviderOut)
 async def get_active_provider(
     domain: ProviderDomain = Path(..., description="Domain"),
-    db=Depends(get_db),
+    db=Depends(get_async_db),
     admin: Any = Depends(require_platform_admin),
 ) -> ActiveProviderOut:
     _ = admin
@@ -290,7 +286,7 @@ async def get_active_provider(
 async def set_active_provider(
     payload: SetActive,
     request: Request,
-    db=Depends(get_db),
+    db=Depends(get_async_db),
     admin: Any = Depends(require_platform_admin),
 ) -> ActiveProviderOut:
     idem_key = getattr(getattr(request, "state", None), "idempotency_key", None)
@@ -327,7 +323,7 @@ async def list_events(
     actor_user_id: int | None = None,
     limit: int | None = Query(default=None, ge=1, le=500),
     offset: int | None = Query(default=None, ge=0),
-    db=Depends(get_db),
+    db=Depends(get_async_db),
     admin: Any = Depends(require_platform_admin),
 ) -> list[ProviderEventOut]:
     _ = admin
@@ -374,7 +370,7 @@ async def invalidate_cache(
 async def get_provider_config(
     domain: ProviderDomain,
     provider: str,
-    db=Depends(get_db),
+    db=Depends(get_async_db),
     admin: Any = Depends(require_platform_admin),
 ) -> ProviderConfigOut:
     _ = admin
@@ -400,7 +396,7 @@ async def set_provider_config(
     provider: str,
     payload: ProviderConfigIn,
     request: Request,
-    db=Depends(get_db),
+    db=Depends(get_async_db),
     admin: Any = Depends(require_platform_admin),
 ) -> ProviderConfigOut:
     idem_key = getattr(getattr(request, "state", None), "idempotency_key", None)
@@ -433,7 +429,7 @@ async def set_provider_config(
 async def provider_healthcheck(
     domain: ProviderDomain,
     provider: str,
-    db=Depends(get_db),
+    db=Depends(get_async_db),
     admin: Any = Depends(require_platform_admin),
 ) -> ProviderHealthcheckOut:
     _ = admin
@@ -466,7 +462,7 @@ async def list_messaging_providers(
     is_active: bool | None = None,
     limit: int | None = Query(default=None, ge=1, le=500),
     offset: int | None = Query(default=None, ge=0),
-    db=Depends(get_db),
+    db=Depends(get_async_db),
     admin: Any = Depends(require_platform_admin),
 ) -> list[ProviderOut]:
     _ = admin
@@ -501,7 +497,7 @@ async def list_messaging_providers(
 @router.get("/messaging/config", response_model=ProviderConfigOut)
 async def get_messaging_config(
     provider: str = Query(..., min_length=1, max_length=128),
-    db=Depends(get_db),
+    db=Depends(get_async_db),
     admin: Any = Depends(require_platform_admin),
 ) -> ProviderConfigOut:
     _ = admin
@@ -525,7 +521,7 @@ async def get_messaging_config(
 async def set_messaging_config(
     payload: MessagingConfigUpsert,
     request: Request,
-    db=Depends(get_db),
+    db=Depends(get_async_db),
     admin: Any = Depends(require_platform_admin),
 ) -> ProviderConfigOut:
     idem_key = getattr(getattr(request, "state", None), "idempotency_key", None)
@@ -554,7 +550,7 @@ async def set_messaging_config(
 @router.get("/messaging/healthcheck", response_model=ProviderHealthcheckOut)
 async def messaging_healthcheck(
     provider: str = Query(..., min_length=1, max_length=128),
-    db=Depends(get_db),
+    db=Depends(get_async_db),
     admin: Any = Depends(require_platform_admin),
 ) -> ProviderHealthcheckOut:
     _ = admin
@@ -582,7 +578,7 @@ async def list_payment_providers(
     is_active: bool | None = None,
     limit: int | None = Query(default=None, ge=1, le=500),
     offset: int | None = Query(default=None, ge=0),
-    db=Depends(get_db),
+    db=Depends(get_async_db),
     admin: Any = Depends(require_platform_admin),
 ) -> list[ProviderOut]:
     _ = admin
@@ -617,7 +613,7 @@ async def list_payment_providers(
 @router.get("/payments/config", response_model=ProviderConfigOut)
 async def get_payment_config(
     provider: str = Query(..., min_length=1, max_length=128),
-    db=Depends(get_db),
+    db=Depends(get_async_db),
     admin: Any = Depends(require_platform_admin),
 ) -> ProviderConfigOut:
     _ = admin
@@ -641,7 +637,7 @@ async def get_payment_config(
 async def set_payment_config(
     payload: PaymentConfigUpsert,
     request: Request,
-    db=Depends(get_db),
+    db=Depends(get_async_db),
     admin: Any = Depends(require_platform_admin),
 ) -> ProviderConfigOut:
     idem_key = getattr(getattr(request, "state", None), "idempotency_key", None)
@@ -669,7 +665,7 @@ async def set_payment_config(
 @router.get("/payments/healthcheck", response_model=ProviderHealthcheckOut)
 async def payment_healthcheck(
     provider: str = Query(..., min_length=1, max_length=128),
-    db=Depends(get_db),
+    db=Depends(get_async_db),
     admin: Any = Depends(require_platform_admin),
 ) -> ProviderHealthcheckOut:
     _ = admin

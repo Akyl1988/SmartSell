@@ -24,6 +24,9 @@ async def test_openapi_hides_legacy_api_and_exposes_v1(async_client):
     renew_run = paths.get("/api/v1/admin/tasks/subscriptions/renew/run", {})
     assert "post" in renew_run
 
+    campaigns_run = paths.get("/api/v1/admin/tasks/campaigns/run", {})
+    assert "post" in campaigns_run
+
 
 @pytest.mark.asyncio
 async def test_openapi_kaspi_catalog_template_has_binary_types(async_client):

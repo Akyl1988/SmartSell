@@ -52,3 +52,42 @@ def test_password_borrowed_from_database_url(monkeypatch):
 
     assert parsed.password == "from_base"
     assert source == "TEST_DATABASE_URL"
+
+
+def test_masked_password_is_replaced_by_db_password(monkeypatch):
+    _clear_db_env(monkeypatch)
+    monkeypatch.setenv("ENVIRONMENT", "local")
+
+    masked_url = "postgresql://postgres:***@localhost:5432/smartsell"
+    monkeypatch.setenv("DATABASE_URL", masked_url)
+    monkeypatch.setenv("DB_PASSWORD", "real_pw")
+
+    url, source, _ = resolve_database_url(Settings())
+    parsed = urlparse(url)
+
+    assert parsed.password
+    assert source
+
+
+def test_sync_url_injects_password_from_db_password(monkeypatch):
+    import os
+
+    from app.core.config import _inject_password_if_missing
+    from app.core.db import _normalize_pg_to_psycopg2
+
+    _clear_db_env(monkeypatch)
+    monkeypatch.setenv("ENVIRONMENT", "production")
+    monkeypatch.delenv("PYTEST_CURRENT_TEST", raising=False)
+    monkeypatch.delenv("TESTING", raising=False)
+
+    monkeypatch.setenv("DATABASE_URL", "postgresql://postgres@localhost:5432/smartsell")
+    monkeypatch.setenv("DB_PASSWORD", "sync_pw")
+    monkeypatch.setenv("PGPASSWORD", "sync_pw")
+    os.environ["DB_PASSWORD"] = "sync_pw"
+    os.environ["PGPASSWORD"] = "sync_pw"
+
+    injected = _inject_password_if_missing("postgresql://postgres@localhost:5432/smartsell")
+    url = _normalize_pg_to_psycopg2(injected)
+    parsed = urlparse(url)
+
+    assert parsed.password

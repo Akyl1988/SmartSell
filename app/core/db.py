@@ -339,13 +339,21 @@ _SYNC_REPLICA_ENGINE: Engine | None = None
 _query_stats: dict[str, dict[str, float]] = {}
 
 
+def _password_present(url: str) -> bool:
+    try:
+        parsed = make_url(url)
+        return bool(parsed.password)
+    except Exception:
+        return False
+
+
 def _log_effective_url(url: str, *, mode: str, source: str | None = None) -> None:
     """Логируем безопасную сводку по DSN перед созданием engine."""
     try:
         parsed = make_url(url)
         fp = db_url_fingerprint(url)
         logger.info(
-            "db_url_resolved mode=%s driver=%s user=%s host=%s port=%s db=%s source=%s fp=%s",
+            "db_url_resolved mode=%s driver=%s user=%s host=%s port=%s db=%s source=%s fp=%s password_present=%s",
             mode,
             parsed.drivername,
             parsed.username or "",
@@ -354,6 +362,7 @@ def _log_effective_url(url: str, *, mode: str, source: str | None = None) -> Non
             parsed.database or "",
             (source or getattr(settings, "db_url_source", lambda: "unknown")()),
             fp,
+            bool(parsed.password),
         )
     except Exception as e:
         logger.warning("db_url_resolved mode=%s failed to log: %s", mode, e)

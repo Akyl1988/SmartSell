@@ -5,7 +5,7 @@ from datetime import UTC, datetime
 from typing import Any
 from uuid import uuid4
 
-from sqlalchemy import and_, or_, select
+from sqlalchemy import and_, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
@@ -28,6 +28,13 @@ def _now_utc() -> datetime:
 def _log_failure_metric(*, campaign_id: int, company_id: int, error_code: str) -> None:
     logger.warning(
         "metric=campaign_job_failures", extra={"campaign_id": campaign_id, "company_id": company_id, "code": error_code}
+    )
+
+
+def _due_campaigns_filter(*, now: datetime) -> Any:
+    return or_(
+        Campaign.status == CampaignStatus.READY,
+        and_(Campaign.status == CampaignStatus.SCHEDULED, Campaign.scheduled_at <= now),
     )
 
 
@@ -132,11 +139,7 @@ async def run_campaigns(
     run_id = request_id or str(uuid4())
     now = now or _now_utc()
 
-    scheduled_ready = or_(
-        Campaign.status == CampaignStatus.READY,
-        and_(Campaign.status == CampaignStatus.SCHEDULED, Campaign.scheduled_at <= now),
-    )
-    where = [scheduled_ready, Campaign.deleted_at.is_(None)]
+    where = [_due_campaigns_filter(now=now), Campaign.deleted_at.is_(None)]
     if company_id is not None:
         where.append(Campaign.company_id == int(company_id))
 
@@ -165,6 +168,115 @@ async def run_campaigns(
     return results
 
 
+async def run_campaigns_with_claim(
+    db: AsyncSession,
+    *,
+    company_id: int | None = None,
+    request_id: str | None = None,
+    now: datetime | None = None,
+    limit: int = 100,
+    dry_run: bool = False,
+) -> dict[str, Any]:
+    run_id = request_id or str(uuid4())
+    now = now or _now_utc()
+
+    where = [_due_campaigns_filter(now=now), Campaign.deleted_at.is_(None)]
+    if company_id is not None:
+        where.append(Campaign.company_id == int(company_id))
+
+    details: list[dict[str, Any]] = []
+    total_due = (await db.execute(select(func.count()).select_from(Campaign).where(*where))).scalar_one()
+    limit_value = max(1, int(limit))
+    found = min(int(total_due), limit_value)
+
+    if dry_run:
+        rows = (
+            await db.execute(
+                select(Campaign.id, Campaign.company_id, Campaign.status)
+                .where(*where)
+                .order_by(Campaign.scheduled_at.asc().nullsfirst(), Campaign.id.asc())
+                .limit(limit_value)
+            )
+        ).all()
+        for row in rows:
+            details.append(
+                {
+                    "campaign_id": row.id,
+                    "company_id": row.company_id,
+                    "status_before": row.status.value,
+                    "status_after": None,
+                    "reason": "dry_run",
+                }
+            )
+        return {
+            "found": len(rows),
+            "started": 0,
+            "skipped": len(rows),
+            "details": details,
+            "request_id": run_id,
+        }
+
+    claim_stmt = (
+        select(Campaign)
+        .where(*where)
+        .order_by(Campaign.scheduled_at.asc().nullsfirst(), Campaign.id.asc())
+        .limit(limit_value)
+        .with_for_update(skip_locked=True)
+    )
+    campaigns = (await db.execute(claim_stmt)).scalars().all()
+
+    for campaign in campaigns:
+        status_before = campaign.status
+        with bound_context(request_id=run_id, tenant=str(campaign.company_id)):
+            try:
+                status_after = await _process_campaign(db, campaign, request_id=run_id, retry_policy=_DEFAULT_RETRY)
+                reason = campaign.error_code if status_after == CampaignStatus.FAILED else None
+            except Exception as exc:  # pragma: no cover - defensive
+                campaign.status = CampaignStatus.FAILED
+                campaign.error_code = "campaign_runner_failed"
+                campaign.error_message = str(exc)
+                campaign.request_id = run_id
+                await db.flush()
+                _log_failure_metric(
+                    campaign_id=campaign.id,
+                    company_id=campaign.company_id,
+                    error_code="campaign_runner_failed",
+                )
+                status_after = CampaignStatus.FAILED
+                reason = "campaign_runner_failed"
+
+        logger.info(
+            "campaign_claimed",
+            extra={
+                "campaign_id": campaign.id,
+                "company_id": campaign.company_id,
+                "attempt": 1,
+                "status_before": status_before.value,
+                "status_after": status_after.value,
+            },
+        )
+        details.append(
+            {
+                "campaign_id": campaign.id,
+                "company_id": campaign.company_id,
+                "status_before": status_before.value,
+                "status_after": status_after.value,
+                "reason": reason,
+            }
+        )
+
+    await db.commit()
+    started = len(campaigns)
+    skipped = max(0, found - started)
+    return {
+        "found": found,
+        "started": started,
+        "skipped": skipped,
+        "details": details,
+        "request_id": run_id,
+    }
+
+
 def run_campaigns_sync(*, company_id: int | None = None, request_id: str | None = None) -> list[dict[str, Any]]:
     async def _runner():
         async with async_session_maker() as db:
@@ -184,4 +296,4 @@ async def process_scheduled_campaigns(
         return await run_campaigns(db, company_id=company_id, request_id=request_id)
 
 
-__all__ = ["run_campaigns", "process_scheduled_campaigns", "run_campaigns_sync"]
+__all__ = ["run_campaigns", "run_campaigns_with_claim", "process_scheduled_campaigns", "run_campaigns_sync"]

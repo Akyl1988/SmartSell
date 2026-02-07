@@ -942,12 +942,6 @@ if _HAS_FASTAPI:
                 return True
         return False
 
-    def is_platform_admin(user: User | None) -> bool:
-        try:
-            return str(getattr(user, "role", "") or "").lower() == "platform_admin"
-        except Exception:
-            return False
-
     def resolve_tenant_company_id(
         current_user: User,
         *,
@@ -973,11 +967,6 @@ if _HAS_FASTAPI:
     def _enforce_roles(user: User, allowed: set[str]) -> User:
         role = _user_role(user)
         if role not in allowed:
-            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="forbidden")
-        return user
-
-    async def require_platform_admin(user: User = Depends(get_current_user)) -> User:
-        if _user_role(user) not in {"platform_admin"}:
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="forbidden")
         return user
 
@@ -1111,7 +1100,6 @@ __all__ = [
     # fastapi helpers
     "get_current_user_sub",
     "get_current_user",
-    "require_platform_admin",
     "require_company_admin",
     "require_manager",
     "auth_scheme",

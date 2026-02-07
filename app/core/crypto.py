@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import base64
+import hashlib
 import json
+import logging
 import os
 from functools import lru_cache
 from typing import Any
@@ -9,6 +12,8 @@ from cryptography.fernet import Fernet, InvalidToken
 
 from app.core.config import settings
 
+log = logging.getLogger(__name__)
+
 __all__ = ["encrypt_json", "decrypt_json", "reset_crypto_key_cache"]
 
 
@@ -16,7 +21,12 @@ def _master_key() -> bytes:
     """Resolve the master key from env/settings and validate."""
     key = os.getenv("INTEGRATIONS_MASTER_KEY") or getattr(settings, "INTEGRATIONS_MASTER_KEY", None)
     if not key:
-        raise RuntimeError("INTEGRATIONS_MASTER_KEY is not configured")
+        if settings.is_development or settings.is_testing:
+            seed = f"{settings.SECRET_KEY}:integrations_master_key".encode()
+            key = base64.urlsafe_b64encode(hashlib.sha256(seed).digest()).decode("utf-8")
+            log.warning("INTEGRATIONS_MASTER_KEY is not configured; using derived dev/test key")
+        else:
+            raise RuntimeError("INTEGRATIONS_MASTER_KEY is not configured")
     key_bytes = key.encode() if isinstance(key, str) else key
     try:
         # Fernet ctor validates key shape (base64-encoded 32 bytes)
