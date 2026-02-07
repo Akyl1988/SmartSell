@@ -15,6 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 # --- проектные зависимости (пути проверьте по вашему проекту) ---
 from app.core.db import get_async_db
+from app.core.dependencies import require_platform_admin
 from app.core.rbac import is_platform_admin
 from app.core.security import (
     decode_and_validate,
@@ -168,11 +169,6 @@ def ensure_company_access(user, company: Company) -> None:
     raise HTTPException(status_code=404, detail="Company not found")
 
 
-def ensure_platform_admin(user: User) -> None:
-    if getattr(user, "role", None) not in {"platform_admin", "superadmin"}:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="forbidden")
-
-
 async def _get_subscription_scoped(
     db: AsyncSession,
     user: User,
@@ -259,9 +255,9 @@ async def _auth_user(
 
 @router.get("/plans", response_model=list[PlanCatalogOut])
 async def list_plan_catalog(
-    user: User = Depends(_auth_user),
+    user: User = Depends(require_platform_admin),
 ):
-    ensure_platform_admin(user)
+    _ = user
     return list_plans()
 
 

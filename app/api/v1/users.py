@@ -14,6 +14,7 @@ from app.core.db import get_async_db
 from app.core.dependencies import api_rate_limit, get_current_user, get_current_verified_user
 from app.core.exceptions import AuthenticationError, AuthorizationError, NotFoundError, SmartSellValidationError
 from app.core.logging import audit_logger
+from app.core.rbac import is_platform_admin, is_store_admin
 from app.core.security import get_password_hash, resolve_tenant_company_id, verify_password
 from app.models.company import Company
 from app.models.user import User, UserSession
@@ -37,8 +38,7 @@ async def _get_company_and_owner(db: AsyncSession, company_id: int) -> Company |
 
 def _require_owner_or_admin(*, current_user: User, company: Company | None) -> bool:
     is_owner = bool(company and company.owner_id == current_user.id)
-    role = (getattr(current_user, "role", "") or "").lower()
-    if is_owner or role == "admin":
+    if is_owner or is_store_admin(current_user) or is_platform_admin(current_user):
         return is_owner
     raise AuthorizationError("Insufficient permissions", "FORBIDDEN")
 
@@ -126,10 +126,6 @@ def _is_owner(company: Company | None, user: User) -> bool:
     return bool(company and company.owner_id == user.id)
 
 
-def _is_admin(user: User) -> bool:
-    return (getattr(user, "role", "") or "").lower() == "admin"
-
-
 @router.post("/{user_id}/deactivate", response_model=SuccessResponse)
 async def deactivate_user(
     user_id: int = Path(...),
@@ -139,7 +135,7 @@ async def deactivate_user(
     company_id = resolve_tenant_company_id(current_user)
     company = await _get_company_and_owner(db, company_id)
     is_owner = _is_owner(company, current_user)
-    is_admin = _is_admin(current_user)
+    is_admin = is_store_admin(current_user)
     if not (is_owner or is_admin):
         raise AuthorizationError("Insufficient permissions", "FORBIDDEN")
 
@@ -181,7 +177,7 @@ async def activate_user(
     company_id = resolve_tenant_company_id(current_user)
     company = await _get_company_and_owner(db, company_id)
     is_owner = _is_owner(company, current_user)
-    is_admin = _is_admin(current_user)
+    is_admin = is_store_admin(current_user)
     if not (is_owner or is_admin):
         raise AuthorizationError("Insufficient permissions", "FORBIDDEN")
 
@@ -223,7 +219,7 @@ async def change_user_role(
     company_id = resolve_tenant_company_id(current_user)
     company = await _get_company_and_owner(db, company_id)
     is_owner = _is_owner(company, current_user)
-    is_admin = _is_admin(current_user)
+    is_admin = is_store_admin(current_user)
     if not (is_owner or is_admin):
         raise AuthorizationError("Insufficient permissions", "FORBIDDEN")
 
