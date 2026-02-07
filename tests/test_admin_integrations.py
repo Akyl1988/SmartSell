@@ -13,6 +13,7 @@ from app.core.security import create_access_token, get_password_hash
 from app.models.integration_provider import IntegrationProvider, IntegrationProviderEvent
 from app.models.user import User
 from app.services.otp_providers import OtpProviderResolver
+from app.services.provider_configs import ProviderConfigService
 
 
 @pytest.fixture(autouse=True)
@@ -200,6 +201,59 @@ async def test_access_control_admin_only(async_client, async_db_session):
 
     resp = await async_client.get("/api/admin/integrations/providers", headers={"Authorization": f"Bearer {token}"})
     assert resp.status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_admin_config_write_and_redaction(async_client, async_db_session):
+    _, token = await _make_admin(async_db_session)
+    headers = {"Authorization": f"Bearer {token}"}
+
+    otp_payload = {"config": {"api_key": "secret", "sender": "+100", "timeout_seconds": 1}}
+    resp_write = await async_client.put(
+        "/api/admin/integrations/providers/otp/noop/config",
+        json=otp_payload,
+        headers=headers,
+    )
+    assert resp_write.status_code == 200, resp_write.text
+    data_write = resp_write.json()
+    assert data_write.get("config", {}).get("api_key") == "***"
+
+    resp_get = await async_client.get(
+        "/api/admin/integrations/providers/otp/noop/config",
+        headers=headers,
+    )
+    assert resp_get.status_code == 200, resp_get.text
+    data_get = resp_get.json()
+    assert data_get.get("config", {}).get("api_key") == "***"
+
+    stored = await ProviderConfigService.get_provider_config(async_db_session, domain="otp", provider="noop")
+    assert stored.get("api_key") == "secret"
+
+    msg_payload = {"provider": "webhook", "config": {"url": "https://example.invalid", "api_key": "secret"}}
+    resp_msg_write = await async_client.put(
+        "/api/admin/integrations/messaging/config",
+        json=msg_payload,
+        headers=headers,
+    )
+    assert resp_msg_write.status_code == 200, resp_msg_write.text
+    data_msg_write = resp_msg_write.json()
+    assert data_msg_write.get("config", {}).get("api_key") == "***"
+
+    resp_msg_get = await async_client.get(
+        "/api/admin/integrations/messaging/config",
+        params={"provider": "webhook"},
+        headers=headers,
+    )
+    assert resp_msg_get.status_code == 200, resp_msg_get.text
+    data_msg_get = resp_msg_get.json()
+    assert data_msg_get.get("config", {}).get("api_key") == "***"
+
+    stored_msg = await ProviderConfigService.get_provider_config(
+        async_db_session,
+        domain="messaging",
+        provider="webhook",
+    )
+    assert stored_msg.get("api_key") == "secret"
 
 
 @pytest.mark.asyncio
