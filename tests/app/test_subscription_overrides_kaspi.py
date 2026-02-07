@@ -166,12 +166,16 @@ async def test_subscription_override_owner_only(async_client, async_db_session):
         json={"note": "nope"},
     )
     assert resp_put.status_code == 403
+    payload_put = resp_put.json()
+    assert payload_put.get("code") == "ADMIN_REQUIRED"
 
     resp_del = await async_client.delete(
         "/api/v1/admin/subscription-overrides/kaspi/M-OVR-2",
         headers=_auth_headers(admin),
     )
     assert resp_del.status_code == 403
+    payload_del = resp_del.json()
+    assert payload_del.get("code") == "ADMIN_REQUIRED"
 
 
 async def test_subscription_override_tenant_isolation(async_client, async_db_session):
