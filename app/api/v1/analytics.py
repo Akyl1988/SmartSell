@@ -8,12 +8,17 @@ Analytics router for business intelligence and reporting.
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import and_, desc, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.db import get_async_db
-from app.core.dependencies import api_rate_limit_dep, ensure_idempotency, require_active_subscription, require_store_roles
+from app.core.dependencies import (
+    api_rate_limit_dep,
+    ensure_idempotency,
+    require_active_subscription,
+    require_store_roles,
+)
 from app.core.exceptions import bad_request, server_error
 from app.core.security import get_current_user, resolve_tenant_company_id
 from app.models import Order, OrderItem, Product, User

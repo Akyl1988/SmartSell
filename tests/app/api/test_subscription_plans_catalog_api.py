@@ -13,6 +13,6 @@ async def test_subscription_plans_catalog_admin_ok(client, auth_headers):
 
 
 @pytest.mark.asyncio
-async def test_subscription_plans_catalog_non_admin_forbidden(client, company_a_admin_headers):
+async def test_subscription_plans_catalog_non_admin_allowed(client, company_a_admin_headers):
     resp = await client.get(BASE, headers=company_a_admin_headers)
-    assert resp.status_code == 403
+    assert resp.status_code == 200

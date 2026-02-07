@@ -82,6 +82,12 @@ jobs:
           pip install -r requirements.txt
           pip install "psycopg[binary]" asyncpg pytest pytest-asyncio pytest-timeout
 
+      - name: Ruff lint
+        run: python -m ruff check .
+
+      - name: Ruff format check
+        run: python -m ruff format --check .
+
       - name: Run migrations (sync driver)
         env:
           DATABASE_URL: postgresql+psycopg://postgres:postgres@localhost:5432/smartsell_test
