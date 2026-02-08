@@ -45,7 +45,7 @@ from xml.etree import ElementTree as ET
 
 import httpx
 import sqlalchemy as sa
-from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, Response, UploadFile, status
+from fastapi import APIRouter, Body, Depends, File, HTTPException, Query, Request, Response, UploadFile, status
 from fastapi.encoders import jsonable_encoder
 from fastapi.responses import FileResponse, JSONResponse
 from openpyxl import Workbook, load_workbook
@@ -1218,7 +1218,7 @@ def _compute_sync_now_budgets(
     goods_timeout_sec = max(0.0, default_goods * scale)
     feed_timeout_sec = max(0.0, default_feed * scale)
 
-    min_orders_budget = min(12.0, budget_total)
+    min_orders_budget = min(10.0, budget_total)
     non_orders_total = goods_timeout_sec + feed_timeout_sec
     max_non_orders = max(0.0, budget_total - min_orders_budget)
     if non_orders_total > max_non_orders and non_orders_total > 0:
@@ -1227,7 +1227,7 @@ def _compute_sync_now_budgets(
         feed_timeout_sec = max(0.0, feed_timeout_sec * shrink)
 
     orders_budget = max(0.1, budget_total - goods_timeout_sec - feed_timeout_sec)
-    final_orders_timeout = min(max(orders_timeout_sec, 12.0), orders_budget)
+    final_orders_timeout = min(max(orders_timeout_sec, 10.0), orders_budget)
 
     return {
         "budget_total": budget_total,
@@ -1483,6 +1483,15 @@ async def kaspi_import_status(req: ImportStatusQuery):
 async def kaspi_orders_sync(
     request: Request,
     response: Response,
+    timeout_sec: int = Query(
+        30,
+        ge=5,
+        le=300,
+        description="Overall timeout budget for this sync call in seconds",
+    ),
+    max_pages: int = Query(2, ge=1, le=50),
+    max_window_minutes: int = Query(1440, ge=5, le=10080),
+    merchant_uid: str | None = Query(None, min_length=1, alias="merchantUid"),
     current_user: User = Depends(_auth_user),
     session: AsyncSession = Depends(get_async_db),
 ):
@@ -1490,9 +1499,79 @@ async def kaspi_orders_sync(
     svc: KaspiService | None = None
     try:
         resolved_company_id = _resolve_company_id(current_user)
+        company = await session.get(Company, resolved_company_id)
+        query_merchant = (merchant_uid or "").strip()
+        merchant_source = "query" if query_merchant else "company"
+        resolved_merchant_uid = query_merchant or (company.kaspi_store_id if company else None)
+        if not resolved_merchant_uid:
+            logger.warning(
+                "kaspi_orders_sync missing merchant_uid",
+                extra={
+                    "company_id": resolved_company_id,
+                    "request_id": getattr(getattr(request, "state", None), "request_id", None),
+                },
+            )
+            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="missing_merchant_uid")
+
+        logger.info(
+            "kaspi_orders_sync merchant_uid resolved",
+            extra={
+                "company_id": resolved_company_id,
+                "request_id": getattr(getattr(request, "state", None), "request_id", None),
+                "merchant_uid": resolved_merchant_uid,
+                "merchant_uid_source": merchant_source,
+                "store_selected": resolved_merchant_uid,
+            },
+        )
+
+        stub_mode = False
+        try:
+            health = KaspiAdapter().health(str(resolved_merchant_uid))
+            note = health.get("note") if isinstance(health, dict) else None
+            if isinstance(note, str) and ("stub" in note.lower() or "not_implemented" in note.lower()):
+                stub_mode = True
+        except Exception as exc:
+            logger.warning(
+                "kaspi_orders_sync health check failed",
+                extra={
+                    "company_id": resolved_company_id,
+                    "request_id": getattr(getattr(request, "state", None), "request_id", None),
+                    "error": type(exc).__name__,
+                },
+            )
+
+        logger.info(
+            "kaspi_orders_sync stub_mode",
+            extra={
+                "company_id": resolved_company_id,
+                "request_id": getattr(getattr(request, "state", None), "request_id", None),
+                "merchant_uid": resolved_merchant_uid,
+                "stub_mode": stub_mode,
+            },
+        )
+
+        if stub_mode:
+            payload = {
+                "ok": False,
+                "status": "not_implemented",
+                "code": "KASPI_STUB_NOT_IMPLEMENTED",
+                "detail": "kaspi_stub_not_implemented",
+                "company_id": resolved_company_id,
+                "merchant_uid": resolved_merchant_uid,
+            }
+            return JSONResponse(status_code=status.HTTP_501_NOT_IMPLEMENTED, content=payload)
+
         svc = KaspiService()
         request_id = getattr(getattr(request, "state", None), "request_id", None) if request else None
-        result = await svc.sync_orders(db=session, company_id=resolved_company_id, request_id=request_id)
+        result = await svc.sync_orders(
+            db=session,
+            company_id=resolved_company_id,
+            merchant_uid=resolved_merchant_uid,
+            request_id=request_id,
+            timeout_seconds=timeout_sec,
+            max_pages=max_pages,
+            max_window_minutes=max_window_minutes,
+        )
         if "ok" not in result and "status" not in result and "code" not in result:
             response.status_code = status.HTTP_200_OK
             return result
@@ -1528,6 +1607,9 @@ async def kaspi_orders_sync(
             detail = "kaspi rate limited"
             if retry_after is not None:
                 response.headers["Retry-After"] = str(retry_after)
+        elif code == "KASPI_BAD_REQUEST":
+            response.status_code = status.HTTP_422_UNPROCESSABLE_ENTITY
+            detail = result.get("message") or "kaspi bad request"
         elif code == "upstream_unavailable":
             response.status_code = status.HTTP_502_BAD_GATEWAY
             detail = "kaspi upstream error"
@@ -1551,6 +1633,8 @@ async def kaspi_orders_sync(
             "code": code,
             "request_id": request_id,
         }
+    except HTTPException:
+        raise
     except KaspiSyncAlreadyRunning:
         request_id = getattr(getattr(request, "state", None), "request_id", None) if request else None
         if resolved_company_id is not None:
@@ -2757,7 +2841,8 @@ async def kaspi_goods_import_refresh(
 )
 async def kaspi_sync_now(
     request: Request,
-    body: KaspiSyncNowIn,
+    body: KaspiSyncNowIn | None = Body(None),
+    merchant_uid: str | None = Query(None, min_length=1, alias="merchantUid"),
     timeout_sec: float = Query(SYNC_NOW_TIMEOUT_SEC, ge=0.1, le=60.0),
     hard: int = Query(0, ge=0, le=1),
     current_user: User = Depends(require_store_admin_then_feature(FEATURE_KASPI_SYNC_NOW)),
@@ -2766,7 +2851,10 @@ async def kaspi_sync_now(
     insp = sa_inspect(current_user)
     current_user_id = insp.identity[0] if insp.identity else int(current_user.id)
 
-    merchant_uid = (body.merchant_uid or "").strip()
+    refresh_once = True
+    if body is not None:
+        refresh_once = bool(body.refresh_once)
+    merchant_uid = ((body.merchant_uid if body else merchant_uid) or "").strip()
     if not merchant_uid:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="missing_merchant_uid")
 
@@ -2899,6 +2987,7 @@ async def kaspi_sync_now(
                         svc.sync_orders(
                             db=session,
                             company_id=company_id,
+                            merchant_uid=merchant_uid,
                             request_id=rid,
                             timeout_seconds=final_orders_timeout,
                             orders_max_attempts=1,
@@ -3151,7 +3240,7 @@ async def kaspi_sync_now(
                 await session.commit()
                 await session.refresh(record)
 
-                if body.refresh_once:
+                if refresh_once:
                     try:
                         status_response = await import_client.get_status(import_code=str(import_code))
                         record.status = str(status_response.get("status") or record.status)

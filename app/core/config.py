@@ -389,6 +389,8 @@ def should_disable_startup_hooks() -> bool:
 def run_startup_side_effects(s: Settings | None = None) -> None:
     """Run startup checks/logging explicitly (no import-time side effects)."""
     s = s or get_settings()
+    if s.is_production:
+        _check_kaspi_stub_disabled()
     if should_disable_startup_hooks():
         return
 
@@ -416,6 +418,20 @@ def run_startup_side_effects(s: Settings | None = None) -> None:
             s.log_startup_summary()
         except Exception:
             pass
+
+
+def _kaspi_stub_enabled(value: str | None) -> bool:
+    if value is None:
+        return True
+    raw = value.strip().lower()
+    if raw in {"0", "false", "no"}:
+        return False
+    return True
+
+
+def _check_kaspi_stub_disabled() -> None:
+    if _kaspi_stub_enabled(os.getenv("KASPI_STUB")):
+        raise RuntimeError("KASPI_STUB must be disabled in production (set KASPI_STUB=0)")
 
 
 # ================================

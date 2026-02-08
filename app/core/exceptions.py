@@ -322,7 +322,7 @@ async def smartsell_exception_handler(request: Request, exc: SmartSellException)
         sc = exc.http_status or status.HTTP_502_BAD_GATEWAY
         code = exc.code or "UPSTREAM_ERROR"
     elif isinstance(exc, SmartSellValidationError):
-        sc = exc.http_status or status.HTTP_422_UNPROCESSABLE_ENTITY
+        sc = exc.http_status or status.HTTP_422_UNPROCESSABLE_CONTENT
         code = exc.code or "VALIDATION_ERROR"
 
     rid = _ensure_request_id(request)
@@ -387,7 +387,7 @@ async def validation_exception_handler(request: Request, exc: ValidationError) -
 
     return _json_error_response(
         request=request,
-        status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+        status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
         detail="One or more fields failed validation",
         code="VALIDATION_ERROR",
         errors=errs,
@@ -421,7 +421,7 @@ async def request_validation_exception_handler(request: Request, exc) -> JSONRes
 
     return _json_error_response(
         request=request,
-        status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+        status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
         detail="Request validation failed",
         code="REQUEST_VALIDATION_ERROR",
         errors=errs,
