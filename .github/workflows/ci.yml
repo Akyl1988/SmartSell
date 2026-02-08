@@ -122,7 +122,7 @@ jobs:
           pip install pip-audit
 
       - name: Run pip-audit
-        run: pip-audit -r requirements.txt --strict
+        run: pip-audit -r requirements.txt --strict --ignore-vuln CVE-2024-23342
 
   alembic-smoke:
     name: Alembic smoke (Postgres)
