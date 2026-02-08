@@ -1511,7 +1511,7 @@ async def kaspi_orders_sync(
                     "request_id": getattr(getattr(request, "state", None), "request_id", None),
                 },
             )
-            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="missing_merchant_uid")
+            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail="missing_merchant_uid")
 
         logger.info(
             "kaspi_orders_sync merchant_uid resolved",
@@ -1608,7 +1608,7 @@ async def kaspi_orders_sync(
             if retry_after is not None:
                 response.headers["Retry-After"] = str(retry_after)
         elif code == "KASPI_BAD_REQUEST":
-            response.status_code = status.HTTP_422_UNPROCESSABLE_ENTITY
+            response.status_code = status.HTTP_422_UNPROCESSABLE_CONTENT
             detail = result.get("message") or "kaspi bad request"
         elif code == "upstream_unavailable":
             response.status_code = status.HTTP_502_BAD_GATEWAY

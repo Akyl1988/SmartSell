@@ -1,7 +1,7 @@
 <#
 Kaspi sync-now smoke (platform admin token)
 Env:
-  SMARTSELL_PLATFORM_IDENTIFIER / SMARTSELL_PLATFORM_PASSWORD (fallback: PLATFORM_IDENTIFIER / PLATFORM_PASSWORD, ADMIN_IDENTIFIER / ADMIN_PASSWORD)
+  ADMIN_IDENTIFIER / ADMIN_PASSWORD (fallback: PLATFORM_IDENTIFIER / PLATFORM_PASSWORD)
   KASPI_MERCHANT_UID
 #>
 
@@ -22,12 +22,10 @@ $ErrorActionPreference = "Stop"
 if (-not $BaseUrl) { $BaseUrl = "http://127.0.0.1:8000" }
 $idSource = "param"
 $pwSource = "param"
-if ([string]::IsNullOrWhiteSpace($Identifier)) { $Identifier = $env:SMARTSELL_PLATFORM_IDENTIFIER; $idSource = "SMARTSELL_PLATFORM_IDENTIFIER" }
-if ([string]::IsNullOrWhiteSpace($Password)) { $Password = $env:SMARTSELL_PLATFORM_PASSWORD; $pwSource = "SMARTSELL_PLATFORM_PASSWORD" }
+if ([string]::IsNullOrWhiteSpace($Identifier)) { $Identifier = $env:ADMIN_IDENTIFIER; $idSource = "ADMIN_IDENTIFIER" }
+if ([string]::IsNullOrWhiteSpace($Password)) { $Password = $env:ADMIN_PASSWORD; $pwSource = "ADMIN_PASSWORD" }
 if ([string]::IsNullOrWhiteSpace($Identifier)) { $Identifier = $env:PLATFORM_IDENTIFIER; $idSource = "PLATFORM_IDENTIFIER (fallback)" }
 if ([string]::IsNullOrWhiteSpace($Password)) { $Password = $env:PLATFORM_PASSWORD; $pwSource = "PLATFORM_PASSWORD (fallback)" }
-if ([string]::IsNullOrWhiteSpace($Identifier)) { $Identifier = $env:ADMIN_IDENTIFIER; $idSource = "ADMIN_IDENTIFIER (fallback)" }
-if ([string]::IsNullOrWhiteSpace($Password)) { $Password = $env:ADMIN_PASSWORD; $pwSource = "ADMIN_PASSWORD (fallback)" }
 if (-not $Identifier) { $Identifier = "" }
 if (-not $Password) { $Password = "" }
 if (-not $MerchantUid) { $MerchantUid = "" }
@@ -293,7 +291,7 @@ function Invoke-KaspiSyncNow {
 Write-Host "[INFO] Admin credentials source: ID=$idSource PW=$pwSource"
 
 if (-not $Identifier -or -not $Password -or -not $MerchantUid) {
-  Write-Host "[FAIL] missing SMARTSELL_PLATFORM_IDENTIFIER/SMARTSELL_PLATFORM_PASSWORD (or PLATFORM_/ADMIN_) or KASPI_MERCHANT_UID"
+  Write-Host "[FAIL] missing ADMIN_IDENTIFIER/ADMIN_PASSWORD (or PLATFORM_IDENTIFIER/PLATFORM_PASSWORD) or KASPI_MERCHANT_UID"
   exit 1
 }
 
