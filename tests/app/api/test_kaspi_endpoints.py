@@ -32,19 +32,27 @@ async def test_kaspi_orders_sync_allows_empty_body(monkeypatch, async_client, co
     called = {"count": 0, "company_id": None}
 
     class _FakeKaspiService:
-        async def sync_orders(self, company_id: int, db, request_id=None):  # noqa: ANN001
+        async def sync_orders(self, company_id: int, db, request_id=None, **kwargs):  # noqa: ANN001
             called["count"] += 1
             called["company_id"] = company_id
             return {"synced_for": company_id}
 
+        def classify_sync_error(self, exc):  # noqa: ANN001
+            return "internal_error"
+
+    monkeypatch.setattr(kaspi_module.KaspiAdapter, "health", lambda *args, **kwargs: {"note": "ok"})
+
     monkeypatch.setattr(kaspi_module, "KaspiService", _FakeKaspiService)
 
-    resp = await async_client.post("/api/v1/kaspi/orders/sync", headers=company_a_admin_headers)
+    resp = await async_client.post(
+        "/api/v1/kaspi/orders/sync?merchantUid=store-a",
+        headers=company_a_admin_headers,
+    )
     assert resp.status_code == 200, resp.text
     assert resp.json()["synced_for"] == 1001
 
     resp_empty = await async_client.post(
-        "/api/v1/kaspi/orders/sync",
+        "/api/v1/kaspi/orders/sync?merchantUid=store-a",
         headers=company_a_admin_headers,
         json={},
     )

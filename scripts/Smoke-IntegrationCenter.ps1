@@ -1,15 +1,28 @@
-param(
-    [string]$BaseUrl = "http://127.0.0.1:8000",
-    [string]$Token
-)
-
 <#
 .SYNOPSIS
 Quick smoke tests for Integration Center admin endpoints.
 
+.PARAMETER Identifier
+Platform admin identifier (optional if -Token is provided).
+
+.PARAMETER Password
+Platform admin password (optional if -Token is provided).
+
+.ENVIRONMENT
+SMARTSELL_PLATFORM_IDENTIFIER / SMARTSELL_PLATFORM_PASSWORD
+Fallbacks: PLATFORM_IDENTIFIER / PLATFORM_PASSWORD, ADMIN_IDENTIFIER / ADMIN_PASSWORD
+
 .EXAMPLE
+./Smoke-IntegrationCenter.ps1 -BaseUrl "http://127.0.0.1:8000" -Identifier "admin@local" -Password "admin"
 ./Smoke-IntegrationCenter.ps1 -BaseUrl "http://127.0.0.1:8000" -Token "eyJhbGciOi..."
 #>
+
+param(
+    [string]$BaseUrl = "http://127.0.0.1:8000",
+    [string]$Identifier = "",
+    [string]$Password = "",
+    [string]$Token
+)
 
 $ErrorActionPreference = "Stop"
 
@@ -68,11 +81,25 @@ function Invoke-Api {
     return Invoke-RestMethod @params
 }
 
-Write-Host "Platform credentials present: ID=$([bool]$env:SMARTSELL_PLATFORM_IDENTIFIER) PW=$([bool]$env:SMARTSELL_PLATFORM_PASSWORD)"
+$idSource = "param"
+$pwSource = "param"
+if ([string]::IsNullOrWhiteSpace($Identifier)) { $Identifier = $env:SMARTSELL_PLATFORM_IDENTIFIER; $idSource = "SMARTSELL_PLATFORM_IDENTIFIER" }
+if ([string]::IsNullOrWhiteSpace($Password)) { $Password = $env:SMARTSELL_PLATFORM_PASSWORD; $pwSource = "SMARTSELL_PLATFORM_PASSWORD" }
+if ([string]::IsNullOrWhiteSpace($Identifier)) { $Identifier = $env:PLATFORM_IDENTIFIER; $idSource = "PLATFORM_IDENTIFIER (fallback)" }
+if ([string]::IsNullOrWhiteSpace($Password)) { $Password = $env:PLATFORM_PASSWORD; $pwSource = "PLATFORM_PASSWORD (fallback)" }
+if ([string]::IsNullOrWhiteSpace($Identifier)) { $Identifier = $env:ADMIN_IDENTIFIER; $idSource = "ADMIN_IDENTIFIER (fallback)" }
+if ([string]::IsNullOrWhiteSpace($Password)) { $Password = $env:ADMIN_PASSWORD; $pwSource = "ADMIN_PASSWORD (fallback)" }
+
+Write-Host "[INFO] Platform credentials present: ID=$([bool]$Identifier) PW=$([bool]$Password)"
+Write-Host "[INFO] Platform credentials source: ID=$idSource PW=$pwSource"
 
 if (-not $Token) {
+    if ([string]::IsNullOrWhiteSpace($Identifier) -or [string]::IsNullOrWhiteSpace($Password)) {
+        Write-Host "FAIL: SMARTSELL_PLATFORM_IDENTIFIER/SMARTSELL_PLATFORM_PASSWORD (or PLATFORM_/ADMIN_ or -Identifier/-Password) are required when -Token is not provided"
+        exit 1
+    }
     try {
-        $Token = Get-TokenFromLogin -Identifier $env:SMARTSELL_PLATFORM_IDENTIFIER -Password $env:SMARTSELL_PLATFORM_PASSWORD
+        $Token = Get-TokenFromLogin -Identifier $Identifier -Password $Password
         Write-Result "platform login" $true
     } catch {
         Write-Result "platform login" $false $_.Exception.Message

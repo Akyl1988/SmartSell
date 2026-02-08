@@ -10,6 +10,7 @@ Tests cover:
 from datetime import UTC, datetime, timedelta
 
 import pytest
+import pytest_asyncio
 import sqlalchemy as sa
 
 from app.models import Order
@@ -44,8 +45,16 @@ def _orders_payload_with_timestamp(order_id: str, status: str, price: int, ts: d
     ]
 
 
+@pytest_asyncio.fixture
+async def kaspi_orders_sync_setup(ensure_company_has_kaspi_store_id, kaspi_adapter_health_ok):
+    await ensure_company_has_kaspi_store_id()
+    return kaspi_adapter_health_ok
+
+
 @pytest.mark.asyncio
-async def test_idempotency_no_duplicates(monkeypatch, async_client, async_db_session, company_a_admin_headers):
+async def test_idempotency_no_duplicates(
+    monkeypatch, async_client, async_db_session, company_a_admin_headers, kaspi_orders_sync_setup
+):
     """
     Test that running sync twice with the same remote payload does not create duplicates.
 
@@ -144,7 +153,9 @@ async def test_idempotency_no_duplicates(monkeypatch, async_client, async_db_ses
 
 
 @pytest.mark.asyncio
-async def test_watermark_advances_and_filters(monkeypatch, async_client, async_db_session, company_a_admin_headers):
+async def test_watermark_advances_and_filters(
+    monkeypatch, async_client, async_db_session, company_a_admin_headers, kaspi_orders_sync_setup
+):
     """
     Test that watermark advances after successful sync and second run requests only orders >= watermark.
 
@@ -261,7 +272,9 @@ async def test_watermark_advances_and_filters(monkeypatch, async_client, async_d
 
 
 @pytest.mark.asyncio
-async def test_upsert_updates_existing_order(monkeypatch, async_client, async_db_session, company_a_admin_headers):
+async def test_upsert_updates_existing_order(
+    monkeypatch, async_client, async_db_session, company_a_admin_headers, kaspi_orders_sync_setup
+):
     """
     Test that when remote order changes (status/price), second sync updates existing row.
 
@@ -383,7 +396,7 @@ async def test_upsert_updates_existing_order(monkeypatch, async_client, async_db
 
 @pytest.mark.asyncio
 async def test_advisory_lock_prevents_concurrent_sync(
-    monkeypatch, async_client, async_db_session, company_a_admin_headers
+    monkeypatch, async_client, async_db_session, company_a_admin_headers, kaspi_orders_sync_setup
 ):
     """
     Test that advisory lock prevents concurrent syncs and returns 423 status.
@@ -431,7 +444,7 @@ async def test_advisory_lock_prevents_concurrent_sync(
 
 @pytest.mark.asyncio
 async def test_error_handling_persists_failure_state(
-    monkeypatch, async_client, async_db_session, company_a_admin_headers
+    monkeypatch, async_client, async_db_session, company_a_admin_headers, kaspi_orders_sync_setup
 ):
     """
     Test that sync errors are properly recorded in state without changing watermark.

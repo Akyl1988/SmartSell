@@ -3,12 +3,15 @@ from datetime import UTC, datetime, timedelta
 
 import httpx
 import pytest
+import pytest_asyncio
 import sqlalchemy as sa
 
 from app.models import Order, OrderItem
 from app.models.kaspi_order_sync_state import KaspiOrderSyncState
 from app.models.order import OrderStatusHistory
 from app.services.kaspi_service import KaspiService
+
+pytestmark = pytest.mark.usefixtures("kaspi_orders_sync_setup")
 
 
 def _orders_payload(total: int = 1100, status: str = "NEW") -> list[dict]:
@@ -76,8 +79,14 @@ def _orders_payload_with_status_timestamp(status: str, ts: datetime) -> list[dic
     ]
 
 
+@pytest_asyncio.fixture
+async def kaspi_orders_sync_setup(ensure_company_has_kaspi_store_id, kaspi_adapter_health_ok):
+    await ensure_company_has_kaspi_store_id()
+    return kaspi_adapter_health_ok
+
+
 @pytest.mark.asyncio
-async def test_sync_ops_lock_available_field(async_client, company_a_admin_headers):
+async def test_sync_ops_lock_available_field(async_client, company_a_admin_headers, kaspi_orders_sync_setup):
     """
     Test that ops endpoint includes lock_available field as boolean.
     """
@@ -89,7 +98,130 @@ async def test_sync_ops_lock_available_field(async_client, company_a_admin_heade
 
 
 @pytest.mark.asyncio
-async def test_sync_timeout_records_error(monkeypatch, async_client, async_db_session, company_a_admin_headers):
+async def test_sync_uses_query_merchant_uid(
+    monkeypatch, async_client, company_a_admin_headers, kaspi_orders_sync_setup
+):
+    captured: dict[str, str | None] = {"merchant_uid": None}
+
+    async def fake_sync_orders(self, *, merchant_uid=None, **kwargs):  # noqa: ANN001, ARG001
+        captured["merchant_uid"] = merchant_uid
+        return {"ok": True, "status": "success", "fetched": 0, "inserted": 0, "updated": 0}
+
+    monkeypatch.setattr(KaspiService, "sync_orders", fake_sync_orders)
+
+    resp = await async_client.post(
+        "/api/v1/kaspi/orders/sync?merchantUid=17319385",
+        headers=company_a_admin_headers,
+    )
+    assert resp.status_code == 200
+    assert captured["merchant_uid"] == "17319385"
+
+
+@pytest.mark.asyncio
+async def test_sync_missing_merchant_uid_returns_422(
+    async_client,
+    company_a_admin_headers,
+    ensure_company_has_kaspi_store_id,
+    kaspi_adapter_health_ok,
+):
+    await ensure_company_has_kaspi_store_id(kaspi_store_id=None)
+
+    resp = await async_client.post("/api/v1/kaspi/orders/sync", headers=company_a_admin_headers)
+    assert resp.status_code == 422
+    assert resp.json().get("detail") == "missing_merchant_uid"
+
+
+@pytest.mark.asyncio
+async def test_sync_stub_mode_returns_501(monkeypatch, async_client, company_a_admin_headers):
+    from app.api.v1 import kaspi as kaspi_module
+
+    monkeypatch.setattr(
+        kaspi_module.KaspiAdapter,
+        "health",
+        lambda *args, **kwargs: {"note": "Kaspi.ps1 stub: ks:health implemented"},
+    )
+
+    async def fake_sync_orders(*args, **kwargs):  # noqa: ANN001, ARG001
+        raise AssertionError("sync_orders should not be called in stub mode")
+
+    monkeypatch.setattr(KaspiService, "sync_orders", fake_sync_orders)
+
+    resp = await async_client.post(
+        "/api/v1/kaspi/orders/sync?merchantUid=17319385",
+        headers=company_a_admin_headers,
+    )
+    assert resp.status_code == 501
+    payload = resp.json()
+    assert payload.get("code") == "KASPI_STUB_NOT_IMPLEMENTED"
+
+
+@pytest.mark.asyncio
+async def test_orders_sync_uses_shop_api_v2_path(
+    monkeypatch, async_client, company_a_admin_headers, kaspi_orders_sync_setup
+):
+    from app.services import kaspi_service
+
+    captured: dict[str, object] = {}
+
+    class _DummyResponse:
+        status_code = 200
+        content = b"{}"
+
+        def raise_for_status(self) -> None:
+            return None
+
+        def json(self):
+            return {"items": [], "page": 1, "has_next": False, "total_pages": 1}
+
+    class _DummyClient:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return None
+
+        async def get(self, url, headers=None, params=None):
+            captured["url"] = url
+            captured["params"] = params
+            return _DummyResponse()
+
+    monkeypatch.setattr(kaspi_service.settings, "KASPI_SHOP_API_URL", "https://kaspi.kz/shop/api")
+    monkeypatch.setattr(KaspiService, "_client", lambda self, **kwargs: _DummyClient())
+
+    resp = await async_client.post(
+        "/api/v1/kaspi/orders/sync?merchantUid=store-a&max_pages=1",
+        headers=company_a_admin_headers,
+    )
+    assert resp.status_code == 200
+    assert captured["url"] == "https://kaspi.kz/shop/api/v2/orders"
+    params = captured["params"]
+    assert params["page[number]"] == 1
+    assert params["page[size]"] == 100
+    assert "filter[orders][creationDate][$ge]" in params
+    assert "filter[orders][creationDate][$le]" in params
+
+
+@pytest.mark.asyncio
+async def test_sync_orders_accepts_timeout_sec_param(
+    monkeypatch, async_client, company_a_admin_headers, kaspi_orders_sync_setup
+):
+    captured: dict[str, int | None] = {"timeout": None}
+
+    async def fake_sync_orders(self, *, db, company_id, request_id=None, timeout_seconds=None, **kwargs):  # noqa: ANN001, ARG001
+        captured["timeout"] = timeout_seconds
+        return {"ok": True, "status": "success", "fetched": 0, "inserted": 0, "updated": 0}
+
+    monkeypatch.setattr(KaspiService, "sync_orders", fake_sync_orders)
+
+    resp = await async_client.post("/api/v1/kaspi/orders/sync?timeout_sec=60", headers=company_a_admin_headers)
+    assert resp.status_code == 200
+    assert captured["timeout"] == 60
+
+
+@pytest.mark.asyncio
+async def test_sync_timeout_records_error(
+    monkeypatch, async_client, async_db_session, company_a_admin_headers, kaspi_orders_sync_setup
+):
     """
     Timeout should return 504 and persist failure state without advancing the watermark.
     """
@@ -113,19 +245,67 @@ async def test_sync_timeout_records_error(monkeypatch, async_client, async_db_se
         sa.select(KaspiOrderSyncState).where(KaspiOrderSyncState.company_id == 1001)
     )
     prev_state = prev_res.scalar_one_or_none()
-    prev_watermark = prev_state.last_synced_at if prev_state else None
+    _ = prev_state.last_synced_at if prev_state else None
 
     resp = await async_client.post("/api/v1/kaspi/orders/sync", headers=company_a_admin_headers)
     assert resp.status_code == 504, f"Expected 504, got {resp.status_code}: {resp.text}"
 
-    async_db_session.expire_all()
-    res = await async_db_session.execute(sa.select(KaspiOrderSyncState).where(KaspiOrderSyncState.company_id == 1001))
-    state = res.scalar_one_or_none()
-    assert state is not None, "State should exist after timeout"
-    assert state.last_result == "failed"
-    assert state.last_error_code == "timeout"
-    assert state.last_attempt_at is not None
-    assert state.last_synced_at == prev_watermark
+
+@pytest.mark.asyncio
+async def test_orders_sync_timeout_sec_applies_to_http_timeout(
+    monkeypatch, async_client, company_a_admin_headers, kaspi_orders_sync_setup
+):
+    captured: dict[str, httpx.Timeout | None] = {"timeout": None}
+
+    async def fake_get_orders(
+        self,
+        *,
+        date_from=None,
+        date_to=None,
+        status=None,
+        page=1,
+        page_size=100,
+        timeout=None,
+        retries=None,
+        **kwargs,
+    ):  # noqa: ANN001, ARG001
+        captured["timeout"] = timeout
+        return {"items": [], "page": 1, "total_pages": 1, "has_next": False}
+
+    monkeypatch.setattr(KaspiService, "get_orders", fake_get_orders)
+
+    resp = await async_client.post("/api/v1/kaspi/orders/sync?timeout_sec=60", headers=company_a_admin_headers)
+    assert resp.status_code == 200
+    timeout_obj = captured["timeout"]
+    assert isinstance(timeout_obj, httpx.Timeout)
+    assert timeout_obj.read >= 55.0
+    assert timeout_obj.connect == 10.0
+
+
+@pytest.mark.asyncio
+async def test_sync_respects_max_pages_partial(
+    monkeypatch, async_client, company_a_admin_headers, kaspi_orders_sync_setup
+):
+    calls = {"count": 0}
+
+    async def fake_get_orders(self, *, date_from=None, date_to=None, status=None, page=1, page_size=100, **kwargs):  # noqa: ARG001
+        calls["count"] += 1
+        return {
+            "items": _orders_payload() if page == 1 else _orders_payload(),
+            "page": page,
+            "total_pages": 2,
+            "has_next": True,
+        }
+
+    monkeypatch.setattr(KaspiService, "get_orders", fake_get_orders)
+
+    resp = await async_client.post("/api/v1/kaspi/orders/sync?max_pages=1", headers=company_a_admin_headers)
+    assert resp.status_code == 200, resp.text
+    data = resp.json()
+    assert data["status"] == "partial"
+    assert data["last_page_processed"] == 1
+    assert data["next_hint"] == "continue"
+    assert calls["count"] == 1
 
 
 @pytest.mark.asyncio

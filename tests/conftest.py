@@ -53,6 +53,8 @@ from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import NullPool
 from sqlalchemy.sql.type_api import TypeEngine  # С‚РёРїС‹ РґР»СЏ С„РёР»СЊС‚СЂР° unsupported
 
+from app.models.company import Company
+
 # Compatibility shim: newer trio may not expose MultiError; avoid touching deprecated attribute when present.
 try:
     import trio  # type: ignore
@@ -84,6 +86,29 @@ os.environ.setdefault("TEST_REDIS_DISABLED", "1")
 
 # РЇРІРЅРѕ СѓРєР°Р¶РµРј "СЃРѕРІСЂРµРјРµРЅРЅС‹Р№" strict-СЂРµР¶РёРј asyncio, РµСЃР»Рё РїР»Р°РіРёРЅ РЅРµ РґРµР»Р°РµС‚ СЌС‚РѕРіРѕ СЃР°Рј.
 os.environ.setdefault("PYTEST_ASYNCIO_MODE", "strict")
+
+
+@pytest_asyncio.fixture
+async def ensure_company_has_kaspi_store_id(async_db_session):
+    async def _ensure(*, company_id: int = 1001, kaspi_store_id: str | None = "store-a") -> Company:
+        company = await async_db_session.get(Company, company_id)
+        if company is None:
+            company = Company(id=company_id, name=f"Company {company_id}", kaspi_store_id=kaspi_store_id)
+            async_db_session.add(company)
+        else:
+            company.kaspi_store_id = kaspi_store_id
+        await async_db_session.commit()
+        return company
+
+    return _ensure
+
+
+@pytest.fixture
+def kaspi_adapter_health_ok(monkeypatch):
+    from app.api.v1 import kaspi as kaspi_module
+
+    monkeypatch.setattr(kaspi_module.KaspiAdapter, "health", lambda *args, **kwargs: {"note": "ok"})
+    return True
 
 
 # ======================================================================================

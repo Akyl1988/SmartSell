@@ -1,7 +1,14 @@
+<#
+Kaspi sync-now smoke (platform admin token)
+Env:
+  SMARTSELL_PLATFORM_IDENTIFIER / SMARTSELL_PLATFORM_PASSWORD (fallback: PLATFORM_IDENTIFIER / PLATFORM_PASSWORD, ADMIN_IDENTIFIER / ADMIN_PASSWORD)
+  KASPI_MERCHANT_UID
+#>
+
 param(
   [string]$BaseUrl = $env:SMARTSELL_BASE_URL,
-  [string]$Identifier = $env:SMARTSELL_IDENTIFIER,
-  [string]$Password = $env:SMARTSELL_PASSWORD,
+  [string]$Identifier = "",
+  [string]$Password = "",
   [string]$MerchantUid = $env:KASPI_MERCHANT_UID,
   [int]$TimeoutSec = 30,
   [int]$ProbeTimeoutSec = 2,
@@ -13,9 +20,19 @@ $ErrorActionPreference = "Stop"
 
 # --------- User-configurable variables ---------
 if (-not $BaseUrl) { $BaseUrl = "http://127.0.0.1:8000" }
+$idSource = "param"
+$pwSource = "param"
+if ([string]::IsNullOrWhiteSpace($Identifier)) { $Identifier = $env:SMARTSELL_PLATFORM_IDENTIFIER; $idSource = "SMARTSELL_PLATFORM_IDENTIFIER" }
+if ([string]::IsNullOrWhiteSpace($Password)) { $Password = $env:SMARTSELL_PLATFORM_PASSWORD; $pwSource = "SMARTSELL_PLATFORM_PASSWORD" }
+if ([string]::IsNullOrWhiteSpace($Identifier)) { $Identifier = $env:PLATFORM_IDENTIFIER; $idSource = "PLATFORM_IDENTIFIER (fallback)" }
+if ([string]::IsNullOrWhiteSpace($Password)) { $Password = $env:PLATFORM_PASSWORD; $pwSource = "PLATFORM_PASSWORD (fallback)" }
+if ([string]::IsNullOrWhiteSpace($Identifier)) { $Identifier = $env:ADMIN_IDENTIFIER; $idSource = "ADMIN_IDENTIFIER (fallback)" }
+if ([string]::IsNullOrWhiteSpace($Password)) { $Password = $env:ADMIN_PASSWORD; $pwSource = "ADMIN_PASSWORD (fallback)" }
 if (-not $Identifier) { $Identifier = "" }
 if (-not $Password) { $Password = "" }
 if (-not $MerchantUid) { $MerchantUid = "" }
+$merchantForHint = $MerchantUid
+if ([string]::IsNullOrWhiteSpace($merchantForHint)) { $merchantForHint = "17319385" }
 
 function Get-ScriptDir {
   if ($PSScriptRoot) { return $PSScriptRoot }
@@ -273,9 +290,11 @@ function Invoke-KaspiSyncNow {
   return $result
 }
 
+Write-Host "[INFO] Admin credentials source: ID=$idSource PW=$pwSource"
+
 if (-not $Identifier -or -not $Password -or -not $MerchantUid) {
-  Write-Error "missing Identifier/Password/MerchantUid"
-  exit 2
+  Write-Host "[FAIL] missing SMARTSELL_PLATFORM_IDENTIFIER/SMARTSELL_PLATFORM_PASSWORD (or PLATFORM_/ADMIN_) or KASPI_MERCHANT_UID"
+  exit 1
 }
 
 if (-not (Test-ApiReady)) {
@@ -335,6 +354,22 @@ $firstCode = $first.StatusCode
 $firstBody = Get-JsonProperty -Object $first -Name "Body"
 $firstErrCode = Get-JsonProperty -Object $firstBody -Name "code"
 $firstErrDetail = Get-JsonProperty -Object $firstBody -Name "detail"
+if ($firstCode -eq 403 -and $firstErrCode -eq "ADMIN_REQUIRED") {
+  Write-Host "[FAIL] ADMIN_REQUIRED: ensure platform_admin creds. Used: ID=$idSource PW=$pwSource"
+  exit 1
+}
+if ($firstCode -eq 409 -and ($firstErrCode -eq "kaspi_not_configured" -or $firstErrDetail -eq "kaspi_not_configured")) {
+  Write-Host "[FAIL] kaspi_not_configured: check companies.kaspi_store_id for company_id=1 and kaspi_store_tokens for store_name=merchant_uid"
+  exit 1
+}
+if ($firstCode -eq 409 -and ($firstErrCode -eq "kaspi_token_not_found" -or $firstErrDetail -eq "kaspi_token_not_found")) {
+  Write-Host "[FAIL] kaspi_token_not_found: check kaspi_store_tokens row for store_name=merchant_uid"
+  exit 1
+}
+if ($firstCode -eq 404 -and ($firstErrCode -eq "offers_not_found" -or $firstErrDetail -eq "offers_not_found")) {
+  Write-Host "[FAIL] Нет офферов для company_id=1 merchant_uid=$merchantForHint (kaspi_offers пустая). Сначала запусти /api/v1/kaspi/catalog/import (или скрипт импорта офферов)."
+  exit 1
+}
 
 if ($firstCode -eq 402 -and ($firstErrCode -eq "subscription_required" -or $firstErrDetail -eq "subscription_required")) {
   Write-Host "SKIP: subscription required for kaspi sync now."
@@ -378,6 +413,15 @@ if ($second.StatusCode -eq 429) {
 $secondCode = $second.StatusCode
 $secondBody = Get-JsonProperty -Object $second -Name "Body"
 $secondErrCode = Get-JsonProperty -Object $secondBody -Name "code"
+$secondErrDetail = Get-JsonProperty -Object $secondBody -Name "detail"
+if ($secondCode -eq 403 -and $secondErrCode -eq "ADMIN_REQUIRED") {
+  Write-Host "[FAIL] ADMIN_REQUIRED: ensure platform_admin creds. Used: ID=$idSource PW=$pwSource"
+  exit 1
+}
+if ($secondCode -eq 404 -and ($secondErrCode -eq "offers_not_found" -or $secondErrDetail -eq "offers_not_found")) {
+  Write-Host "[FAIL] Нет офферов для company_id=1 merchant_uid=$merchantForHint (kaspi_offers пустая). Сначала запусти /api/v1/kaspi/catalog/import (или скрипт импорта офферов)."
+  exit 1
+}
 
 if (-not ($secondCode -eq 409 -and $secondErrCode -eq "kaspi_sync_in_progress")) {
   if ($secondCode -eq 504 -and $secondErrCode -eq "kaspi_sync_timeout") {

@@ -1,3 +1,12 @@
+<#
+Smoke core (OpenAPI + health + optional auth)
+Params:
+  -BaseUrl http://127.0.0.1:8000
+  -Identifier / -Password (optional; if missing => WARN, exit 0)
+Env examples:
+  SMARTSELL_IDENTIFIER / SMARTSELL_PASSWORD (pass via -Identifier/-Password)
+#>
+
 param(
   [string]$BaseUrl = "http://127.0.0.1:8000",
   [string]$Identifier = "",
@@ -7,7 +16,7 @@ param(
 $ErrorActionPreference = "Stop"
 
 function Run-Step([string]$title, [scriptblock]$action) {
-  Write-Host $title
+  Write-Host "[INFO] $title"
   & $action
 }
 
@@ -21,7 +30,7 @@ try {
     if ($resp.StatusCode -ne 200) {
       throw "Wallet health status $($resp.StatusCode)"
     }
-    Write-Host "OK: wallet health $($resp.StatusCode)"
+    Write-Host "[OK] wallet health $($resp.StatusCode)"
   }
 
   if (-not [string]::IsNullOrWhiteSpace($Identifier) -and -not [string]::IsNullOrWhiteSpace($Password)) {
@@ -29,11 +38,11 @@ try {
       & "$PSScriptRoot\smoke-auth.ps1" -BaseUrl $BaseUrl -Identifier $Identifier -Password $Password
     }
   } else {
-    Write-Host "AUTH SMOKE skipped (Identifier/Password not provided)"
+    Write-Host "[WARN] AUTH SMOKE skipped (Identifier/Password not provided)"
   }
 
-  Write-Host "DONE OK"
+  Write-Host "[OK] DONE"
 } catch {
-  Write-Host $_
+  Write-Host "[FAIL] $($_)"
   exit 1
 }

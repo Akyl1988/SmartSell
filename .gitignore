@@ -184,6 +184,10 @@ data/
 local/
 local2/
 
+# Local smoke scripts (do not commit)
+scripts/*.local.ps1
+scripts/smoke-*.local.ps1
+
 # =========================
 #         Docker
 # =========================

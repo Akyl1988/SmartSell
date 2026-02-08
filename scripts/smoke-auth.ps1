@@ -23,6 +23,8 @@ function Get-Json($url, $headers) {
 }
 
 if ([string]::IsNullOrWhiteSpace($Identifier) -or [string]::IsNullOrWhiteSpace($Password)) {
+  Write-Host "Missing credentials. Example:"
+  Write-Host "  pwsh -NoProfile -File .\scripts\smoke-auth.ps1 -BaseUrl http://127.0.0.1:8000 -Identifier admin@local -Password 'admin'"
   throw "Pass -Identifier and -Password"
 }
 

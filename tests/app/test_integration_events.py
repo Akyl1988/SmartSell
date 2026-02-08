@@ -83,16 +83,27 @@ async def test_integration_events_connect_and_selftest(
 
 @pytest.mark.asyncio
 async def test_integration_events_orders_sync_failure(
-    async_client, async_db_session, monkeypatch, company_a_admin_headers
+    async_client,
+    async_db_session,
+    monkeypatch,
+    company_a_admin_headers,
+    ensure_company_has_kaspi_store_id,
+    kaspi_adapter_health_ok,
 ):
     from app.api.v1 import kaspi as kaspi_router
+
+    await ensure_company_has_kaspi_store_id()
+    _ = kaspi_adapter_health_ok
 
     async def _sync_orders(*args, **kwargs):
         raise RuntimeError("boom")
 
     monkeypatch.setattr(kaspi_router.KaspiService, "sync_orders", _sync_orders)
 
-    resp = await async_client.post("/api/v1/kaspi/orders/sync", headers=company_a_admin_headers)
+    resp = await async_client.post(
+        "/api/v1/kaspi/orders/sync?merchantUid=store-a",
+        headers=company_a_admin_headers,
+    )
     assert resp.status_code == 500, resp.text
 
     event = (
