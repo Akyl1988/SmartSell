@@ -467,6 +467,11 @@ class Settings(BaseSettings):
         description="Log masked config summary at startup (dev only)",
         validation_alias="STARTUP_LOG_SUMMARY",
     )
+    KASPI_STUB: bool = Field(
+        default=False,
+        description="Enable Kaspi stub mode (must be disabled in production)",
+        validation_alias="KASPI_STUB",
+    )
     API_V1_STR: str = Field(default="/api/v1", description="API v1 prefix")
     HOST: str = Field(default="127.0.0.1", description="Server host", validation_alias="HOST")
     PORT: int = Field(default=8000, description="Server port", validation_alias="PORT")
@@ -2058,6 +2063,15 @@ def validate_prod_secrets(s: Settings | None = None) -> None:
         s.check_secret_key()
         s.check_token_secrets()
         s.check_otp_secret()
+        stub_value = getattr(s, "KASPI_STUB", False)
+        if isinstance(stub_value, bool):
+            stub_enabled = stub_value
+        elif stub_value is None:
+            stub_enabled = False
+        else:
+            stub_enabled = str(stub_value).strip().lower() in ("1", "true", "yes", "on", "enable", "enabled")
+        if stub_enabled:
+            raise RuntimeError("KASPI_STUB must be disabled in production")
 
 
 settings = get_settings()
