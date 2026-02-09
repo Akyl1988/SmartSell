@@ -128,6 +128,16 @@ FAST_PROBE_TIMEOUT = 5.0
 SYNC_NOW_TIMEOUT_SEC = 25.0
 
 
+def _is_dev_environment() -> bool:
+    env_name = str(getattr(settings, "ENVIRONMENT", "") or "").lower()
+    debug_flag = bool(getattr(settings, "DEBUG", False))
+    if debug_flag:
+        return True
+    if env_name in {"local", "development", "dev", "test", "testing", "pytest"}:
+        return True
+    return bool(os.environ.get("PYTEST_CURRENT_TEST"))
+
+
 def _ci_diag_enabled() -> bool:
     return os.environ.get("CI_DIAG", "").strip() == "1"
 
@@ -935,7 +945,20 @@ async def connect_store(
 
     # Update Company with provided company_name
     company.name = body.company_name.strip()
-    company.kaspi_store_id = body.store_name
+
+    requested_store = body.store_name.strip()
+    if requested_store:
+        conflict = await session.execute(
+            sa.select(Company.id).where(Company.kaspi_store_id == requested_store, Company.id != company_id)
+        )
+        conflict_id = conflict.scalar_one_or_none()
+        if conflict_id is not None:
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="kaspi_store_id_conflict")
+
+        if not company.kaspi_store_id:
+            company.kaspi_store_id = requested_store
+        elif company.kaspi_store_id != requested_store:
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="kaspi_store_id_conflict")
 
     # Store private metadata in Company.settings if provided
     if body.meta:
@@ -1227,7 +1250,7 @@ def _compute_sync_now_budgets(
         feed_timeout_sec = max(0.0, feed_timeout_sec * shrink)
 
     orders_budget = max(0.1, budget_total - goods_timeout_sec - feed_timeout_sec)
-    final_orders_timeout = min(max(orders_timeout_sec, 10.0), orders_budget)
+    final_orders_timeout = min(max(orders_budget, 0.1), 60.0)
 
     return {
         "budget_total": budget_total,
@@ -2966,6 +2989,7 @@ async def kaspi_sync_now(
                 feed_timeout_sec = budgets["feed_timeout_sec"]
                 orders_budget = budgets["orders_budget"]
                 final_orders_timeout = budgets["final_orders_timeout"]
+                orders_http_timeout = svc._orders_timeout(final_orders_timeout)
 
                 logger.info(
                     "kaspi_sync_now budgets",
@@ -2980,6 +3004,10 @@ async def kaspi_sync_now(
                         "budget_total_sec": budget_total,
                         "orders_budget": orders_budget,
                         "orders_final_timeout_sec": final_orders_timeout,
+                        "orders_http_connect": getattr(orders_http_timeout, "connect", None),
+                        "orders_http_read": getattr(orders_http_timeout, "read", None),
+                        "orders_http_write": getattr(orders_http_timeout, "write", None),
+                        "orders_http_pool": getattr(orders_http_timeout, "pool", None),
                     },
                 )
 
@@ -4297,6 +4325,66 @@ async def kaspi_offers_list(
     ]
 
     return KaspiOfferListOut(items=items, total=int(total or 0), limit=limit, offset=offset)
+
+
+class KaspiOfferSeedIn(BaseModel):
+    merchant_uid: str = Field(..., min_length=1)
+    sku: str | None = None
+    title: str | None = None
+    price: int | None = Field(None, ge=0)
+
+
+class KaspiOfferSeedOut(BaseModel):
+    created: bool
+    merchant_uid: str
+    sku: str
+    offer_id: int | None = None
+
+
+@router.post(
+    "/offers/seed",
+    summary="Dev-only: seed minimal Kaspi offer",
+    response_model=KaspiOfferSeedOut,
+)
+async def kaspi_offers_seed(
+    payload: KaspiOfferSeedIn,
+    current_user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_async_db),
+):
+    if not _is_dev_environment():
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="not_found")
+
+    await require_store_admin(current_user)
+    company_id = _resolve_company_id(current_user)
+    merchant_uid = payload.merchant_uid.strip()
+
+    existing = await session.execute(
+        sa.select(KaspiOffer)
+        .where(KaspiOffer.company_id == company_id, KaspiOffer.merchant_uid == merchant_uid)
+        .limit(1)
+    )
+    offer = existing.scalars().first()
+    if offer:
+        return KaspiOfferSeedOut(created=False, merchant_uid=merchant_uid, sku=offer.sku, offer_id=offer.id)
+
+    sku = (payload.sku or f"SMOKE-{uuid4().hex[:8]}").strip()
+    title = (payload.title or "Smoke Item").strip()
+    price = int(payload.price) if payload.price is not None else 1000
+
+    offer = KaspiOffer(
+        company_id=company_id,
+        merchant_uid=merchant_uid,
+        sku=sku,
+        title=title,
+        price=price,
+        stock_count=1,
+        stock_specified=True,
+    )
+    session.add(offer)
+    await session.commit()
+    await session.refresh(offer)
+
+    return KaspiOfferSeedOut(created=True, merchant_uid=merchant_uid, sku=sku, offer_id=offer.id)
 
 
 TEMPLATE_RESPONSES = {

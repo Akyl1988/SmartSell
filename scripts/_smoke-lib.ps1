@@ -1,6 +1,7 @@
 Set-StrictMode -Version Latest
 $script:SmartsellAccessToken = $null
 $script:SmartsellRefreshToken = $null
+$script:SmartsellCachePath = $null
 
 function Mask-Secret([string]$Value) {
   if ([string]::IsNullOrWhiteSpace($Value)) { return "" }
@@ -8,10 +9,82 @@ function Mask-Secret([string]$Value) {
   return ($Value.Substring(0,4) + "..." + $Value.Substring($Value.Length-4))
 }
 
-function Test-AsciiValue {
+function Get-SmokeCachePath {
+  if ($script:SmartsellCachePath) { return $script:SmartsellCachePath }
+  $root = $PSScriptRoot
+  if (-not $root) { $root = (Get-Location).Path }
+  $script:SmartsellCachePath = Join-Path $root ".smoke-cache.json"
+  return $script:SmartsellCachePath
+}
+
+function Read-SmokeCache {
+  $path = Get-SmokeCachePath
+  if (-not (Test-Path $path)) { return @{} }
+  try {
+    $raw = Get-Content -LiteralPath $path -Raw
+    if (-not $raw) { return @{} }
+    $data = $raw | ConvertFrom-Json
+    if ($data -is [hashtable]) { return $data }
+    $ht = @{}
+    foreach ($p in $data.PSObject.Properties) { $ht[$p.Name] = $p.Value }
+    return $ht
+  } catch {
+    return @{}
+  }
+}
+
+function Write-SmokeCache {
+  param([hashtable]$Data)
+  $path = Get-SmokeCachePath
+  try {
+    $json = $Data | ConvertTo-Json -Depth 6
+    Set-Content -LiteralPath $path -Value $json -Encoding UTF8
+  } catch {
+    return $false
+  }
+  return $true
+}
+
+function Normalize-JwtToken {
   param([string]$Value)
-  if ($null -eq $Value) { return $false }
-  return -not ([string]$Value -match "[^\x20-\x7E]")
+  if ([string]::IsNullOrWhiteSpace($Value)) { return $null }
+  $token = ([string]$Value).Trim()
+  if ($token -match '^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$') {
+    return $token
+  }
+  return $null
+}
+
+function Load-SmartsellTokensFromCache {
+  param([string]$BaseUrl)
+  if (-not $BaseUrl) { return $null }
+  $cache = Read-SmokeCache
+  if (-not $cache.ContainsKey($BaseUrl)) { return $null }
+  $entry = $cache[$BaseUrl]
+  if (-not $entry) { return $null }
+  $access = Normalize-JwtToken -Value $entry.access
+  $refresh = Normalize-JwtToken -Value $entry.refresh
+  if (-not $access -and -not $refresh) { return $null }
+  return @{
+    access = $access
+    refresh = $refresh
+  }
+}
+
+function Save-SmartsellTokensToCache {
+  param(
+    [string]$BaseUrl,
+    [string]$AccessToken,
+    [string]$RefreshToken
+  )
+  if (-not $BaseUrl) { return $false }
+  $cache = Read-SmokeCache
+  $entry = @{}
+  if ($AccessToken) { $entry.access = $AccessToken }
+  if ($RefreshToken) { $entry.refresh = $RefreshToken }
+  $entry.updated_at = (Get-Date).ToString("o")
+  $cache[$BaseUrl] = $entry
+  return (Write-SmokeCache -Data $cache)
 }
 
 function Invoke-WebRequestSafe {
@@ -63,23 +136,23 @@ function Get-BaseUrlFromUrl {
 function Set-SmartsellTokens {
   param(
     [string]$AccessToken,
-    [string]$RefreshToken
+    [string]$RefreshToken,
+    [string]$BaseUrl = $null
   )
-  if ($AccessToken) {
-    $AccessToken = ([string]$AccessToken).Trim()
-    if (-not (Test-AsciiValue -Value $AccessToken)) {
-      $AccessToken = ""
-    }
+  $normalizedAccess = Normalize-JwtToken -Value $AccessToken
+  $normalizedRefresh = Normalize-JwtToken -Value $RefreshToken
+  if ($normalizedAccess) {
+    $AccessToken = $normalizedAccess
     $script:SmartsellAccessToken = $AccessToken
     $env:SMARTSELL_ACCESS_TOKEN = $AccessToken
   }
-  if ($RefreshToken) {
-    $RefreshToken = ([string]$RefreshToken).Trim()
-    if (-not (Test-AsciiValue -Value $RefreshToken)) {
-      $RefreshToken = ""
-    }
+  if ($normalizedRefresh) {
+    $RefreshToken = $normalizedRefresh
     $script:SmartsellRefreshToken = $RefreshToken
     $env:SMARTSELL_REFRESH_TOKEN = $RefreshToken
+  }
+  if ($BaseUrl -and ($normalizedAccess -or $normalizedRefresh)) {
+    Save-SmartsellTokensToCache -BaseUrl $BaseUrl -AccessToken $normalizedAccess -RefreshToken $normalizedRefresh | Out-Null
   }
 }
 
@@ -102,7 +175,13 @@ function Get-SmartsellTokens {
     throw "Login response missing access_token/refresh_token"
   }
 
-  Set-SmartsellTokens -AccessToken $access -RefreshToken $refresh
+  $access = Normalize-JwtToken -Value $access
+  $refresh = Normalize-JwtToken -Value $refresh
+  if (-not $access -or -not $refresh) {
+    throw "Login response missing valid access_token/refresh_token"
+  }
+
+  Set-SmartsellTokens -AccessToken $access -RefreshToken $refresh -BaseUrl $BaseUrl
 
   $me = $null
   try {
@@ -138,7 +217,10 @@ function Refresh-SmartsellAccessToken {
   if (-not $refresh) { $refresh = $data.refreshToken }
 
   if (-not $access) { return $null }
-  Set-SmartsellTokens -AccessToken $access -RefreshToken $refresh
+  $access = Normalize-JwtToken -Value $access
+  $refresh = Normalize-JwtToken -Value $refresh
+  if (-not $access) { return $null }
+  Set-SmartsellTokens -AccessToken $access -RefreshToken $refresh -BaseUrl $BaseUrl
   return @{
     access = $access
     refresh = $refresh
@@ -176,6 +258,164 @@ function Test-AuthExpired {
   return $false
 }
 
+function Invoke-SmartsellMultipart {
+  param(
+    [Parameter(Mandatory=$true)][string]$Method,
+    [Parameter(Mandatory=$true)][string]$Url,
+    [Parameter(Mandatory=$true)][hashtable]$Form,
+    [hashtable]$Headers = $null,
+    [int]$TimeoutSec = 30,
+    [string]$BaseUrl = $null,
+    [string]$AccessToken = $null,
+    [string]$RefreshToken = $null,
+    [string]$Identifier = $null,
+    [string]$Password = $null
+  )
+
+  if (-not $BaseUrl) { $BaseUrl = Get-BaseUrlFromUrl -Url $Url }
+  if ($AccessToken) { $script:SmartsellAccessToken = Normalize-JwtToken -Value $AccessToken }
+  if ($RefreshToken) { $script:SmartsellRefreshToken = Normalize-JwtToken -Value $RefreshToken }
+
+  if (-not $script:SmartsellAccessToken -or -not $script:SmartsellRefreshToken) {
+    $cached = Load-SmartsellTokensFromCache -BaseUrl $BaseUrl
+    if ($cached) {
+      if ($cached.access) { $script:SmartsellAccessToken = $cached.access }
+      if ($cached.refresh) { $script:SmartsellRefreshToken = $cached.refresh }
+    }
+  }
+
+  function Invoke-Once([string]$Token) {
+    $reqHeaders = @{}
+    if ($Headers) { $reqHeaders = @{} + $Headers }
+    if ($Token) { $reqHeaders["Authorization"] = "Bearer $Token" }
+
+    try {
+      $resp = Invoke-WebRequestSafe -Params @{
+        Method = $Method
+        Uri = $Url
+        Headers = $reqHeaders
+        Form = $Form
+        TimeoutSec = $TimeoutSec
+      }
+    } catch {
+      $errMsg = "request failed"
+      try { $errMsg = $_.Exception.Message } catch { }
+      return [PSCustomObject]@{
+        StatusCode = 0
+        Headers = $null
+        Body = $null
+        RequestId = ""
+        Error = $errMsg
+      }
+    }
+
+    $status = $resp.StatusCode
+    $body = $null
+    $rid = ""
+    if ($resp -and $resp.Headers) {
+      $rid = [string](@($resp.Headers["X-Request-ID"])[0])
+      if (-not $rid) { $rid = [string](@($resp.Headers["x-request-id"])[0]) }
+    }
+    if ($resp.Content) {
+      try {
+        $body = $resp.Content | ConvertFrom-Json
+      } catch {
+        $body = $resp.Content
+      }
+    }
+
+    return [PSCustomObject]@{
+      StatusCode = $status
+      Headers = $resp.Headers
+      Body = $body
+      RequestId = $rid
+      Error = $null
+    }
+  }
+
+  $resp = Invoke-Once -Token $script:SmartsellAccessToken
+  if (-not (Test-AuthExpired -StatusCode $resp.StatusCode -Body $resp.Body)) {
+    return $resp
+  }
+
+  $refreshed = $null
+  if ($script:SmartsellRefreshToken) {
+    try {
+      $refreshed = Refresh-SmartsellAccessToken -BaseUrl $BaseUrl -RefreshToken $script:SmartsellRefreshToken -TimeoutSec $TimeoutSec
+    } catch {
+      $refreshed = $null
+    }
+  }
+
+  if (-not $refreshed -and $Identifier -and $Password) {
+    try {
+      $tokens = Get-SmartsellTokens -BaseUrl $BaseUrl -Identifier $Identifier -Password $Password -TimeoutSec $TimeoutSec
+      $script:SmartsellAccessToken = $tokens.access
+      $script:SmartsellRefreshToken = $tokens.refresh
+    } catch {
+      $tokens = $null
+    }
+  }
+
+  if ($script:SmartsellAccessToken) {
+    return Invoke-Once -Token $script:SmartsellAccessToken
+  }
+
+  return $resp
+}
+
+function Is-DevEnvironment {
+  $envName = ($env:ENVIRONMENT ?? "").ToLower()
+  $debug = ($env:DEBUG ?? "").ToLower()
+  if ($debug -in @("1", "true", "yes", "on")) { return $true }
+  return $envName -in @("local", "development", "dev", "test", "testing", "pytest")
+}
+
+function Ensure-KaspiOffers {
+  param(
+    [string]$BaseUrl,
+    [string]$MerchantUid,
+    [string]$AccessToken = $null,
+    [string]$RefreshToken = $null,
+    [string]$Identifier = $null,
+    [string]$Password = $null,
+    [switch]$AllowSeed
+  )
+  if (-not $MerchantUid) { return $false }
+
+  $listUrl = "$BaseUrl/api/v1/kaspi/offers?merchantUid=$([uri]::EscapeDataString($MerchantUid))&limit=1&offset=0"
+  $listResp = Invoke-SmartsellApi -Method "GET" -Url $listUrl -TimeoutSec 20 -AccessToken $AccessToken -RefreshToken $RefreshToken -Identifier $Identifier -Password $Password
+  if ($listResp.StatusCode -ge 200 -and $listResp.StatusCode -lt 300) {
+    $total = $listResp.Body.total
+    if ($total -and [int]$total -gt 0) { return $true }
+  }
+
+  $sku = "SMOKE-" + ([guid]::NewGuid().ToString("N").Substring(0, 8))
+  $tmpPath = [System.IO.Path]::ChangeExtension([System.IO.Path]::GetTempFileName(), "csv")
+  $csv = "sku,title,price`n$sku,Smoke Item,1000`n"
+  Set-Content -LiteralPath $tmpPath -Value $csv -Encoding UTF8
+
+  $importUrl = "$BaseUrl/api/v1/kaspi/catalog/import?merchantUid=$([uri]::EscapeDataString($MerchantUid))"
+  $form = @{ file = Get-Item $tmpPath }
+  $importResp = Invoke-SmartsellMultipart -Method "POST" -Url $importUrl -Form $form -TimeoutSec 30 -AccessToken $AccessToken -RefreshToken $RefreshToken -Identifier $Identifier -Password $Password
+  Remove-Item -LiteralPath $tmpPath -ErrorAction SilentlyContinue
+
+  if ($importResp.StatusCode -ge 200 -and $importResp.StatusCode -lt 300) {
+    return $true
+  }
+
+  if ($AllowSeed.IsPresent -and (Is-DevEnvironment)) {
+    $seedUrl = "$BaseUrl/api/v1/kaspi/offers/seed"
+    $seedBody = @{ merchant_uid = $MerchantUid; sku = $sku; title = "Smoke Item"; price = 1000 }
+    $seedResp = Invoke-SmartsellApi -Method "POST" -Url $seedUrl -Body $seedBody -TimeoutSec 20 -AccessToken $AccessToken -RefreshToken $RefreshToken -Identifier $Identifier -Password $Password
+    if ($seedResp.StatusCode -ge 200 -and $seedResp.StatusCode -lt 300) {
+      return $true
+    }
+  }
+
+  return $false
+}
+
 function Invoke-SmartsellApi {
   param(
     [Parameter(Mandatory=$true)][string]$Method,
@@ -190,23 +430,34 @@ function Invoke-SmartsellApi {
     [string]$Password = $null
   )
 
-  if ($AccessToken) { $script:SmartsellAccessToken = $AccessToken }
-  if ($RefreshToken) { $script:SmartsellRefreshToken = $RefreshToken }
+  if ($AccessToken) { $script:SmartsellAccessToken = Normalize-JwtToken -Value $AccessToken }
+  if ($RefreshToken) { $script:SmartsellRefreshToken = Normalize-JwtToken -Value $RefreshToken }
 
   if (-not $script:SmartsellAccessToken -and $env:SMARTSELL_ACCESS_TOKEN) {
-    $script:SmartsellAccessToken = $env:SMARTSELL_ACCESS_TOKEN
+    $script:SmartsellAccessToken = Normalize-JwtToken -Value $env:SMARTSELL_ACCESS_TOKEN
   }
   if (-not $script:SmartsellRefreshToken -and $env:SMARTSELL_REFRESH_TOKEN) {
-    $script:SmartsellRefreshToken = $env:SMARTSELL_REFRESH_TOKEN
+    $script:SmartsellRefreshToken = Normalize-JwtToken -Value $env:SMARTSELL_REFRESH_TOKEN
   }
 
-  if ($script:SmartsellAccessToken -and -not (Test-AsciiValue -Value $script:SmartsellAccessToken)) {
-    Write-Host ("WARN: access token contains non-ASCII chars; ignoring token={0}" -f (Mask-Secret $script:SmartsellAccessToken))
+  if ($script:SmartsellAccessToken -and -not (Normalize-JwtToken -Value $script:SmartsellAccessToken)) {
+    Write-Host ("WARN: access token has invalid format; ignoring token={0}" -f (Mask-Secret $script:SmartsellAccessToken))
     $script:SmartsellAccessToken = $null
   }
-  if ($script:SmartsellRefreshToken -and -not (Test-AsciiValue -Value $script:SmartsellRefreshToken)) {
-    Write-Host ("WARN: refresh token contains non-ASCII chars; ignoring token={0}" -f (Mask-Secret $script:SmartsellRefreshToken))
+  if ($script:SmartsellRefreshToken -and -not (Normalize-JwtToken -Value $script:SmartsellRefreshToken)) {
+    Write-Host ("WARN: refresh token has invalid format; ignoring token={0}" -f (Mask-Secret $script:SmartsellRefreshToken))
     $script:SmartsellRefreshToken = $null
+  }
+
+  if (-not $BaseUrl) { $BaseUrl = Get-BaseUrlFromUrl -Url $Url }
+
+  if (-not $script:SmartsellAccessToken -or -not $script:SmartsellRefreshToken) {
+    $cached = Load-SmartsellTokensFromCache -BaseUrl $BaseUrl
+    if ($cached) {
+      if ($cached.access) { $script:SmartsellAccessToken = $cached.access }
+      if ($cached.refresh) { $script:SmartsellRefreshToken = $cached.refresh }
+      Write-Host ("[INFO] Loaded cached tokens from {0}" -f (Get-SmokeCachePath))
+    }
   }
 
   if (-not $Identifier) { $Identifier = $env:ADMIN_IDENTIFIER }

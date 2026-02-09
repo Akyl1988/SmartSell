@@ -140,6 +140,36 @@ class TestKaspiConnect:
             mock_instance.verify_token.assert_called_once()
 
     @pytest.mark.asyncio
+    async def test_connect_persists_store_and_me_shows_kaspi_store_id(
+        self, async_client: AsyncClient, async_db_session: AsyncSession
+    ):
+        """Test: connect persists kaspi_store_id and /auth/me exposes it."""
+        user, company = await self._create_user_and_company(async_db_session, "77001234590")
+        headers = self._get_auth_header(user)
+
+        with patch("app.api.v1.kaspi.KaspiStoreToken.upsert_token"):
+            response = await async_client.post(
+                "/api/v1/kaspi/connect",
+                json={
+                    "company_name": "Store Connect",
+                    "store_name": "store_me_test",
+                    "token": "test_token_123456",
+                    "verify": False,
+                },
+                headers=headers,
+            )
+
+            assert response.status_code == 200, response.text
+
+        await async_db_session.refresh(company)
+        assert company.kaspi_store_id == "store_me_test"
+
+        me_resp = await async_client.get("/api/v1/auth/me", headers=headers)
+        assert me_resp.status_code == 200, me_resp.text
+        me_data = me_resp.json()
+        assert me_data.get("kaspi_store_id") == "store_me_test"
+
+    @pytest.mark.asyncio
     async def test_connect_verify_false_skips_adapter(self, async_client: AsyncClient, async_db_session: AsyncSession):
         """Test: verify=false should save token without calling HTTP verification."""
         user, company = await self._create_user_and_company(async_db_session, "77001234570")

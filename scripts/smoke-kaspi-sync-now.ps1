@@ -13,6 +13,7 @@ param(
   [string]$MerchantUid = $env:KASPI_MERCHANT_UID,
   [int]$TimeoutSec = 30,
   [int]$ProbeTimeoutSec = 2,
+  [switch]$EnsureOffers,
   [switch]$SkipIfApiDown
 )
 
@@ -47,16 +48,6 @@ function Get-ScriptDir {
 
 $ScriptDir = Get-ScriptDir
 . (Join-Path $ScriptDir "_smoke-lib.ps1")
-
-function Get-ScriptDir {
-  if ($PSScriptRoot) { return $PSScriptRoot }
-  if ($MyInvocation -and $MyInvocation.MyCommand -and $MyInvocation.MyCommand.Path) {
-    return Split-Path -Parent $MyInvocation.MyCommand.Path
-  }
-  return (Get-Location).Path
-}
-
-$ScriptDir = Get-ScriptDir
 $RepoRoot = Split-Path -Parent $ScriptDir
 if ($RepoRoot) { Set-Location $RepoRoot }
 
@@ -215,16 +206,25 @@ function Invoke-KaspiSyncNow {
 Write-Host "[INFO] Credentials source: ID=$idSource PW=$pwSource"
 
 $AccessToken = $Token
-if (-not $AccessToken) { $AccessToken = $env:SMARTSELL_ACCESS_TOKEN }
+$AccessToken = Normalize-JwtToken -Value $AccessToken
+if (-not $AccessToken) { $AccessToken = Normalize-JwtToken -Value $env:SMARTSELL_ACCESS_TOKEN }
 $RefreshToken = $env:SMARTSELL_REFRESH_TOKEN
 
 if ($AccessToken) {
-  if (-not (Test-AsciiValue -Value $AccessToken)) {
-    Write-Host ("WARN: access token contains non-ASCII chars; ignoring token={0}" -f (Mask-Secret $AccessToken))
-    $AccessToken = ""
-  }
-  Set-SmartsellTokens -AccessToken $AccessToken -RefreshToken $RefreshToken
+  Set-SmartsellTokens -AccessToken $AccessToken -RefreshToken $RefreshToken -BaseUrl $BaseUrl
   Write-Host ("[INFO] Using access token={0}" -f (Mask-Secret $AccessToken))
+} elseif ($Token) {
+  Write-Host ("WARN: provided access token has invalid format; ignoring token={0}" -f (Mask-Secret $Token))
+}
+
+if (-not $AccessToken) {
+  $cached = Load-SmartsellTokensFromCache -BaseUrl $BaseUrl
+  if ($cached -and $cached.access) {
+    $AccessToken = $cached.access
+    $RefreshToken = $cached.refresh
+    Set-SmartsellTokens -AccessToken $AccessToken -RefreshToken $RefreshToken -BaseUrl $BaseUrl
+    Write-Host ("[INFO] Using cached access token from {0}" -f (Get-SmokeCachePath))
+  }
 }
 
 if (-not $AccessToken -and (-not $Identifier -or -not $Password)) {
@@ -294,6 +294,13 @@ $path = Resolve-KaspiSyncNowPath
 if (-not $path) { exit 1 }
 "Resolved endpoint: $path"
 
+if ($EnsureOffers.IsPresent) {
+  $ok = Ensure-KaspiOffers -BaseUrl $BaseUrl -MerchantUid $MerchantUid -AccessToken $AccessToken -RefreshToken $RefreshToken -Identifier $Identifier -Password $Password -AllowSeed
+  if (-not $ok) {
+    Write-Host "WARN: could not ensure offers (will proceed)"
+  }
+}
+
 if (-not (Test-ApiReady)) {
   if ($SkipIfApiDown) {
     Write-Host "SKIP: API unreachable"
@@ -342,8 +349,25 @@ if ($firstCode -eq 409 -and ($firstErrCode -eq "kaspi_token_not_found" -or $firs
   exit 1
 }
 if ($firstCode -eq 404 -and ($firstErrCode -eq "offers_not_found" -or $firstErrDetail -eq "offers_not_found")) {
-  Write-Host "WARN: Нет офферов для company_id=1 merchant_uid=$merchantForHint (kaspi_offers пустая). Сначала запусти /api/v1/kaspi/catalog/import (или скрипт импорта офферов)."
-  exit 0
+  Write-Host "WARN: Нет офферов для company_id=1 merchant_uid=$merchantForHint (kaspi_offers пустая)."
+  if (Is-DevEnvironment) {
+    Write-Host "[INFO] Attempting dev-only offers seed/import..."
+    $seeded = Ensure-KaspiOffers -BaseUrl $BaseUrl -MerchantUid $MerchantUid -AccessToken $AccessToken -RefreshToken $RefreshToken -Identifier $Identifier -Password $Password -AllowSeed
+    if ($seeded) {
+      Write-Host "[INFO] Offers ensured; retrying sync-now"
+      $first = Invoke-KaspiSyncNow -Path $path -MerchantUid $MerchantUid
+      $firstCode = $first.StatusCode
+      $firstBody = Get-JsonProperty -Object $first -Name "Body"
+      $firstErrCode = Get-JsonProperty -Object $firstBody -Name "code"
+      $firstErrDetail = Get-JsonProperty -Object $firstBody -Name "detail"
+    } else {
+      Write-Host "WARN: offers still missing; stop"
+      exit 0
+    }
+  } else {
+    Write-Host "WARN: offers missing; skipping in non-dev environment."
+    exit 0
+  }
 }
 
 if ($firstCode -eq 402 -and ($firstErrCode -eq "subscription_required" -or $firstErrDetail -eq "subscription_required")) {

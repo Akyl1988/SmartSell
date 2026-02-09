@@ -188,6 +188,9 @@ local2/
 scripts/*.local.ps1
 scripts/smoke-*.local.ps1
 
+# Smoke cache (tokens) - local only
+scripts/.smoke-cache.json
+
 # Keep shared smoke scripts tracked
 !scripts/smoke-kaspi-onboard.ps1
 !scripts/_smoke-lib.ps1

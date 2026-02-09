@@ -62,10 +62,11 @@ try {
 
 $access = $tokens.access
 $refresh = $tokens.refresh
-Set-SmartsellTokens -AccessToken $access -RefreshToken $refresh
+Set-SmartsellTokens -AccessToken $access -RefreshToken $refresh -BaseUrl $BaseUrl
 
 Write-Host ("ACCESS: {0}" -f (Mask-Secret $access))
 Write-Host ("REFRESH: {0}" -f (Mask-Secret $refresh))
+Write-Host ("CACHE: {0}" -f (Get-SmokeCachePath))
 
 $meResp = Invoke-SmartsellApi -Method "GET" -Url "$BaseUrl/api/v1/auth/me" -TimeoutSec 20 -AccessToken $access -RefreshToken $refresh -Identifier $Identifier -Password $Password
 $me1 = $meResp.Body
