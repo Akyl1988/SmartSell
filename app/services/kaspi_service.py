@@ -24,6 +24,7 @@ from decimal import Decimal
 from time import perf_counter
 from typing import Any, Optional
 
+import anyio
 import httpx
 from sqlalchemy import and_, literal_column, select, text
 from sqlalchemy.dialects.postgresql import insert
@@ -278,6 +279,35 @@ class KaspiService:
         transport = httpx.AsyncHTTPTransport(http2=False)
         return httpx.AsyncClient(timeout=timeout, trust_env=False, transport=transport)
 
+    async def _orders_http_get(
+        self,
+        *,
+        url: str,
+        headers: dict[str, str],
+        params: list[tuple[str, object]],
+        timeout: httpx.Timeout,
+    ) -> httpx.Response:
+        transport_mode = str(getattr(settings, "KASPI_ORDERS_TRANSPORT", "async") or "async").lower()
+
+        if transport_mode == "sync":
+            read_timeout = getattr(timeout, "read", None)
+            sync_timeout = httpx.Timeout(
+                connect=getattr(timeout, "connect", None),
+                read=max(float(read_timeout or 0.0), 10.0),
+                write=getattr(timeout, "write", None),
+                pool=getattr(timeout, "pool", None),
+            )
+
+            def _do_request() -> httpx.Response:
+                transport = httpx.HTTPTransport(http2=False)
+                with httpx.Client(timeout=sync_timeout, trust_env=False, transport=transport) as client:
+                    return client.get(url, headers=headers, params=params)
+
+            return await anyio.to_thread.run_sync(_do_request, cancellable=True)
+
+        async with self._orders_client(timeout=timeout) as client:
+            return await client.get(url, headers=headers, params=params)
+
     def _orders_params(
         self,
         *,
@@ -323,17 +353,17 @@ class KaspiService:
         timeout_seconds: float | None = None,
     ) -> dict[str, Any]:
         orders_url = "https://kaspi.kz/shop/api/v2/orders"
-        params: dict[str, Any] = {
-            "page[number]": page,
-            "page[size]": limit,
-            "filter[orders][merchantUid]": merchant_uid,
-            "filter[orders][creationDate][$ge]": date_from_ms,
-            "filter[orders][creationDate][$le]": date_to_ms,
-        }
+        params: list[tuple[str, Any]] = [
+            ("page[number]", page),
+            ("page[size]", limit),
+            ("filter[orders][merchantUid]", merchant_uid),
+            ("filter[orders][creationDate][$ge]", date_from_ms),
+            ("filter[orders][creationDate][$le]", date_to_ms),
+        ]
         if state:
-            params["filter[orders][state]"] = state
+            params.append(("filter[orders][state]", state))
         if include_entries:
-            params["include[orders]"] = "entries"
+            params.append(("include[orders]", "entries"))
 
         headers = {
             "X-Auth-Token": token,
@@ -350,18 +380,22 @@ class KaspiService:
             getattr(timeout, "pool", None),
         )
         try:
-            async with self._orders_client(timeout=timeout) as client:
-                resp = await client.get(orders_url, headers=headers, params=params)
-                if resp.status_code in {401, 403}:
-                    return {
-                        "ok": False,
-                        "code": "NOT_AUTHENTICATED",
-                        "detail": "NOT_AUTHENTICATED",
-                        "status_code": 401,
-                        "request_id": request_id,
-                    }
-                resp.raise_for_status()
-                payload = resp.json() or {}
+            resp = await self._orders_http_get(
+                url=orders_url,
+                headers=headers,
+                params=params,
+                timeout=timeout,
+            )
+            if resp.status_code in {401, 403}:
+                return {
+                    "ok": False,
+                    "code": "NOT_AUTHENTICATED",
+                    "detail": "NOT_AUTHENTICATED",
+                    "status_code": 401,
+                    "request_id": request_id,
+                }
+            resp.raise_for_status()
+            payload = resp.json() or {}
         except httpx.TimeoutException:
             return {
                 "ok": False,
@@ -474,6 +508,7 @@ class KaspiService:
                 "path": "/shop/api/v2/orders",
                 "resolved_url": orders_url,
                 "http2_enabled": bool(getattr(settings, "KASPI_HTTP2", False)),
+                "orders_transport": str(getattr(settings, "KASPI_ORDERS_TRANSPORT", "async")),
                 "params": params,
                 "timeout_connect": getattr(timeout_obj, "connect", None),
                 "timeout_read": getattr(timeout_obj, "read", None),
@@ -502,8 +537,12 @@ class KaspiService:
             )
 
         try:
-            async with self._orders_client(timeout=timeout_obj) as client:
-                resp = await client.get(orders_url, headers=self._orders_headers(), params=params)
+            resp = await self._orders_http_get(
+                url=orders_url,
+                headers=self._orders_headers(),
+                params=params,
+                timeout=timeout_obj,
+            )
         except (httpx.TimeoutException, httpx.NetworkError, httpx.HTTPStatusError) as e:
             duration_ms = int((perf_counter() - started_at) * 1000)
             status_code = getattr(getattr(e, "response", None), "status_code", None)

@@ -717,6 +717,12 @@ class Settings(BaseSettings):
     KASPI_HTTP2: bool = Field(
         default=False, description="Enable HTTP/2 for Kaspi orders", validation_alias="KASPI_HTTP2"
     )
+    # Transport for Kaspi orders HTTP calls
+    KASPI_ORDERS_TRANSPORT: Literal["async", "sync"] = Field(
+        default="async",
+        description="Transport for Kaspi orders HTTP calls",
+        validation_alias="KASPI_ORDERS_TRANSPORT",
+    )
     # Симметричный ключ для pgcrypto: pgp_sym_encrypt/decrypt (ОЧЕНЬ ВАЖНО!)
     PGCRYPTO_KEY: str | None = Field(
         default=None,
