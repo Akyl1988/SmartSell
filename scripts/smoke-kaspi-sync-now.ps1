@@ -422,24 +422,40 @@ if ($secondCode -eq 404 -and ($secondErrCode -eq "offers_not_found" -or $secondE
   exit 0
 }
 
-if (-not ($secondCode -eq 409 -and $secondErrCode -eq "kaspi_sync_in_progress")) {
-  if ($secondCode -eq 504 -and $secondErrCode -eq "kaspi_sync_timeout") {
-    Write-Host "WARN: kaspi sync timeout on second call; not failing script."
+if ($secondCode -eq 409 -and $secondErrCode -eq "kaspi_sync_in_progress") {
+  "PASS"
+  exit 0
+}
+
+if ($secondCode -eq 504 -and $secondErrCode -eq "kaspi_sync_timeout") {
+  Write-Host "WARN: kaspi sync timeout on second call; not failing script."
+  exit 0
+}
+
+if ($secondCode -eq 200) {
+  if (-not $secondBody) {
+    Write-Error "Second call returned 200 but body is empty"
+    exit 1
+  }
+  $secondOk = Get-JsonProperty -Object $secondBody -Name "ok"
+  if ($secondOk -ne $true) {
+    Write-Error "Second call returned 200 but payload ok != true"
+    exit 1
+  }
+  $secondStatus = Get-JsonProperty -Object $secondBody -Name "status"
+  if ($secondStatus -eq "partial") {
+    Write-Host "WARN: kaspi sync partial on second call; not failing script."
     exit 0
   }
-  if ($secondCode -eq 200 -or $secondCode -eq 202) {
-    $secondStatus = Get-JsonProperty -Object $secondBody -Name "status"
-    $secondErrors = Get-JsonProperty -Object $secondBody -Name "errors"
-    $secondErr0 = $null
-    if ($secondErrors -and $secondErrors.Count -gt 0) { $secondErr0 = $secondErrors[0] }
-    $secondErr0Code = Get-JsonProperty -Object $secondErr0 -Name "code"
-    if ($secondStatus -eq "partial" -and $secondErr0Code -in @("kaspi_sync_timeout", "upstream_timeout")) {
-      Write-Host "WARN: kaspi sync timeout on second call (partial); not failing script."
-      exit 0
-    }
+  if ($secondStatus -eq "ok") {
+    "PASS"
+    exit 0
   }
-  Write-Error "Second call returned unexpected status: $secondCode"
+  Write-Error "Second call returned 200 with unexpected status: $secondStatus"
   exit 1
 }
+
+Write-Error "Second call returned unexpected status: $secondCode"
+exit 1
 
 "PASS"
