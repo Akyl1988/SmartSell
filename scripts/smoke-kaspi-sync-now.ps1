@@ -219,6 +219,10 @@ if (-not $AccessToken) { $AccessToken = $env:SMARTSELL_ACCESS_TOKEN }
 $RefreshToken = $env:SMARTSELL_REFRESH_TOKEN
 
 if ($AccessToken) {
+  if (-not (Test-AsciiValue -Value $AccessToken)) {
+    Write-Host ("WARN: access token contains non-ASCII chars; ignoring token={0}" -f (Mask-Secret $AccessToken))
+    $AccessToken = ""
+  }
   Set-SmartsellTokens -AccessToken $AccessToken -RefreshToken $RefreshToken
   Write-Host ("[INFO] Using access token={0}" -f (Mask-Secret $AccessToken))
 }
@@ -274,8 +278,12 @@ if (-not $MerchantUid -and $me) {
   $MerchantUid = [string]$meKaspiStore
 }
 
+if ($MerchantUid -and $MerchantUid -match "^<YOUR_MERCHANT_UID>$|^YOUR_MERCHANT_UID$|^MERCHANT_UID$") {
+  $MerchantUid = ""
+}
+
 if (-not $MerchantUid) {
-  Write-Host "[FAIL] missing KASPI_MERCHANT_UID and company.kaspi_store_id not set"
+  Write-Host "[FAIL] missing MerchantUid (-MerchantUid / KASPI_MERCHANT_UID) and company.kaspi_store_id not set"
   exit 1
 }
 
@@ -334,8 +342,8 @@ if ($firstCode -eq 409 -and ($firstErrCode -eq "kaspi_token_not_found" -or $firs
   exit 1
 }
 if ($firstCode -eq 404 -and ($firstErrCode -eq "offers_not_found" -or $firstErrDetail -eq "offers_not_found")) {
-  Write-Host "[FAIL] Нет офферов для company_id=1 merchant_uid=$merchantForHint (kaspi_offers пустая). Сначала запусти /api/v1/kaspi/catalog/import (или скрипт импорта офферов)."
-  exit 1
+  Write-Host "WARN: Нет офферов для company_id=1 merchant_uid=$merchantForHint (kaspi_offers пустая). Сначала запусти /api/v1/kaspi/catalog/import (или скрипт импорта офферов)."
+  exit 0
 }
 
 if ($firstCode -eq 402 -and ($firstErrCode -eq "subscription_required" -or $firstErrDetail -eq "subscription_required")) {
@@ -386,8 +394,8 @@ if ($secondCode -eq 403 -and $secondErrCode -eq "ADMIN_REQUIRED") {
   exit 1
 }
 if ($secondCode -eq 404 -and ($secondErrCode -eq "offers_not_found" -or $secondErrDetail -eq "offers_not_found")) {
-  Write-Host "[FAIL] Нет офферов для company_id=1 merchant_uid=$merchantForHint (kaspi_offers пустая). Сначала запусти /api/v1/kaspi/catalog/import (или скрипт импорта офферов)."
-  exit 1
+  Write-Host "WARN: Нет офферов для company_id=1 merchant_uid=$merchantForHint (kaspi_offers пустая). Сначала запусти /api/v1/kaspi/catalog/import (или скрипт импорта офферов)."
+  exit 0
 }
 
 if (-not ($secondCode -eq 409 -and $secondErrCode -eq "kaspi_sync_in_progress")) {

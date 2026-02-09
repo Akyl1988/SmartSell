@@ -190,6 +190,7 @@ scripts/smoke-*.local.ps1
 
 # Keep shared smoke scripts tracked
 !scripts/smoke-kaspi-onboard.ps1
+!scripts/_smoke-lib.ps1
 
 # =========================
 #         Docker
