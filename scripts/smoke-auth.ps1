@@ -1,7 +1,10 @@
 param(
   [string]$BaseUrl = "http://127.0.0.1:8000",
-  [string]$Identifier = "",
-  [string]$Password = ""
+  [string]$Identifier = $env:ADMIN_IDENTIFIER,
+  [string]$Password = $env:ADMIN_PASSWORD,
+  [string]$Phone = "",
+  [string]$CompanyName = "Demo Company",
+  [switch]$RegisterIfMissing
 )
 
 $ErrorActionPreference = "Stop"
@@ -18,9 +21,24 @@ function Post-Json($url, $obj, $headers = $null) {
   return Invoke-RestMethod @params
 }
 
+function Mask-Secret([string]$Value) {
+  if ([string]::IsNullOrWhiteSpace($Value)) { return "" }
+  if ($Value.Length -le 8) { return ("*" * $Value.Length) }
+  return ($Value.Substring(0,4) + "..." + $Value.Substring($Value.Length-4))
+}
+
 function Get-Json($url, $headers) {
   return Invoke-RestMethod -Uri $url -Method GET -TimeoutSec 20 -Headers $headers
 }
+
+$identifierProvided = $PSBoundParameters.ContainsKey("Identifier")
+$passwordProvided = $PSBoundParameters.ContainsKey("Password")
+
+if (-not $Identifier) { $Identifier = $env:PLATFORM_IDENTIFIER }
+if (-not $Password) { $Password = $env:PLATFORM_PASSWORD }
+
+$idSource = if ($identifierProvided) { "param:Identifier" } elseif ($env:ADMIN_IDENTIFIER) { "ADMIN_IDENTIFIER" } else { "PLATFORM_IDENTIFIER" }
+$pwSource = if ($passwordProvided) { "param:Password" } elseif ($env:ADMIN_PASSWORD) { "ADMIN_PASSWORD" } else { "PLATFORM_PASSWORD" }
 
 if ([string]::IsNullOrWhiteSpace($Identifier) -or [string]::IsNullOrWhiteSpace($Password)) {
   Write-Host "Missing credentials. Example:"
@@ -29,12 +47,28 @@ if ([string]::IsNullOrWhiteSpace($Identifier) -or [string]::IsNullOrWhiteSpace($
 }
 
 $loginUrl   = "$BaseUrl/api/v1/auth/login"
+$registerUrl = "$BaseUrl/api/v1/auth/register"
 $meUrl      = "$BaseUrl/api/v1/auth/me"
-$refreshUrl = "$BaseUrl/api/v1/auth/refresh"
-$logoutUrl  = "$BaseUrl/api/v1/auth/logout"
 
-Write-Host "LOGIN  $loginUrl"
-$login = Post-Json $loginUrl @{ identifier = $Identifier; password = $Password }
+Write-Host "LOGIN  $loginUrl (ID source=$idSource PW source=$pwSource)"
+try {
+  $login = Post-Json $loginUrl @{ identifier = $Identifier; password = $Password }
+} catch {
+  if (-not $RegisterIfMissing) { throw }
+  Write-Host "LOGIN failed. Attempting register: $registerUrl"
+
+  $payload = @{ password = $Password; company_name = $CompanyName }
+  if ($Identifier -match "@") {
+    $payload.email = $Identifier
+    if (-not $Phone) { throw "Register requires -Phone when using email identifier." }
+    $payload.phone = $Phone
+  } else {
+    $payload.phone = $Identifier
+  }
+
+  $register = Post-Json $registerUrl $payload
+  $login = $register
+}
 
 # Поддержим разные форматы ответа (на всякий случай)
 $access = $login.access_token
@@ -51,52 +85,14 @@ $h = @{ Authorization = "Bearer $access" }
 
 Write-Host "ME     $meUrl"
 $me1 = Get-Json $meUrl $h
-Write-Host ("ME OK user_id={0} role={1} company_name={2} phone={3} email={4}" -f $me1.id, $me1.role, $me1.company_name, $me1.phone, $me1.email)
+Write-Host ("ME OK user_id={0} role={1} company_id={2} company_name={3} kaspi_store_id={4}" -f $me1.id, $me1.role, $me1.company_id, $me1.company_name, $me1.kaspi_store_id)
 
-Write-Host "REFRESH $refreshUrl"
-$r = Post-Json $refreshUrl @{ refresh_token = $refresh }
+Write-Host ("TOKEN: {0}" -f (Mask-Secret $access))
 
-$access2 = $r.access_token
-if (-not $access2) { $access2 = $r.accessToken }
-$refresh2 = $r.refresh_token
-if (-not $refresh2) { $refresh2 = $r.refreshToken }
-
-if (-not $access2 -or -not $refresh2) {
-  Write-Host ($r | ConvertTo-Json -Depth 10)
-  throw "Refresh response missing access_token/refresh_token"
+$result = @{
+  token = $access
+  refresh_token = $refresh
+  user = $me1
 }
-
-$h2 = @{ Authorization = "Bearer $access2" }
-
-Write-Host "ME2    $meUrl"
-$me2 = Get-Json $meUrl $h2
-Write-Host ("ME2 OK user_id={0} role={1} company_name={2} phone={3} email={4}" -f $me2.id, $me2.role, $me2.company_name, $me2.phone, $me2.email)
-
-Write-Host "LOGOUT $logoutUrl"
-try {
-  # если logout ожидает refresh_token
-  $out = Post-Json $logoutUrl @{ refresh_token = $refresh2 } $h2
-  Write-Host "Logout OK"
-} catch {
-  Write-Host "Logout call failed (maybe different contract)."
-  throw
-}
-
-Write-Host "REFRESH_AFTER_LOGOUT"
-try {
-  Post-Json $refreshUrl @{ refresh_token = $refresh2 } | Out-Null
-  Write-Host "UNEXPECTED: refresh still works"
-} catch {
-  Write-Host "OK: refresh blocked"
-}
-
-Write-Host "ME_AFTER_LOGOUT"
-try {
-  $null = Get-Json $meUrl $h2
-  throw "ERROR: access token still valid after logout"
-} catch {
-  Write-Host "OK: /me blocked after logout"
-}
-
-Write-Host "DONE OK"
+Write-Output ($result | ConvertTo-Json -Depth 10)
 

@@ -7,6 +7,7 @@ Env:
 
 param(
   [string]$BaseUrl = $env:SMARTSELL_BASE_URL,
+  [string]$Token = $env:SMARTSELL_TOKEN,
   [string]$Identifier = $env:ADMIN_IDENTIFIER,
   [string]$Password = $env:ADMIN_PASSWORD,
   [string]$MerchantUid = $env:KASPI_MERCHANT_UID,
@@ -20,6 +21,7 @@ $ErrorActionPreference = "Stop"
 
 # --------- User-configurable variables ---------
 if (-not $BaseUrl) { $BaseUrl = "http://127.0.0.1:8000" }
+if (-not $Token) { $Token = "" }
 $identifierProvided = $PSBoundParameters.ContainsKey("Identifier")
 $passwordProvided = $PSBoundParameters.ContainsKey("Password")
 
@@ -34,8 +36,6 @@ if (-not $Password) { $Password = $env:PLATFORM_PASSWORD; $pwSource = "PLATFORM_
 if (-not $Identifier) { $Identifier = "" }
 if (-not $Password) { $Password = "" }
 if (-not $MerchantUid) { $MerchantUid = "" }
-$merchantForHint = $MerchantUid
-if ([string]::IsNullOrWhiteSpace($merchantForHint)) { $merchantForHint = "17319385" }
 
 function Get-ScriptDir {
   if ($PSScriptRoot) { return $PSScriptRoot }
@@ -89,6 +89,37 @@ function Get-JsonProperty {
   if (-not $Object) { return $null }
   $prop = $Object.PSObject.Properties[$Name]
   if ($prop) { return $prop.Value }
+  return $null
+}
+
+function Get-Json {
+  param(
+    [string]$Url,
+    [hashtable]$Headers
+  )
+  return Invoke-RestMethod -Uri $Url -Method GET -TimeoutSec 20 -Headers $Headers
+}
+
+function Resolve-ProfileValue {
+  param(
+    [object]$Profile,
+    [string]$Name
+  )
+  if (-not $Profile) { return $null }
+  $direct = $Profile.PSObject.Properties[$Name]
+  if ($direct) { return $direct.Value }
+  $user = $Profile.PSObject.Properties["user"]
+  if ($user -and $user.Value) {
+    $uval = $user.Value
+    $uv = $uval.PSObject.Properties[$Name]
+    if ($uv) { return $uv.Value }
+  }
+  $company = $Profile.PSObject.Properties["company"]
+  if ($company -and $company.Value) {
+    $cval = $company.Value
+    $cv = $cval.PSObject.Properties[$Name]
+    if ($cv) { return $cv.Value }
+  }
   return $null
 }
 
@@ -162,10 +193,14 @@ function Invoke-KaspiSyncNow {
 
   $sw = [System.Diagnostics.Stopwatch]::StartNew()
   $resp = $null
+  $uri = "$BaseUrl$Path"
+  if ($MerchantUid) {
+    $uri = $uri + "?merchantUid=" + [uri]::EscapeDataString($MerchantUid)
+  }
   try {
     $resp = Invoke-WebRequestSafe -Params @{
       Method = "Post"
-      Uri = "$BaseUrl$Path"
+      Uri = $uri
       Headers = $headers
       ContentType = "application/json"
       Body = $null
@@ -295,9 +330,15 @@ function Invoke-KaspiSyncNow {
 
 Write-Host "[INFO] Credentials source: ID=$idSource PW=$pwSource"
 
-if (-not $Identifier -or -not $Password -or -not $MerchantUid) {
-  Write-Host "[FAIL] missing ADMIN_IDENTIFIER/ADMIN_PASSWORD or PLATFORM_IDENTIFIER/PLATFORM_PASSWORD or KASPI_MERCHANT_UID"
+if (-not $Token -and (-not $Identifier -or -not $Password)) {
+  Write-Host "[FAIL] missing ADMIN_IDENTIFIER/ADMIN_PASSWORD or PLATFORM_IDENTIFIER/PLATFORM_PASSWORD (or pass -Token)"
   exit 1
+}
+
+if ($Token) {
+  $masked = ""
+  if ($Token.Length -le 8) { $masked = ("*" * $Token.Length) } else { $masked = $Token.Substring(0, 4) + "..." + $Token.Substring($Token.Length - 4) }
+  Write-Host "[INFO] Using provided token=$masked"
 }
 
 if (-not (Test-ApiReady)) {
@@ -309,14 +350,41 @@ if (-not (Test-ApiReady)) {
   exit 1
 }
 
-$loginRid = New-RequestId
-$loginHeaders = @{ "X-Request-ID" = $loginRid }
-$loginBody = @{ identifier = $Identifier; password = $Password } | ConvertTo-Json
-$login = Invoke-RestMethod -Method Post -Uri "$BaseUrl/api/v1/auth/login" -Headers $loginHeaders -ContentType "application/json" -Body $loginBody -TimeoutSec 15
+if (-not $Token) {
+  $loginRid = New-RequestId
+  $loginHeaders = @{ "X-Request-ID" = $loginRid }
+  $loginBody = @{ identifier = $Identifier; password = $Password } | ConvertTo-Json
+  $login = Invoke-RestMethod -Method Post -Uri "$BaseUrl/api/v1/auth/login" -Headers $loginHeaders -ContentType "application/json" -Body $loginBody -TimeoutSec 15
 
-$access = $login.access_token
-if (-not $access) { $access = $login.accessToken }
-if (-not $access) { throw "Login response: access token not found." }
+  $Token = $login.access_token
+  if (-not $Token) { $Token = $login.accessToken }
+  if (-not $Token) { throw "Login response: access token not found." }
+}
+
+$me = $null
+try {
+  $me = Get-Json "$BaseUrl/api/v1/auth/me" @{ Authorization = "Bearer $Token" }
+  $meCompanyId = Resolve-ProfileValue -Profile $me -Name "company_id"
+  $meCompanyName = Resolve-ProfileValue -Profile $me -Name "company_name"
+  $meKaspiStore = Resolve-ProfileValue -Profile $me -Name "kaspi_store_id"
+  $meUserId = Resolve-ProfileValue -Profile $me -Name "id"
+  $meRole = Resolve-ProfileValue -Profile $me -Name "role"
+  Write-Host ("ME OK user_id={0} role={1} company_id={2} company_name={3} kaspi_store_id={4}" -f $meUserId, $meRole, $meCompanyId, $meCompanyName, $meKaspiStore)
+} catch {
+  Write-Host "WARN: failed to fetch /api/v1/auth/me"
+}
+
+if (-not $MerchantUid -and $me) {
+  $MerchantUid = [string]$meKaspiStore
+}
+
+if (-not $MerchantUid) {
+  Write-Host "[FAIL] missing KASPI_MERCHANT_UID and company.kaspi_store_id not set"
+  exit 1
+}
+
+$merchantForHint = $MerchantUid
+if ([string]::IsNullOrWhiteSpace($merchantForHint)) { $merchantForHint = "17319385" }
 
 $path = Resolve-KaspiSyncNowPath
 if (-not $path) { exit 1 }
@@ -332,7 +400,7 @@ if (-not (Test-ApiReady)) {
 }
 
 "--- First call ---"
-$first = Invoke-KaspiSyncNow -Token $access -Path $path -MerchantUid $MerchantUid
+$first = Invoke-KaspiSyncNow -Token $Token -Path $path -MerchantUid $MerchantUid
 
 if (-not $first) {
   Write-Error "First call failed to return a response"
@@ -392,7 +460,7 @@ if ($firstCode -eq 409 -and $firstErrCode -eq "kaspi_sync_in_progress") {
 }
 
 "--- Second call ---"
-$second = Invoke-KaspiSyncNow -Token $access -Path $path -MerchantUid $MerchantUid
+$second = Invoke-KaspiSyncNow -Token $Token -Path $path -MerchantUid $MerchantUid
 
 if (-not $second) {
   Write-Error "Second call failed to return a response"
