@@ -1,5 +1,5 @@
 param(
-  [string]$BaseUrl = "http://127.0.0.1:8000",
+  [string]$BaseUrl = $env:SMARTSELL_BASE_URL,
   [string]$Identifier = $env:ADMIN_IDENTIFIER,
   [string]$Password = $env:ADMIN_PASSWORD,
   [string]$Phone = "",
@@ -9,27 +9,18 @@ param(
 
 $ErrorActionPreference = "Stop"
 
-function Post-Json($url, $obj, $headers = $null) {
-  $params = @{
-    Uri = $url
-    Method = "POST"
-    TimeoutSec = 20
-    ContentType = "application/json"
-    Body = ($obj | ConvertTo-Json -Depth 10)
+if (-not $BaseUrl) { $BaseUrl = "http://127.0.0.1:8000" }
+
+function Get-ScriptDir {
+  if ($PSScriptRoot) { return $PSScriptRoot }
+  if ($MyInvocation -and $MyInvocation.MyCommand -and $MyInvocation.MyCommand.Path) {
+    return Split-Path -Parent $MyInvocation.MyCommand.Path
   }
-  if ($headers) { $params.Headers = $headers }
-  return Invoke-RestMethod @params
+  return (Get-Location).Path
 }
 
-function Mask-Secret([string]$Value) {
-  if ([string]::IsNullOrWhiteSpace($Value)) { return "" }
-  if ($Value.Length -le 8) { return ("*" * $Value.Length) }
-  return ($Value.Substring(0,4) + "..." + $Value.Substring($Value.Length-4))
-}
-
-function Get-Json($url, $headers) {
-  return Invoke-RestMethod -Uri $url -Method GET -TimeoutSec 20 -Headers $headers
-}
+$ScriptDir = Get-ScriptDir
+. (Join-Path $ScriptDir "_smoke-lib.ps1")
 
 $identifierProvided = $PSBoundParameters.ContainsKey("Identifier")
 $passwordProvided = $PSBoundParameters.ContainsKey("Password")
@@ -46,13 +37,12 @@ if ([string]::IsNullOrWhiteSpace($Identifier) -or [string]::IsNullOrWhiteSpace($
   throw "Pass -Identifier and -Password"
 }
 
-$loginUrl   = "$BaseUrl/api/v1/auth/login"
+$loginUrl = "$BaseUrl/api/v1/auth/login"
 $registerUrl = "$BaseUrl/api/v1/auth/register"
-$meUrl      = "$BaseUrl/api/v1/auth/me"
 
 Write-Host "LOGIN  $loginUrl (ID source=$idSource PW source=$pwSource)"
 try {
-  $login = Post-Json $loginUrl @{ identifier = $Identifier; password = $Password }
+  $tokens = Get-SmartsellTokens -BaseUrl $BaseUrl -Identifier $Identifier -Password $Password
 } catch {
   if (-not $RegisterIfMissing) { throw }
   Write-Host "LOGIN failed. Attempting register: $registerUrl"
@@ -66,32 +56,30 @@ try {
     $payload.phone = $Identifier
   }
 
-  $register = Post-Json $registerUrl $payload
-  $login = $register
+  Invoke-RestMethod -Method POST -Uri $registerUrl -TimeoutSec 20 -ContentType "application/json" -Body ($payload | ConvertTo-Json)
+  $tokens = Get-SmartsellTokens -BaseUrl $BaseUrl -Identifier $Identifier -Password $Password
 }
 
-# Поддержим разные форматы ответа (на всякий случай)
-$access = $login.access_token
-if (-not $access) { $access = $login.accessToken }
-$refresh = $login.refresh_token
-if (-not $refresh) { $refresh = $login.refreshToken }
+$access = $tokens.access
+$refresh = $tokens.refresh
+Set-SmartsellTokens -AccessToken $access -RefreshToken $refresh
 
-if (-not $access -or -not $refresh) {
-  Write-Host ($login | ConvertTo-Json -Depth 10)
-  throw "Login response missing access_token/refresh_token"
-}
+Write-Host ("ACCESS: {0}" -f (Mask-Secret $access))
+Write-Host ("REFRESH: {0}" -f (Mask-Secret $refresh))
 
-$h = @{ Authorization = "Bearer $access" }
+$meResp = Invoke-SmartsellApi -Method "GET" -Url "$BaseUrl/api/v1/auth/me" -TimeoutSec 20 -AccessToken $access -RefreshToken $refresh -Identifier $Identifier -Password $Password
+$me1 = $meResp.Body
 
-Write-Host "ME     $meUrl"
-$me1 = Get-Json $meUrl $h
-Write-Host ("ME OK user_id={0} role={1} company_id={2} company_name={3} kaspi_store_id={4}" -f $me1.id, $me1.role, $me1.company_id, $me1.company_name, $me1.kaspi_store_id)
-
-Write-Host ("TOKEN: {0}" -f (Mask-Secret $access))
+$meCompanyId = Resolve-ProfileValue -Profile $me1 -Name "company_id"
+$meCompanyName = Resolve-ProfileValue -Profile $me1 -Name "company_name"
+$meKaspiStore = Resolve-ProfileValue -Profile $me1 -Name "kaspi_store_id"
+$meUserId = Resolve-ProfileValue -Profile $me1 -Name "id"
+$meRole = Resolve-ProfileValue -Profile $me1 -Name "role"
+Write-Host ("ME OK user_id={0} role={1} company_id={2} company_name={3} kaspi_store_id={4}" -f $meUserId, $meRole, $meCompanyId, $meCompanyName, $meKaspiStore)
 
 $result = @{
-  token = $access
-  refresh_token = $refresh
+  access_token = (Mask-Secret $access)
+  refresh_token = (Mask-Secret $refresh)
   user = $me1
 }
 Write-Output ($result | ConvertTo-Json -Depth 10)
