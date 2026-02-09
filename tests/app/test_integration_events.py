@@ -83,17 +83,20 @@ async def test_integration_events_connect_and_selftest(
 
 @pytest.mark.asyncio
 async def test_integration_events_orders_sync_failure(
-    async_client,
-    async_db_session,
-    monkeypatch,
-    company_a_admin_headers,
-    ensure_company_has_kaspi_store_id,
-    kaspi_adapter_health_ok,
+    async_client, async_db_session, monkeypatch, company_a_admin_headers
 ):
     from app.api.v1 import kaspi as kaspi_router
+    from app.models.company import Company
 
-    await ensure_company_has_kaspi_store_id()
-    _ = kaspi_adapter_health_ok
+    company = await async_db_session.get(Company, 1001)
+    if company is None:
+        company = Company(id=1001, name="Company 1001", kaspi_store_id="store-a")
+        async_db_session.add(company)
+    elif not company.kaspi_store_id:
+        company.kaspi_store_id = "store-a"
+    await async_db_session.commit()
+
+    monkeypatch.setattr(kaspi_router.KaspiAdapter, "health", lambda *args, **kwargs: {"note": "ok"})
 
     async def _sync_orders(*args, **kwargs):
         raise RuntimeError("boom")
