@@ -1607,9 +1607,9 @@ async def kaspi_orders_sync(
             detail = "kaspi rate limited"
             if retry_after is not None:
                 response.headers["Retry-After"] = str(retry_after)
-        elif code == "KASPI_BAD_REQUEST":
+        elif code.upper() == "KASPI_BAD_REQUEST":
             response.status_code = status.HTTP_422_UNPROCESSABLE_CONTENT
-            detail = result.get("message") or "kaspi bad request"
+            detail = str(result.get("message") or result.get("detail") or "kaspi bad request")
         elif code == "upstream_unavailable":
             response.status_code = status.HTTP_502_BAD_GATEWAY
             detail = "kaspi upstream error"
@@ -1633,8 +1633,6 @@ async def kaspi_orders_sync(
             "code": code,
             "request_id": request_id,
         }
-    except HTTPException:
-        raise
     except KaspiSyncAlreadyRunning:
         request_id = getattr(getattr(request, "state", None), "request_id", None) if request else None
         if resolved_company_id is not None:
@@ -1655,6 +1653,8 @@ async def kaspi_orders_sync(
             "detail": "kaspi sync already running",
             "request_id": request_id,
         }
+    except HTTPException:
+        raise
     except Exception as e:
         svc = svc or KaspiService()
         error_code = svc.classify_sync_error(e)

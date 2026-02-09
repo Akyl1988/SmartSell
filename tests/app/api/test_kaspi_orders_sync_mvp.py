@@ -45,16 +45,24 @@ def _orders_payload_with_timestamp(order_id: str, status: str, price: int, ts: d
     ]
 
 
-@pytest_asyncio.fixture
-async def kaspi_orders_sync_setup(ensure_company_has_kaspi_store_id, kaspi_adapter_health_ok):
-    await ensure_company_has_kaspi_store_id()
-    return kaspi_adapter_health_ok
+@pytest_asyncio.fixture(autouse=True)
+async def _kaspi_orders_sync_setup(async_db_session, monkeypatch):
+    from app.api.v1 import kaspi as kaspi_module
+    from app.models.company import Company
+
+    company = await async_db_session.get(Company, 1001)
+    if company is None:
+        company = Company(id=1001, name="Company 1001", kaspi_store_id="store-a")
+        async_db_session.add(company)
+    elif not company.kaspi_store_id:
+        company.kaspi_store_id = "store-a"
+    await async_db_session.commit()
+
+    monkeypatch.setattr(kaspi_module.KaspiAdapter, "health", lambda *args, **kwargs: {"note": "ok"})
 
 
 @pytest.mark.asyncio
-async def test_idempotency_no_duplicates(
-    monkeypatch, async_client, async_db_session, company_a_admin_headers, kaspi_orders_sync_setup
-):
+async def test_idempotency_no_duplicates(monkeypatch, async_client, async_db_session, company_a_admin_headers):
     """
     Test that running sync twice with the same remote payload does not create duplicates.
 
@@ -153,9 +161,7 @@ async def test_idempotency_no_duplicates(
 
 
 @pytest.mark.asyncio
-async def test_watermark_advances_and_filters(
-    monkeypatch, async_client, async_db_session, company_a_admin_headers, kaspi_orders_sync_setup
-):
+async def test_watermark_advances_and_filters(monkeypatch, async_client, async_db_session, company_a_admin_headers):
     """
     Test that watermark advances after successful sync and second run requests only orders >= watermark.
 
@@ -272,9 +278,7 @@ async def test_watermark_advances_and_filters(
 
 
 @pytest.mark.asyncio
-async def test_upsert_updates_existing_order(
-    monkeypatch, async_client, async_db_session, company_a_admin_headers, kaspi_orders_sync_setup
-):
+async def test_upsert_updates_existing_order(monkeypatch, async_client, async_db_session, company_a_admin_headers):
     """
     Test that when remote order changes (status/price), second sync updates existing row.
 
@@ -396,7 +400,7 @@ async def test_upsert_updates_existing_order(
 
 @pytest.mark.asyncio
 async def test_advisory_lock_prevents_concurrent_sync(
-    monkeypatch, async_client, async_db_session, company_a_admin_headers, kaspi_orders_sync_setup
+    monkeypatch, async_client, async_db_session, company_a_admin_headers
 ):
     """
     Test that advisory lock prevents concurrent syncs and returns 423 status.
@@ -444,7 +448,7 @@ async def test_advisory_lock_prevents_concurrent_sync(
 
 @pytest.mark.asyncio
 async def test_error_handling_persists_failure_state(
-    monkeypatch, async_client, async_db_session, company_a_admin_headers, kaspi_orders_sync_setup
+    monkeypatch, async_client, async_db_session, company_a_admin_headers
 ):
     """
     Test that sync errors are properly recorded in state without changing watermark.

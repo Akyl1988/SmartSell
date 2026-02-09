@@ -7,8 +7,8 @@ Env:
 
 param(
   [string]$BaseUrl = $env:SMARTSELL_BASE_URL,
-  [string]$Identifier = "",
-  [string]$Password = "",
+  [string]$Identifier = $env:ADMIN_IDENTIFIER,
+  [string]$Password = $env:ADMIN_PASSWORD,
   [string]$MerchantUid = $env:KASPI_MERCHANT_UID,
   [int]$TimeoutSec = 30,
   [int]$ProbeTimeoutSec = 2,
@@ -20,12 +20,17 @@ $ErrorActionPreference = "Stop"
 
 # --------- User-configurable variables ---------
 if (-not $BaseUrl) { $BaseUrl = "http://127.0.0.1:8000" }
-$idSource = "param"
-$pwSource = "param"
-if ([string]::IsNullOrWhiteSpace($Identifier)) { $Identifier = $env:ADMIN_IDENTIFIER; $idSource = "ADMIN_IDENTIFIER" }
-if ([string]::IsNullOrWhiteSpace($Password)) { $Password = $env:ADMIN_PASSWORD; $pwSource = "ADMIN_PASSWORD" }
-if ([string]::IsNullOrWhiteSpace($Identifier)) { $Identifier = $env:PLATFORM_IDENTIFIER; $idSource = "PLATFORM_IDENTIFIER (fallback)" }
-if ([string]::IsNullOrWhiteSpace($Password)) { $Password = $env:PLATFORM_PASSWORD; $pwSource = "PLATFORM_PASSWORD (fallback)" }
+$identifierProvided = $PSBoundParameters.ContainsKey("Identifier")
+$passwordProvided = $PSBoundParameters.ContainsKey("Password")
+
+if (-not $identifierProvided) { $Identifier = $env:ADMIN_IDENTIFIER }
+if (-not $passwordProvided) { $Password = $env:ADMIN_PASSWORD }
+
+$idSource = if ($identifierProvided) { "param:Identifier" } else { "ADMIN_IDENTIFIER" }
+$pwSource = if ($passwordProvided) { "param:Password" } else { "ADMIN_PASSWORD" }
+
+if (-not $Identifier) { $Identifier = $env:PLATFORM_IDENTIFIER; $idSource = "PLATFORM_IDENTIFIER" }
+if (-not $Password) { $Password = $env:PLATFORM_PASSWORD; $pwSource = "PLATFORM_PASSWORD" }
 if (-not $Identifier) { $Identifier = "" }
 if (-not $Password) { $Password = "" }
 if (-not $MerchantUid) { $MerchantUid = "" }
@@ -288,10 +293,10 @@ function Invoke-KaspiSyncNow {
   return $result
 }
 
-Write-Host "[INFO] Admin credentials source: ID=$idSource PW=$pwSource"
+Write-Host "[INFO] Credentials source: ID=$idSource PW=$pwSource"
 
 if (-not $Identifier -or -not $Password -or -not $MerchantUid) {
-  Write-Host "[FAIL] missing ADMIN_IDENTIFIER/ADMIN_PASSWORD (or PLATFORM_IDENTIFIER/PLATFORM_PASSWORD) or KASPI_MERCHANT_UID"
+  Write-Host "[FAIL] missing ADMIN_IDENTIFIER/ADMIN_PASSWORD or PLATFORM_IDENTIFIER/PLATFORM_PASSWORD or KASPI_MERCHANT_UID"
   exit 1
 }
 

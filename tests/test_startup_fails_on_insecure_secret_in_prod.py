@@ -35,7 +35,6 @@ async def test_startup_allows_secure_secret_in_prod(monkeypatch):
     monkeypatch.setenv("INVITE_TOKEN_SECRET", "x" * 48)
     monkeypatch.setenv("RESET_TOKEN_SECRET", "x" * 48)
     monkeypatch.setenv("OTP_SECRET", "x" * 48)
-    monkeypatch.setenv("KASPI_STUB", "0")
     monkeypatch.setenv("DISABLE_APP_STARTUP_HOOKS", "1")
 
     config.get_settings.cache_clear()
