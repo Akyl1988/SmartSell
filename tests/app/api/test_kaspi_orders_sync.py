@@ -199,6 +199,7 @@ async def test_orders_sync_uses_shop_api_url(monkeypatch, async_client, company_
         async def __aexit__(self, exc_type, exc, tb):
             return None
 
+    monkeypatch.setattr(kaspi_service.settings, "KASPI_ORDERS_TRANSPORT", "async")
     monkeypatch.setattr(kaspi_service.httpx, "AsyncClient", _DummyAsyncClient)
 
     resp = await async_client.post(
@@ -245,6 +246,7 @@ async def test_get_orders_total_count_zero_ok(monkeypatch):
             captured["params"] = params
             return _DummyResponse()
 
+    monkeypatch.setattr(kaspi_service.settings, "KASPI_ORDERS_TRANSPORT", "async")
     monkeypatch.setattr(kaspi_service.httpx, "AsyncClient", lambda **kwargs: _DummyClient())
 
     svc = KaspiService(api_key="token")
@@ -287,6 +289,7 @@ async def test_get_orders_one_order_ok(monkeypatch):
         async def get(self, url, headers=None, params=None):
             return _DummyResponse()
 
+    monkeypatch.setattr(kaspi_service.settings, "KASPI_ORDERS_TRANSPORT", "async")
     monkeypatch.setattr(kaspi_service.httpx, "AsyncClient", lambda **kwargs: _DummyClient())
 
     svc = KaspiService(api_key="token")

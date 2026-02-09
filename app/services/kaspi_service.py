@@ -303,7 +303,7 @@ class KaspiService:
                 with httpx.Client(timeout=sync_timeout, trust_env=False, transport=transport) as client:
                     return client.get(url, headers=headers, params=params)
 
-            return await anyio.to_thread.run_sync(_do_request, cancellable=True)
+            return await anyio.to_thread.run_sync(_do_request, abandon_on_cancel=True)
 
         async with self._orders_client(timeout=timeout) as client:
             return await client.get(url, headers=headers, params=params)
