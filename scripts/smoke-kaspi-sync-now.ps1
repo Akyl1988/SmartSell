@@ -194,8 +194,15 @@ function Invoke-KaspiSyncNow {
   $sw = [System.Diagnostics.Stopwatch]::StartNew()
   $resp = $null
   $uri = "$BaseUrl$Path"
+  $queryParts = @()
   if ($MerchantUid) {
-    $uri = $uri + "?merchantUid=" + [uri]::EscapeDataString($MerchantUid)
+    $queryParts += "merchantUid=" + [uri]::EscapeDataString($MerchantUid)
+  }
+  if ($TimeoutSec -gt 0) {
+    $queryParts += "timeout_sec=" + [uri]::EscapeDataString([string]$TimeoutSec)
+  }
+  if ($queryParts.Count -gt 0) {
+    $uri = $uri + "?" + ($queryParts -join "&")
   }
   try {
     $resp = Invoke-WebRequestSafe -Params @{
@@ -261,7 +268,7 @@ function Invoke-KaspiSyncNow {
     try {
       $resp = Invoke-WebRequestSafe -Params @{
         Method = "Post"
-        Uri = "$BaseUrl$Path"
+        Uri = "$BaseUrl$Path?timeout_sec=$TimeoutSec"
         Headers = $retryHeaders
         ContentType = "application/json"
         Body = $retryBody
