@@ -1514,6 +1514,7 @@ async def kaspi_orders_sync(
     ),
     max_pages: int = Query(2, ge=1, le=50),
     max_window_minutes: int = Query(1440, ge=5, le=10080),
+    backfill_days: int = Query(0, ge=0, le=365),
     merchant_uid: str | None = Query(None, min_length=1, alias="merchantUid"),
     current_user: User = Depends(_auth_user),
     session: AsyncSession = Depends(get_async_db),
@@ -1573,6 +1574,13 @@ async def kaspi_orders_sync(
             },
         )
 
+        env_value = (settings.ENVIRONMENT or "").lower()
+        if backfill_days > 0 and env_value not in {"dev", "development", "test", "testing", "local"}:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="backfill_days_allowed_only_in_development",
+            )
+
         if stub_mode:
             payload = {
                 "ok": False,
@@ -1594,6 +1602,7 @@ async def kaspi_orders_sync(
             timeout_seconds=timeout_sec,
             max_pages=max_pages,
             max_window_minutes=max_window_minutes,
+            backfill_days=backfill_days,
         )
         if "ok" not in result and "status" not in result and "code" not in result:
             response.status_code = status.HTTP_200_OK

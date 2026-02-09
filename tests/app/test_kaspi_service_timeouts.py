@@ -54,6 +54,7 @@ async def test_kaspi_list_orders_uses_computed_timeout(monkeypatch):
         captured["trust_env"] = trust_env
         return _DummyClient(timeout=timeout, transport=transport, http2=http2)
 
+    monkeypatch.setattr(kaspi_service.settings, "KASPI_ORDERS_TRANSPORT", "async")
     monkeypatch.setattr(kaspi_service.httpx, "AsyncClient", _client_factory)
 
     await svc.list_orders(
@@ -116,6 +117,7 @@ async def test_kaspi_get_orders_uses_shop_api_url_and_jsonapi_pagination(monkeyp
             captured["headers"] = headers
             return _DummyResponse()
 
+    monkeypatch.setattr(kaspi_service.settings, "KASPI_ORDERS_TRANSPORT", "async")
     monkeypatch.setattr(kaspi_service.httpx, "AsyncClient", _DummyClient)
 
     await svc.get_orders(page=0, page_size=0)
