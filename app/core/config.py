@@ -467,6 +467,11 @@ class Settings(BaseSettings):
         description="Log masked config summary at startup (dev only)",
         validation_alias="STARTUP_LOG_SUMMARY",
     )
+    KASPI_STUB: bool = Field(
+        default=False,
+        description="Enable Kaspi stub mode (must be disabled in production)",
+        validation_alias="KASPI_STUB",
+    )
     API_V1_STR: str = Field(default="/api/v1", description="API v1 prefix")
     HOST: str = Field(default="127.0.0.1", description="Server host", validation_alias="HOST")
     PORT: int = Field(default=8000, description="Server port", validation_alias="PORT")
@@ -708,6 +713,16 @@ class Settings(BaseSettings):
     KASPI_PAGE_SIZE_MAX: int = Field(default=100, description="Kaspi orders max page size")
     # Безопасный дефолт page[size] при наших запросах
     KASPI_DEFAULT_PAGE_SIZE: int = Field(default=50, description="Default page size")
+    # Use HTTP/2 for Kaspi shop orders (default off)
+    KASPI_HTTP2: bool = Field(
+        default=False, description="Enable HTTP/2 for Kaspi orders", validation_alias="KASPI_HTTP2"
+    )
+    # Transport for Kaspi orders HTTP calls
+    KASPI_ORDERS_TRANSPORT: Literal["async", "sync"] = Field(
+        default="async",
+        description="Transport for Kaspi orders HTTP calls",
+        validation_alias="KASPI_ORDERS_TRANSPORT",
+    )
     # Симметричный ключ для pgcrypto: pgp_sym_encrypt/decrypt (ОЧЕНЬ ВАЖНО!)
     PGCRYPTO_KEY: str | None = Field(
         default=None,
@@ -2058,6 +2073,15 @@ def validate_prod_secrets(s: Settings | None = None) -> None:
         s.check_secret_key()
         s.check_token_secrets()
         s.check_otp_secret()
+        stub_value = getattr(s, "KASPI_STUB", False)
+        if isinstance(stub_value, bool):
+            stub_enabled = stub_value
+        elif stub_value is None:
+            stub_enabled = False
+        else:
+            stub_enabled = str(stub_value).strip().lower() in ("1", "true", "yes", "on", "enable", "enabled")
+        if stub_enabled:
+            raise RuntimeError("KASPI_STUB must be disabled in production")
 
 
 settings = get_settings()

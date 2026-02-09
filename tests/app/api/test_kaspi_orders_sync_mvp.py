@@ -10,6 +10,7 @@ Tests cover:
 from datetime import UTC, datetime, timedelta
 
 import pytest
+import pytest_asyncio
 import sqlalchemy as sa
 
 from app.models import Order
@@ -42,6 +43,22 @@ def _orders_payload_with_timestamp(order_id: str, status: str, price: int, ts: d
             ],
         }
     ]
+
+
+@pytest_asyncio.fixture(autouse=True)
+async def _kaspi_orders_sync_setup(async_db_session, monkeypatch):
+    from app.api.v1 import kaspi as kaspi_module
+    from app.models.company import Company
+
+    company = await async_db_session.get(Company, 1001)
+    if company is None:
+        company = Company(id=1001, name="Company 1001", kaspi_store_id="store-a")
+        async_db_session.add(company)
+    elif not company.kaspi_store_id:
+        company.kaspi_store_id = "store-a"
+    await async_db_session.commit()
+
+    monkeypatch.setattr(kaspi_module.KaspiAdapter, "health", lambda *args, **kwargs: {"note": "ok"})
 
 
 @pytest.mark.asyncio

@@ -75,12 +75,17 @@ os.environ.setdefault("PYTHONIOENCODING", "UTF-8")
 
 # Ensure host SUPERUSER_ALLOWLIST does not leak into test runs
 os.environ.pop("SUPERUSER_ALLOWLIST", None)
+os.environ.pop("INVITE_TOKEN_SECRET", None)
+os.environ.pop("RESET_TOKEN_SECRET", None)
 
 # Disable rate limiting in tests by default (can be overridden explicitly)
+os.environ["ENVIRONMENT"] = "test"
 os.environ.setdefault("RATE_LIMIT_ENABLED", "0")
-os.environ.setdefault("TESTING", "1")
+os.environ["TESTING"] = "1"
 os.environ.setdefault("FORCE_INMEMORY_BACKENDS", "1")
 os.environ.setdefault("TEST_REDIS_DISABLED", "1")
+os.environ.setdefault("CSRF_SECRET", "test-csrf-secret-32-chars-minimum")
+os.environ["KASPI_STUB"] = "0"
 
 # РЇРІРЅРѕ СѓРєР°Р¶РµРј "СЃРѕРІСЂРµРјРµРЅРЅС‹Р№" strict-СЂРµР¶РёРј asyncio, РµСЃР»Рё РїР»Р°РіРёРЅ РЅРµ РґРµР»Р°РµС‚ СЌС‚РѕРіРѕ СЃР°Рј.
 os.environ.setdefault("PYTEST_ASYNCIO_MODE", "strict")
@@ -167,6 +172,58 @@ def _patch_testclient_async_await() -> None:
 
 
 _patch_testclient_async_await()
+
+
+# ======================================================================================
+# Sync settings object for token hashing across tests
+# ======================================================================================
+
+
+@pytest.fixture(autouse=True)
+def _sync_token_settings(monkeypatch: pytest.MonkeyPatch) -> None:
+    try:
+        from app.core import config as config_mod
+        from app.utils import tokens as tokens_mod
+
+        config_mod.get_settings.cache_clear()
+        new_settings = config_mod.get_settings()
+        current_settings = config_mod.settings
+        try:
+            data = new_settings.model_dump()
+        except Exception:
+            data = new_settings.__dict__
+        for key, value in data.items():
+            try:
+                setattr(current_settings, key, value)
+            except Exception:
+                pass
+
+        monkeypatch.setattr(config_mod, "settings", current_settings, raising=False)
+        monkeypatch.setattr(tokens_mod, "settings", current_settings, raising=False)
+
+        try:
+            import app.core.security as security_mod
+
+            monkeypatch.setattr(security_mod, "settings", current_settings, raising=False)
+        except Exception:
+            pass
+
+        try:
+            import app.main as main_mod
+
+            monkeypatch.setattr(main_mod, "settings", current_settings, raising=False)
+        except Exception:
+            pass
+
+        try:
+            import app.worker.scheduler_worker as scheduler_worker_mod
+
+            monkeypatch.setattr(scheduler_worker_mod, "settings", current_settings, raising=False)
+        except Exception:
+            pass
+
+    except Exception:
+        pass
 
 
 # ======================================================================================

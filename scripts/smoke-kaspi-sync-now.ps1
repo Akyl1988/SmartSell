@@ -1,10 +1,19 @@
+<#
+Kaspi sync-now smoke (platform admin token)
+Env:
+  ADMIN_IDENTIFIER / ADMIN_PASSWORD (fallback: PLATFORM_IDENTIFIER / PLATFORM_PASSWORD)
+  KASPI_MERCHANT_UID
+#>
+
 param(
   [string]$BaseUrl = $env:SMARTSELL_BASE_URL,
-  [string]$Identifier = $env:SMARTSELL_IDENTIFIER,
-  [string]$Password = $env:SMARTSELL_PASSWORD,
+  [string]$Token = $env:SMARTSELL_TOKEN,
+  [string]$Identifier = $env:ADMIN_IDENTIFIER,
+  [string]$Password = $env:ADMIN_PASSWORD,
   [string]$MerchantUid = $env:KASPI_MERCHANT_UID,
   [int]$TimeoutSec = 30,
   [int]$ProbeTimeoutSec = 2,
+  [switch]$EnsureOffers,
   [switch]$SkipIfApiDown
 )
 
@@ -13,6 +22,18 @@ $ErrorActionPreference = "Stop"
 
 # --------- User-configurable variables ---------
 if (-not $BaseUrl) { $BaseUrl = "http://127.0.0.1:8000" }
+if (-not $Token) { $Token = "" }
+$identifierProvided = $PSBoundParameters.ContainsKey("Identifier")
+$passwordProvided = $PSBoundParameters.ContainsKey("Password")
+
+if (-not $identifierProvided) { $Identifier = $env:ADMIN_IDENTIFIER }
+if (-not $passwordProvided) { $Password = $env:ADMIN_PASSWORD }
+
+$idSource = if ($identifierProvided) { "param:Identifier" } else { "ADMIN_IDENTIFIER" }
+$pwSource = if ($passwordProvided) { "param:Password" } else { "ADMIN_PASSWORD" }
+
+if (-not $Identifier) { $Identifier = $env:PLATFORM_IDENTIFIER; $idSource = "PLATFORM_IDENTIFIER" }
+if (-not $Password) { $Password = $env:PLATFORM_PASSWORD; $pwSource = "PLATFORM_PASSWORD" }
 if (-not $Identifier) { $Identifier = "" }
 if (-not $Password) { $Password = "" }
 if (-not $MerchantUid) { $MerchantUid = "" }
@@ -26,6 +47,7 @@ function Get-ScriptDir {
 }
 
 $ScriptDir = Get-ScriptDir
+. (Join-Path $ScriptDir "_smoke-lib.ps1")
 $RepoRoot = Split-Path -Parent $ScriptDir
 if ($RepoRoot) { Set-Location $RepoRoot }
 
@@ -72,6 +94,7 @@ function Get-JsonProperty {
   return $null
 }
 
+
 function Print-Response {
   param(
     [object]$Resp,
@@ -104,19 +127,6 @@ function Print-Response {
   }
 }
 
-function Invoke-WebRequestSafe {
-  param(
-    [hashtable]$Params
-  )
-  if ((Get-Command Invoke-WebRequest).Parameters.ContainsKey("SkipHttpErrorCheck")) {
-    $Params.SkipHttpErrorCheck = $true
-  }
-  if ((Get-Command Invoke-WebRequest).Parameters.ContainsKey("UseBasicParsing")) {
-    $Params.UseBasicParsing = $true
-  }
-  return Invoke-WebRequest @Params
-}
-
 function Test-ApiReady {
   try {
     $resp = Invoke-WebRequestSafe -Params @{
@@ -132,133 +142,53 @@ function Test-ApiReady {
 
 function Invoke-KaspiSyncNow {
   param(
-    [string]$Token,
     [string]$Path,
     [string]$MerchantUid
   )
-
   $rid = New-RequestId
-  $headers = @{ "Authorization" = "Bearer $Token"; "X-Request-ID" = $rid }
+  $headers = @{ "X-Request-ID" = $rid }
 
   $sw = [System.Diagnostics.Stopwatch]::StartNew()
-  $resp = $null
-  try {
-    $resp = Invoke-WebRequestSafe -Params @{
-      Method = "Post"
-      Uri = "$BaseUrl$Path"
-      Headers = $headers
-      ContentType = "application/json"
-      Body = $null
-      TimeoutSec = $TimeoutSec
-    }
-  } catch {
-    $sw.Stop()
-    $errMsg = ""
-    try { $errMsg = $_.Exception.Message } catch { $errMsg = "request failed" }
-    if ($errMsg) { Write-Host "ERROR: $errMsg" }
-    Print-Response -Resp $null -LatencyMs $sw.ElapsedMilliseconds
-    return [PSCustomObject]@{
-      StatusCode = 0
-      RetryAfter = $null
-      Body = $null
-      RequestId = $rid
-      Error = $errMsg
-    }
+  $uri = "$BaseUrl$Path"
+  $queryParts = @()
+  if ($MerchantUid) {
+    $queryParts += "merchantUid=" + [uri]::EscapeDataString($MerchantUid)
   }
+  if ($TimeoutSec -gt 0) {
+    $queryParts += "timeout_sec=" + [uri]::EscapeDataString([string]$TimeoutSec)
+  }
+  if ($queryParts.Count -gt 0) {
+    $uri = $uri + "?" + ($queryParts -join "&")
+  }
+
+  $resp = Invoke-SmartsellApi -Method "POST" -Url $uri -Headers $headers -TimeoutSec $TimeoutSec -AccessToken $AccessToken -RefreshToken $RefreshToken -Identifier $Identifier -Password $Password
   $sw.Stop()
 
-  $status = $resp.StatusCode
-  $retryAfter = $resp.Headers["Retry-After"]
-  $body = $null
-  $data = $null
-  $rid = ""
-  if ($resp -and $resp.Headers) {
-    $rid = [string](@($resp.Headers["X-Request-ID"])[0])
-    if (-not $rid) { $rid = [string](@($resp.Headers["x-request-id"])[0]) }
-  }
+  $AccessToken = $script:SmartsellAccessToken
+  $RefreshToken = $script:SmartsellRefreshToken
 
-  if ($resp.Content) {
-    try {
-      $data = $resp.Content | ConvertFrom-Json
-      $body = $data
-      if (-not $rid) { $rid = [string](Get-JsonProperty -Object $data -Name "request_id") }
-      if (-not $rid) {
-        $errs = Get-JsonProperty -Object $data -Name "errors"
-        if ($errs -and $errs.Count -gt 0) {
-          $rid = [string](Get-JsonProperty -Object $errs[0] -Name "request_id")
-        }
-      }
-      if (-not $rid) {
-        $orderSync = Get-JsonProperty -Object $data -Name "orders_sync"
-        if ($orderSync) { $rid = [string](Get-JsonProperty -Object $orderSync -Name "request_id") }
-      }
-    } catch {
-      $body = $resp.Content
-    }
-  }
-  $rid = [string]($rid ?? "")
+  $status = $resp.StatusCode
+  $retryAfter = $null
+  if ($resp.Headers) { $retryAfter = $resp.Headers["Retry-After"] }
+  $body = $resp.Body
+  $rid = [string]($resp.RequestId ?? "")
 
   if ($status -eq 422 -and $MerchantUid) {
     $retryRid = New-RequestId
-    $retryHeaders = @{ "Authorization" = "Bearer $Token"; "X-Request-ID" = $retryRid }
-    $retryBody = @{ merchant_uid = $MerchantUid } | ConvertTo-Json
+    $retryHeaders = @{ "X-Request-ID" = $retryRid }
+    $retryBody = @{ merchant_uid = $MerchantUid }
     $sw = [System.Diagnostics.Stopwatch]::StartNew()
-    try {
-      $resp = Invoke-WebRequestSafe -Params @{
-        Method = "Post"
-        Uri = "$BaseUrl$Path"
-        Headers = $retryHeaders
-        ContentType = "application/json"
-        Body = $retryBody
-        TimeoutSec = $TimeoutSec
-      }
-    } catch {
-      $sw.Stop()
-      $errMsg = ""
-      try { $errMsg = $_.Exception.Message } catch { $errMsg = "request failed" }
-      if ($errMsg) { Write-Host "ERROR: $errMsg" }
-      $result = [PSCustomObject]@{
-        StatusCode = 0
-        RetryAfter = $null
-        Body = $null
-        RequestId = $retryRid
-        Error = $errMsg
-      }
-      Print-Response -Resp $result -LatencyMs $sw.ElapsedMilliseconds
-      return $result
-    }
+    $resp = Invoke-SmartsellApi -Method "POST" -Url "$BaseUrl$Path?timeout_sec=$TimeoutSec" -Headers $retryHeaders -Body $retryBody -TimeoutSec $TimeoutSec -AccessToken $AccessToken -RefreshToken $RefreshToken -Identifier $Identifier -Password $Password
     $sw.Stop()
 
-    $status = $resp.StatusCode
-    $retryAfter = $resp.Headers["Retry-After"]
-    $body = $null
-    $data = $null
-    $rid = ""
-    if ($resp -and $resp.Headers) {
-      $rid = [string](@($resp.Headers["X-Request-ID"])[0])
-      if (-not $rid) { $rid = [string](@($resp.Headers["x-request-id"])[0]) }
-    }
+    $AccessToken = $script:SmartsellAccessToken
+    $RefreshToken = $script:SmartsellRefreshToken
 
-    if ($resp.Content) {
-      try {
-        $data = $resp.Content | ConvertFrom-Json
-        $body = $data
-        if (-not $rid) { $rid = [string](Get-JsonProperty -Object $data -Name "request_id") }
-        if (-not $rid) {
-          $errs = Get-JsonProperty -Object $data -Name "errors"
-          if ($errs -and $errs.Count -gt 0) {
-            $rid = [string](Get-JsonProperty -Object $errs[0] -Name "request_id")
-          }
-        }
-        if (-not $rid) {
-          $orderSync = Get-JsonProperty -Object $data -Name "orders_sync"
-          if ($orderSync) { $rid = [string](Get-JsonProperty -Object $orderSync -Name "request_id") }
-        }
-      } catch {
-        $body = $resp.Content
-      }
-    }
-    $rid = [string]($rid ?? "")
+    $status = $resp.StatusCode
+    $retryAfter = $null
+    if ($resp.Headers) { $retryAfter = $resp.Headers["Retry-After"] }
+    $body = $resp.Body
+    $rid = [string]($resp.RequestId ?? "")
   }
 
   $result = [PSCustomObject]@{
@@ -273,9 +203,33 @@ function Invoke-KaspiSyncNow {
   return $result
 }
 
-if (-not $Identifier -or -not $Password -or -not $MerchantUid) {
-  Write-Error "missing Identifier/Password/MerchantUid"
-  exit 2
+Write-Host "[INFO] Credentials source: ID=$idSource PW=$pwSource"
+
+$AccessToken = $Token
+$AccessToken = Normalize-JwtToken -Value $AccessToken
+if (-not $AccessToken) { $AccessToken = Normalize-JwtToken -Value $env:SMARTSELL_ACCESS_TOKEN }
+$RefreshToken = $env:SMARTSELL_REFRESH_TOKEN
+
+if ($AccessToken) {
+  Set-SmartsellTokens -AccessToken $AccessToken -RefreshToken $RefreshToken -BaseUrl $BaseUrl
+  Write-Host ("[INFO] Using access token={0}" -f (Mask-Secret $AccessToken))
+} elseif ($Token) {
+  Write-Host ("WARN: provided access token has invalid format; ignoring token={0}" -f (Mask-Secret $Token))
+}
+
+if (-not $AccessToken) {
+  $cached = Load-SmartsellTokensFromCache -BaseUrl $BaseUrl
+  if ($cached -and $cached.access) {
+    $AccessToken = $cached.access
+    $RefreshToken = $cached.refresh
+    Set-SmartsellTokens -AccessToken $AccessToken -RefreshToken $RefreshToken -BaseUrl $BaseUrl
+    Write-Host ("[INFO] Using cached access token from {0}" -f (Get-SmokeCachePath))
+  }
+}
+
+if (-not $AccessToken -and (-not $Identifier -or -not $Password)) {
+  Write-Host "[FAIL] missing ADMIN_IDENTIFIER/ADMIN_PASSWORD or PLATFORM_IDENTIFIER/PLATFORM_PASSWORD (or pass -Token/SMARTSELL_ACCESS_TOKEN)"
+  exit 1
 }
 
 if (-not (Test-ApiReady)) {
@@ -287,18 +241,65 @@ if (-not (Test-ApiReady)) {
   exit 1
 }
 
-$loginRid = New-RequestId
-$loginHeaders = @{ "X-Request-ID" = $loginRid }
-$loginBody = @{ identifier = $Identifier; password = $Password } | ConvertTo-Json
-$login = Invoke-RestMethod -Method Post -Uri "$BaseUrl/api/v1/auth/login" -Headers $loginHeaders -ContentType "application/json" -Body $loginBody -TimeoutSec 15
+if (-not $AccessToken) {
+  $tokens = Get-SmartsellTokens -BaseUrl $BaseUrl -Identifier $Identifier -Password $Password -TimeoutSec 20
+  $AccessToken = $tokens.access
+  $RefreshToken = $tokens.refresh
+}
 
-$access = $login.access_token
-if (-not $access) { $access = $login.accessToken }
-if (-not $access) { throw "Login response: access token not found." }
+$me = $null
+try {
+  $meResp = Invoke-SmartsellApi -Method "GET" -Url "$BaseUrl/api/v1/auth/me" -TimeoutSec 20 -AccessToken $AccessToken -RefreshToken $RefreshToken -Identifier $Identifier -Password $Password
+  if ($meResp.StatusCode -ge 200 -and $meResp.StatusCode -lt 300) {
+    $me = $meResp.Body
+  }
+  $meCompanyId = Resolve-ProfileValue -Profile $me -Name "company_id"
+  $meCompanyName = Resolve-ProfileValue -Profile $me -Name "company_name"
+  $meKaspiStore = Resolve-ProfileValue -Profile $me -Name "kaspi_store_id"
+  $meUserId = Resolve-ProfileValue -Profile $me -Name "id"
+  $meRole = Resolve-ProfileValue -Profile $me -Name "role"
+  Write-Host ("ME OK user_id={0} role={1} company_id={2} company_name={3} kaspi_store_id={4}" -f $meUserId, $meRole, $meCompanyId, $meCompanyName, $meKaspiStore)
+} catch {
+  Write-Host "WARN: failed to fetch /api/v1/auth/me"
+}
+
+$bodyMerchant = $null
+$syncBody = $null
+if ($syncBody) {
+  $bodyMerchant = Get-JsonProperty -Object $syncBody -Name "merchant_uid"
+  if (-not $bodyMerchant) { $bodyMerchant = Get-JsonProperty -Object $syncBody -Name "merchantUid" }
+}
+
+if (-not $MerchantUid -and $bodyMerchant) {
+  $MerchantUid = [string]$bodyMerchant
+}
+
+if (-not $MerchantUid -and $me) {
+  $MerchantUid = [string]$meKaspiStore
+}
+
+if ($MerchantUid -and $MerchantUid -match "^<YOUR_MERCHANT_UID>$|^YOUR_MERCHANT_UID$|^MERCHANT_UID$") {
+  $MerchantUid = ""
+}
+
+if (-not $MerchantUid) {
+  Write-Host "[FAIL] missing MerchantUid (-MerchantUid / KASPI_MERCHANT_UID) and company.kaspi_store_id not set"
+  exit 1
+}
+
+$merchantForHint = $MerchantUid
+if ([string]::IsNullOrWhiteSpace($merchantForHint)) { $merchantForHint = "17319385" }
 
 $path = Resolve-KaspiSyncNowPath
 if (-not $path) { exit 1 }
 "Resolved endpoint: $path"
+
+if ($EnsureOffers.IsPresent) {
+  $ok = Ensure-KaspiOffers -BaseUrl $BaseUrl -MerchantUid $MerchantUid -AccessToken $AccessToken -RefreshToken $RefreshToken -Identifier $Identifier -Password $Password -AllowSeed
+  if (-not $ok) {
+    Write-Host "WARN: could not ensure offers (will proceed)"
+  }
+}
 
 if (-not (Test-ApiReady)) {
   if ($SkipIfApiDown) {
@@ -310,7 +311,7 @@ if (-not (Test-ApiReady)) {
 }
 
 "--- First call ---"
-$first = Invoke-KaspiSyncNow -Token $access -Path $path -MerchantUid $MerchantUid
+$first = Invoke-KaspiSyncNow -Path $path -MerchantUid $MerchantUid
 
 if (-not $first) {
   Write-Error "First call failed to return a response"
@@ -335,6 +336,39 @@ $firstCode = $first.StatusCode
 $firstBody = Get-JsonProperty -Object $first -Name "Body"
 $firstErrCode = Get-JsonProperty -Object $firstBody -Name "code"
 $firstErrDetail = Get-JsonProperty -Object $firstBody -Name "detail"
+if ($firstCode -eq 403 -and $firstErrCode -eq "ADMIN_REQUIRED") {
+  Write-Host "[FAIL] ADMIN_REQUIRED: ensure platform_admin creds. Used: ID=$idSource PW=$pwSource"
+  exit 1
+}
+if ($firstCode -eq 409 -and ($firstErrCode -eq "kaspi_not_configured" -or $firstErrDetail -eq "kaspi_not_configured")) {
+  Write-Host "[FAIL] kaspi_not_configured: check companies.kaspi_store_id for company_id=1 and kaspi_store_tokens for store_name=merchant_uid"
+  exit 1
+}
+if ($firstCode -eq 409 -and ($firstErrCode -eq "kaspi_token_not_found" -or $firstErrDetail -eq "kaspi_token_not_found")) {
+  Write-Host "[FAIL] kaspi_token_not_found: check kaspi_store_tokens row for store_name=merchant_uid"
+  exit 1
+}
+if ($firstCode -eq 404 -and ($firstErrCode -eq "offers_not_found" -or $firstErrDetail -eq "offers_not_found")) {
+  Write-Host "WARN: Нет офферов для company_id=1 merchant_uid=$merchantForHint (kaspi_offers пустая)."
+  if (Is-DevEnvironment) {
+    Write-Host "[INFO] Attempting dev-only offers seed/import..."
+    $seeded = Ensure-KaspiOffers -BaseUrl $BaseUrl -MerchantUid $MerchantUid -AccessToken $AccessToken -RefreshToken $RefreshToken -Identifier $Identifier -Password $Password -AllowSeed
+    if ($seeded) {
+      Write-Host "[INFO] Offers ensured; retrying sync-now"
+      $first = Invoke-KaspiSyncNow -Path $path -MerchantUid $MerchantUid
+      $firstCode = $first.StatusCode
+      $firstBody = Get-JsonProperty -Object $first -Name "Body"
+      $firstErrCode = Get-JsonProperty -Object $firstBody -Name "code"
+      $firstErrDetail = Get-JsonProperty -Object $firstBody -Name "detail"
+    } else {
+      Write-Host "WARN: offers still missing; stop"
+      exit 0
+    }
+  } else {
+    Write-Host "WARN: offers missing; skipping in non-dev environment."
+    exit 0
+  }
+}
 
 if ($firstCode -eq 402 -and ($firstErrCode -eq "subscription_required" -or $firstErrDetail -eq "subscription_required")) {
   Write-Host "SKIP: subscription required for kaspi sync now."
@@ -354,7 +388,7 @@ if ($firstCode -eq 409 -and $firstErrCode -eq "kaspi_sync_in_progress") {
 }
 
 "--- Second call ---"
-$second = Invoke-KaspiSyncNow -Token $access -Path $path -MerchantUid $MerchantUid
+$second = Invoke-KaspiSyncNow -Path $path -MerchantUid $MerchantUid
 
 if (-not $second) {
   Write-Error "Second call failed to return a response"
@@ -378,25 +412,50 @@ if ($second.StatusCode -eq 429) {
 $secondCode = $second.StatusCode
 $secondBody = Get-JsonProperty -Object $second -Name "Body"
 $secondErrCode = Get-JsonProperty -Object $secondBody -Name "code"
-
-if (-not ($secondCode -eq 409 -and $secondErrCode -eq "kaspi_sync_in_progress")) {
-  if ($secondCode -eq 504 -and $secondErrCode -eq "kaspi_sync_timeout") {
-    Write-Host "WARN: kaspi sync timeout on second call; not failing script."
-    exit 0
-  }
-  if ($secondCode -eq 200 -or $secondCode -eq 202) {
-    $secondStatus = Get-JsonProperty -Object $secondBody -Name "status"
-    $secondErrors = Get-JsonProperty -Object $secondBody -Name "errors"
-    $secondErr0 = $null
-    if ($secondErrors -and $secondErrors.Count -gt 0) { $secondErr0 = $secondErrors[0] }
-    $secondErr0Code = Get-JsonProperty -Object $secondErr0 -Name "code"
-    if ($secondStatus -eq "partial" -and $secondErr0Code -in @("kaspi_sync_timeout", "upstream_timeout")) {
-      Write-Host "WARN: kaspi sync timeout on second call (partial); not failing script."
-      exit 0
-    }
-  }
-  Write-Error "Second call returned unexpected status: $secondCode"
+$secondErrDetail = Get-JsonProperty -Object $secondBody -Name "detail"
+if ($secondCode -eq 403 -and $secondErrCode -eq "ADMIN_REQUIRED") {
+  Write-Host "[FAIL] ADMIN_REQUIRED: ensure platform_admin creds. Used: ID=$idSource PW=$pwSource"
   exit 1
 }
+if ($secondCode -eq 404 -and ($secondErrCode -eq "offers_not_found" -or $secondErrDetail -eq "offers_not_found")) {
+  Write-Host "WARN: Нет офферов для company_id=1 merchant_uid=$merchantForHint (kaspi_offers пустая). Сначала запусти /api/v1/kaspi/catalog/import (или скрипт импорта офферов)."
+  exit 0
+}
+
+if ($secondCode -eq 409 -and $secondErrCode -eq "kaspi_sync_in_progress") {
+  "PASS"
+  exit 0
+}
+
+if ($secondCode -eq 504 -and $secondErrCode -eq "kaspi_sync_timeout") {
+  Write-Host "WARN: kaspi sync timeout on second call; not failing script."
+  exit 0
+}
+
+if ($secondCode -eq 200) {
+  if (-not $secondBody) {
+    Write-Error "Second call returned 200 but body is empty"
+    exit 1
+  }
+  $secondOk = Get-JsonProperty -Object $secondBody -Name "ok"
+  if ($secondOk -ne $true) {
+    Write-Error "Second call returned 200 but payload ok != true"
+    exit 1
+  }
+  $secondStatus = Get-JsonProperty -Object $secondBody -Name "status"
+  if ($secondStatus -eq "partial") {
+    Write-Host "WARN: kaspi sync partial on second call; not failing script."
+    exit 0
+  }
+  if ($secondStatus -eq "ok") {
+    "PASS"
+    exit 0
+  }
+  Write-Error "Second call returned 200 with unexpected status: $secondStatus"
+  exit 1
+}
+
+Write-Error "Second call returned unexpected status: $secondCode"
+exit 1
 
 "PASS"

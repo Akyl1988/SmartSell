@@ -466,7 +466,6 @@ def _configure_structlog() -> None:
         _redact_processor,
         _add_app(build_info=True),
         structlog.processors.StackInfoRenderer(),
-        structlog.processors.format_exc_info,
         structlog.processors.UnicodeDecoder(),
     ]
     renderer = (
