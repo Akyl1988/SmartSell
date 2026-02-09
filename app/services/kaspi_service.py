@@ -272,7 +272,11 @@ class KaspiService:
         return headers
 
     def _orders_client(self, *, timeout: httpx.Timeout) -> httpx.AsyncClient:
-        return httpx.AsyncClient(timeout=timeout, trust_env=False)
+        http2_enabled = bool(getattr(settings, "KASPI_HTTP2", False))
+        if http2_enabled:
+            return httpx.AsyncClient(timeout=timeout, trust_env=False, http2=True)
+        transport = httpx.AsyncHTTPTransport(http2=False)
+        return httpx.AsyncClient(timeout=timeout, trust_env=False, transport=transport)
 
     def _orders_params(
         self,
@@ -469,6 +473,7 @@ class KaspiService:
                 "base_url": orders_base_url,
                 "path": "/shop/api/v2/orders",
                 "resolved_url": orders_url,
+                "http2_enabled": bool(getattr(settings, "KASPI_HTTP2", False)),
                 "params": params,
                 "timeout_connect": getattr(timeout_obj, "connect", None),
                 "timeout_read": getattr(timeout_obj, "read", None),

@@ -36,8 +36,10 @@ async def test_kaspi_list_orders_uses_computed_timeout(monkeypatch):
             return {"data": []}
 
     class _DummyClient:
-        def __init__(self, *, timeout):
+        def __init__(self, *, timeout, transport=None, http2=None, **kwargs):
             captured["timeout"] = timeout
+            captured["transport"] = transport
+            captured["http2"] = http2
 
         async def __aenter__(self):
             return self
@@ -48,9 +50,9 @@ async def test_kaspi_list_orders_uses_computed_timeout(monkeypatch):
         async def get(self, url, headers=None, params=None):
             return _DummyResponse()
 
-    def _client_factory(*, timeout, trust_env=False, **kwargs):
+    def _client_factory(*, timeout, trust_env=False, transport=None, http2=None, **kwargs):
         captured["trust_env"] = trust_env
-        return _DummyClient(timeout=timeout)
+        return _DummyClient(timeout=timeout, transport=transport, http2=http2)
 
     monkeypatch.setattr(kaspi_service.httpx, "AsyncClient", _client_factory)
 
@@ -75,6 +77,9 @@ async def test_kaspi_list_orders_uses_computed_timeout(monkeypatch):
     assert actual.write == expected.write
     assert actual.pool == expected.pool
     assert captured.get("trust_env") is False
+    transport = captured.get("transport")
+    if transport is not None:
+        assert getattr(transport, "_http2", False) is False
 
 
 @pytest.mark.asyncio
@@ -96,6 +101,8 @@ async def test_kaspi_get_orders_uses_shop_api_url_and_jsonapi_pagination(monkeyp
         def __init__(self, **kwargs):
             captured["timeout"] = kwargs.get("timeout")
             captured["trust_env"] = kwargs.get("trust_env")
+            captured["http2"] = kwargs.get("http2")
+            captured["transport"] = kwargs.get("transport")
 
         async def __aenter__(self):
             return self
@@ -122,6 +129,9 @@ async def test_kaspi_get_orders_uses_shop_api_url_and_jsonapi_pagination(monkeyp
     assert ("page[number]", 1) in params
     assert ("page[size]", 100) in params
     assert captured.get("trust_env") is False
+    transport = captured.get("transport")
+    if transport is not None:
+        assert getattr(transport, "_http2", False) is False
     assert isinstance(headers, dict)
     assert headers.get("Accept") == "application/vnd.api+json"
     assert headers.get("Content-Type") == "application/vnd.api+json"

@@ -713,6 +713,10 @@ class Settings(BaseSettings):
     KASPI_PAGE_SIZE_MAX: int = Field(default=100, description="Kaspi orders max page size")
     # Безопасный дефолт page[size] при наших запросах
     KASPI_DEFAULT_PAGE_SIZE: int = Field(default=50, description="Default page size")
+    # Use HTTP/2 for Kaspi shop orders (default off)
+    KASPI_HTTP2: bool = Field(
+        default=False, description="Enable HTTP/2 for Kaspi orders", validation_alias="KASPI_HTTP2"
+    )
     # Симметричный ключ для pgcrypto: pgp_sym_encrypt/decrypt (ОЧЕНЬ ВАЖНО!)
     PGCRYPTO_KEY: str | None = Field(
         default=None,
