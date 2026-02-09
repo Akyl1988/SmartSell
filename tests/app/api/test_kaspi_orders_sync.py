@@ -188,20 +188,17 @@ async def test_orders_sync_uses_shop_api_url(monkeypatch, async_client, company_
             captured["params"] = params
             return _DummyResponse()
 
-    class _DummyRetryClient:
+    class _DummyAsyncClient:
         def __init__(self, **kwargs):
             self._client = _DummyClient()
 
         async def __aenter__(self):
-            return self
+            return self._client
 
         async def __aexit__(self, exc_type, exc, tb):
             return None
 
-        async def get(self, url, headers=None, params=None):
-            return await self._client.get(url, headers=headers, params=params)
-
-    monkeypatch.setattr(kaspi_service, "_RetryingAsyncClient", lambda **kwargs: _DummyRetryClient())
+    monkeypatch.setattr(kaspi_service.httpx, "AsyncClient", _DummyAsyncClient)
 
     resp = await async_client.post(
         "/api/v1/kaspi/orders/sync?merchantUid=store-a",
@@ -211,9 +208,89 @@ async def test_orders_sync_uses_shop_api_url(monkeypatch, async_client, company_
     url = captured.get("url")
     params = captured.get("params")
     assert isinstance(url, str)
-    assert url.endswith("/v2/orders")
-    assert isinstance(params, dict)
-    assert params.get("page[number]") == 1
+    assert url.endswith("/shop/api/v2/orders")
+    assert isinstance(params, list)
+    assert ("page[number]", 1) in params
+
+
+@pytest.mark.asyncio
+async def test_get_orders_total_count_zero_ok(monkeypatch):
+    captured: dict[str, object] = {}
+
+    class _DummyResponse:
+        status_code = 200
+        content = b"{}"
+
+        def raise_for_status(self) -> None:
+            return None
+
+        def json(self):
+            return {"data": [], "included": [], "meta": {"pageCount": 0, "totalCount": 0}}
+
+    class _DummyClient:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return None
+
+        async def get(self, url, headers=None, params=None):
+            captured["url"] = url
+            captured["params"] = params
+            return _DummyResponse()
+
+    monkeypatch.setattr(kaspi_service.httpx, "AsyncClient", lambda **kwargs: _DummyClient())
+
+    svc = KaspiService(api_key="token")
+    now = datetime.utcnow()
+    result = await svc.get_orders(date_from=now - timedelta(hours=1), date_to=now, page=1, page_size=10)
+    assert result.get("ok") is True
+    assert result.get("count") == 0
+    assert result.get("items") == []
+    assert str(captured.get("url", "")).endswith("/shop/api/v2/orders")
+
+
+@pytest.mark.asyncio
+async def test_get_orders_one_order_ok(monkeypatch):
+    class _DummyResponse:
+        status_code = 200
+        content = b"{}"
+
+        def raise_for_status(self) -> None:
+            return None
+
+        def json(self):
+            return {
+                "data": [
+                    {
+                        "id": "order-1",
+                        "attributes": {"status": "NEW", "totalPrice": 1000},
+                    }
+                ],
+                "included": [],
+                "meta": {"pageCount": 1, "totalCount": 1},
+            }
+
+    class _DummyClient:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return None
+
+        async def get(self, url, headers=None, params=None):
+            return _DummyResponse()
+
+    monkeypatch.setattr(kaspi_service.httpx, "AsyncClient", lambda **kwargs: _DummyClient())
+
+    svc = KaspiService(api_key="token")
+    now = datetime.utcnow()
+    result = await svc.get_orders(date_from=now - timedelta(hours=1), date_to=now, page=1, page_size=10)
+    assert result.get("ok") is True
+    assert result.get("count") == 1
+    items = result.get("items") or []
+    assert len(items) == 1
+    assert items[0].get("id") == "order-1"
 
 
 @pytest.mark.asyncio

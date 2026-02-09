@@ -91,6 +91,9 @@ async def test_kaspi_get_orders_uses_shop_api_url_and_jsonapi_pagination(monkeyp
             return {"data": []}
 
     class _DummyClient:
+        def __init__(self, **kwargs):
+            captured["timeout"] = kwargs.get("timeout")
+
         async def __aenter__(self):
             return self
 
@@ -102,27 +105,14 @@ async def test_kaspi_get_orders_uses_shop_api_url_and_jsonapi_pagination(monkeyp
             captured["params"] = params
             return _DummyResponse()
 
-    class _DummyRetryClient:
-        def __init__(self, **kwargs):
-            self._client = _DummyClient()
-
-        async def __aenter__(self):
-            return self
-
-        async def __aexit__(self, exc_type, exc, tb):
-            return None
-
-        async def get(self, url, headers=None, params=None):
-            return await self._client.get(url, headers=headers, params=params)
-
-    monkeypatch.setattr(kaspi_service, "_RetryingAsyncClient", lambda **kwargs: _DummyRetryClient())
+    monkeypatch.setattr(kaspi_service.httpx, "AsyncClient", _DummyClient)
 
     await svc.get_orders(page=0, page_size=0)
 
     url = captured.get("url")
     params = captured.get("params")
     assert isinstance(url, str)
-    assert url.endswith("/v2/orders")
-    assert isinstance(params, dict)
-    assert params.get("page[number]") == 1
-    assert params.get("page[size]") == 100
+    assert url.endswith("/shop/api/v2/orders")
+    assert isinstance(params, list)
+    assert ("page[number]", 1) in params
+    assert ("page[size]", 100) in params
