@@ -267,7 +267,12 @@ class KaspiService:
             if self.api_key:
                 headers["X-Auth-Token"] = self.api_key
         headers.setdefault("Accept", "application/vnd.api+json")
+        headers.setdefault("Content-Type", "application/vnd.api+json")
+        headers.setdefault("User-Agent", f"{settings.PROJECT_NAME}/{settings.VERSION}")
         return headers
+
+    def _orders_client(self, *, timeout: httpx.Timeout) -> httpx.AsyncClient:
+        return httpx.AsyncClient(timeout=timeout, trust_env=False)
 
     def _orders_params(
         self,
@@ -341,7 +346,7 @@ class KaspiService:
             getattr(timeout, "pool", None),
         )
         try:
-            async with httpx.AsyncClient(timeout=timeout) as client:
+            async with self._orders_client(timeout=timeout) as client:
                 resp = await client.get(orders_url, headers=headers, params=params)
                 if resp.status_code in {401, 403}:
                     return {
@@ -492,7 +497,7 @@ class KaspiService:
             )
 
         try:
-            async with httpx.AsyncClient(timeout=timeout_obj) as client:
+            async with self._orders_client(timeout=timeout_obj) as client:
                 resp = await client.get(orders_url, headers=self._orders_headers(), params=params)
         except (httpx.TimeoutException, httpx.NetworkError, httpx.HTTPStatusError) as e:
             duration_ms = int((perf_counter() - started_at) * 1000)

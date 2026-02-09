@@ -186,6 +186,7 @@ async def test_orders_sync_uses_shop_api_url(monkeypatch, async_client, company_
         async def get(self, url, headers=None, params=None):
             captured["url"] = url
             captured["params"] = params
+            captured["headers"] = headers
             return _DummyResponse()
 
     class _DummyAsyncClient:
@@ -207,10 +208,15 @@ async def test_orders_sync_uses_shop_api_url(monkeypatch, async_client, company_
     assert resp.status_code == 200, resp.text
     url = captured.get("url")
     params = captured.get("params")
+    headers = captured.get("headers")
     assert isinstance(url, str)
     assert url.endswith("/shop/api/v2/orders")
     assert isinstance(params, list)
     assert ("page[number]", 1) in params
+    assert isinstance(headers, dict)
+    assert headers.get("Accept") == "application/vnd.api+json"
+    assert headers.get("Content-Type") == "application/vnd.api+json"
+    assert headers.get("User-Agent")
 
 
 @pytest.mark.asyncio

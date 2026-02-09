@@ -48,7 +48,8 @@ async def test_kaspi_list_orders_uses_computed_timeout(monkeypatch):
         async def get(self, url, headers=None, params=None):
             return _DummyResponse()
 
-    def _client_factory(*, timeout):
+    def _client_factory(*, timeout, trust_env=False, **kwargs):
+        captured["trust_env"] = trust_env
         return _DummyClient(timeout=timeout)
 
     monkeypatch.setattr(kaspi_service.httpx, "AsyncClient", _client_factory)
@@ -73,6 +74,7 @@ async def test_kaspi_list_orders_uses_computed_timeout(monkeypatch):
     assert actual.read == expected.read
     assert actual.write == expected.write
     assert actual.pool == expected.pool
+    assert captured.get("trust_env") is False
 
 
 @pytest.mark.asyncio
@@ -93,6 +95,7 @@ async def test_kaspi_get_orders_uses_shop_api_url_and_jsonapi_pagination(monkeyp
     class _DummyClient:
         def __init__(self, **kwargs):
             captured["timeout"] = kwargs.get("timeout")
+            captured["trust_env"] = kwargs.get("trust_env")
 
         async def __aenter__(self):
             return self
@@ -103,6 +106,7 @@ async def test_kaspi_get_orders_uses_shop_api_url_and_jsonapi_pagination(monkeyp
         async def get(self, url, headers=None, params=None):
             captured["url"] = url
             captured["params"] = params
+            captured["headers"] = headers
             return _DummyResponse()
 
     monkeypatch.setattr(kaspi_service.httpx, "AsyncClient", _DummyClient)
@@ -111,8 +115,15 @@ async def test_kaspi_get_orders_uses_shop_api_url_and_jsonapi_pagination(monkeyp
 
     url = captured.get("url")
     params = captured.get("params")
+    headers = captured.get("headers")
     assert isinstance(url, str)
     assert url.endswith("/shop/api/v2/orders")
     assert isinstance(params, list)
     assert ("page[number]", 1) in params
     assert ("page[size]", 100) in params
+    assert captured.get("trust_env") is False
+    assert isinstance(headers, dict)
+    assert headers.get("Accept") == "application/vnd.api+json"
+    assert headers.get("Content-Type") == "application/vnd.api+json"
+    assert headers.get("User-Agent")
+    assert headers.get("X-Auth-Token") == "token"
