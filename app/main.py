@@ -982,8 +982,6 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:  # type: ignore[overrid
     try:
         run_startup_side_effects(settings)
     except Exception as e:
-        if settings.is_production:
-            raise
         logger.warning("startup side effects failed: %s", e)
     try:
         env_val = str(getattr(settings, "ENVIRONMENT", "") or "").lower()

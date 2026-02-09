@@ -46,6 +46,12 @@ class KaspiSyncAlreadyRunning(RuntimeError):
     pass
 
 
+class KaspiBadRequestError(RuntimeError):
+    def __init__(self, message: str, *, status_code: int | None = None):
+        super().__init__(message)
+        self.status_code = status_code
+
+
 # ---------------------- small utils ---------------------- #
 
 
@@ -108,6 +114,23 @@ def _safe_httpx_url_path(exc: Exception) -> str | None:
         return getattr(url, "path", None)
     except Exception:
         return None
+
+
+def _extract_kaspi_error_title(payload: Any) -> str | None:
+    if not isinstance(payload, dict):
+        return None
+    errors = payload.get("errors")
+    if isinstance(errors, list) and errors:
+        first = errors[0]
+        if isinstance(first, dict):
+            title = first.get("title") or first.get("detail")
+            if title:
+                return str(title)
+    if "error" in payload and payload.get("error"):
+        return str(payload.get("error"))
+    if "detail" in payload and payload.get("detail"):
+        return str(payload.get("detail"))
+    return None
 
 
 # ---------------------- resilient HTTP client ---------------------- #
@@ -232,6 +255,48 @@ class KaspiService:
         if not path.startswith("/"):
             path = "/" + path
         return f"{self.base_url}{path}"
+
+    def _orders_url(self) -> str:
+        return settings.kaspi_orders_url()
+
+    def _orders_headers(self) -> dict[str, str]:
+        try:
+            headers = settings.kaspi_jsonapi_headers(self.api_key)
+        except ValueError:
+            headers = {"Accept": "application/vnd.api+json"}
+            if self.api_key:
+                headers["X-Auth-Token"] = self.api_key
+        headers.setdefault("Accept", "application/vnd.api+json")
+        return headers
+
+    def _orders_params(
+        self,
+        *,
+        date_from: datetime,
+        date_to: datetime,
+        status: str | None,
+        page: int,
+        page_size: int,
+        merchant_uid: str | None,
+        use_pagination_fallback: bool = False,
+    ) -> dict[str, Any]:
+        page_number = max(1, int(page or 1))
+        size_value = max(1, int(page_size or 100))
+        key_number = "pagination[number]" if use_pagination_fallback else "page[number]"
+        key_size = "pagination[size]" if use_pagination_fallback else "page[size]"
+
+        params: dict[str, Any] = {
+            key_number: page_number,
+            key_size: size_value,
+            "filter[orders][creationDate][$ge]": settings.dt_to_ms_almaty(date_from),
+            "filter[orders][creationDate][$le]": settings.dt_to_ms_almaty(date_to),
+        }
+        if merchant_uid:
+            params["filter[orders][merchantUid]"] = merchant_uid
+        if status:
+            params["filter[orders][status]"] = status
+        params["include[orders]"] = "entries"
+        return params
 
     # ---------------------- Orders API ---------------------- #
 
@@ -373,35 +438,16 @@ class KaspiService:
         if not date_to:
             date_to = _utcnow()
 
-        def _to_epoch_ms(value: datetime) -> int:
-            if value.tzinfo is None:
-                value = value.replace(tzinfo=UTC)
-            return int(value.timestamp() * 1000)
-
-        page_number = max(1, int(page or 1))
-        page_size_value = max(1, int(page_size or 100))
-        params = {
-            "page[number]": page_number,
-            "page[size]": page_size_value,
-            "filter[orders][creationDate][$ge]": _to_epoch_ms(date_from),
-            "filter[orders][creationDate][$le]": _to_epoch_ms(date_to),
-        }
-        if merchant_uid:
-            params["filter[orders][merchantUid]"] = merchant_uid
-        if status:
-            params["filter[orders][state]"] = status
-
-        shop_base = (getattr(settings, "KASPI_SHOP_API_URL", "") or "https://kaspi.kz/shop").rstrip("/")
-        if shop_base.endswith("/api"):
-            orders_base_url = shop_base[: -len("/api")]
-        else:
-            orders_base_url = shop_base
-        orders_path = "/api/v2/orders"
-        resolved_url = f"{orders_base_url}{orders_path}"
-        try:
-            full_url = str(httpx.URL(resolved_url).copy_add_params(params))
-        except Exception:
-            full_url = resolved_url
+        params = self._orders_params(
+            date_from=date_from,
+            date_to=date_to,
+            status=status,
+            page=page,
+            page_size=page_size,
+            merchant_uid=merchant_uid,
+        )
+        orders_url = self._orders_url()
+        orders_base_url = getattr(settings, "KASPI_SHOP_API_URL", "").rstrip("/")
 
         async with self._client(timeout=timeout or self._orders_timeout(), retries=retries) as client:
             try:
@@ -411,33 +457,30 @@ class KaspiService:
                     if isinstance(timeout, httpx.Timeout)
                     else self._orders_timeout(float(timeout) if timeout is not None else None)
                 )
-                if _diag_enabled():
-                    logger.info(
-                        "[CI_DIAG] kaspi_orders_http_entry",
-                        extra={
-                            "company_id": company_id,
-                            "request_id": request_id,
-                            "merchant_uid_present": bool(merchant_uid),
-                            "base_url": orders_base_url,
-                            "path": orders_path,
-                            "resolved_url": resolved_url,
-                            "full_url": full_url,
-                            "params": params,
-                            "timeout_connect": getattr(timeout_obj, "connect", None),
-                            "timeout_read": getattr(timeout_obj, "read", None),
-                            "timeout_write": getattr(timeout_obj, "write", None),
-                            "timeout_pool": getattr(timeout_obj, "pool", None),
-                        },
-                    )
+                logger.info(
+                    "[CI_DIAG] kaspi_orders_http_entry",
+                    extra={
+                        "company_id": company_id,
+                        "request_id": request_id,
+                        "merchant_uid_present": bool(merchant_uid),
+                        "base_url": orders_base_url,
+                        "path": "/v2/orders",
+                        "resolved_url": orders_url,
+                        "params": params,
+                        "timeout_connect": getattr(timeout_obj, "connect", None),
+                        "timeout_read": getattr(timeout_obj, "read", None),
+                        "timeout_write": getattr(timeout_obj, "write", None),
+                        "timeout_pool": getattr(timeout_obj, "pool", None),
+                    },
+                )
                 logger.info(
                     "kaspi_orders_http_start",
                     extra={
                         "company_id": company_id,
                         "merchant_uid": merchant_uid,
                         "request_id": request_id,
-                        "path": orders_path,
-                        "resolved_url": resolved_url,
-                        "full_url": full_url,
+                        "path": "/v2/orders",
+                        "resolved_url": orders_url,
                         "params": params,
                     },
                 )
@@ -449,22 +492,56 @@ class KaspiService:
                         status,
                         perf_counter(),
                     )
-                resp = await client.get(resolved_url, headers=self.headers, params=params)  # Fetch orders
+                resp = await client.get(orders_url, headers=self._orders_headers(), params=params)
                 duration_ms = int((perf_counter() - started_at) * 1000)
                 content_len = None
                 try:
                     content_len = len(resp.content) if resp.content is not None else None
                 except Exception:
                     content_len = None
+                if resp.status_code == 400:
+                    payload = None
+                    try:
+                        payload = resp.json()
+                    except Exception:
+                        payload = None
+                    title = _extract_kaspi_error_title(payload) or "kaspi bad request"
+                    is_pagination_error = "pagination" in title.lower() or "page" in title.lower()
+                    if is_pagination_error:
+                        fallback_params = self._orders_params(
+                            date_from=date_from,
+                            date_to=date_to,
+                            status=status,
+                            page=page,
+                            page_size=page_size,
+                            merchant_uid=merchant_uid,
+                            use_pagination_fallback=True,
+                        )
+                        resp = await client.get(orders_url, headers=self._orders_headers(), params=fallback_params)
+                        params = fallback_params
+                        duration_ms = int((perf_counter() - started_at) * 1000)
+                        try:
+                            content_len = len(resp.content) if resp.content is not None else None
+                        except Exception:
+                            content_len = None
+                    else:
+                        raise KaspiBadRequestError(title, status_code=resp.status_code)
+                if resp.status_code == 400:
+                    payload = None
+                    try:
+                        payload = resp.json()
+                    except Exception:
+                        payload = None
+                    title = _extract_kaspi_error_title(payload) or "kaspi bad request"
+                    raise KaspiBadRequestError(title, status_code=resp.status_code)
                 logger.info(
                     "kaspi_orders_http_end",
                     extra={
                         "company_id": company_id,
                         "merchant_uid": merchant_uid,
                         "request_id": request_id,
-                        "path": orders_path,
-                        "resolved_url": resolved_url,
-                        "full_url": full_url,
+                        "path": "/v2/orders",
+                        "resolved_url": orders_url,
                         "params": params,
                         "duration_ms": duration_ms,
                         "status_code": resp.status_code,
@@ -474,32 +551,42 @@ class KaspiService:
                 resp.raise_for_status()
                 data = resp.json() or {}
                 items = data.get("orders") or data.get("items") or data.get("data")
+                if isinstance(items, list):
+                    normalized_items = []
+                    for item in items:
+                        if isinstance(item, dict) and isinstance(item.get("attributes"), dict):
+                            merged = {**item.get("attributes", {})}
+                            if item.get("id") and "id" not in merged:
+                                merged["id"] = item.get("id")
+                            normalized_items.append(merged)
+                        else:
+                            normalized_items.append(item)
+                    items = normalized_items
                 if items is None:
                     return []
                 has_next = _first_present(data, "hasNext", "has_next")
                 next_page = _first_present(data, "nextPage", "next_page")
                 total_pages = _first_present(data, "totalPages", "pageCount", "total_pages")
-                if _diag_enabled():
-                    logger.info(
-                        "[CI_DIAG] kaspi_orders_http_exit",
-                        extra={
-                            "company_id": company_id,
-                            "request_id": request_id,
-                            "merchant_uid_present": bool(merchant_uid),
-                            "path": orders_path,
-                            "resolved_url": resolved_url,
-                            "full_url": full_url,
-                            "status_code": resp.status_code,
-                            "duration_ms": duration_ms,
-                            "bytes_len": content_len,
-                            "page": page,
-                            "has_next": has_next,
-                            "total_pages": total_pages,
-                        },
-                    )
+                logger.info(
+                    "[CI_DIAG] kaspi_orders_http_exit",
+                    extra={
+                        "company_id": company_id,
+                        "request_id": request_id,
+                        "merchant_uid_present": bool(merchant_uid),
+                        "path": "/v2/orders",
+                        "resolved_url": orders_url,
+                        "params": params,
+                        "status_code": resp.status_code,
+                        "duration_ms": duration_ms,
+                        "bytes_len": content_len,
+                        "page": page,
+                        "has_next": has_next,
+                        "total_pages": total_pages,
+                    },
+                )
                 return {
                     "items": items,
-                    "page": data.get("page") or data.get("pageNumber") or data.get("page[number]") or page,
+                    "page": data.get("page") or data.get("pageNumber") or page,
                     "total_pages": total_pages,
                     "has_next": has_next,
                     "next_page": next_page,
@@ -509,42 +596,39 @@ class KaspiService:
                 duration_ms = int((perf_counter() - started_at) * 1000)
                 status_code = getattr(getattr(e, "response", None), "status_code", None)
                 timed_out = isinstance(e, httpx.TimeoutException)
-                if _diag_enabled():
-                    logger.warning(
-                        "[CI_DIAG] kaspi_orders_http_exc",
-                        extra={
-                            "company_id": company_id,
-                            "request_id": request_id,
-                            "merchant_uid_present": bool(merchant_uid),
-                            "path": _safe_httpx_url_path(e) or "/orders",
-                            "resolved_url": resolved_url,
-                            "full_url": full_url,
-                            "params": params,
-                            "duration_ms": duration_ms,
-                            "status_code": status_code,
-                            "exc_type": type(e).__name__,
-                            "classify": "read_timeout"
-                            if isinstance(e, httpx.ReadTimeout)
-                            else "connect_timeout"
-                            if isinstance(e, httpx.ConnectTimeout)
-                            else "timeout"
-                            if isinstance(e, httpx.TimeoutException)
-                            else "http_error"
-                            if isinstance(e, httpx.HTTPStatusError)
-                            else "network_error"
-                            if isinstance(e, httpx.NetworkError)
-                            else "error",
-                        },
-                    )
+                logger.warning(
+                    "[CI_DIAG] kaspi_orders_http_exc",
+                    extra={
+                        "company_id": company_id,
+                        "request_id": request_id,
+                        "merchant_uid_present": bool(merchant_uid),
+                        "path": _safe_httpx_url_path(e) or "/v2/orders",
+                        "resolved_url": orders_url,
+                        "params": params,
+                        "duration_ms": duration_ms,
+                        "status_code": status_code,
+                        "exc_type": type(e).__name__,
+                        "classify": "read_timeout"
+                        if isinstance(e, httpx.ReadTimeout)
+                        else "connect_timeout"
+                        if isinstance(e, httpx.ConnectTimeout)
+                        else "timeout"
+                        if isinstance(e, httpx.TimeoutException)
+                        else "http_error"
+                        if isinstance(e, httpx.HTTPStatusError)
+                        else "network_error"
+                        if isinstance(e, httpx.NetworkError)
+                        else "error",
+                    },
+                )
                 logger.warning(
                     "kaspi_orders_http_end",
                     extra={
                         "company_id": company_id,
                         "merchant_uid": merchant_uid,
                         "request_id": request_id,
-                        "path": orders_path,
-                        "resolved_url": resolved_url,
-                        "full_url": full_url,
+                        "path": "/v2/orders",
+                        "resolved_url": orders_url,
                         "params": params,
                         "duration_ms": duration_ms,
                         "status_code": status_code,
@@ -552,6 +636,8 @@ class KaspiService:
                     },
                 )
                 logger.warning("Kaspi get_orders transient error: %s", e)
+                raise
+            except KaspiBadRequestError:
                 raise
             except httpx.HTTPError as e:
                 logger.error("Kaspi get_orders error: %s", e)
@@ -874,12 +960,10 @@ class KaspiService:
                         finished_at = _utcnow()
                         duration_ms = int((perf_counter() - started_at) * 1000)
                         state.updated_at = finished_at
-                        is_partial = bool(pagination_state.get("stopped_early"))
-                        if not is_partial:
-                            state.last_error_at = None
-                            state.last_error_code = None
-                            state.last_error_message = None
-                        state.last_result = "partial" if is_partial else "success"
+                        state.last_error_at = None
+                        state.last_error_code = None
+                        state.last_error_message = None
+                        state.last_result = "partial" if pagination_state.get("stopped_early") else "success"
                         state.last_duration_ms = duration_ms
                         state.last_attempt_at = attempt_at
                         state.last_fetched = fetched
@@ -950,40 +1034,6 @@ class KaspiService:
             status_code = getattr(getattr(exc, "response", None), "status_code", None)
             retry_after = self.get_retry_after_seconds(exc)
 
-            if status_code == 400:
-                kaspi_title = None
-                try:
-                    payload = exc.response.json() if exc.response is not None else None
-                except Exception:
-                    payload = None
-                if isinstance(payload, dict):
-                    errors = payload.get("errors") if isinstance(payload.get("errors"), list) else None
-                    if errors:
-                        first = errors[0]
-                        if isinstance(first, dict):
-                            kaspi_title = first.get("title") or first.get("detail")
-                if kaspi_title and ("page" in kaspi_title.lower() or "pagination" in kaspi_title.lower()):
-                    await self.record_sync_error(
-                        db,
-                        company_id=company_id,
-                        code="KASPI_BAD_REQUEST",
-                        message=kaspi_title,
-                        occurred_at=_utcnow(),
-                        attempt_at=attempt_at,
-                        duration_ms=duration_ms,
-                        fetched=fetched,
-                        inserted=inserted,
-                        updated=updated,
-                    )
-                    return {
-                        "ok": False,
-                        "status": "failed",
-                        "code": "KASPI_BAD_REQUEST",
-                        "message": kaspi_title,
-                        "company_id": company_id,
-                        "duration_ms": duration_ms,
-                    }
-
             if status_code == 429:
                 await self.record_sync_error(
                     db,
@@ -1025,6 +1075,29 @@ class KaspiService:
                 "status": "failed",
                 "code": error_code,
                 "message": "kaspi orders sync failed",
+                "company_id": company_id,
+                "duration_ms": duration_ms,
+            }
+        except KaspiBadRequestError as exc:
+            duration_ms = int((perf_counter() - started_at) * 1000)
+            detail = str(exc)
+            await self.record_sync_error(
+                db,
+                company_id=company_id,
+                code="KASPI_BAD_REQUEST",
+                message=detail,
+                occurred_at=_utcnow(),
+                attempt_at=attempt_at,
+                duration_ms=duration_ms,
+                fetched=fetched,
+                inserted=inserted,
+                updated=updated,
+            )
+            return {
+                "ok": False,
+                "status": "failed",
+                "code": "KASPI_BAD_REQUEST",
+                "message": detail or "kaspi bad request",
                 "company_id": company_id,
                 "duration_ms": duration_ms,
             }

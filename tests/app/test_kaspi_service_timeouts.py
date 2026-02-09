@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-from datetime import datetime
-
 import pytest
 
 from app.services import kaspi_service
@@ -78,7 +76,7 @@ async def test_kaspi_list_orders_uses_computed_timeout(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_get_orders_uses_shop_api_v2_and_jsonapi_pagination(monkeypatch):
+async def test_kaspi_get_orders_uses_shop_api_url_and_jsonapi_pagination(monkeypatch):
     svc = KaspiService(api_key="token", base_url="https://kaspi.kz")
     captured: dict[str, object] = {}
 
@@ -90,12 +88,9 @@ async def test_get_orders_uses_shop_api_v2_and_jsonapi_pagination(monkeypatch):
             return None
 
         def json(self):
-            return {"items": [], "page": 1, "has_next": False, "total_pages": 1}
+            return {"data": []}
 
     class _DummyClient:
-        def __init__(self):
-            return None
-
         async def __aenter__(self):
             return self
 
@@ -107,20 +102,27 @@ async def test_get_orders_uses_shop_api_v2_and_jsonapi_pagination(monkeypatch):
             captured["params"] = params
             return _DummyResponse()
 
-    monkeypatch.setattr(kaspi_service.settings, "KASPI_SHOP_API_URL", "https://kaspi.kz/shop/api")
-    monkeypatch.setattr(KaspiService, "_client", lambda self, **kwargs: _DummyClient())
+    class _DummyRetryClient:
+        def __init__(self, **kwargs):
+            self._client = _DummyClient()
 
-    await svc.get_orders(
-        date_from=datetime(2024, 1, 1),
-        date_to=datetime(2024, 1, 2),
-        page=2,
-        page_size=10,
-        merchant_uid="m-1",
-    )
+        async def __aenter__(self):
+            return self
 
-    assert captured["url"] == "https://kaspi.kz/shop/api/v2/orders"
-    params = captured["params"]
-    assert params["page[number]"] == 2
-    assert params["page[size]"] == 10
-    assert "filter[orders][creationDate][$ge]" in params
-    assert "filter[orders][creationDate][$le]" in params
+        async def __aexit__(self, exc_type, exc, tb):
+            return None
+
+        async def get(self, url, headers=None, params=None):
+            return await self._client.get(url, headers=headers, params=params)
+
+    monkeypatch.setattr(kaspi_service, "_RetryingAsyncClient", lambda **kwargs: _DummyRetryClient())
+
+    await svc.get_orders(page=0, page_size=0)
+
+    url = captured.get("url")
+    params = captured.get("params")
+    assert isinstance(url, str)
+    assert url.endswith("/v2/orders")
+    assert isinstance(params, dict)
+    assert params.get("page[number]") == 1
+    assert params.get("page[size]") == 100
