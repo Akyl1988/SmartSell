@@ -174,7 +174,7 @@ async def test_kaspi_get_orders_sync_transport_uses_threadpool(monkeypatch):
             captured["headers"] = headers
             return _DummyResponse()
 
-    async def _run_sync(func, *args, cancellable=True, **kwargs):
+    async def _run_sync(func, *args, abandon_on_cancel=True, **kwargs):
         captured["run_sync"] = True
         return func(*args, **kwargs)
 
