@@ -1466,12 +1466,14 @@ async def get_me(
     company_id = getattr(current_user, "company_id", None)
     company_name = None
     bin_iin = None
+    kaspi_store_id = None
     if company_id:
         row = await db.execute(select(Company).where(Company.id == company_id))
         company = row.scalar_one_or_none()
         if company is not None:
             company_name = getattr(company, "name", None)
             bin_iin = getattr(company, "bin_iin", None)
+            kaspi_store_id = getattr(company, "kaspi_store_id", None)
     return {
         "id": current_user.id,
         "phone": current_user.phone,
@@ -1482,6 +1484,7 @@ async def get_me(
         "company_id": company_id,
         "company_name": company_name,
         "bin_iin": bin_iin,
+        "kaspi_store_id": kaspi_store_id,
         "role": getattr(current_user, "role", None),
         "is_active": getattr(current_user, "is_active", True),
         "is_verified": getattr(current_user, "is_verified", False),

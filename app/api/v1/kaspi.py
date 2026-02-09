@@ -2854,7 +2854,11 @@ async def kaspi_sync_now(
     refresh_once = True
     if body is not None:
         refresh_once = bool(body.refresh_once)
-    merchant_uid = ((body.merchant_uid if body else merchant_uid) or "").strip()
+    query_merchant_uid = ((body.merchant_uid if body else merchant_uid) or "").strip()
+    resolved_company_id = resolve_tenant_company_id(current_user, not_found_detail="Company not set")
+    company = await session.get(Company, resolved_company_id)
+    merchant_uid = query_merchant_uid or ((company.kaspi_store_id if company else None) or "")
+    merchant_uid = merchant_uid.strip()
     if not merchant_uid:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="missing_merchant_uid")
 
