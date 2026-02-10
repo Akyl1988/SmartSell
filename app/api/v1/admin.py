@@ -121,13 +121,20 @@ async def run_campaigns_task(
     payload: CampaignRunIn | None = Body(default=None),
     limit: int = Query(100, ge=1),
     company_id_param: int | None = Query(default=None, ge=1, alias="company_id"),
+    company_id_alias: int | None = Query(default=None, ge=1, alias="companyId"),
     dry_run: bool = Query(False),
     admin: User = Depends(require_platform_admin),
     db: AsyncSession = Depends(get_async_db),
 ) -> dict:
     _ = admin
     resolved_limit = payload.limit if payload and payload.limit is not None else limit
-    resolved_company_id = payload.companyId if payload else company_id_param
+    resolved_company_id = None
+    if payload and payload.companyId is not None:
+        resolved_company_id = payload.companyId
+    elif company_id_param is not None:
+        resolved_company_id = company_id_param
+    elif company_id_alias is not None:
+        resolved_company_id = company_id_alias
     resolved_dry_run = payload.dry_run if payload else dry_run
 
     if resolved_company_id is None:
