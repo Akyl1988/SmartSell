@@ -4,8 +4,6 @@ from scripts.kaspi_httpx_probe import _extract_total_count, _safe_truncate, _spl
 
 
 def test_split_windows_halves_to_min():
-
-
     assert _split_windows(480, 60) == [480, 240, 120, 60]
 
 
@@ -26,4 +24,3 @@ def test_extract_total_count_from_meta():
 def test_extract_total_count_missing_meta():
     resp = httpx.Response(200, json={"data": []})
     assert _extract_total_count(resp) is None
-
