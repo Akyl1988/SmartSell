@@ -390,3 +390,7 @@ openapi.json
 # local tmp logs
 /tmp_*.json
 
+
+# allow python package marker for CI imports
+!scripts/__init__.py
+
