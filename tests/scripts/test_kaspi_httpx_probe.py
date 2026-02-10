@@ -1,4 +1,3 @@
-feat/workers-campaigns-iteration3
 import httpx
 
 from scripts.kaspi_httpx_probe import _extract_total_count, _safe_truncate, _split_windows
@@ -14,7 +13,6 @@ def test_split_windows_stops_at_min():
     assert _split_windows(75, 60) == [75, 60]
 
 
-feat/workers-campaigns-iteration3
 def test_safe_truncate_respects_limit():
     assert _safe_truncate("abc", 2) == "ab"
     assert _safe_truncate("abc", 0) == ""
