@@ -1036,8 +1036,15 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:  # type: ignore[overrid
         enable_scheduler = _env_truthy(os.getenv("ENABLE_SCHEDULER", "0")) or getattr(
             settings, "ENABLE_SCHEDULER", False
         )
-        if role != "scheduler":
+        background_tasks_enabled = _env_truthy(os.getenv("SMARTSELL_BACKGROUND_TASKS", "1"), True)
+        allowed_roles = {"web", "worker", "scheduler"}
+        if role not in allowed_roles:
             logger.info("Scheduler start skipped for role", extra={"role": role, "enable_scheduler": enable_scheduler})
+        elif not background_tasks_enabled:
+            logger.info(
+                "Scheduler start skipped: SMARTSELL_BACKGROUND_TASKS=0",
+                extra={"role": role, "enable_scheduler": enable_scheduler},
+            )
         elif disable_hooks:
             logger.info("Scheduler start skipped: startup hooks disabled")
         elif not enable_scheduler:
