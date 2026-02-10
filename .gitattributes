@@ -1,37 +1,3 @@
-# Enforce line endings at repo level (source of truth)
-
-# Default: treat as text and store as LF in repo + checkout as LF
-* text=auto eol=lf
-
-# Explicit LF for code/config/docs
+* text=auto
 *.py text eol=lf
-*.yml text eol=lf
-*.yaml text eol=lf
-*.md text eol=lf
-*.txt text eol=lf
-*.json text eol=lf
-*.toml text eol=lf
-*.ini text eol=lf
-*.sql text eol=lf
-Dockerfile text eol=lf
-
-# Windows scripts: CRLF on checkout (prevents PowerShell/CMD edge cases)
 *.ps1 text eol=crlf
-*.psm1 text eol=crlf
-*.bat text eol=crlf
-*.cmd text eol=crlf
-
-# Binary files (never touch)
-*.png binary
-*.jpg binary
-*.jpeg binary
-*.gif binary
-*.webp binary
-*.ico binary
-*.pdf binary
-*.zip binary
-*.7z binary
-*.exe binary
-*.dll binary
-*.woff binary
-*.woff2 binary

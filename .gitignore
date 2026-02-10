@@ -386,3 +386,7 @@ scripts/smoke-*.local.ps1
 openapi.json
 
 openapi.json
+
+# local tmp logs
+/tmp_*.json
+

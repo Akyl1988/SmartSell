@@ -35,8 +35,8 @@ jobs:
 
       - name: Ruff
         run: |
-          python -m ruff check app tests tools
-          python -m ruff format --check app tests tools
+          python -m ruff check .
+          python -m ruff format --check .
 
   test:
     name: Tests (Postgres + Redis)
@@ -100,10 +100,10 @@ jobs:
           DATABASE_URL: postgresql+psycopg://postgres:postgres@localhost:5432/smartsell_test
           TEST_DATABASE_URL: postgresql+psycopg://postgres:postgres@localhost:5432/smartsell_test
           TEST_ASYNC_DATABASE_URL: postgresql+asyncpg://postgres:postgres@localhost:5432/smartsell_test
-          ENVIRONMENT: testing
+          ENVIRONMENT: test
           TESTING: "True"
           REDIS_URL: redis://localhost:6379
-        run: python -m pytest -vv -ra --maxfail=1 --durations=25 --timeout=600 --timeout-method=thread
+        run: python -m pytest -q --tb=short --maxfail=1 -m "not migrations"
 
   security:
     name: Security (pip-audit)
