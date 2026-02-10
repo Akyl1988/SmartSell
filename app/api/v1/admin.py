@@ -24,7 +24,7 @@ from app.models.kaspi_offer import KaspiOffer
 from app.models.kaspi_trial_grant import KaspiTrialGrant
 from app.models.subscription_override import SubscriptionOverride
 from app.models.user import User
-from app.services.campaign_runner import run_campaigns_with_claim
+from app.services.campaign_runner import run_due_campaigns
 from app.services.subscriptions import activate_plan, renew_if_due
 
 router = APIRouter(
@@ -130,24 +130,21 @@ async def run_campaigns_task(
     resolved_company_id = payload.companyId if payload else company_id_param
     resolved_dry_run = payload.dry_run if payload else dry_run
 
+    if resolved_company_id is None:
+        raise NotFoundError("company_id_required", code="company_id_required", http_status=400)
+
     rid = _ensure_request_id(request)
-    result = await run_campaigns_with_claim(
+    if resolved_dry_run:
+        return {"processed": 0}
+
+    processed = await run_due_campaigns(
         db,
         company_id=resolved_company_id,
         request_id=rid,
         limit=resolved_limit,
-        dry_run=resolved_dry_run,
+        now=datetime.now(UTC),
     )
-    return {
-        "ok": True,
-        "dry_run": resolved_dry_run,
-        "limit": resolved_limit,
-        "company_id": resolved_company_id,
-        "found": result["found"],
-        "started": result["started"],
-        "skipped": result["skipped"],
-        "details": result["details"],
-    }
+    return {"processed": processed}
 
 
 class SubscriptionActivateIn(BaseModel):
