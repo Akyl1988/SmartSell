@@ -24,7 +24,7 @@ from app.models.kaspi_offer import KaspiOffer
 from app.models.kaspi_trial_grant import KaspiTrialGrant
 from app.models.subscription_override import SubscriptionOverride
 from app.models.user import User
-from app.services.campaign_runner import run_campaigns_with_claim
+from app.services.campaign_runner import run_due_campaigns
 from app.services.subscriptions import activate_plan, renew_if_due
 
 router = APIRouter(
@@ -121,33 +121,37 @@ async def run_campaigns_task(
     payload: CampaignRunIn | None = Body(default=None),
     limit: int = Query(100, ge=1),
     company_id_param: int | None = Query(default=None, ge=1, alias="company_id"),
+    company_id_alias: int | None = Query(default=None, ge=1, alias="companyId"),
     dry_run: bool = Query(False),
     admin: User = Depends(require_platform_admin),
     db: AsyncSession = Depends(get_async_db),
 ) -> dict:
     _ = admin
     resolved_limit = payload.limit if payload and payload.limit is not None else limit
-    resolved_company_id = payload.companyId if payload else company_id_param
+    resolved_company_id = None
+    if payload and payload.companyId is not None:
+        resolved_company_id = payload.companyId
+    elif company_id_param is not None:
+        resolved_company_id = company_id_param
+    elif company_id_alias is not None:
+        resolved_company_id = company_id_alias
     resolved_dry_run = payload.dry_run if payload else dry_run
 
+    if resolved_company_id is None:
+        raise NotFoundError("company_id_required", code="company_id_required", http_status=400)
+
     rid = _ensure_request_id(request)
-    result = await run_campaigns_with_claim(
+    if resolved_dry_run:
+        return {"processed": 0}
+
+    processed = await run_due_campaigns(
         db,
         company_id=resolved_company_id,
         request_id=rid,
         limit=resolved_limit,
-        dry_run=resolved_dry_run,
+        now=datetime.now(UTC),
     )
-    return {
-        "ok": True,
-        "dry_run": resolved_dry_run,
-        "limit": resolved_limit,
-        "company_id": resolved_company_id,
-        "found": result["found"],
-        "started": result["started"],
-        "skipped": result["skipped"],
-        "details": result["details"],
-    }
+    return {"processed": processed}
 
 
 class SubscriptionActivateIn(BaseModel):

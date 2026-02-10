@@ -3,6 +3,7 @@ Background tasks for SmartSell3 using asyncio.
 """
 
 import asyncio
+import os
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
@@ -30,6 +31,9 @@ class TaskManager:
 
     async def start(self):
         """Start background tasks"""
+        if os.getenv("SMARTSELL_BACKGROUND_TASKS", "1").strip() == "0":
+            logger.info("Background tasks disabled via SMARTSELL_BACKGROUND_TASKS=0")
+            return
         if self.running:
             return
 
