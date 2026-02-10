@@ -12,12 +12,14 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.admin.integrations import router as integrations_router
+from app.core.config import settings
 from app.core.db import get_async_db
 from app.core.dependencies import require_platform_admin
 from app.core.exceptions import AuthorizationError, NotFoundError, _ensure_request_id
 from app.core.logging import audit_logger
 from app.core.subscriptions.plan_catalog import get_plan, normalize_plan_id
 from app.models.billing import Subscription, WalletBalance, WalletTransaction
+from app.models.campaign import Campaign, CampaignStatus, ChannelType, Message, MessageStatus
 from app.models.company import Company
 from app.models.kaspi_mc_session import KaspiMcSession
 from app.models.kaspi_offer import KaspiOffer
@@ -120,8 +122,6 @@ async def run_campaigns_task(
     request: Request,
     payload: CampaignRunIn | None = Body(default=None),
     limit: int = Query(100, ge=1),
-    company_id_param: int | None = Query(default=None, ge=1, alias="company_id"),
-    company_id_alias: int | None = Query(default=None, ge=1, alias="companyId"),
     dry_run: bool = Query(False),
     admin: User = Depends(require_platform_admin),
     db: AsyncSession = Depends(get_async_db),
@@ -131,10 +131,13 @@ async def run_campaigns_task(
     resolved_company_id = None
     if payload and payload.companyId is not None:
         resolved_company_id = payload.companyId
-    elif company_id_param is not None:
-        resolved_company_id = company_id_param
-    elif company_id_alias is not None:
-        resolved_company_id = company_id_alias
+    else:
+        query_company_id = request.query_params.get("company_id") or request.query_params.get("companyId")
+        if query_company_id:
+            try:
+                resolved_company_id = int(query_company_id)
+            except ValueError:
+                resolved_company_id = None
     resolved_dry_run = payload.dry_run if payload else dry_run
 
     if resolved_company_id is None:
@@ -152,6 +155,56 @@ async def run_campaigns_task(
         now=datetime.now(UTC),
     )
     return {"processed": processed}
+
+
+@router.post(
+    "/dev/seed/campaign_due",
+    summary="Seed a due campaign for testing (dev/test only)",
+)
+async def seed_due_campaign(
+    request: Request,
+    admin: User = Depends(require_platform_admin),
+    db: AsyncSession = Depends(get_async_db),
+) -> dict:
+    _ = admin
+    if str(getattr(settings, "ENVIRONMENT", "")) == "production":
+        raise NotFoundError("not_found", code="not_found", http_status=404)
+
+    query_company_id = request.query_params.get("company_id") or request.query_params.get("companyId")
+    if not query_company_id:
+        raise NotFoundError("company_id_required", code="company_id_required", http_status=400)
+    try:
+        company_id = int(query_company_id)
+    except ValueError:
+        raise NotFoundError("company_id_required", code="company_id_required", http_status=400)
+
+    company = await db.get(Company, company_id)
+    if not company:
+        company = Company(id=company_id, name=f"Company {company_id}")
+        db.add(company)
+        await db.flush()
+
+    campaign = Campaign(
+        title=f"Seed due {company_id} {datetime.now(UTC).isoformat()}",
+        description="seed due campaign",
+        status=CampaignStatus.READY,
+        scheduled_at=None,
+        company_id=company.id,
+    )
+    db.add(campaign)
+    await db.flush()
+
+    message = Message(
+        campaign_id=campaign.id,
+        recipient="seed@example.com",
+        content="seed",
+        status=MessageStatus.PENDING,
+        channel=ChannelType.EMAIL,
+    )
+    db.add(message)
+
+    await db.commit()
+    return {"campaign_id": campaign.id}
 
 
 class SubscriptionActivateIn(BaseModel):
