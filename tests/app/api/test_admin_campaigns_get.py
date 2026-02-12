@@ -3,7 +3,6 @@ from __future__ import annotations
 import pytest
 
 from app.models.campaign import CampaignProcessingStatus
-
 from tests.app.test_campaign_processing_worker import _seed_campaign
 
 pytestmark = pytest.mark.asyncio
