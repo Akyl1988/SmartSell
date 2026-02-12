@@ -2,7 +2,7 @@ from datetime import datetime
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-from app.models.campaign import CampaignStatus, MessageStatus
+from app.models.campaign import CampaignProcessingStatus, CampaignStatus, MessageStatus
 
 
 class MessageCreate(BaseModel):
@@ -89,6 +89,12 @@ class CampaignResponse(BaseModel):
     title: str
     description: str | None = None
     status: CampaignStatus
+    processing_status: CampaignProcessingStatus
+    queued_at: datetime | None = None
+    started_at: datetime | None = None
+    finished_at: datetime | None = None
+    last_error: str | None = None
+    attempts: int
     created_at: datetime
     updated_at: datetime
     scheduled_at: datetime | None = None

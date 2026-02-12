@@ -18,6 +18,7 @@ from app.services import EmailService, KaspiService
 from app.services.campaign_runner import process_scheduled_campaigns
 from app.services.subscriptions import renew_if_due
 from app.utils.idempotency import cleanup_idempotency_records
+from app.worker.campaign_processing import process_campaign_queue_once
 
 logger = get_logger(__name__)
 
@@ -47,6 +48,7 @@ class TaskManager:
             asyncio.create_task(self._send_notifications_task()),
             asyncio.create_task(self._update_stock_levels_task()),
             asyncio.create_task(self._process_scheduled_campaigns_task()),
+            asyncio.create_task(self._process_campaign_queue_task()),
             asyncio.create_task(self._renew_subscriptions_task()),
         ]
 
@@ -201,6 +203,18 @@ class TaskManager:
 
             except Exception as e:
                 logger.error(f"Campaigns task error: {e}")
+
+    async def _process_campaign_queue_task(self):
+        """Process queued campaign runs"""
+
+        while self.running:
+            try:
+                await asyncio.sleep(15)
+                async with async_session_maker() as db:
+                    await process_campaign_queue_once(db, limit=10)
+
+            except Exception as e:
+                logger.error(f"Campaign queue task error: {e}")
 
     async def _renew_subscriptions_task(self):
         """Renew subscriptions daily (runs immediately on start)."""
