@@ -33,6 +33,7 @@ from app.models.kaspi_offer import KaspiOffer
 from app.models.kaspi_trial_grant import KaspiTrialGrant
 from app.models.subscription_override import SubscriptionOverride
 from app.models.user import User
+from app.schemas.campaign import AdminCampaignResponse
 from app.services.campaign_runner import run_due_campaigns
 from app.services.subscriptions import activate_plan, renew_if_due
 
@@ -212,6 +213,23 @@ async def queue_campaign_run(
     }
 
 
+@router.get(
+    "/campaigns/{campaign_id}",
+    response_model=AdminCampaignResponse,
+    summary="Get campaign details (platform admin)",
+)
+async def get_campaign_admin(
+    campaign_id: int,
+    admin: User = Depends(require_platform_admin),
+    db: AsyncSession = Depends(get_async_db),
+) -> AdminCampaignResponse:
+    _ = admin
+    campaign = await db.get(Campaign, campaign_id)
+    if not campaign:
+        raise NotFoundError("campaign_not_found", code="campaign_not_found", http_status=404)
+    return AdminCampaignResponse.model_validate(campaign)
+
+
 @router.post(
     "/dev/seed/campaign_due",
     summary="Seed a due campaign for testing (dev/test only)",
@@ -226,18 +244,27 @@ async def seed_due_campaign(
         raise NotFoundError("not_found", code="not_found", http_status=404)
 
     query_company_id = request.query_params.get("company_id") or request.query_params.get("companyId")
-    if not query_company_id:
-        raise NotFoundError("company_id_required", code="company_id_required", http_status=400)
-    try:
-        company_id = int(query_company_id)
-    except ValueError:
-        raise NotFoundError("company_id_required", code="company_id_required", http_status=400)
+    company_id: int | None = None
+    if query_company_id:
+        try:
+            company_id = int(query_company_id)
+        except ValueError:
+            raise NotFoundError("company_id_required", code="company_id_required", http_status=400)
 
-    company = await db.get(Company, company_id)
-    if not company:
-        company = Company(id=company_id, name=f"Company {company_id}")
-        db.add(company)
-        await db.flush()
+    company: Company | None = None
+    if company_id is not None:
+        company = await db.get(Company, company_id)
+        if not company:
+            company = Company(id=company_id, name=f"Company {company_id}")
+            db.add(company)
+            await db.flush()
+    else:
+        stmt = select(Company).order_by(Company.id.asc()).limit(1)
+        company = (await db.execute(stmt)).scalar_one_or_none()
+        if not company:
+            company = Company(name="Seed Company")
+            db.add(company)
+            await db.flush()
 
     campaign = Campaign(
         title=f"Seed due {company_id} {datetime.now(UTC).isoformat()}",

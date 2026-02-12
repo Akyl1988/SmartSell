@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 
 import pytest
+from sqlalchemy import delete
 from sqlalchemy.orm import sessionmaker
 
 import tests.conftest as base_conftest
@@ -179,3 +180,27 @@ async def test_campaign_seed_and_run(async_client, test_db):
         campaign = s.query(Campaign).filter(Campaign.id == campaign_id).first()
         assert campaign is not None
         assert campaign.status == CampaignStatus.SUCCESS
+
+
+async def test_campaign_seed_without_company_id(async_client, async_db_session, test_db):
+    _ = test_db
+    headers = _platform_admin_headers_without_company()
+
+    await async_db_session.execute(delete(Campaign))
+    await async_db_session.execute(delete(Company))
+    await async_db_session.commit()
+
+    seed = await async_client.post(
+        "/api/v1/admin/dev/seed/campaign_due",
+        headers=headers,
+    )
+    assert seed.status_code == 200, seed.text
+    seed_payload = seed.json()
+    campaign_id = seed_payload.get("campaign_id")
+    assert campaign_id
+
+    SessionLocal = sessionmaker(bind=base_conftest.sync_engine, expire_on_commit=False, autoflush=False)
+    with SessionLocal() as s:
+        campaign = s.query(Campaign).filter(Campaign.id == campaign_id).first()
+        assert campaign is not None
+        assert campaign.company_id is not None
