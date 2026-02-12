@@ -249,8 +249,12 @@ def _resolve_sync_pg_url() -> str:
     def _append_candidate(raw: str | None) -> None:
         if not raw:
             return
-        if "***" in raw:
-            return
+        try:
+            parsed = make_url(raw)
+            if parsed.password is not None and set(parsed.password) <= {"*"}:
+                return
+        except Exception:
+            pass
         candidates.append(raw)
 
     try:

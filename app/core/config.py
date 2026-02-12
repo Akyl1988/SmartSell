@@ -22,6 +22,8 @@ from zoneinfo import ZoneInfo
 
 from pydantic import AliasChoices, AnyHttpUrl, EmailStr, Field, ValidationInfo, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+from sqlalchemy.engine import URL
+from sqlalchemy.engine.url import make_url
 
 # Константы JSON:API (Kaspi Shop Orders)
 JSONAPI_MIME: str = "application/vnd.api+json"
@@ -102,11 +104,9 @@ def _mask_db_fp(url: str) -> str:
     return db_connection_fingerprint(url, include_password=False)
 
 
-def _is_masked_password_in_url(url: str | None) -> bool:
-    if not url:
-        return False
+def _sa_is_masked_password(url: str) -> bool:
     try:
-        parsed = urlparse(url)
+        parsed = make_url(url)
         if parsed.password is None:
             return False
         return set(parsed.password) <= {"*"}
@@ -114,17 +114,21 @@ def _is_masked_password_in_url(url: str | None) -> bool:
         return False
 
 
-def _strip_masked_password(url: str) -> str:
+def _sa_strip_password(url: str) -> str:
     try:
-        parsed = urlparse(url)
-        if not parsed.username or parsed.password is None:
+        if not _sa_is_masked_password(url):
             return url
-        if not _is_masked_password_in_url(url):
-            return url
-        host = parsed.hostname or ""
-        port = f":{parsed.port}" if parsed.port else ""
-        netloc = f"{parsed.username}@{host}{port}"
-        return urlunparse((parsed.scheme, netloc, parsed.path, parsed.params, parsed.query, parsed.fragment))
+        parsed = make_url(url)
+        stripped = URL.create(
+            drivername=parsed.drivername,
+            username=parsed.username,
+            password=None,
+            host=parsed.host,
+            port=parsed.port,
+            database=parsed.database,
+            query=parsed.query,
+        )
+        return stripped.render_as_string(hide_password=False)
     except Exception:
         return url
 
@@ -143,15 +147,11 @@ def _inject_password_if_missing(url: str) -> str:
         env = os.environ
         env_name = env.get("ENVIRONMENT", "")
         debug_flag = env.get("DEBUG", "0").lower() in {"1", "true", "yes", "on"}
-        parsed = urlparse(url)
-        if not parsed.scheme.startswith("postgres"):
+        parsed = make_url(url)
+        if not str(parsed.drivername).startswith("postgres"):
             return url
 
-        password_is_masked = False
-        if parsed.password is not None:
-            password_is_masked = set(parsed.password) <= {"*"}
-
-        if (parsed.password and not password_is_masked) or not parsed.username:
+        if parsed.password is not None or not parsed.username:
             return url
 
         password = env.get("DB_PASSWORD") or env.get("PGPASSWORD")
@@ -160,24 +160,19 @@ def _inject_password_if_missing(url: str) -> str:
                 base_env_url = env.get("DATABASE_URL") or env.get("DB_URL")
                 try:
                     if base_env_url and base_env_url != url:
-                        base_parsed = urlparse(base_env_url)
+                        base_parsed = make_url(base_env_url)
                         base_password = base_parsed.password
-                        if (
-                            base_password
-                            and (base_parsed.scheme or "").startswith("postgres")
-                            and not set(base_password) <= {"*"}
-                        ):
-                            password = base_parsed.password
+                        if base_password and str(base_parsed.drivername).startswith("postgres"):
+                            if not _sa_is_masked_password(base_env_url):
+                                password = base_password
                 except Exception:
                     password = None
 
         if not password:
             return url
 
-        host = parsed.hostname or ""
-        port = f":{parsed.port}" if parsed.port else ""
-        netloc = f"{quote(parsed.username)}:{quote(password)}@{host}{port}"
-        return urlunparse((parsed.scheme, netloc, parsed.path, parsed.params, parsed.query, parsed.fragment))
+        updated = parsed.set(password=password)
+        return updated.render_as_string(hide_password=False)
     except Exception:
         return url
 
@@ -289,8 +284,10 @@ def resolve_database_url(settings: Settings | None = None) -> tuple[str, str, st
         else:
             raise ValueError("DATABASE_URL is required in non-local environments")
 
-    if _is_masked_password_in_url(resolved_url):
-        resolved_url = _strip_masked_password(resolved_url)
+    if _sa_is_masked_password(resolved_url):
+        resolved_url = _sa_strip_password(resolved_url)
+    if resolved_url and _sa_is_masked_password(resolved_url):
+        resolved_url = _sa_strip_password(resolved_url)
     # Local/dev/pytest: if URL lacks password but PGPASSWORD is set, inject it
     resolved_url = _inject_password_if_missing(resolved_url)
 
@@ -333,6 +330,8 @@ def resolve_async_database_url(settings: Settings) -> tuple[str, str, str]:
     else:
         base, src, _ = resolve_database_url(settings)
 
+    if base and _sa_is_masked_password(base):
+        base = _sa_strip_password(base)
     url = _to_asyncpg_url(base or "")
     url = _inject_password_if_missing(url)
     fp = _mask_db_fp(url)

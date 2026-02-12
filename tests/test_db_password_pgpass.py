@@ -1,6 +1,6 @@
 from urllib.parse import urlparse
 
-from app.core.config import Settings, resolve_database_url
+from app.core.config import Settings, resolve_async_database_url, resolve_database_url
 
 
 def _clear_db_env(monkeypatch):
@@ -84,6 +84,17 @@ def test_masked_password_is_stripped_without_env_password(monkeypatch):
     assert source
 
 
+def test_async_resolution_strips_masked_password(monkeypatch):
+    _clear_db_env(monkeypatch)
+    monkeypatch.setenv("ENVIRONMENT", "testing")
+    monkeypatch.setenv("TEST_ASYNC_DATABASE_URL", "postgresql+asyncpg://user:***@localhost:5432/dbname")
+    monkeypatch.setenv("PYTEST_CURRENT_TEST", "config::async-masked")
+
+    url, _, _ = resolve_async_database_url(Settings())
+
+    assert ":***@" not in url
+
+
 def test_sync_url_injects_password_from_db_password(monkeypatch):
     import os
 
@@ -135,18 +146,12 @@ def test_resolve_sync_pg_url_skips_masked_candidate(monkeypatch):
 
     _clear_db_env(monkeypatch)
     monkeypatch.setenv("ENVIRONMENT", "testing")
-    monkeypatch.setenv("TEST_ASYNC_DATABASE_URL", "postgresql+asyncpg://user:real@localhost:5432/dbname")
+    monkeypatch.setenv("TEST_ASYNC_DATABASE_URL", "postgresql+asyncpg://user:***@localhost:5432/dbname")
+    monkeypatch.setenv("TEST_DATABASE_URL", "postgresql+asyncpg://user:***@localhost:5432/dbname")
     monkeypatch.setenv("PYTEST_CURRENT_TEST", "db::resolve")
 
     new_settings = SettingsCls()
     monkeypatch.setattr(db, "settings", new_settings, raising=False)
-    masked = "postgresql://user:***@localhost:5432/dbname"
-    monkeypatch.setattr(SettingsCls, "sqlalchemy_sync_url", property(lambda _self: masked))
-    monkeypatch.setattr(
-        SettingsCls,
-        "sqlalchemy_urls",
-        property(lambda _self: {"sync": masked, "async": masked, "driver": "postgresql"}),
-    )
 
     resolved = db._resolve_sync_pg_url()
 
