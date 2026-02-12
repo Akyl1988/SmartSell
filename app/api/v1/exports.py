@@ -11,16 +11,37 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.db import get_async_db
-from app.core.dependencies import require_store_admin
+from app.core.dependencies import (
+    get_current_verified_user,
+    require_active_subscription,
+    require_company_access,
+    require_store_admin_company,
+)
 from app.core.security import resolve_tenant_company_id
 from app.models.billing import BillingInvoice
 from app.models.order import Order, OrderItem
 from app.models.product import Product
+from app.models.user import User
 from app.services.exports.products_xlsx import build_products_xlsx
 from app.services.exports.sales_xlsx import build_sales_xlsx
 from app.utils.pii import mask_phone
 
-router = APIRouter(prefix="/exports", tags=["exports"])
+
+async def _require_company_context(current_user: User = Depends(get_current_verified_user)) -> User:
+    resolve_tenant_company_id(current_user, not_found_detail="Company not set")
+    return current_user
+
+
+router = APIRouter(
+    prefix="/exports",
+    tags=["exports"],
+    dependencies=[
+        Depends(require_company_access),
+        Depends(_require_company_context),
+        Depends(require_store_admin_company),
+        Depends(require_active_subscription),
+    ],
+)
 
 
 def _parse_dt(value: str | None, field: str) -> datetime | None:
@@ -183,7 +204,7 @@ async def export_orders_xlsx(
     date_from: str | None = Query(default=None),
     date_to: str | None = Query(default=None),
     limit: int = Query(default=1000, ge=1, le=5000),
-    admin=Depends(require_store_admin),
+    admin: User = Depends(get_current_verified_user),
     db: AsyncSession = Depends(get_async_db),
 ) -> Response:
     _ = admin
@@ -226,7 +247,7 @@ async def export_sales_xlsx(
     date_from: str | None = Query(default=None),
     date_to: str | None = Query(default=None),
     limit: int = Query(default=1000, ge=1, le=5000),
-    admin=Depends(require_store_admin),
+    admin: User = Depends(get_current_verified_user),
     db: AsyncSession = Depends(get_async_db),
 ) -> StreamingResponse:
     _ = admin
@@ -246,7 +267,7 @@ async def export_sales_xlsx(
 @router.get("/products.xlsx")
 async def export_products_xlsx(
     limit: int = Query(default=1000, ge=1, le=5000),
-    admin=Depends(require_store_admin),
+    admin: User = Depends(get_current_verified_user),
     db: AsyncSession = Depends(get_async_db),
 ) -> StreamingResponse:
     _ = admin
