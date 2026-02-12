@@ -35,6 +35,13 @@ def _has_column(insp, table: str, column: str) -> bool:
         return False
 
 
+def _has_index(insp, table: str, index_name: str) -> bool:
+    try:
+        return any(idx.get("name") == index_name for idx in insp.get_indexes(table))
+    except Exception:
+        return False
+
+
 def upgrade() -> None:
     bind = op.get_bind()
     insp = safe_inspect(bind) if safe_inspect else None
@@ -55,6 +62,12 @@ def upgrade() -> None:
                     server_default="done",
                 ),
             )
+        if bind.dialect.name == "postgresql":
+            op.execute(
+                "CREATE INDEX IF NOT EXISTS ix_campaign_processing_status_queued_at "
+                "ON campaigns (processing_status, queued_at)"
+            )
+        elif not insp or not _has_index(insp, "campaigns", "ix_campaign_processing_status_queued_at"):
             op.create_index(
                 "ix_campaign_processing_status_queued_at",
                 "campaigns",
@@ -86,10 +99,13 @@ def downgrade() -> None:
             op.drop_column("campaigns", "finished_at")
         if not insp or _has_column(insp, "campaigns", "started_at"):
             op.drop_column("campaigns", "started_at")
+        if bind.dialect.name == "postgresql":
+            op.execute("DROP INDEX IF EXISTS ix_campaign_processing_status_queued_at")
+        elif not insp or _has_index(insp, "campaigns", "ix_campaign_processing_status_queued_at"):
+            op.drop_index("ix_campaign_processing_status_queued_at", table_name="campaigns")
         if not insp or _has_column(insp, "campaigns", "queued_at"):
             op.drop_column("campaigns", "queued_at")
         if not insp or _has_column(insp, "campaigns", "processing_status"):
-            op.drop_index("ix_campaign_processing_status_queued_at", table_name="campaigns")
             op.drop_column("campaigns", "processing_status")
 
     if bind.dialect.name == "postgresql":
