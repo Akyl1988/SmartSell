@@ -125,6 +125,44 @@ async def test_sync_uses_query_merchant_uid(monkeypatch, async_client, company_a
 
 
 @pytest.mark.asyncio
+async def test_sync_passes_backfill_days(monkeypatch, async_client, company_a_admin_headers):
+    captured: dict[str, int | None] = {"backfill_days": None}
+
+    async def fake_sync_orders(self, *, backfill_days=None, **kwargs):  # noqa: ANN001, ARG001
+        captured["backfill_days"] = backfill_days
+        return {"ok": True, "status": "success", "fetched": 0, "inserted": 0, "updated": 0}
+
+    monkeypatch.setattr(KaspiService, "sync_orders", fake_sync_orders)
+
+    resp = await async_client.post(
+        "/api/v1/kaspi/orders/sync?merchantUid=17319385&backfill_days=7",
+        headers=company_a_admin_headers,
+    )
+    assert resp.status_code == 200
+    assert captured["backfill_days"] == 7
+
+
+@pytest.mark.asyncio
+async def test_sync_backfill_rejected_in_production(monkeypatch, async_client, company_a_admin_headers):
+    from app.api.v1 import kaspi as kaspi_module
+    from app.core.config import settings
+
+    async def fake_sync_orders(*args, **kwargs):  # noqa: ANN001, ARG001
+        raise AssertionError("sync_orders should not be called when backfill is blocked")
+
+    monkeypatch.setattr(KaspiService, "sync_orders", fake_sync_orders)
+    monkeypatch.setattr(settings, "ENVIRONMENT", "production", raising=False)
+    monkeypatch.setattr(kaspi_module.settings, "ENVIRONMENT", "production", raising=False)
+
+    resp = await async_client.post(
+        "/api/v1/kaspi/orders/sync?merchantUid=17319385&backfill_days=7",
+        headers=company_a_admin_headers,
+    )
+    assert resp.status_code == 400
+    assert resp.json().get("detail") == "backfill_days_allowed_only_in_development"
+
+
+@pytest.mark.asyncio
 async def test_sync_missing_merchant_uid_returns_422(async_client, async_db_session, company_a_admin_headers):
     from app.models.company import Company
 
@@ -199,6 +237,7 @@ async def test_orders_sync_uses_shop_api_url(monkeypatch, async_client, company_
         async def __aexit__(self, exc_type, exc, tb):
             return None
 
+    monkeypatch.setattr(kaspi_service.settings, "KASPI_ORDERS_TRANSPORT", "async")
     monkeypatch.setattr(kaspi_service.httpx, "AsyncClient", _DummyAsyncClient)
 
     resp = await async_client.post(
@@ -245,6 +284,7 @@ async def test_get_orders_total_count_zero_ok(monkeypatch):
             captured["params"] = params
             return _DummyResponse()
 
+    monkeypatch.setattr(kaspi_service.settings, "KASPI_ORDERS_TRANSPORT", "async")
     monkeypatch.setattr(kaspi_service.httpx, "AsyncClient", lambda **kwargs: _DummyClient())
 
     svc = KaspiService(api_key="token")
@@ -287,6 +327,7 @@ async def test_get_orders_one_order_ok(monkeypatch):
         async def get(self, url, headers=None, params=None):
             return _DummyResponse()
 
+    monkeypatch.setattr(kaspi_service.settings, "KASPI_ORDERS_TRANSPORT", "async")
     monkeypatch.setattr(kaspi_service.httpx, "AsyncClient", lambda **kwargs: _DummyClient())
 
     svc = KaspiService(api_key="token")

@@ -154,7 +154,7 @@ def _normalize_pg_to_asyncpg(url: str) -> str:
                 q.pop("sslmode", None)
                 u = u.set(query=q)
 
-        return str(u)
+        return u.render_as_string(hide_password=False)
     except Exception:
         # Fallback to original heuristic if parsing failed
         if url.startswith("postgresql+"):
@@ -176,7 +176,7 @@ def _normalize_pg_to_psycopg2(url: str) -> str:
         u = make_url(url)
         base_driver = u.drivername.split("+", 1)[0]
         u = u.set(drivername=f"{base_driver}+psycopg2")
-        return str(u)
+        return u.render_as_string(hide_password=False)
     except Exception:
         if url.startswith("postgresql+psycopg2://"):
             return url
@@ -245,22 +245,33 @@ def _resolve_sync_pg_url() -> str:
     _assert_non_local_has_real_db(source)
 
     candidates: list[str] = []
+
+    def _append_candidate(raw: str | None) -> None:
+        if not raw:
+            return
+        try:
+            parsed = make_url(raw)
+            if parsed.password is not None and set(parsed.password) <= {"*"}:
+                return
+        except Exception:
+            pass
+        candidates.append(raw)
+
     try:
         override = getattr(settings, "sqlalchemy_sync_url", "").strip()
-        if override:
-            candidates.append(override)
+        _append_candidate(override)
     except Exception:
         pass
 
     try:
         urls = getattr(settings, "sqlalchemy_urls", {}) or {}
         sync_url = (urls.get("sync") or "").strip()
-        if sync_url:
-            candidates.append(sync_url)
+        _append_candidate(sync_url)
     except Exception:
         pass
 
-    candidates.append(base_url.strip())
+    if base_url:
+        candidates.append(base_url.strip())
 
     for raw in candidates:
         if not raw:
@@ -461,6 +472,43 @@ def _get_sync_engine() -> Engine:
     if _SYNC_ENGINE is not None:
         return _SYNC_ENGINE
 
+    def _dsn_diagnostics_enabled() -> bool:
+        return os.getenv("DB_DSN_DIAGNOSTICS", "").lower() in {"1", "true", "yes", "on"}
+
+    def _log_dsn_diagnostic(message: str) -> None:
+        if _dsn_diagnostics_enabled():
+            logger.warning(message)
+
+    def _is_masked_password(parsed_url) -> bool:
+        try:
+            if not parsed_url.username:
+                return False
+            if parsed_url.password is None:
+                return True
+            return set(parsed_url.password) <= {"*"}
+        except Exception:
+            return False
+
+    def _fallback_unmasked_url(raw_url: str) -> str:
+        try:
+            parsed = make_url(raw_url)
+            if not _is_masked_password(parsed):
+                return raw_url
+        except Exception:
+            return raw_url
+
+        fallback_url = _resolve_sync_pg_url()
+        try:
+            parsed_fallback = make_url(fallback_url)
+            if _is_masked_password(parsed_fallback):
+                _log_dsn_diagnostic("Masked sync DSN detected; fallback still masked, keeping original")
+                return raw_url
+        except Exception:
+            return raw_url
+
+        _log_dsn_diagnostic("Masked sync DSN detected; falling back to resolved DATABASE_URL")
+        return fallback_url
+
     def _install_pg_connection_events(engine: Engine) -> None:
         app_name = f"{getattr(settings, 'PROJECT_NAME', 'SmartSell')}@{getattr(settings, 'VERSION', '')}".strip("@")
         pg_search_path = getattr(settings, "PG_SEARCH_PATH", "") or os.getenv("PG_SEARCH_PATH", "")
@@ -488,6 +536,11 @@ def _get_sync_engine() -> Engine:
                 logger.warning("PG on_connect setup failed: %s", e)
 
     url = _resolve_sync_pg_url()
+    try:
+        if _is_masked_password(make_url(url)):
+            url = _fallback_unmasked_url(url)
+    except Exception:
+        pass
     # Recompute source for sync engine logging
     _, source, _ = resolve_database_url(settings)
     _log_effective_url(url, mode="sync", source=source)
@@ -501,8 +554,11 @@ def _get_sync_engine() -> Engine:
         try:
             rep_url = _normalize_pg_to_psycopg2(rep)
             make_url(rep_url)
-            _SYNC_REPLICA_ENGINE = create_engine(rep_url, **_engine_options(async_engine=False))
-            _install_pg_connection_events(_SYNC_REPLICA_ENGINE)
+            if _is_masked_password(make_url(rep_url)):
+                _log_dsn_diagnostic("Masked replica DSN detected; skipping replica engine")
+            else:
+                _SYNC_REPLICA_ENGINE = create_engine(rep_url, **_engine_options(async_engine=False))
+                _install_pg_connection_events(_SYNC_REPLICA_ENGINE)
         except Exception as e:
             logger.warning("Sync replica init failed; primary will be used. %s", e)
 

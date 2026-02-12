@@ -83,14 +83,12 @@ async def test_campaign_run_ok(async_client, test_db):
     campaign_id = _seed_due_campaign(company_id=9101, title_suffix="ok")
 
     resp = await async_client.post(
-        "/api/v1/admin/tasks/campaigns/run",
+        "/api/v1/admin/tasks/campaigns/run?company_id=9101",
         headers=headers,
     )
     assert resp.status_code == 200, resp.text
     payload = resp.json()
-    assert payload.get("ok") is True
-    assert payload.get("started") == 1
-    assert payload.get("found") >= 1
+    assert payload.get("processed") == 1
 
     SessionLocal = sessionmaker(bind=base_conftest.sync_engine, expire_on_commit=False, autoflush=False)
     with SessionLocal() as s:
@@ -105,17 +103,79 @@ async def test_campaign_run_claims_once(async_client, test_db):
     _seed_due_campaign(company_id=9102, title_suffix=datetime.now(UTC).isoformat())
 
     first = await async_client.post(
-        "/api/v1/admin/tasks/campaigns/run",
+        "/api/v1/admin/tasks/campaigns/run?company_id=9102",
         headers=headers,
     )
     assert first.status_code == 200, first.text
     payload_first = first.json()
-    assert payload_first.get("started") == 1
+    assert payload_first.get("processed") == 1
 
     second = await async_client.post(
-        "/api/v1/admin/tasks/campaigns/run",
+        "/api/v1/admin/tasks/campaigns/run?company_id=9102",
         headers=headers,
     )
     assert second.status_code == 200, second.text
     payload_second = second.json()
-    assert payload_second.get("started") == 0
+    assert payload_second.get("processed") == 0
+
+
+async def test_campaign_run_company_id_from_body(async_client, test_db):
+    _ = test_db
+    headers = _platform_admin_headers_without_company()
+    campaign_id = _seed_due_campaign(company_id=9103, title_suffix="body")
+
+    resp = await async_client.post(
+        "/api/v1/admin/tasks/campaigns/run",
+        headers=headers,
+        json={"companyId": 9103},
+    )
+    assert resp.status_code == 200, resp.text
+    payload = resp.json()
+    assert payload.get("processed") == 1
+
+    SessionLocal = sessionmaker(bind=base_conftest.sync_engine, expire_on_commit=False, autoflush=False)
+    with SessionLocal() as s:
+        campaign = s.query(Campaign).filter(Campaign.id == campaign_id).first()
+        assert campaign is not None
+        assert campaign.status == CampaignStatus.SUCCESS
+
+
+async def test_campaign_run_missing_company_id_returns_400(async_client, test_db):
+    _ = test_db
+    headers = _platform_admin_headers_without_company()
+
+    resp = await async_client.post(
+        "/api/v1/admin/tasks/campaigns/run",
+        headers=headers,
+    )
+    assert resp.status_code == 400, resp.text
+    payload = resp.json()
+    assert payload.get("code") == "company_id_required"
+
+
+async def test_campaign_seed_and_run(async_client, test_db):
+    _ = test_db
+    headers = _platform_admin_headers_without_company()
+
+    seed = await async_client.post(
+        "/api/v1/admin/dev/seed/campaign_due?company_id=9201",
+        headers=headers,
+    )
+    assert seed.status_code == 200, seed.text
+    seed_payload = seed.json()
+    campaign_id = seed_payload.get("campaign_id")
+    assert campaign_id
+
+    run = await async_client.post(
+        "/api/v1/admin/tasks/campaigns/run?company_id=9201",
+        headers=headers,
+    )
+    assert run.status_code == 200, run.text
+    run_payload = run.json()
+    assert run_payload.get("processed") == 1
+
+    SessionLocal = sessionmaker(bind=base_conftest.sync_engine, expire_on_commit=False, autoflush=False)
+    with SessionLocal() as s:
+        campaign = s.query(Campaign).filter(Campaign.id == campaign_id).first()
+        assert campaign is not None
+        assert campaign.status == CampaignStatus.SUCCESS

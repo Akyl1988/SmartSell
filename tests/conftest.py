@@ -86,6 +86,7 @@ os.environ.setdefault("FORCE_INMEMORY_BACKENDS", "1")
 os.environ.setdefault("TEST_REDIS_DISABLED", "1")
 os.environ.setdefault("CSRF_SECRET", "test-csrf-secret-32-chars-minimum")
 os.environ["KASPI_STUB"] = "0"
+os.environ.setdefault("SMARTSELL_BACKGROUND_TASKS", "0")
 
 # РЇРІРЅРѕ СѓРєР°Р¶РµРј "СЃРѕРІСЂРµРјРµРЅРЅС‹Р№" strict-СЂРµР¶РёРј asyncio, РµСЃР»Рё РїР»Р°РіРёРЅ РЅРµ РґРµР»Р°РµС‚ СЌС‚РѕРіРѕ СЃР°Рј.
 os.environ.setdefault("PYTEST_ASYNCIO_MODE", "strict")

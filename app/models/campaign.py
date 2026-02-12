@@ -106,6 +106,13 @@ class CampaignStatus(str, enum.Enum):
     FAILED = "failed"
 
 
+class CampaignProcessingStatus(str, enum.Enum):
+    QUEUED = "queued"
+    PROCESSING = "processing"
+    DONE = "done"
+    FAILED = "failed"
+
+
 class MessageStatus(str, enum.Enum):
     PENDING = "pending"
     SENT = "sent"
@@ -148,6 +155,24 @@ class Campaign(SoftDeleteMixin, Base):
 
     scheduled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, index=True)
 
+    processing_status: Mapped[CampaignProcessingStatus] = mapped_column(
+        SAEnum(
+            CampaignProcessingStatus,
+            name="campaign_processing_status",
+            native_enum=True,
+            create_constraint=False,
+            values_callable=lambda enum_cls: [member.value for member in enum_cls],
+            validate_strings=True,
+        ),
+        default=CampaignProcessingStatus.DONE,
+        nullable=False,
+    )
+    queued_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+
     # Multitenant
     company_id: Mapped[int] = mapped_column(
         Integer, ForeignKey("companies.id", ondelete="CASCADE"), nullable=False, index=True
@@ -176,6 +201,7 @@ class Campaign(SoftDeleteMixin, Base):
         CheckConstraint("length(title) > 0", name="ck_campaign_title_non_empty"),
         Index("ix_campaign_company_status", "company_id", "status"),
         Index("ix_campaign_scheduled_at_status", "scheduled_at", "status"),
+        Index("ix_campaign_processing_status_queued_at", "processing_status", "queued_at"),
         UniqueConstraint("company_id", "title", "scheduled_at", name="uq_campaign_company_title_scheduled"),
     )
 
@@ -636,6 +662,12 @@ class Campaign(SoftDeleteMixin, Base):
             "title": self.title,
             "description": self.description,
             "status": self.status.value,
+            "processing_status": self.processing_status.value,
+            "queued_at": self.queued_at.isoformat() if self.queued_at else None,
+            "started_at": self.started_at.isoformat() if self.started_at else None,
+            "finished_at": self.finished_at.isoformat() if self.finished_at else None,
+            "last_error": self.last_error,
+            "attempts": self.attempts,
             "scheduled_at": self.scheduled_at.isoformat() if self.scheduled_at else None,
             "company_id": self.company_id,
             "total_messages": self.total_messages,

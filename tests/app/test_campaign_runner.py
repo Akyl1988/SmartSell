@@ -8,7 +8,7 @@ from app.core.config import settings
 from app.core.provider_registry import ProviderRegistry
 from app.models.campaign import Campaign, CampaignStatus, ChannelType, Message, MessageStatus
 from app.models.company import Company
-from app.services.campaign_runner import run_campaigns
+from app.services.campaign_runner import run_campaigns, run_due_campaigns
 
 
 async def _seed_campaign(async_db_session, *, company_id: int, status: CampaignStatus, scheduled_at=None):
@@ -82,6 +82,48 @@ async def test_campaign_tenant_isolation(async_db_session, monkeypatch):
     await async_db_session.refresh(campaign_a)
     await async_db_session.refresh(campaign_b)
 
+    assert campaign_a.status == CampaignStatus.SUCCESS
+    assert campaign_b.status == CampaignStatus.READY
+
+
+async def test_run_due_campaigns_processes_ready(async_db_session, monkeypatch):
+    monkeypatch.setattr(settings, "ENVIRONMENT", "development", raising=False)
+    ProviderRegistry.invalidate()
+
+    campaign = await _seed_campaign(async_db_session, company_id=3001, status=CampaignStatus.READY)
+    processed = await run_due_campaigns(async_db_session, company_id=3001, limit=10)
+
+    assert processed == 1
+    await async_db_session.refresh(campaign)
+    assert campaign.status == CampaignStatus.SUCCESS
+
+
+async def test_run_due_campaigns_idempotent(async_db_session, monkeypatch):
+    monkeypatch.setattr(settings, "ENVIRONMENT", "development", raising=False)
+    ProviderRegistry.invalidate()
+
+    campaign = await _seed_campaign(async_db_session, company_id=3002, status=CampaignStatus.READY)
+    first = await run_due_campaigns(async_db_session, company_id=3002, limit=10)
+    second = await run_due_campaigns(async_db_session, company_id=3002, limit=10)
+
+    assert first == 1
+    assert second == 0
+    await async_db_session.refresh(campaign)
+    assert campaign.status == CampaignStatus.SUCCESS
+
+
+async def test_run_due_campaigns_tenant_scoped(async_db_session, monkeypatch):
+    monkeypatch.setattr(settings, "ENVIRONMENT", "development", raising=False)
+    ProviderRegistry.invalidate()
+
+    campaign_a = await _seed_campaign(async_db_session, company_id=3003, status=CampaignStatus.READY)
+    campaign_b = await _seed_campaign(async_db_session, company_id=3004, status=CampaignStatus.READY)
+
+    processed = await run_due_campaigns(async_db_session, company_id=3003, limit=10)
+
+    assert processed == 1
+    await async_db_session.refresh(campaign_a)
+    await async_db_session.refresh(campaign_b)
     assert campaign_a.status == CampaignStatus.SUCCESS
     assert campaign_b.status == CampaignStatus.READY
 

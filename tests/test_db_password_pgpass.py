@@ -1,6 +1,6 @@
 from urllib.parse import urlparse
 
-from app.core.config import Settings, resolve_database_url
+from app.core.config import Settings, resolve_async_database_url, resolve_database_url
 
 
 def _clear_db_env(monkeypatch):
@@ -70,6 +70,31 @@ def test_masked_password_is_replaced_by_db_password(monkeypatch):
     assert source
 
 
+def test_masked_password_is_stripped_without_env_password(monkeypatch):
+    _clear_db_env(monkeypatch)
+    monkeypatch.setenv("ENVIRONMENT", "testing")
+    monkeypatch.setenv("TEST_DATABASE_URL", "postgresql+asyncpg://user:***@localhost:5432/dbname")
+    monkeypatch.setenv("PYTEST_CURRENT_TEST", "config::masked-no-env")
+
+    url, source, _ = resolve_database_url(Settings())
+    parsed = urlparse(url)
+
+    assert ":***@" not in url
+    assert parsed.password in {None, ""}
+    assert source
+
+
+def test_async_resolution_strips_masked_password(monkeypatch):
+    _clear_db_env(monkeypatch)
+    monkeypatch.setenv("ENVIRONMENT", "testing")
+    monkeypatch.setenv("TEST_ASYNC_DATABASE_URL", "postgresql+asyncpg://user:***@localhost:5432/dbname")
+    monkeypatch.setenv("PYTEST_CURRENT_TEST", "config::async-masked")
+
+    url, _, _ = resolve_async_database_url(Settings())
+
+    assert ":***@" not in url
+
+
 def test_sync_url_injects_password_from_db_password(monkeypatch):
     import os
 
@@ -92,3 +117,73 @@ def test_sync_url_injects_password_from_db_password(monkeypatch):
     parsed = urlparse(url)
 
     assert parsed.password
+
+
+def test_resolved_url_and_sqlalchemy_urls_unmasked(monkeypatch):
+    from app.core.config import get_settings
+
+    _clear_db_env(monkeypatch)
+    monkeypatch.setenv("ENVIRONMENT", "testing")
+    monkeypatch.setenv("TEST_DATABASE_URL", "postgresql://user:realpass@localhost:5432/dbname")
+    monkeypatch.setenv("PYTEST_CURRENT_TEST", "config::unmasked")
+
+    get_settings.cache_clear()
+    url, _, _ = resolve_database_url(Settings())
+    parsed = urlparse(url)
+
+    assert parsed.password
+    assert parsed.password != "***"
+
+    settings = get_settings()
+    assert settings.sqlalchemy_urls["sync"]
+    assert ":***@" not in settings.sqlalchemy_urls["sync"]
+    get_settings.cache_clear()
+
+
+def test_resolve_sync_pg_url_skips_masked_candidate(monkeypatch):
+    import app.core.db as db
+    from app.core.config import Settings as SettingsCls
+
+    _clear_db_env(monkeypatch)
+    monkeypatch.setenv("ENVIRONMENT", "testing")
+    monkeypatch.setenv("TEST_ASYNC_DATABASE_URL", "postgresql+asyncpg://user:***@localhost:5432/dbname")
+    monkeypatch.setenv("TEST_DATABASE_URL", "postgresql+asyncpg://user:***@localhost:5432/dbname")
+    monkeypatch.setenv("PYTEST_CURRENT_TEST", "db::resolve")
+
+    new_settings = SettingsCls()
+    monkeypatch.setattr(db, "settings", new_settings, raising=False)
+
+    resolved = db._resolve_sync_pg_url()
+
+    assert ":***@" not in resolved
+
+
+def test_sync_engine_falls_back_from_masked_url(monkeypatch):
+    from sqlalchemy import create_engine as sa_create_engine
+
+    import app.core.db as db
+
+    db._SYNC_ENGINE = None
+    db._SYNC_SESSION_MAKER = None
+    db._SYNC_REPLICA_ENGINE = None
+
+    calls = {"count": 0, "url": None}
+    masked = "postgresql+psycopg2://user:***@localhost:5432/dbname"
+    unmasked = "postgresql+psycopg2://user:realpass@localhost:5432/dbname"
+
+    def fake_resolve_sync_pg_url():
+        calls["count"] += 1
+        return masked if calls["count"] == 1 else unmasked
+
+    def fake_create_engine(url, **kwargs):
+        calls["url"] = url
+        return sa_create_engine("sqlite:///:memory:")
+
+    monkeypatch.setattr(db, "_resolve_sync_pg_url", fake_resolve_sync_pg_url)
+    monkeypatch.setattr(db, "create_engine", fake_create_engine)
+
+    engine = db._get_sync_engine()
+
+    assert calls["url"] == unmasked
+    assert calls["count"] >= 2
+    assert engine is not None

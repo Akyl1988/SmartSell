@@ -303,7 +303,7 @@ class KaspiService:
                 with httpx.Client(timeout=sync_timeout, trust_env=False, transport=transport) as client:
                     return client.get(url, headers=headers, params=params)
 
-            return await anyio.to_thread.run_sync(_do_request, cancellable=True)
+            return await anyio.to_thread.run_sync(_do_request, abandon_on_cancel=True)
 
         async with self._orders_client(timeout=timeout) as client:
             return await client.get(url, headers=headers, params=params)
@@ -829,6 +829,7 @@ class KaspiService:
         timeout_seconds: float | None = None,
         max_pages: int | None = None,
         max_window_minutes: int | None = None,
+        backfill_days: int | None = None,
         orders_max_attempts: int | None = None,
         client_retries: int | None = None,
     ) -> dict[str, Any]:
@@ -844,6 +845,8 @@ class KaspiService:
         max_pages = None if max_pages is None else max(1, int(max_pages))
         max_window_minutes = None if max_window_minutes is None else max(1, int(max_window_minutes))
         pagination_state = {"pages_processed": 0, "last_page": 0, "stopped_early": False}
+        backfill_days_value = int(backfill_days or 0)
+        backfill_active = backfill_days_value > 0
 
         timeout_obj = self._orders_timeout(timeout_seconds)
         logger.info(
@@ -860,10 +863,12 @@ class KaspiService:
         logger.info("Kaspi orders sync start: company_id=%s request_id=%s", company_id, request_id)
         if _diag_enabled():
             logger.info(
-                "[CI_DIAG] sync_orders ENTRY: company_id=%s request_id=%s timeout=%s monotonic=%s",
+                "[CI_DIAG] sync_orders ENTRY: company_id=%s request_id=%s timeout=%s backfill_days=%s backfill_active=%s monotonic=%s",
                 company_id,
                 request_id,
                 timeout_seconds,
+                backfill_days_value,
+                backfill_active,
                 perf_counter(),
             )
 
@@ -889,7 +894,10 @@ class KaspiService:
                         prev_last_ext = state.last_external_order_id
                         is_new_state = prev_last_synced is None and prev_last_ext is None
 
-                        base_from = date_from or prev_last_synced or (effective_to - timedelta(days=1))
+                        if backfill_active and date_from is None:
+                            base_from = effective_to - timedelta(days=backfill_days_value)
+                        else:
+                            base_from = date_from or prev_last_synced or (effective_to - timedelta(days=1))
                         min_from = (
                             effective_to - timedelta(minutes=max_window_minutes)
                             if max_window_minutes is not None
@@ -900,6 +908,17 @@ class KaspiService:
                         effective_from = base_from - overlap
                         if min_from is not None and effective_from < min_from:
                             effective_from = min_from
+
+                        if backfill_active:
+                            logger.info(
+                                "Kaspi orders sync backfill: company_id=%s request_id=%s backfill_days=%s from=%s to=%s prev_last_synced=%s",
+                                company_id,
+                                request_id,
+                                backfill_days_value,
+                                effective_from.isoformat(),
+                                effective_to.isoformat(),
+                                prev_last_synced.isoformat() if prev_last_synced else None,
+                            )
 
                         watermark = prev_last_synced or base_from
                         last_ext = prev_last_ext
@@ -1264,6 +1283,9 @@ class KaspiService:
             "to": effective_to.isoformat(),
             "watermark": (state.last_synced_at or final_wm).isoformat() if (state.last_synced_at or final_wm) else None,
         }
+
+        if backfill_active:
+            summary["backfill_days"] = backfill_days_value
 
         if pagination_state.get("stopped_early"):
             summary["last_page_processed"] = int(pagination_state.get("last_page", 0))

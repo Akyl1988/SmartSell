@@ -12,19 +12,28 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.admin.integrations import router as integrations_router
+from app.core.config import settings
 from app.core.db import get_async_db
 from app.core.dependencies import require_platform_admin
 from app.core.exceptions import AuthorizationError, NotFoundError, _ensure_request_id
 from app.core.logging import audit_logger
 from app.core.subscriptions.plan_catalog import get_plan, normalize_plan_id
 from app.models.billing import Subscription, WalletBalance, WalletTransaction
+from app.models.campaign import (
+    Campaign,
+    CampaignProcessingStatus,
+    CampaignStatus,
+    ChannelType,
+    Message,
+    MessageStatus,
+)
 from app.models.company import Company
 from app.models.kaspi_mc_session import KaspiMcSession
 from app.models.kaspi_offer import KaspiOffer
 from app.models.kaspi_trial_grant import KaspiTrialGrant
 from app.models.subscription_override import SubscriptionOverride
 from app.models.user import User
-from app.services.campaign_runner import run_campaigns_with_claim
+from app.services.campaign_runner import run_due_campaigns
 from app.services.subscriptions import activate_plan, renew_if_due
 
 router = APIRouter(
@@ -120,34 +129,137 @@ async def run_campaigns_task(
     request: Request,
     payload: CampaignRunIn | None = Body(default=None),
     limit: int = Query(100, ge=1),
-    company_id_param: int | None = Query(default=None, ge=1, alias="company_id"),
     dry_run: bool = Query(False),
     admin: User = Depends(require_platform_admin),
     db: AsyncSession = Depends(get_async_db),
 ) -> dict:
     _ = admin
     resolved_limit = payload.limit if payload and payload.limit is not None else limit
-    resolved_company_id = payload.companyId if payload else company_id_param
+    resolved_company_id = None
+    if payload and payload.companyId is not None:
+        resolved_company_id = payload.companyId
+    else:
+        query_company_id = request.query_params.get("company_id") or request.query_params.get("companyId")
+        if query_company_id:
+            try:
+                resolved_company_id = int(query_company_id)
+            except ValueError:
+                resolved_company_id = None
     resolved_dry_run = payload.dry_run if payload else dry_run
 
+    if resolved_company_id is None:
+        raise NotFoundError("company_id_required", code="company_id_required", http_status=400)
+
     rid = _ensure_request_id(request)
-    result = await run_campaigns_with_claim(
+    if resolved_dry_run:
+        return {"processed": 0}
+
+    processed = await run_due_campaigns(
         db,
         company_id=resolved_company_id,
         request_id=rid,
         limit=resolved_limit,
-        dry_run=resolved_dry_run,
+        now=datetime.now(UTC),
     )
+    return {"processed": processed}
+
+
+@router.post(
+    "/campaigns/{campaign_id}/run",
+    summary="Queue a campaign run (platform admin)",
+)
+async def queue_campaign_run(
+    request: Request,
+    campaign_id: int,
+    admin: User = Depends(require_platform_admin),
+    db: AsyncSession = Depends(get_async_db),
+) -> dict:
+    _ = admin
+    campaign = await db.get(Campaign, campaign_id)
+    if not campaign:
+        raise NotFoundError("campaign_not_found", code="campaign_not_found", http_status=404)
+
+    if campaign.processing_status in (CampaignProcessingStatus.QUEUED, CampaignProcessingStatus.PROCESSING):
+        return {
+            "campaign_id": campaign.id,
+            "status": campaign.processing_status.value,
+            "queued_at": campaign.queued_at.isoformat() if campaign.queued_at else None,
+            "started_at": campaign.started_at.isoformat() if campaign.started_at else None,
+            "finished_at": campaign.finished_at.isoformat() if campaign.finished_at else None,
+            "last_error": campaign.last_error,
+            "attempts": campaign.attempts,
+            "request_id": _ensure_request_id(request),
+        }
+
+    now = datetime.now(UTC)
+    campaign.processing_status = CampaignProcessingStatus.QUEUED
+    campaign.queued_at = now
+    campaign.started_at = None
+    campaign.finished_at = None
+    campaign.last_error = None
+    await db.commit()
+    await db.refresh(campaign)
+
     return {
-        "ok": True,
-        "dry_run": resolved_dry_run,
-        "limit": resolved_limit,
-        "company_id": resolved_company_id,
-        "found": result["found"],
-        "started": result["started"],
-        "skipped": result["skipped"],
-        "details": result["details"],
+        "campaign_id": campaign.id,
+        "status": campaign.processing_status.value,
+        "queued_at": campaign.queued_at.isoformat() if campaign.queued_at else None,
+        "started_at": campaign.started_at.isoformat() if campaign.started_at else None,
+        "finished_at": campaign.finished_at.isoformat() if campaign.finished_at else None,
+        "last_error": campaign.last_error,
+        "attempts": campaign.attempts,
+        "request_id": _ensure_request_id(request),
     }
+
+
+@router.post(
+    "/dev/seed/campaign_due",
+    summary="Seed a due campaign for testing (dev/test only)",
+)
+async def seed_due_campaign(
+    request: Request,
+    admin: User = Depends(require_platform_admin),
+    db: AsyncSession = Depends(get_async_db),
+) -> dict:
+    _ = admin
+    if str(getattr(settings, "ENVIRONMENT", "")) == "production":
+        raise NotFoundError("not_found", code="not_found", http_status=404)
+
+    query_company_id = request.query_params.get("company_id") or request.query_params.get("companyId")
+    if not query_company_id:
+        raise NotFoundError("company_id_required", code="company_id_required", http_status=400)
+    try:
+        company_id = int(query_company_id)
+    except ValueError:
+        raise NotFoundError("company_id_required", code="company_id_required", http_status=400)
+
+    company = await db.get(Company, company_id)
+    if not company:
+        company = Company(id=company_id, name=f"Company {company_id}")
+        db.add(company)
+        await db.flush()
+
+    campaign = Campaign(
+        title=f"Seed due {company_id} {datetime.now(UTC).isoformat()}",
+        description="seed due campaign",
+        status=CampaignStatus.READY,
+        scheduled_at=None,
+        company_id=company.id,
+    )
+    db.add(campaign)
+    await db.flush()
+
+    message = Message(
+        campaign_id=campaign.id,
+        recipient="seed@example.com",
+        content="seed",
+        status=MessageStatus.PENDING,
+        channel=ChannelType.EMAIL,
+    )
+    db.add(message)
+
+    await db.commit()
+    return {"campaign_id": campaign.id}
 
 
 class SubscriptionActivateIn(BaseModel):
