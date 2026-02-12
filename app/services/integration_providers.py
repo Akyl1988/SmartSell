@@ -211,7 +211,7 @@ class IntegrationProviderService:
             return False, False, None
         domain = item.domain
         was_active = bool(item.is_active)
-        db.delete(item)
+        await db.delete(item)
         await _commit(db)
         return True, was_active, domain
 
