@@ -28,10 +28,12 @@ from app.core.dependencies import (
     get_current_verified_user,
     get_pagination,
     require_active_subscription,
-    require_store_roles,
+    require_company_access,
+    require_store_admin_company,
 )
 from app.core.exceptions import ConflictError, NotFoundError, SmartSellValidationError
 from app.core.logging import audit_logger
+from app.core.rbac import is_platform_admin
 from app.core.security import resolve_tenant_company_id
 from app.models.product import Category, Product
 from app.models.user import User
@@ -103,10 +105,32 @@ except Exception:
             )
 
 
-router = APIRouter(
+async def _require_company_context(current_user: User = Depends(get_current_verified_user)) -> User:
+    resolve_tenant_company_id(current_user, not_found_detail="Company not set")
+    return current_user
+
+
+router = APIRouter()
+read_router = APIRouter(
     prefix="/products",
     tags=["Products"],
-    dependencies=[Depends(api_rate_limit), Depends(require_active_subscription)],
+    dependencies=[
+        Depends(api_rate_limit),
+        Depends(require_company_access),
+        Depends(_require_company_context),
+        Depends(require_active_subscription),
+    ],
+)
+admin_router = APIRouter(
+    prefix="/products",
+    tags=["Products"],
+    dependencies=[
+        Depends(api_rate_limit),
+        Depends(require_company_access),
+        Depends(_require_company_context),
+        Depends(require_store_admin_company),
+        Depends(require_active_subscription),
+    ],
 )
 
 
@@ -166,15 +190,11 @@ def _apply_sorting(stmt, sort_by: str, sort_order: str):
     return stmt.order_by(column.asc() if sort_order.lower() == "asc" else column.desc())
 
 
-_PRODUCT_READ_ROLES = {"admin", "manager", "analyst", "storekeeper", "platform_admin"}
-_PRODUCT_WRITE_ROLES = {"admin", "manager", "platform_admin"}
-_STOCK_WRITE_ROLES = {"admin", "manager", "storekeeper", "platform_admin"}
-
-
 def _filter_company(stmt, user: User):
+    if is_platform_admin(user):
+        return stmt
     cid = resolve_tenant_company_id(user, not_found_detail="Company not set")
-    stmt = stmt.where(Product.company_id == cid)
-    return stmt
+    return stmt.where(Product.company_id == cid)
 
 
 async def _get_product_or_404(db: AsyncSession, product_id: int, user: User) -> Product:
@@ -192,10 +212,9 @@ async def _get_product_or_404(db: AsyncSession, product_id: int, user: User) -> 
 # ---------------------------------------------------------------------------
 
 
-@router.get(
+@read_router.get(
     "",
     response_model=PaginatedResponse[ProductResponse],
-    dependencies=[Depends(require_store_roles(*_PRODUCT_READ_ROLES))],
 )
 async def list_products(
     filters: ProductSearchFilters = Depends(),
@@ -217,10 +236,9 @@ async def list_products(
     return PaginatedResponse.create(items=products, total=total, page=pagination.page, per_page=pagination.per_page)
 
 
-@router.get(
+@read_router.get(
     "/{product_id}",
     response_model=ProductResponse,
-    dependencies=[Depends(require_store_roles(*_PRODUCT_READ_ROLES))],
 )
 async def get_product(
     product_id: int = Path(..., ge=1),
@@ -231,7 +249,7 @@ async def get_product(
     return await _get_product_or_404(db, product_id, current_user)
 
 
-@router.post("", response_model=ProductResponse, dependencies=[Depends(require_store_roles(*_PRODUCT_WRITE_ROLES))])
+@admin_router.post("", response_model=ProductResponse)
 async def create_product(
     product_data: ProductCreate,
     current_user: User = Depends(get_current_verified_user),
@@ -275,10 +293,9 @@ async def create_product(
         raise ConflictError("Product creation failed due to data conflict", "CREATION_FAILED", http_status=409)
 
 
-@router.put(
+@admin_router.put(
     "/{product_id}",
     response_model=ProductResponse,
-    dependencies=[Depends(require_store_roles(*_PRODUCT_WRITE_ROLES))],
 )
 async def update_product(
     product_id: int,
@@ -324,10 +341,9 @@ async def update_product(
         raise ConflictError("Product update failed due to data conflict", "UPDATE_FAILED", http_status=409)
 
 
-@router.delete(
+@admin_router.delete(
     "/{product_id}",
     response_model=SuccessResponse,
-    dependencies=[Depends(require_store_roles(*_PRODUCT_WRITE_ROLES))],
 )
 async def delete_product(
     product_id: int,
@@ -360,10 +376,9 @@ async def delete_product(
 # ---------------------------------------------------------------------------
 
 
-@router.get(
+@read_router.get(
     "/{product_id}/stock",
     response_model=dict,
-    dependencies=[Depends(require_store_roles(*_PRODUCT_READ_ROLES))],
 )
 async def get_product_stock(
     product_id: int,
@@ -387,10 +402,9 @@ async def get_product_stock(
     }
 
 
-@router.put(
+@admin_router.put(
     "/{product_id}/stock",
     response_model=SuccessResponse,
-    dependencies=[Depends(require_store_roles(*_STOCK_WRITE_ROLES))],
 )
 async def update_product_stock(
     product_id: int,
@@ -421,10 +435,9 @@ async def update_product_stock(
 # ---------------------------------------------------------------------------
 
 
-@router.post(
+@admin_router.post(
     "/{product_id}/feature",
     response_model=SuccessResponse,
-    dependencies=[Depends(require_store_roles(*_PRODUCT_WRITE_ROLES))],
 )
 async def set_featured(
     product_id: int,
@@ -452,10 +465,9 @@ async def set_featured(
     return SuccessResponse(message="Updated", data={"featured": featured})
 
 
-@router.post(
+@admin_router.post(
     "/{product_id}/activate",
     response_model=SuccessResponse,
-    dependencies=[Depends(require_store_roles(*_PRODUCT_WRITE_ROLES))],
 )
 async def activate_product(
     product_id: int,
@@ -481,10 +493,9 @@ async def activate_product(
     return SuccessResponse(message="Product activated")
 
 
-@router.post(
+@admin_router.post(
     "/{product_id}/deactivate",
     response_model=SuccessResponse,
-    dependencies=[Depends(require_store_roles(*_PRODUCT_WRITE_ROLES))],
 )
 async def deactivate_product(
     product_id: int,
@@ -515,10 +526,9 @@ async def deactivate_product(
 # ---------------------------------------------------------------------------
 
 
-@router.post(
+@admin_router.post(
     "/bulk/create",
     response_model=SuccessResponse,
-    dependencies=[Depends(require_store_roles(*_PRODUCT_WRITE_ROLES))],
 )
 async def bulk_create_products(
     payload: list[ProductCreate],
@@ -566,10 +576,9 @@ async def bulk_create_products(
     return SuccessResponse(message="Bulk create finished", data={"created": created, "errors": errors})
 
 
-@router.post(
+@admin_router.post(
     "/bulk/update",
     response_model=SuccessResponse,
-    dependencies=[Depends(require_store_roles(*_PRODUCT_WRITE_ROLES))],
 )
 async def bulk_update_products(
     payload: list[dict[str, Any]],
@@ -629,10 +638,9 @@ async def bulk_update_products(
     return SuccessResponse(message="Bulk update finished", data={"updated": updated, "errors": errors})
 
 
-@router.post(
+@admin_router.post(
     "/bulk/activate",
     response_model=SuccessResponse,
-    dependencies=[Depends(require_store_roles(*_PRODUCT_WRITE_ROLES))],
 )
 async def bulk_activate_products(
     ids: list[int],
@@ -660,10 +668,9 @@ async def bulk_activate_products(
     return SuccessResponse(message="Bulk activate finished", data={"activated": affected})
 
 
-@router.post(
+@admin_router.post(
     "/bulk/deactivate",
     response_model=SuccessResponse,
-    dependencies=[Depends(require_store_roles(*_PRODUCT_WRITE_ROLES))],
 )
 async def bulk_deactivate_products(
     ids: list[int],
@@ -696,7 +703,7 @@ async def bulk_deactivate_products(
 # ---------------------------------------------------------------------------
 
 
-@router.get("/_suggest", response_model=list[str])
+@read_router.get("/_suggest", response_model=list[str])
 async def product_suggest(
     q: str = Query("", min_length=0),
     limit: int = Query(10, ge=1, le=50),
@@ -731,7 +738,7 @@ async def product_suggest(
 # ---------------------------------------------------------------------------
 
 
-@router.get("/categories", response_model=list[dict[str, Any]])
+@read_router.get("/categories", response_model=list[dict[str, Any]])
 async def list_categories(
     db: AsyncSession = Depends(get_async_db),
     only_active: bool = Query(False, description="Return only categories that have active products"),
@@ -752,7 +759,7 @@ async def list_categories(
     return [{"id": c.id, "name": c.name, "slug": getattr(c, "slug", None)} for c in cats]
 
 
-@router.get("/categories/{category_id}", response_model=dict[str, Any])
+@read_router.get("/categories/{category_id}", response_model=dict[str, Any])
 async def get_category(
     category_id: int = Path(..., ge=1),
     with_counts: bool = Query(True),
@@ -813,7 +820,7 @@ class RepricingTickOut(BaseModel):
     applied: bool = False
 
 
-@router.put("/{product_id}/repricing/config", response_model=RepricingConfigOut)
+@admin_router.put("/{product_id}/repricing/config", response_model=RepricingConfigOut)
 async def set_repricing_config(
     product_id: int,
     cfg: RepricingConfigIn,
@@ -878,10 +885,9 @@ async def set_repricing_config(
     return RepricingConfigOut(**saved_cfg.model_dump())
 
 
-@router.post(
+@admin_router.post(
     "/{product_id}/repricing/tick",
     response_model=RepricingTickOut,
-    dependencies=[Depends(require_store_roles("admin"))],
 )
 async def repricing_tick(
     product_id: int,
@@ -933,3 +939,7 @@ async def repricing_tick(
         reason="shim",
         applied=applied,
     )
+
+
+router.include_router(read_router)
+router.include_router(admin_router)
