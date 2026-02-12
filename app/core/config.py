@@ -102,6 +102,68 @@ def _mask_db_fp(url: str) -> str:
     return db_connection_fingerprint(url, include_password=False)
 
 
+def _is_masked_password_in_url(url: str | None) -> bool:
+    if not url:
+        return False
+    try:
+        parsed = urlparse(url)
+        if parsed.password is None:
+            return False
+        return set(parsed.password) <= {"*"}
+    except Exception:
+        return False
+
+
+def _mask_url_password(url: str) -> str:
+    try:
+        parsed = urlparse(url)
+        if not parsed.netloc or not parsed.username or parsed.password is None:
+            return url
+        host = parsed.hostname or ""
+        port = f":{parsed.port}" if parsed.port else ""
+        userinfo = f"{parsed.username}:***"
+        return urlunparse(
+            (
+                parsed.scheme,
+                f"{userinfo}@{host}{port}",
+                parsed.path,
+                parsed.params,
+                parsed.query,
+                parsed.fragment,
+            )
+        )
+    except Exception:
+        return url
+
+
+def _prefer_unmasked_env_url(resolved_url: str, env: dict[str, str]) -> str:
+    if not _is_masked_password_in_url(resolved_url):
+        return resolved_url
+    masked = _mask_url_password(resolved_url)
+    for key in ("DATABASE_URL", "DB_URL"):
+        candidate = env.get(key)
+        if not candidate or _is_masked_password_in_url(candidate):
+            continue
+        if _mask_url_password(candidate) == masked:
+            return candidate
+    return resolved_url
+
+
+def _strip_masked_password(url: str) -> str:
+    try:
+        parsed = urlparse(url)
+        if not parsed.username or parsed.password is None:
+            return url
+        if not _is_masked_password_in_url(url):
+            return url
+        host = parsed.hostname or ""
+        port = f":{parsed.port}" if parsed.port else ""
+        netloc = f"{parsed.username}@{host}{port}"
+        return urlunparse((parsed.scheme, netloc, parsed.path, parsed.params, parsed.query, parsed.fragment))
+    except Exception:
+        return url
+
+
 def _inject_password_if_missing(url: str) -> str:
     """Inject password when missing or masked in Postgres URLs.
 
@@ -257,8 +319,11 @@ def resolve_database_url(settings: Settings | None = None) -> tuple[str, str, st
         else:
             raise ValueError("DATABASE_URL is required in non-local environments")
 
+    resolved_url = _prefer_unmasked_env_url(resolved_url, env)
     # Local/dev/pytest: if URL lacks password but PGPASSWORD is set, inject it
     resolved_url = _inject_password_if_missing(resolved_url)
+    if _is_masked_password_in_url(resolved_url):
+        resolved_url = _strip_masked_password(resolved_url)
 
     fingerprint = db_url_fingerprint(resolved_url)
     return resolved_url, source, fingerprint

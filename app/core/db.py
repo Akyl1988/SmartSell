@@ -154,7 +154,7 @@ def _normalize_pg_to_asyncpg(url: str) -> str:
                 q.pop("sslmode", None)
                 u = u.set(query=q)
 
-        return str(u)
+        return u.render_as_string(hide_password=False)
     except Exception:
         # Fallback to original heuristic if parsing failed
         if url.startswith("postgresql+"):
@@ -176,7 +176,7 @@ def _normalize_pg_to_psycopg2(url: str) -> str:
         u = make_url(url)
         base_driver = u.drivername.split("+", 1)[0]
         u = u.set(drivername=f"{base_driver}+psycopg2")
-        return str(u)
+        return u.render_as_string(hide_password=False)
     except Exception:
         if url.startswith("postgresql+psycopg2://"):
             return url
@@ -245,22 +245,29 @@ def _resolve_sync_pg_url() -> str:
     _assert_non_local_has_real_db(source)
 
     candidates: list[str] = []
+
+    def _append_candidate(raw: str | None) -> None:
+        if not raw:
+            return
+        if "***" in raw:
+            return
+        candidates.append(raw)
+
     try:
         override = getattr(settings, "sqlalchemy_sync_url", "").strip()
-        if override:
-            candidates.append(override)
+        _append_candidate(override)
     except Exception:
         pass
 
     try:
         urls = getattr(settings, "sqlalchemy_urls", {}) or {}
         sync_url = (urls.get("sync") or "").strip()
-        if sync_url:
-            candidates.append(sync_url)
+        _append_candidate(sync_url)
     except Exception:
         pass
 
-    candidates.append(base_url.strip())
+    if base_url:
+        candidates.append(base_url.strip())
 
     for raw in candidates:
         if not raw:

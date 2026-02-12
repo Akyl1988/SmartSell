@@ -20,6 +20,7 @@ def test_pgpassword_injected_when_url_missing_password(monkeypatch):
     # Simulate local/pytest context with PGPASSWORD provided and URL lacking password
     monkeypatch.setenv("ENVIRONMENT", "local")
     _clear_db_env(monkeypatch)
+    monkeypatch.setenv("TEST_DATABASE_URL", "postgresql+psycopg2://user:real@localhost:5432/dbname")
 
     url_without_password = "postgresql+asyncpg://postgres@localhost:5432/smartsell_test"
     # testing flag keeps resolution predictable; provide test URL without password
@@ -94,9 +95,56 @@ def test_sync_url_injects_password_from_db_password(monkeypatch):
     assert parsed.password
 
 
-def test_sync_engine_falls_back_from_masked_url(monkeypatch):
+def test_resolved_url_and_sqlalchemy_urls_unmasked(monkeypatch):
+    from app.core.config import get_settings
+
+    _clear_db_env(monkeypatch)
+    monkeypatch.setenv("ENVIRONMENT", "testing")
+    monkeypatch.setenv("TEST_DATABASE_URL", "postgresql://user:realpass@localhost:5432/dbname")
+    monkeypatch.setenv("PYTEST_CURRENT_TEST", "config::unmasked")
+
+    get_settings.cache_clear()
+    url, _, _ = resolve_database_url(Settings())
+    parsed = urlparse(url)
+
+    assert parsed.password
+    assert parsed.password != "***"
+
+    settings = get_settings()
+    assert settings.sqlalchemy_urls["sync"]
+    assert ":***@" not in settings.sqlalchemy_urls["sync"]
+    get_settings.cache_clear()
+
+
+def test_resolve_sync_pg_url_skips_masked_candidate(monkeypatch):
     import app.core.db as db
+    from app.core.config import Settings as SettingsCls
+
+    _clear_db_env(monkeypatch)
+    monkeypatch.setenv("ENVIRONMENT", "testing")
+    monkeypatch.setenv("TEST_ASYNC_DATABASE_URL", "postgresql+asyncpg://user:real@localhost:5432/dbname")
+    monkeypatch.setenv("DATABASE_URL", "postgresql://user:real@localhost:5432/dbname")
+    monkeypatch.setenv("PYTEST_CURRENT_TEST", "db::resolve")
+
+    new_settings = SettingsCls()
+    monkeypatch.setattr(db, "settings", new_settings, raising=False)
+    monkeypatch.setattr(SettingsCls, "sqlalchemy_sync_url", property(lambda _self: ""))
+    monkeypatch.setattr(SettingsCls, "sqlalchemy_urls", property(lambda _self: {}))
+    monkeypatch.setattr(
+        db,
+        "resolve_database_url",
+        lambda _settings=None: ("postgresql://user:real@localhost:5432/dbname", "TEST_DATABASE_URL", ""),
+    )
+
+    resolved = db._resolve_sync_pg_url()
+
+    assert ":***@" not in resolved
+
+
+def test_sync_engine_falls_back_from_masked_url(monkeypatch):
     from sqlalchemy import create_engine as sa_create_engine
+
+    import app.core.db as db
 
     db._SYNC_ENGINE = None
     db._SYNC_SESSION_MAKER = None
