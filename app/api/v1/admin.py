@@ -19,7 +19,14 @@ from app.core.exceptions import AuthorizationError, NotFoundError, _ensure_reque
 from app.core.logging import audit_logger
 from app.core.subscriptions.plan_catalog import get_plan, normalize_plan_id
 from app.models.billing import Subscription, WalletBalance, WalletTransaction
-from app.models.campaign import Campaign, CampaignStatus, ChannelType, Message, MessageStatus
+from app.models.campaign import (
+    Campaign,
+    CampaignProcessingStatus,
+    CampaignStatus,
+    ChannelType,
+    Message,
+    MessageStatus,
+)
 from app.models.company import Company
 from app.models.kaspi_mc_session import KaspiMcSession
 from app.models.kaspi_offer import KaspiOffer
@@ -155,6 +162,54 @@ async def run_campaigns_task(
         now=datetime.now(UTC),
     )
     return {"processed": processed}
+
+
+@router.post(
+    "/campaigns/{campaign_id}/run",
+    summary="Queue a campaign run (platform admin)",
+)
+async def queue_campaign_run(
+    request: Request,
+    campaign_id: int,
+    admin: User = Depends(require_platform_admin),
+    db: AsyncSession = Depends(get_async_db),
+) -> dict:
+    _ = admin
+    campaign = await db.get(Campaign, campaign_id)
+    if not campaign:
+        raise NotFoundError("campaign_not_found", code="campaign_not_found", http_status=404)
+
+    if campaign.processing_status in (CampaignProcessingStatus.QUEUED, CampaignProcessingStatus.PROCESSING):
+        return {
+            "campaign_id": campaign.id,
+            "status": campaign.processing_status.value,
+            "queued_at": campaign.queued_at.isoformat() if campaign.queued_at else None,
+            "started_at": campaign.started_at.isoformat() if campaign.started_at else None,
+            "finished_at": campaign.finished_at.isoformat() if campaign.finished_at else None,
+            "last_error": campaign.last_error,
+            "attempts": campaign.attempts,
+            "request_id": _ensure_request_id(request),
+        }
+
+    now = datetime.now(UTC)
+    campaign.processing_status = CampaignProcessingStatus.QUEUED
+    campaign.queued_at = now
+    campaign.started_at = None
+    campaign.finished_at = None
+    campaign.last_error = None
+    await db.commit()
+    await db.refresh(campaign)
+
+    return {
+        "campaign_id": campaign.id,
+        "status": campaign.processing_status.value,
+        "queued_at": campaign.queued_at.isoformat() if campaign.queued_at else None,
+        "started_at": campaign.started_at.isoformat() if campaign.started_at else None,
+        "finished_at": campaign.finished_at.isoformat() if campaign.finished_at else None,
+        "last_error": campaign.last_error,
+        "attempts": campaign.attempts,
+        "request_id": _ensure_request_id(request),
+    }
 
 
 @router.post(
