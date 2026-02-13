@@ -93,6 +93,7 @@ async def test_campaign_worker_transitions_to_done(async_db_session):
     assert campaign.processing_status == CampaignProcessingStatus.DONE
     assert campaign.started_at is not None
     assert campaign.finished_at is not None
+    assert campaign.failed_at is None
 
 
 async def test_campaign_worker_failure_sets_error(async_db_session, monkeypatch):
@@ -114,6 +115,7 @@ async def test_campaign_worker_failure_sets_error(async_db_session, monkeypatch)
     assert campaign.last_error
     assert "boom" in campaign.last_error
     assert campaign.attempts == 1
+    assert campaign.failed_at is not None
 
 
 async def test_campaign_worker_lock_prevents_processing(async_db_session, monkeypatch):
@@ -150,6 +152,7 @@ async def test_campaign_worker_requires_messages(async_db_session):
     assert campaign.processing_status == CampaignProcessingStatus.FAILED
     assert campaign.last_error
     assert "campaign_has_no_messages" in campaign.last_error
+    assert campaign.failed_at is not None
 
     message = (
         await async_db_session.execute(select(Message.id).where(Message.campaign_id == campaign.id).limit(1))

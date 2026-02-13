@@ -106,6 +106,36 @@ def _enqueue_due_campaigns_apply(campaigns: list[Campaign], *, now: datetime) ->
     return queued
 
 
+async def queue_campaign_run(
+    db: AsyncSession,
+    campaign: Campaign,
+    *,
+    requested_by_user_id: int | None,
+    request_id: str | None,
+    now: datetime | None = None,
+) -> Campaign:
+    now = now or _now_utc()
+    if campaign.processing_status in (
+        CampaignProcessingStatus.QUEUED,
+        CampaignProcessingStatus.PROCESSING,
+    ):
+        return campaign
+
+    campaign.processing_status = CampaignProcessingStatus.QUEUED
+    campaign.queued_at = now
+    campaign.started_at = None
+    campaign.finished_at = None
+    campaign.failed_at = None
+    campaign.last_error = None
+    if request_id:
+        campaign.request_id = request_id
+    campaign.requested_by_user_id = requested_by_user_id
+
+    await db.commit()
+    await db.refresh(campaign)
+    return campaign
+
+
 async def enqueue_due_campaigns(
     db: AsyncSession,
     *,
@@ -186,4 +216,5 @@ def enqueue_due_campaigns_sync(
 __all__ = [
     "enqueue_due_campaigns",
     "enqueue_due_campaigns_sync",
+    "queue_campaign_run",
 ]

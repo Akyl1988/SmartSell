@@ -35,6 +35,7 @@ from app.models.subscription_override import SubscriptionOverride
 from app.models.user import User
 from app.schemas.campaign import AdminCampaignResponse
 from app.services.campaign_runner import enqueue_due_campaigns
+from app.services.campaign_runner import queue_campaign_run as queue_campaign_run_service
 from app.services.subscriptions import activate_plan, renew_if_due
 from app.worker.campaign_processing import process_campaign_queue_once
 
@@ -199,14 +200,14 @@ async def queue_campaign_run(
             "request_id": _ensure_request_id(request),
         }
 
-    now = datetime.now(UTC)
-    campaign.processing_status = CampaignProcessingStatus.QUEUED
-    campaign.queued_at = now
-    campaign.started_at = None
-    campaign.finished_at = None
-    campaign.last_error = None
-    await db.commit()
-    await db.refresh(campaign)
+    request_id = _ensure_request_id(request)
+    campaign = await queue_campaign_run_service(
+        db,
+        campaign,
+        requested_by_user_id=getattr(admin, "id", None),
+        request_id=request_id,
+        now=datetime.now(UTC),
+    )
 
     return {
         "campaign_id": campaign.id,
@@ -216,7 +217,7 @@ async def queue_campaign_run(
         "finished_at": campaign.finished_at.isoformat() if campaign.finished_at else None,
         "last_error": campaign.last_error,
         "attempts": campaign.attempts,
-        "request_id": _ensure_request_id(request),
+        "request_id": request_id,
     }
 
 

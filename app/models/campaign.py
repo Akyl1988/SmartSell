@@ -171,8 +171,10 @@ class Campaign(SoftDeleteMixin, Base):
     queued_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    failed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
     attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    requested_by_user_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
     # Multitenant
     company_id: Mapped[int] = mapped_column(

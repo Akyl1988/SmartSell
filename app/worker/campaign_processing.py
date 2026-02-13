@@ -94,6 +94,7 @@ async def process_campaign_queue_once(
             campaign.processing_status = CampaignProcessingStatus.PROCESSING
             campaign.started_at = now
             campaign.finished_at = None
+            campaign.failed_at = None
             campaign.last_error = None
             await db.flush()
 
@@ -101,12 +102,14 @@ async def process_campaign_queue_once(
                 await _perform_campaign_action(db, campaign)
                 campaign.processing_status = CampaignProcessingStatus.DONE
                 campaign.finished_at = _utcnow()
+                campaign.failed_at = None
                 results.append({"campaign_id": campaign.id, "status": campaign.processing_status.value})
             except Exception as exc:
                 campaign.processing_status = CampaignProcessingStatus.FAILED
                 campaign.last_error = _truncate_error(str(exc))
                 campaign.attempts = int(campaign.attempts or 0) + 1
                 campaign.finished_at = _utcnow()
+                campaign.failed_at = campaign.finished_at
                 results.append({"campaign_id": campaign.id, "status": campaign.processing_status.value})
 
     return results
@@ -145,6 +148,7 @@ def process_campaign_queue_once_sync(
                 campaign.processing_status = CampaignProcessingStatus.PROCESSING
                 campaign.started_at = now
                 campaign.finished_at = None
+                campaign.failed_at = None
                 campaign.last_error = None
                 db.flush()
 
@@ -152,12 +156,14 @@ def process_campaign_queue_once_sync(
                     _perform_campaign_action_sync(db, campaign)
                     campaign.processing_status = CampaignProcessingStatus.DONE
                     campaign.finished_at = _utcnow()
+                    campaign.failed_at = None
                     results.append({"campaign_id": campaign.id, "status": campaign.processing_status.value})
                 except Exception as exc:
                     campaign.processing_status = CampaignProcessingStatus.FAILED
                     campaign.last_error = _truncate_error(str(exc))
                     campaign.attempts = int(campaign.attempts or 0) + 1
                     campaign.finished_at = _utcnow()
+                    campaign.failed_at = campaign.finished_at
                     results.append({"campaign_id": campaign.id, "status": campaign.processing_status.value})
 
         return results
