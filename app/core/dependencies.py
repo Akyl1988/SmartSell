@@ -33,6 +33,7 @@ from sqlalchemy import select
 from app.core.rbac import (
     has_any_role,
     is_platform_admin,
+    is_superuser,
     normalize_role,
 )
 from app.core.rbac import (
@@ -473,7 +474,7 @@ async def require_active_subscription(
 
 
 async def get_current_superuser(current_user: Any = Depends(get_current_user)) -> Any:
-    if not getattr(current_user, "is_superuser", False):
+    if not is_superuser(current_user):
         raise AuthorizationError("Insufficient permissions", "INSUFFICIENT_PERMISSIONS")
     return current_user
 

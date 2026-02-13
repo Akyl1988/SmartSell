@@ -8,6 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.db import get_async_db
 from app.core.logging import get_logger
+from app.core.rbac import is_platform_admin
 from app.core.security import get_current_user, resolve_tenant_company_id
 from app.core.subscriptions.errors import (
     build_subscription_required_payload,
@@ -68,8 +69,7 @@ def require_feature(feature: str) -> Any:
         current_user=Depends(get_current_user),  # noqa: B008
         db: AsyncSession = Depends(get_async_db),  # noqa: B008
     ) -> Any:
-        role = (getattr(current_user, "role", "") or "").lower()
-        if getattr(current_user, "is_superuser", False) or role in {"platform_admin", "superadmin"}:
+        if is_platform_admin(current_user):
             return current_user
         company_id = resolve_tenant_company_id(current_user, not_found_detail="Company not set")
         plan = await _resolve_plan(db, company_id)

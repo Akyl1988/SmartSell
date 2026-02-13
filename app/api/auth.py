@@ -45,6 +45,7 @@ from app.api.v1.auth import ChangePasswordPayload as V1ChangePasswordPayload  # 
 from app.api.v1.auth import change_password as v1_change_password
 from app.core.db import get_async_db
 from app.core.dependencies import get_current_user, get_db
+from app.core.rbac import is_superuser
 from app.core.schemas import SuccessResponse
 from app.models import Company, User
 
@@ -281,7 +282,7 @@ async def get_me(
         "role": getattr(current_user, "role", None),
         "is_active": getattr(current_user, "is_active", True),
         "is_verified": getattr(current_user, "is_verified", False),
-        "is_superuser": getattr(current_user, "is_superuser", False),
+        "is_superuser": is_superuser(current_user),
         "last_login_at": getattr(current_user, "last_login_at", None),
         "created_at": getattr(current_user, "created_at", None),
         "updated_at": getattr(current_user, "updated_at", None),
