@@ -482,6 +482,17 @@ async def require_platform_admin(current_user: Any = Depends(get_current_user)) 
     return _require_platform_admin(current_user)
 
 
+async def require_company_access(
+    current_user: Any = Depends(get_current_user),
+) -> Any:
+    if is_platform_admin(current_user):
+        return current_user
+    from app.core.security import resolve_tenant_company_id  # type: ignore
+
+    resolve_tenant_company_id(current_user, not_found_detail="Company not set")
+    return current_user
+
+
 def require_roles_strict(*roles: str) -> Callable[..., Any]:
     allowed = {normalize_role(r) for r in roles if r}
 
@@ -506,6 +517,19 @@ def require_store_roles(*roles: str) -> Callable[..., Any]:
 
 async def require_store_admin(current_user: Any = Depends(get_current_user)) -> Any:
     return _require_store_admin(current_user)
+
+
+async def require_store_admin_company(
+    current_user: Any = Depends(get_current_user),
+) -> Any:
+    if is_platform_admin(current_user):
+        return current_user
+    if not has_any_role(current_user, {normalize_role("admin"), normalize_role("manager")}):
+        raise AuthorizationError("Admin role required", "ADMIN_REQUIRED")
+    from app.core.security import resolve_tenant_company_id  # type: ignore
+
+    resolve_tenant_company_id(current_user, not_found_detail="Company not set")
+    return current_user
 
 
 def require_scopes(required: Sequence[str]) -> Callable[..., Any]:
@@ -873,9 +897,11 @@ __all__ = [
     "require_active_subscription",
     "get_current_superuser",
     "require_platform_admin",
+    "require_company_access",
     "require_roles_strict",
     "require_store_roles",
     "require_store_admin",
+    "require_store_admin_company",
     "require_scopes",
     # rate limit
     "rate_limit",

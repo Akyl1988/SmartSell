@@ -13,9 +13,9 @@ from typing import Any, Literal
 from fastapi import APIRouter, Body, Depends, HTTPException, Path, Query, status
 from pydantic import BaseModel, Field, ValidationError, field_validator
 
-from app.core.dependencies import require_active_subscription, require_store_roles
+from app.core.dependencies import require_active_subscription, require_company_access, require_store_admin_company
 from app.core.exceptions import ConflictError
-from app.core.rbac import is_store_admin, is_store_manager
+from app.core.rbac import is_platform_admin, is_store_admin, is_store_manager
 from app.core.security import get_current_user
 from app.models.user import User
 
@@ -340,6 +340,8 @@ def debounce_dep(bucket: str, seconds: int):
 
 
 def ensure_owner_or_admin(camp_owner: str | None, user: User) -> None:
+    if is_platform_admin(user):
+        return
     if is_store_admin(user) or is_store_manager(user):
         return
     if (getattr(user, "role", None) or "").lower() != "admin":
@@ -653,7 +655,7 @@ def _get_campaign_or_404(campaign_id: int, user: User | None = None) -> Campaign
     data = storage.get_campaign(campaign_id)
     if not data:
         raise HTTPException(status_code=404, detail="Campaign not found")
-    if user is not None:
+    if user is not None and not is_platform_admin(user):
         cid = data.get("company_id")
         if cid is not None and cid != getattr(user, "company_id", None):
             raise HTTPException(status_code=404, detail="Campaign not found")
@@ -756,19 +758,25 @@ def _restore_campaign(campaign_id: int, reason: str | None = None, user: User | 
 # ------------------------------------------------------------------------------
 # ROUTER
 # ------------------------------------------------------------------------------
-router = APIRouter(
-    prefix="/api/v1/campaigns",
-    tags=["campaigns"],
-    dependencies=[Depends(require_active_subscription)],
+router = APIRouter(prefix="/api/v1/campaigns", tags=["campaigns"])
+read_router = APIRouter(
+    dependencies=[Depends(require_company_access), Depends(require_active_subscription)],
+)
+admin_router = APIRouter(
+    dependencies=[
+        Depends(require_company_access),
+        Depends(require_store_admin_company),
+        Depends(require_active_subscription),
+    ],
 )
 
 
 # ---- BASE CREATE/LIST (статические пути) -------------------------------------
-@router.post(
+@admin_router.post(
     "/",
     response_model=Campaign,
     status_code=status.HTTP_201_CREATED,
-    dependencies=[Depends(require_store_roles("admin", "manager"))],
+    dependencies=[Depends(require_store_admin_company)],
 )
 async def create_campaign(campaign: Campaign = Body(...), user: User = Depends(_auth_user)):
     # owner, учитываем при уникальности
@@ -812,7 +820,7 @@ async def create_campaign(campaign: Campaign = Body(...), user: User = Depends(_
     return Campaign(**payload)
 
 
-@router.get("/", response_model=CampaignListResponse)
+@read_router.get("/", response_model=CampaignListResponse)
 async def list_campaigns(
     active: bool | None = Query(None, description="Show only active"),
     archived: bool | None = Query(None, description="Filter by archived flag"),
@@ -854,7 +862,7 @@ async def list_campaigns(
 
 
 # ---- Diagnostics / Search / Export / Import / Drafts (статические пути) ------
-@router.get("/health")
+@read_router.get("/health")
 async def campaign_health_check():
     return {
         "status": "ok",
@@ -866,7 +874,7 @@ async def campaign_health_check():
     }
 
 
-@router.get("/_debug/backends")
+@read_router.get("/_debug/backends")
 async def debug_backends():
     # Ленивая инициализация очередей (для отладки окружения)
     _maybe_init_celery()
@@ -879,12 +887,12 @@ async def debug_backends():
     }
 
 
-@router.get("/_debug/audit", response_model=list[dict[str, Any]])
+@read_router.get("/_debug/audit", response_model=list[dict[str, Any]])
 async def get_audit_tail(limit: int = Query(200, ge=1, le=2000)):
     return _AUDIT[-limit:]
 
 
-@router.get("/search", response_model=CampaignListResponse)
+@read_router.get("/search", response_model=CampaignListResponse)
 async def search_campaigns(
     query: str = Query("", min_length=0, description="Search query"),
     page: int = Query(1, ge=1),
@@ -920,7 +928,7 @@ async def search_campaigns(
     return CampaignListResponse(items=page_items, meta=PageMeta(page=page, size=size, total=total))
 
 
-@router.get("/recipients", response_model=list[str])
+@read_router.get("/recipients", response_model=list[str])
 async def list_all_recipients(user: User = Depends(_auth_user)):
     recs = set()
     try:
@@ -938,7 +946,7 @@ async def list_all_recipients(user: User = Depends(_auth_user)):
     return sorted(recs)
 
 
-@router.get("/search_tags", response_model=list[str])
+@read_router.get("/search_tags", response_model=list[str])
 async def search_tags(q: str = Query("", min_length=0), user: User = Depends(_auth_user)):
     found = set()
     qs = (q or "").strip().lower()
@@ -957,7 +965,7 @@ async def search_tags(q: str = Query("", min_length=0), user: User = Depends(_au
     return sorted(found)
 
 
-@router.post("/validate", response_model=dict[str, Any])
+@read_router.post("/validate", response_model=dict[str, Any])
 async def validate_campaign(campaign: Campaign = Body(...)):
     try:
         Campaign(**campaign.model_dump())
@@ -979,7 +987,7 @@ async def validate_campaign(campaign: Campaign = Body(...)):
     return {"valid": len(errors) == 0, "errors": errors}
 
 
-@router.get("/export", response_model=list[Campaign])
+@read_router.get("/export", response_model=list[Campaign])
 async def export_campaigns(user: User = Depends(_auth_user)):
     try:
         raw_campaigns = storage.list_campaigns(company_id=getattr(user, "company_id", None))
@@ -988,12 +996,12 @@ async def export_campaigns(user: User = Depends(_auth_user)):
     return [Campaign(**c) for c in raw_campaigns if c.get("company_id") in (None, getattr(user, "company_id", None))]
 
 
-@router.get("/export_format", response_model=list[str])
+@read_router.get("/export_format", response_model=list[str])
 async def get_export_formats():
     return [f.value for f in CampaignExportFormat]
 
 
-@router.get("/export/{fmt}", response_model=Any)
+@read_router.get("/export/{fmt}", response_model=Any)
 async def export_campaigns_fmt(fmt: CampaignExportFormat = Path(...), user: User = Depends(_auth_user)):
     try:
         raw_campaigns = storage.list_campaigns(company_id=getattr(user, "company_id", None))
@@ -1030,11 +1038,11 @@ async def export_campaigns_fmt(fmt: CampaignExportFormat = Path(...), user: User
         raise HTTPException(status_code=400, detail="Unknown format")
 
 
-@router.post(
+@admin_router.post(
     "/import",
     response_model=dict[str, Any],
     dependencies=[
-        Depends(require_store_roles("admin", "manager")),
+        Depends(require_store_admin_company),
         Depends(limit_dep("bulk-import", 10, 60)),
     ],
 )
@@ -1098,10 +1106,10 @@ async def import_campaigns_bulk(payload: list[Campaign] = Body(...), user: User 
     return {"imported": imported, "total": len(payload), "errors": errors}
 
 
-@router.post(
+@admin_router.post(
     "/draft",
     response_model=Campaign,
-    dependencies=[Depends(require_store_roles("admin", "manager"))],
+    dependencies=[Depends(require_store_admin_company)],
 )
 async def save_campaign_draft(campaign: Campaign = Body(...), user: User = Depends(_auth_user)):
     owner = (campaign.owner or user.username or "").strip()
@@ -1140,7 +1148,7 @@ async def save_campaign_draft(campaign: Campaign = Body(...), user: User = Depen
     return Campaign(**payload)
 
 
-@router.get("/drafts", response_model=CampaignListResponse)
+@read_router.get("/drafts", response_model=CampaignListResponse)
 async def list_campaign_drafts(
     page: int = Query(1, ge=1),
     size: int = Query(20, ge=1, le=100),
@@ -1165,7 +1173,7 @@ async def list_campaign_drafts(
     return CampaignListResponse(items=items, meta=PageMeta(page=page, size=size, total=total))
 
 
-@router.get("/drafts/{campaign_id}", response_model=Campaign)
+@read_router.get("/drafts/{campaign_id}", response_model=Campaign)
 async def get_campaign_draft(campaign_id: int = Path(..., ge=1), user: User = Depends(_auth_user)):
     data = storage.get_campaign(campaign_id)
     if not data or data.get("active", True):
@@ -1176,15 +1184,15 @@ async def get_campaign_draft(campaign_id: int = Path(..., ge=1), user: User = De
 
 
 # ---- DYNAMIC PATHS (/{campaign_id}...) ---------------------------------------
-@router.get("/{campaign_id}", response_model=Campaign)
+@read_router.get("/{campaign_id}", response_model=Campaign)
 async def get_campaign(campaign_id: int = Path(..., ge=1), user: User = Depends(_auth_user)):
     return _get_campaign_or_404(campaign_id, user)
 
 
-@router.put(
+@admin_router.put(
     "/{campaign_id}",
     response_model=Campaign,
-    dependencies=[Depends(require_store_roles("admin", "manager"))],
+    dependencies=[Depends(require_store_admin_company)],
 )
 async def update_campaign(campaign_id: int, campaign: Campaign = Body(...), user: User = Depends(_auth_user)):
     current = storage.get_campaign(campaign_id)
@@ -1240,10 +1248,10 @@ async def update_campaign(campaign_id: int, campaign: Campaign = Body(...), user
     return _get_campaign_or_404(campaign_id, user)
 
 
-@router.delete(
+@admin_router.delete(
     "/{campaign_id}",
     status_code=status.HTTP_204_NO_CONTENT,
-    dependencies=[Depends(require_store_roles("admin", "manager"))],
+    dependencies=[Depends(require_store_admin_company)],
 )
 async def delete_campaign(campaign_id: int, user: User = Depends(_auth_user)):
     data = storage.get_campaign(campaign_id)
@@ -1265,11 +1273,11 @@ def _message_recipient(m: Any) -> str | None:
     return getattr(m, "recipient", None)
 
 
-@router.post(
+@admin_router.post(
     "/{campaign_id}/messages",
     response_model=Message,
     status_code=status.HTTP_201_CREATED,
-    dependencies=[Depends(require_store_roles("admin", "manager"))],
+    dependencies=[Depends(require_store_admin_company)],
 )
 async def add_message_to_campaign(campaign_id: int, message: Message = Body(...), user: User = Depends(_auth_user)):
     camp = _get_campaign_or_404(campaign_id, user)
@@ -1287,13 +1295,13 @@ async def add_message_to_campaign(campaign_id: int, message: Message = Body(...)
     return Message(**payload)
 
 
-@router.get("/{campaign_id}/messages", response_model=list[Message])
+@read_router.get("/{campaign_id}/messages", response_model=list[Message])
 async def list_campaign_messages(campaign_id: int, user: User = Depends(_auth_user)):
     camp = _get_campaign_or_404(campaign_id, user)
     return camp.messages
 
 
-@router.get("/{campaign_id}/messages/{message_id}", response_model=Message)
+@read_router.get("/{campaign_id}/messages/{message_id}", response_model=Message)
 async def get_campaign_message(campaign_id: int, message_id: int, user: User = Depends(_auth_user)):
     camp = _get_campaign_or_404(campaign_id, user)
     _, found = _find_message_in_campaign(camp, message_id)
@@ -1302,10 +1310,10 @@ async def get_campaign_message(campaign_id: int, message_id: int, user: User = D
     return found
 
 
-@router.put(
+@admin_router.put(
     "/{campaign_id}/messages/{message_id}",
     response_model=Message,
-    dependencies=[Depends(require_store_roles("admin", "manager"))],
+    dependencies=[Depends(require_store_admin_company)],
 )
 async def update_campaign_message(
     campaign_id: int,
@@ -1334,10 +1342,10 @@ async def update_campaign_message(
     return Message(**updated)
 
 
-@router.delete(
+@admin_router.delete(
     "/{campaign_id}/messages/{message_id}",
     status_code=status.HTTP_204_NO_CONTENT,
-    dependencies=[Depends(require_store_roles("admin", "manager"))],
+    dependencies=[Depends(require_store_admin_company)],
 )
 async def delete_campaign_message(campaign_id: int, message_id: int, user: User = Depends(_auth_user)):
     camp = _get_campaign_or_404(campaign_id, user)
@@ -1351,10 +1359,10 @@ async def delete_campaign_message(campaign_id: int, message_id: int, user: User 
     return
 
 
-@router.post(
+@admin_router.post(
     "/{campaign_id}/messages/upsert_by_recipient",
     response_model=Message,
-    dependencies=[Depends(require_store_roles("admin", "manager"))],
+    dependencies=[Depends(require_store_admin_company)],
 )
 async def upsert_message_by_recipient(campaign_id: int, req: UpsertMessageRequest, user: User = Depends(_auth_user)):
     camp = _get_campaign_or_404(campaign_id, user)
@@ -1380,10 +1388,10 @@ async def upsert_message_by_recipient(campaign_id: int, req: UpsertMessageReques
     return msg
 
 
-@router.post(
+@admin_router.post(
     "/{campaign_id}/messages/{message_id}/status",
     response_model=Message,
-    dependencies=[Depends(require_store_roles("admin", "manager"))],
+    dependencies=[Depends(require_store_admin_company)],
 )
 async def set_message_status(
     campaign_id: int,
@@ -1415,10 +1423,10 @@ async def set_message_status(
     return msg
 
 
-@router.post(
+@admin_router.post(
     "/{campaign_id}/messages/{message_id}/reset_to_pending",
     response_model=Message,
-    dependencies=[Depends(require_store_roles("admin", "manager"))],
+    dependencies=[Depends(require_store_admin_company)],
 )
 async def reset_message_to_pending(campaign_id: int, message_id: int, user: User = Depends(_auth_user)):
     camp = _get_campaign_or_404(campaign_id, user)
@@ -1437,11 +1445,11 @@ async def reset_message_to_pending(campaign_id: int, message_id: int, user: User
     return msg
 
 
-@router.post(
+@admin_router.post(
     "/{campaign_id}/messages/clear_failed",
     response_model=dict[str, int],
     dependencies=[
-        Depends(require_store_roles("admin", "manager")),
+        Depends(require_store_admin_company),
         Depends(limit_dep("clear-failed", 30, 60)),
     ],
 )
@@ -1461,11 +1469,11 @@ async def clear_failed_messages(campaign_id: int, user: User = Depends(_auth_use
     return {"removed": len(to_delete), "remaining": len(camp.messages), "before": before}
 
 
-@router.post(
+@admin_router.post(
     "/{campaign_id}/messages/mark_all_sent",
     response_model=dict[str, int],
     dependencies=[
-        Depends(require_store_roles("admin", "manager")),
+        Depends(require_store_admin_company),
         Depends(limit_dep("mark-sent", 60, 60)),
     ],
 )
@@ -1488,11 +1496,11 @@ async def mark_all_sent(campaign_id: int, user: User = Depends(_auth_user)):
     return {"changed": changed, "total": len(camp.messages)}
 
 
-@router.post(
+@admin_router.post(
     "/{campaign_id}/messages/bulk_status_update",
     response_model=dict[str, Any],
     dependencies=[
-        Depends(require_store_roles("admin", "manager")),
+        Depends(require_store_admin_company),
         Depends(limit_dep("bulk-status", 60, 60)),
     ],
 )
@@ -1514,11 +1522,11 @@ async def bulk_update_message_status(campaign_id: int, req: BulkStatusUpdateRequ
     return {"updated": updated, "requested": len(req.ids)}
 
 
-@router.post(
+@admin_router.post(
     "/{campaign_id}/messages/bulk_delete",
     response_model=dict[str, Any],
     dependencies=[
-        Depends(require_store_roles("admin", "manager")),
+        Depends(require_store_admin_company),
         Depends(limit_dep("bulk-delete-msg", 30, 60)),
     ],
 )
@@ -1538,11 +1546,11 @@ async def bulk_delete_messages(campaign_id: int, req: BulkDeleteRequest, user: U
     return {"deleted": len(to_delete), "remaining": len(camp.messages), "before": before}
 
 
-@router.post(
+@admin_router.post(
     "/{campaign_id}/messages/bulk_add",
     response_model=dict[str, Any],
     dependencies=[
-        Depends(require_store_roles("admin", "manager")),
+        Depends(require_store_admin_company),
         Depends(limit_dep("bulk-add-msg", 30, 60)),
     ],
 )
@@ -1580,11 +1588,11 @@ async def bulk_add_messages(campaign_id: int, req: BulkMessageAddRequest, user: 
     return {"added": added, "total": len(camp.messages), "errors": dup_errors}
 
 
-@router.post(
+@admin_router.post(
     "/{campaign_id}/messages/bulk_upsert",
     response_model=dict[str, Any],
     dependencies=[
-        Depends(require_store_roles("admin", "manager")),
+        Depends(require_store_admin_company),
         Depends(limit_dep("bulk-upsert-msg", 30, 60)),
     ],
 )
@@ -1631,7 +1639,7 @@ async def bulk_upsert_messages(campaign_id: int, req: BulkUpsertMessageRequest, 
 
 
 # ---- Actions / Stats / Schedules ---------------------------------------------
-@router.get("/{campaign_id}/stats", response_model=CampaignStats)
+@read_router.get("/{campaign_id}/stats", response_model=CampaignStats)
 async def get_campaign_stats(campaign_id: int, user: User = Depends(_auth_user)):
     camp = _get_campaign_or_404(campaign_id, user)
     total = len(camp.messages)
@@ -1652,10 +1660,10 @@ async def get_campaign_stats(campaign_id: int, user: User = Depends(_auth_user))
     return stats
 
 
-@router.post(
+@admin_router.post(
     "/{campaign_id}/send",
     response_model=dict[str, Any],
-    dependencies=[Depends(require_store_roles("admin", "manager")), Depends(debounce_dep("send", 3))],
+    dependencies=[Depends(require_store_admin_company), Depends(debounce_dep("send", 3))],
 )
 async def send_campaign(campaign_id: int, user: User = Depends(_auth_user)):
     camp = _get_campaign_or_404(campaign_id, user)
@@ -1666,11 +1674,11 @@ async def send_campaign(campaign_id: int, user: User = Depends(_auth_user)):
     return {"status": "started", "campaign_id": campaign_id, **result}
 
 
-@router.post(
+@admin_router.post(
     "/{campaign_id}/send_async",
     response_model=dict[str, Any],
     dependencies=[
-        Depends(require_store_roles("admin", "manager")),
+        Depends(require_store_admin_company),
         Depends(debounce_dep("send-async", 3)),
     ],
 )
@@ -1686,10 +1694,10 @@ async def send_campaign_async(campaign_id: int, user: User = Depends(_auth_user)
     return {"campaign_id": campaign_id, **out}
 
 
-@router.post(
+@admin_router.post(
     "/{campaign_id}/schedule",
     response_model=dict[str, Any],
-    dependencies=[Depends(require_store_roles("admin", "manager")), Depends(debounce_dep("schedule", 3))],
+    dependencies=[Depends(require_store_admin_company), Depends(debounce_dep("schedule", 3))],
 )
 async def schedule_campaign(
     campaign_id: int,
@@ -1718,11 +1726,11 @@ async def schedule_campaign(
     }
 
 
-@router.post(
+@admin_router.post(
     "/{campaign_id}/cancel_schedule",
     response_model=Campaign,
     dependencies=[
-        Depends(require_store_roles("admin", "manager")),
+        Depends(require_store_admin_company),
         Depends(debounce_dep("schedule-cancel", 3)),
     ],
 )
@@ -1737,7 +1745,7 @@ async def cancel_campaign_schedule(campaign_id: int, user: User = Depends(_auth_
     return camp
 
 
-@router.post("/{campaign_id}/preview_send", response_model=dict[str, Any])
+@read_router.post("/{campaign_id}/preview_send", response_model=dict[str, Any])
 async def preview_send(
     campaign_id: int,
     recipients: list[str] = Body(default_factory=list),
@@ -1755,11 +1763,11 @@ async def preview_send(
     }
 
 
-@router.post(
+@admin_router.post(
     "/{campaign_id}/resend_failed",
     response_model=dict[str, Any],
     dependencies=[
-        Depends(require_store_roles("admin", "manager")),
+        Depends(require_store_admin_company),
         Depends(limit_dep("resend-failed", 30, 60)),
     ],
 )
@@ -1783,16 +1791,16 @@ async def resend_failed(campaign_id: int, user: User = Depends(_auth_user)):
 
 
 # ---- Tags & Archive/Restore ---------------------------------------------------
-@router.get("/{campaign_id}/tags", response_model=list[str])
+@read_router.get("/{campaign_id}/tags", response_model=list[str])
 async def get_campaign_tags(campaign_id: int, user: User = Depends(_auth_user)):
     camp = _get_campaign_or_404(campaign_id, user)
     return _normalize_tags(camp.tags)
 
 
-@router.post(
+@admin_router.post(
     "/{campaign_id}/tags",
     response_model=Campaign,
-    dependencies=[Depends(require_store_roles("admin", "manager"))],
+    dependencies=[Depends(require_store_admin_company)],
 )
 async def add_tag_to_campaign(campaign_id: int, tag_req: AddTagRequest = Body(...), user: User = Depends(_auth_user)):
     campaign = _get_campaign_or_404(campaign_id, user)
@@ -1806,10 +1814,10 @@ async def add_tag_to_campaign(campaign_id: int, tag_req: AddTagRequest = Body(..
     return campaign
 
 
-@router.delete(
+@admin_router.delete(
     "/{campaign_id}/tags/{tag}",
     response_model=Campaign,
-    dependencies=[Depends(require_store_roles("admin", "manager"))],
+    dependencies=[Depends(require_store_admin_company)],
 )
 async def remove_tag_from_campaign(
     campaign_id: int, tag: str = Path(..., min_length=1), user: User = Depends(_auth_user)
@@ -1825,10 +1833,10 @@ async def remove_tag_from_campaign(
     return campaign
 
 
-@router.put(
+@admin_router.put(
     "/{campaign_id}/tags",
     response_model=Campaign,
-    dependencies=[Depends(require_store_roles("admin", "manager"))],
+    dependencies=[Depends(require_store_admin_company)],
 )
 async def set_tags_for_campaign(campaign_id: int, req: SetTagsRequest, user: User = Depends(_auth_user)):
     campaign = _get_campaign_or_404(campaign_id, user)
@@ -1841,10 +1849,10 @@ async def set_tags_for_campaign(campaign_id: int, req: SetTagsRequest, user: Use
     return campaign
 
 
-@router.post(
+@admin_router.post(
     "/{campaign_id}/archive",
     response_model=Campaign,
-    dependencies=[Depends(require_store_roles("admin", "manager"))],
+    dependencies=[Depends(require_store_admin_company)],
 )
 async def archive_campaign(campaign_id: int, req: ArchiveRequest = Body(None), user: User = Depends(_auth_user)):
     data = storage.get_campaign(campaign_id)
@@ -1856,10 +1864,10 @@ async def archive_campaign(campaign_id: int, req: ArchiveRequest = Body(None), u
     return _archive_campaign(campaign_id, reason=req.reason if req else None, user=user)
 
 
-@router.post(
+@admin_router.post(
     "/{campaign_id}/restore",
     response_model=Campaign,
-    dependencies=[Depends(require_store_roles("admin", "manager"))],
+    dependencies=[Depends(require_store_admin_company)],
 )
 async def restore_campaign(campaign_id: int, req: RestoreRequest = Body(None), user: User = Depends(_auth_user)):
     data = storage.get_campaign(campaign_id)
@@ -1872,10 +1880,10 @@ async def restore_campaign(campaign_id: int, req: RestoreRequest = Body(None), u
 
 
 # ---- Bulk archive/restore/delete ---------------------------------------------
-@router.post(
+@admin_router.post(
     "/bulk_archive",
     response_model=dict[str, Any],
-    dependencies=[Depends(require_store_roles("admin", "manager"))],
+    dependencies=[Depends(require_store_admin_company)],
 )
 async def bulk_archive_campaigns(req: BulkDeleteRequest, user: User = Depends(_auth_user)):
     archived = 0
@@ -1892,10 +1900,10 @@ async def bulk_archive_campaigns(req: BulkDeleteRequest, user: User = Depends(_a
     return {"archived": archived, "requested": len(req.ids)}
 
 
-@router.post(
+@admin_router.post(
     "/bulk_restore",
     response_model=dict[str, Any],
-    dependencies=[Depends(require_store_roles("admin", "manager"))],
+    dependencies=[Depends(require_store_admin_company)],
 )
 async def bulk_restore_campaigns(req: BulkDeleteRequest, user: User = Depends(_auth_user)):
     restored = 0
@@ -1912,10 +1920,10 @@ async def bulk_restore_campaigns(req: BulkDeleteRequest, user: User = Depends(_a
     return {"restored": restored, "requested": len(req.ids)}
 
 
-@router.post(
+@admin_router.post(
     "/bulk_delete",
     response_model=dict[str, Any],
-    dependencies=[Depends(require_store_roles("admin", "manager"))],
+    dependencies=[Depends(require_store_admin_company)],
 )
 async def bulk_delete_campaigns(req: BulkDeleteRequest, user: User = Depends(_auth_user)):
     deleted = 0
@@ -1934,7 +1942,7 @@ async def bulk_delete_campaigns(req: BulkDeleteRequest, user: User = Depends(_au
 
 
 # ---- Analytics / Diagnostics / Errors ----------------------------------------
-@router.get("/{campaign_id}/advanced_stats", response_model=dict[str, Any])
+@read_router.get("/{campaign_id}/advanced_stats", response_model=dict[str, Any])
 async def advanced_campaign_stats(campaign_id: int, user: User = Depends(_auth_user)):
     camp = _get_campaign_or_404(campaign_id, user)
     msg_by_channel: dict[str, list[Message]] = {}
@@ -1952,11 +1960,15 @@ async def advanced_campaign_stats(campaign_id: int, user: User = Depends(_auth_u
     }
 
 
-@router.get("/error/test")
+@read_router.get("/error/test")
 async def error_test_example():
     raise HTTPException(status_code=418, detail="I'm a teapot")
 
 
-@router.get("/error/raise/{code}")
+@read_router.get("/error/raise/{code}")
 async def raise_custom_error(code: int = Path(..., ge=400, le=599)):
     raise HTTPException(status_code=code, detail=f"Custom error: {code}")
+
+
+router.include_router(read_router)
+router.include_router(admin_router)

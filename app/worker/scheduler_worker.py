@@ -32,6 +32,8 @@ from datetime import UTC, datetime
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 
+from sqlalchemy import update
+
 try:
     from apscheduler.events import EVENT_JOB_ERROR, EVENT_JOB_MAX_INSTANCES, EVENT_JOB_MISSED
     from apscheduler.schedulers.background import BackgroundScheduler
@@ -105,12 +107,14 @@ for _path in (
 if SessionLocal is None:
     raise RuntimeError("SessionLocal не найден. Проверьте, что есть app.core.db.SessionLocal")
 
-# Модели
-from app.models.campaign import Campaign, Message, MessageStatus
-from app.services.campaign_runner import run_campaigns_sync
+from app.models.campaign import Campaign, CampaignProcessingStatus, Message, MessageStatus
+from app.services.campaign_runner import enqueue_due_campaigns_sync
+from app.worker import campaign_processing
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
+
+_ERROR_MESSAGE_LIMIT = 500
 
 
 # -------- Kaspi autosync mutual exclusion helper -------- #
@@ -192,6 +196,15 @@ def _load_smtp_config() -> SmtpConfig:
     )
 
 
+def _truncate_error(message: str | None, limit: int = _ERROR_MESSAGE_LIMIT) -> str | None:
+    if not message:
+        return None
+    cleaned = message.strip()
+    if not cleaned:
+        return None
+    return cleaned[:limit]
+
+
 @contextmanager
 def db_session():
     """Контекстный менеджер для сессии БД с корректным закрытием."""
@@ -239,12 +252,16 @@ def _send_via_smtp(smtp: SmtpConfig, msg: MIMEMultipart) -> None:
             server.send_message(msg)
 
 
-def _smtp_send_with_retry(send_fn: Callable[[], None], *, retries: int = 2, base_delay: float = 0.7) -> None:
+def _smtp_send_with_retry(
+    send_fn: Callable[[], str | None],
+    *,
+    retries: int = 2,
+    base_delay: float = 0.7,
+) -> str | None:
     last_err: Exception | None = None
     for attempt in range(retries + 1):
         try:
-            send_fn()
-            return
+            return send_fn()
         except (TimeoutError, smtplib.SMTPException, OSError) as e:
             last_err = e
             if attempt >= retries:
@@ -289,13 +306,21 @@ def send_message(message_id: int) -> None:
     """
     smtp = _load_smtp_config()
     with db_session() as db:
-        message: Message | None = db.query(Message).filter(Message.id == message_id).first()
-        if not message:
-            logger.error("Message %s не найден", message_id)
+        claim = (
+            update(Message)
+            .where(Message.id == message_id, Message.status == MessageStatus.PENDING)
+            .values(status=MessageStatus.SENDING)
+        )
+        result = db.execute(claim)
+        if not result.rowcount:
+            logger.info("Message %s уже обработан или отсутствует", message_id)
             return
 
-        if message.status != MessageStatus.PENDING:
-            logger.info("Message %s уже обработан (status=%s)", message_id, message.status)
+        db.commit()
+
+        message: Message | None = db.query(Message).filter(Message.id == message_id).first()
+        if not message:
+            logger.error("Message %s не найден после claim", message_id)
             return
 
         recipient = message.recipient
@@ -306,22 +331,30 @@ def send_message(message_id: int) -> None:
         logger.info("Отправка message_id=%s -> %s", message.id, recipient)
 
         try:
-            _smtp_send_with_retry(lambda: _send_via_smtp(smtp, msg))
+            provider_id = _smtp_send_with_retry(lambda: _send_via_smtp(smtp, msg))
             message.status = MessageStatus.SENT
             message.sent_at = _utcnow_naive()
             message.error_message = None
+            if provider_id:
+                message.provider_message_id = str(provider_id)
             logger.info("Сообщение %s успешно отправлено", message.id)
+            db.commit()
         except Exception as e:
             logger.error("Ошибка отправки message_id=%s: %s", message.id, e)
             message.status = MessageStatus.FAILED
-            message.error_message = f"{type(e).__name__}: {e}"
+            message.error_message = _truncate_error(f"{type(e).__name__}: {e}")
+            db.commit()
 
 
-def _schedule_message_send(message_id: int) -> None:
+def _schedule_message_send(message_id: int) -> bool:
     """
     Постановка задачи на немедленную отправку конкретного сообщения.
     """
     job_id = f"send_message_{message_id}"
+    get_job = getattr(scheduler, "get_job", None)
+    if callable(get_job) and get_job(job_id) is not None:
+        logger.info("Запланированная отправка уже существует message_id=%s (job_id=%s)", message_id, job_id)
+        return False
     scheduler.add_job(
         send_message,
         trigger=DateTrigger(run_date=_utcnow_aware()),
@@ -333,18 +366,47 @@ def _schedule_message_send(message_id: int) -> None:
         misfire_grace_time=60,
     )
     logger.info("Запланирована отправка message_id=%s (job_id=%s)", message_id, job_id)
+    return True
+
+
+def _schedule_pending_messages_for_campaigns(campaign_ids: list[int]) -> int:
+    if not campaign_ids:
+        return 0
+
+    scheduled = 0
+    with db_session() as db:
+        rows = (
+            db.query(Message.id)
+            .filter(Message.campaign_id.in_(campaign_ids), Message.status == MessageStatus.PENDING)
+            .all()
+        )
+        for (message_id,) in rows:
+            if _schedule_message_send(message_id):
+                scheduled += 1
+    return scheduled
 
 
 def process_scheduled_campaigns() -> None:
     """
-    Обрабатывает активные кампании, у которых время запуска наступило:
-      - выбирает PENDING-сообщения
-      - для каждого ставит job на отправку
-      - если больше нет PENDING — помечает кампанию COMPLETED
+    Запускает конвейер кампаний:
+      - ставит due кампании в очередь
+      - обрабатывает QUEUED кампании
     """
     now = _utcnow_naive()
     logger.info("Проверка кампаний к отправке (%s)", now.isoformat())
-    run_campaigns_sync()
+    enqueue_summary = enqueue_due_campaigns_sync(now=_utcnow_aware())
+    processed = campaign_processing.process_campaign_queue_once_sync()
+    processed_ids = [
+        item["campaign_id"] for item in processed if item.get("status") == CampaignProcessingStatus.DONE.value
+    ]
+    scheduled = _schedule_pending_messages_for_campaigns(processed_ids)
+    logger.info(
+        "Campaign pipeline tick: queued=%s skipped=%s processed=%s scheduled=%s",
+        enqueue_summary.get("queued"),
+        enqueue_summary.get("skipped"),
+        len(processed),
+        scheduled,
+    )
 
 
 # -------- Публичные сервисные функции воркера -------- #
@@ -367,8 +429,8 @@ def enqueue_campaign(campaign_id: int) -> dict[str, int]:
         )
         for m in messages:
             try:
-                _schedule_message_send(m.id)
-                enqueued += 1
+                if _schedule_message_send(m.id):
+                    enqueued += 1
             except Exception as e:
                 logger.error("Ошибка постановки message_id=%s: %s", m.id, e)
                 m.status = MessageStatus.FAILED

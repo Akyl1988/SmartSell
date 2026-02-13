@@ -15,7 +15,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
 from app.core.db import get_async_db
-from app.core.dependencies import require_store_admin
+from app.core.dependencies import (
+    get_current_verified_user,
+    require_active_subscription,
+    require_company_access,
+    require_store_admin,
+)
 from app.core.idempotency import IdempotencyEnforcer
 from app.core.security import get_current_user, require_manager, resolve_tenant_company_id
 from app.integrations.errors import ProviderNotConfiguredError
@@ -27,8 +32,8 @@ from app.storage.wallet_sql import WalletStorageSQL
 logger = logging.getLogger(__name__)
 
 
-async def _auth_user(current_user: User = Depends(get_current_user)) -> User:
-    await require_store_admin(current_user)
+async def _require_company_context(current_user: User = Depends(get_current_verified_user)) -> User:
+    resolve_tenant_company_id(current_user, not_found_detail="Company not set")
     return current_user
 
 
@@ -196,6 +201,22 @@ async def _ensure_payment_visible(
 
 # --------- Router ----------
 router = APIRouter(prefix="/api/v1/payments", tags=["payments"])
+admin_router = APIRouter(
+    dependencies=[
+        Depends(require_company_access),
+        Depends(_require_company_context),
+        Depends(require_store_admin),
+        Depends(require_active_subscription),
+    ]
+)
+manager_router = APIRouter(
+    dependencies=[
+        Depends(require_company_access),
+        Depends(_require_company_context),
+        Depends(require_manager),
+        Depends(require_active_subscription),
+    ]
+)
 
 
 @router.get("/health")
@@ -303,14 +324,14 @@ async def tiptop_webhook(
     return {"ok": True}
 
 
-@router.post(
+@manager_router.post(
     "/",
     response_model=Payment,
     status_code=status.HTTP_201_CREATED,
 )
 async def create_and_capture(
     req: CreatePaymentRequest,
-    current_user: User = Depends(require_manager),
+    current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_async_db),
 ):
     try:
@@ -337,14 +358,14 @@ async def create_and_capture(
         raise HTTPException(status_code=_pick_http_status(e), detail=str(e))
 
 
-@router.post(
+@manager_router.post(
     "/{payment_id}/refund",
     response_model=Payment,
 )
 async def refund(
     payment_id: int = Path(..., ge=1),
     req: RefundRequest = Body(...),
-    current_user: User = Depends(require_manager),
+    current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_async_db),
 ):
     try:
@@ -371,14 +392,14 @@ async def refund(
         raise HTTPException(status_code=_pick_http_status(e), detail=str(e))
 
 
-@router.post(
+@manager_router.post(
     "/{payment_id}/cancel",
     response_model=Payment,
 )
 async def cancel(
     payment_id: int = Path(..., ge=1),
     req: CancelRequest = Body(None),
-    current_user: User = Depends(require_manager),
+    current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_async_db),
 ):
     try:
@@ -404,10 +425,10 @@ async def cancel(
         raise HTTPException(status_code=_pick_http_status(e), detail=str(e))
 
 
-@router.get("/{payment_id}", response_model=Payment)
+@admin_router.get("/{payment_id}", response_model=Payment)
 async def get_payment(
     payment_id: int = Path(..., ge=1),
-    current_user: User = Depends(_auth_user),
+    current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_async_db),
 ):
     storage = await _get_payment_storage(db)
@@ -421,12 +442,12 @@ async def get_payment(
     return Payment(**p)
 
 
-@router.get("/", response_model=PaymentList)
+@admin_router.get("/", response_model=PaymentList)
 async def list_payments(
     user_id: int | None = Query(None, ge=1),
     page: int = Query(1, ge=1),
     size: int = Query(20, ge=1, le=200),
-    current_user: User = Depends(_auth_user),
+    current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_async_db),
 ):
     resolved_company_id = resolve_tenant_company_id(current_user, not_found_detail="Company not set")
@@ -453,14 +474,14 @@ async def list_payments(
     return PaymentList(items=items, meta=meta)
 
 
-@router.post(
+@manager_router.post(
     "/intents",
     response_model=PaymentIntentOut,
     status_code=status.HTTP_201_CREATED,
 )
 async def create_payment_intent(
     req: PaymentIntentCreate,
-    current_user: User = Depends(require_manager),
+    current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_async_db),
 ):
     try:
@@ -497,13 +518,13 @@ async def create_payment_intent(
         raise HTTPException(status_code=_pick_http_status(e), detail=str(e))
 
 
-@router.get(
+@admin_router.get(
     "/intents/{intent_id}",
     response_model=PaymentIntentOut,
 )
 async def get_payment_intent(
     intent_id: str = Path(..., min_length=1),
-    current_user: User = Depends(_auth_user),
+    current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_async_db),
 ):
     resolved_company_id = resolve_tenant_company_id(current_user, not_found_detail="Company not set")
@@ -523,3 +544,7 @@ async def get_payment_intent(
         metadata=row.get("metadata", {}),
         created_at=row["created_at"],
     )
+
+
+router.include_router(admin_router)
+router.include_router(manager_router)

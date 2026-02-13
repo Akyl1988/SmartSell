@@ -3,11 +3,12 @@ from __future__ import annotations
 from datetime import UTC, datetime
 
 import pytest
+from sqlalchemy import delete
 from sqlalchemy.orm import sessionmaker
 
 import tests.conftest as base_conftest
 from app.core.security import create_access_token, get_password_hash
-from app.models.campaign import Campaign, CampaignStatus
+from app.models.campaign import Campaign, CampaignProcessingStatus, CampaignStatus, ChannelType
 from app.models.company import Company
 from app.models.user import User
 
@@ -62,6 +63,14 @@ def _seed_due_campaign(*, company_id: int, title_suffix: str) -> int:
             company_id=company.id,
         )
         s.add(campaign)
+        s.flush()
+
+        campaign.add_message(
+            recipient="user@example.com",
+            content="Hello!",
+            channel=ChannelType.EMAIL,
+        )
+
         s.commit()
         s.refresh(campaign)
         return campaign.id
@@ -88,13 +97,14 @@ async def test_campaign_run_ok(async_client, test_db):
     )
     assert resp.status_code == 200, resp.text
     payload = resp.json()
+    assert payload.get("queued") == 1
     assert payload.get("processed") == 1
 
     SessionLocal = sessionmaker(bind=base_conftest.sync_engine, expire_on_commit=False, autoflush=False)
     with SessionLocal() as s:
         campaign = s.query(Campaign).filter(Campaign.id == campaign_id).first()
         assert campaign is not None
-        assert campaign.status == CampaignStatus.SUCCESS
+        assert campaign.processing_status == CampaignProcessingStatus.DONE
 
 
 async def test_campaign_run_claims_once(async_client, test_db):
@@ -108,6 +118,7 @@ async def test_campaign_run_claims_once(async_client, test_db):
     )
     assert first.status_code == 200, first.text
     payload_first = first.json()
+    assert payload_first.get("queued") == 1
     assert payload_first.get("processed") == 1
 
     second = await async_client.post(
@@ -116,6 +127,7 @@ async def test_campaign_run_claims_once(async_client, test_db):
     )
     assert second.status_code == 200, second.text
     payload_second = second.json()
+    assert payload_second.get("queued") == 0
     assert payload_second.get("processed") == 0
 
 
@@ -131,13 +143,14 @@ async def test_campaign_run_company_id_from_body(async_client, test_db):
     )
     assert resp.status_code == 200, resp.text
     payload = resp.json()
+    assert payload.get("queued") == 1
     assert payload.get("processed") == 1
 
     SessionLocal = sessionmaker(bind=base_conftest.sync_engine, expire_on_commit=False, autoflush=False)
     with SessionLocal() as s:
         campaign = s.query(Campaign).filter(Campaign.id == campaign_id).first()
         assert campaign is not None
-        assert campaign.status == CampaignStatus.SUCCESS
+        assert campaign.processing_status == CampaignProcessingStatus.DONE
 
 
 async def test_campaign_run_missing_company_id_returns_400(async_client, test_db):
@@ -172,10 +185,35 @@ async def test_campaign_seed_and_run(async_client, test_db):
     )
     assert run.status_code == 200, run.text
     run_payload = run.json()
+    assert run_payload.get("queued") == 1
     assert run_payload.get("processed") == 1
 
     SessionLocal = sessionmaker(bind=base_conftest.sync_engine, expire_on_commit=False, autoflush=False)
     with SessionLocal() as s:
         campaign = s.query(Campaign).filter(Campaign.id == campaign_id).first()
         assert campaign is not None
-        assert campaign.status == CampaignStatus.SUCCESS
+        assert campaign.processing_status == CampaignProcessingStatus.DONE
+
+
+async def test_campaign_seed_without_company_id(async_client, async_db_session, test_db):
+    _ = test_db
+    headers = _platform_admin_headers_without_company()
+
+    await async_db_session.execute(delete(Campaign))
+    await async_db_session.execute(delete(Company))
+    await async_db_session.commit()
+
+    seed = await async_client.post(
+        "/api/v1/admin/dev/seed/campaign_due",
+        headers=headers,
+    )
+    assert seed.status_code == 200, seed.text
+    seed_payload = seed.json()
+    campaign_id = seed_payload.get("campaign_id")
+    assert campaign_id
+
+    SessionLocal = sessionmaker(bind=base_conftest.sync_engine, expire_on_commit=False, autoflush=False)
+    with SessionLocal() as s:
+        campaign = s.query(Campaign).filter(Campaign.id == campaign_id).first()
+        assert campaign is not None
+        assert campaign.company_id is not None

@@ -33,7 +33,7 @@ class MessageResponse(BaseModel):
     recipient: str
     content: str
     status: MessageStatus
-    created_at: datetime
+    created_at: datetime | None = None
     sent_at: datetime | None = None
     error_message: str | None = None
 
@@ -97,5 +97,24 @@ class CampaignResponse(BaseModel):
     attempts: int
     created_at: datetime
     updated_at: datetime
+    scheduled_at: datetime | None = None
+    messages: list[MessageResponse] = Field(default_factory=list)
+
+
+class AdminCampaignResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    title: str
+    description: str | None = None
+    status: CampaignStatus
+    processing_status: CampaignProcessingStatus
+    queued_at: datetime | None = None
+    started_at: datetime | None = None
+    finished_at: datetime | None = None
+    last_error: str | None = None
+    attempts: int
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
     scheduled_at: datetime | None = None
     messages: list[MessageResponse] = Field(default_factory=list)

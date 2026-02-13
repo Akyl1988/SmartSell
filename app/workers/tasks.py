@@ -15,7 +15,7 @@ from app.core.logging import get_logger
 from app.core.subscriptions.plan_catalog import get_plan_display_name, normalize_plan_id
 from app.models import AuditLog, Company, OtpAttempt, Product, ProductStock, User
 from app.services import EmailService, KaspiService
-from app.services.campaign_runner import process_scheduled_campaigns
+from app.services.campaign_runner import enqueue_due_campaigns
 from app.services.subscriptions import renew_if_due
 from app.utils.idempotency import cleanup_idempotency_records
 from app.worker.campaign_processing import process_campaign_queue_once
@@ -194,12 +194,13 @@ class TaskManager:
                 logger.error(f"Stock update task error: {e}")
 
     async def _process_scheduled_campaigns_task(self):
-        """Process scheduled marketing campaigns"""
+        """Enqueue due marketing campaigns"""
 
         while self.running:
             try:
                 await asyncio.sleep(60)  # Run every minute
-                await process_scheduled_campaigns()
+                async with async_session_maker() as db:
+                    await enqueue_due_campaigns(db, now=datetime.now(UTC))
 
             except Exception as e:
                 logger.error(f"Campaigns task error: {e}")

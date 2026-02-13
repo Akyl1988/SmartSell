@@ -107,7 +107,19 @@ def _build_request(
     return url, params, json_body, data
 
 
-async def test_admin_routes_platform_only_contract(async_client, company_a_admin_headers):
+def _assert_forbidden(resp) -> None:
+    assert resp.status_code == 403, resp.text
+    payload = resp.json()
+    assert payload.get("code") == "ADMIN_REQUIRED"
+    assert payload.get("request_id")
+
+
+async def test_admin_routes_platform_only_contract(
+    async_client,
+    auth_headers,
+    company_a_admin_headers,
+    company_a_employee_headers,
+):
     response = await async_client.get("/openapi.json")
     assert response.status_code == 200
     payload = response.json()
@@ -126,7 +138,7 @@ async def test_admin_routes_platform_only_contract(async_client, company_a_admin
             if method not in {"get", "post", "put", "patch", "delete"}:
                 continue
             url, params, json_body, data = _build_request(path, operation, components)
-            resp = await async_client.request(
+            resp_store_admin = await async_client.request(
                 method.upper(),
                 url,
                 headers=company_a_admin_headers,
@@ -134,7 +146,29 @@ async def test_admin_routes_platform_only_contract(async_client, company_a_admin
                 json=json_body,
                 data=data,
             )
-            assert resp.status_code == 403, f"{method.upper()} {url} -> {resp.status_code}: {resp.text}"
+            _assert_forbidden(resp_store_admin)
+
+            resp_employee = await async_client.request(
+                method.upper(),
+                url,
+                headers=company_a_employee_headers,
+                params=params or None,
+                json=json_body,
+                data=data,
+            )
+            _assert_forbidden(resp_employee)
+
+            resp_platform = await async_client.request(
+                method.upper(),
+                url,
+                headers=auth_headers,
+                params=params or None,
+                json=json_body,
+                data=data,
+            )
+            assert (
+                resp_platform.status_code != 403
+            ), f"{method.upper()} {url} -> {resp_platform.status_code}: {resp_platform.text}"
 
             if operation.get("security") is None and not payload.get("security"):
                 missing_security.append((method, path))

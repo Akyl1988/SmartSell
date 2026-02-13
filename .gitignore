@@ -398,3 +398,7 @@ openapi.json
 # allow python probe module for CI tests
 !scripts/kaspi_httpx_probe.py
 
+
+# allow tracked utility scripts
+!scripts/openapi_report.py
+

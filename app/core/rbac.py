@@ -5,7 +5,7 @@ from enum import Enum
 from typing import Any
 
 from app.core.exceptions import AuthorizationError
-from app.core.security import resolve_tenant_company_id
+from app.core.security import is_superuser, resolve_tenant_company_id
 
 
 class Role(str, Enum):
@@ -37,14 +37,15 @@ STORE_ROLES = {Role.STORE_ADMIN.value, Role.STORE_MANAGER.value, Role.STORE_EMPL
 def is_platform_admin(user: Any) -> bool:
     if user is None:
         return False
-    if getattr(user, "is_superuser", False):
+    if has_role(user, Role.PLATFORM_ADMIN.value):
         return True
-    return has_role(user, Role.PLATFORM_ADMIN.value)
+    return is_superuser(user)
 
 
-def is_store_admin(user: Any) -> bool:
+def is_store_admin(user: Any, company_id: int | None = None) -> bool:
     if user is None:
         return False
+    _ = company_id
     is_admin = getattr(user, "is_admin", None)
     if callable(is_admin):
         if normalize_role(getattr(user, "role", "")) == Role.STORE_ADMIN.value:

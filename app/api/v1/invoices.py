@@ -13,7 +13,12 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.db import get_async_db
-from app.core.dependencies import require_active_subscription, require_store_admin
+from app.core.dependencies import (
+    get_current_verified_user,
+    require_active_subscription,
+    require_company_access,
+    require_store_admin_company,
+)
 from app.core.exceptions import ConflictError
 from app.core.security import decode_and_validate, is_token_revoked, resolve_tenant_company_id
 from app.models.billing import Invoice, WalletBalance, WalletTransaction
@@ -21,10 +26,22 @@ from app.models.company import Company
 from app.models.user import User
 
 logger = logging.getLogger(__name__)
+
+
+async def _require_company_context(current_user: User = Depends(get_current_verified_user)) -> User:
+    resolve_tenant_company_id(current_user, not_found_detail="Company not set")
+    return current_user
+
+
 router = APIRouter(
     prefix="/api/v1/invoices",
     tags=["invoices"],
-    dependencies=[Depends(require_active_subscription)],
+    dependencies=[
+        Depends(require_company_access),
+        Depends(_require_company_context),
+        Depends(require_store_admin_company),
+        Depends(require_active_subscription),
+    ],
 )
 http_bearer = HTTPBearer(auto_error=False)
 
@@ -117,7 +134,6 @@ async def _auth_user(
     user = await db.get(User, user_id)
     if not user:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Not authenticated")
-    await require_store_admin(user)
     return user
 
 
