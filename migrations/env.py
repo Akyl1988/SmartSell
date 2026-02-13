@@ -612,6 +612,7 @@ def _configure_context(connection: Connection | None = None) -> None:
         render_as_batch=render_as_batch,
         literal_binds=True if context.is_offline_mode() else False,
         dialect_opts={"paramstyle": "named"},
+        transaction_per_migration=True,
         # Фиксация таблицы версий
         version_table=ALEMBIC_VERSION_TABLE,
         version_table_schema=version_table_schema,
@@ -689,75 +690,95 @@ def run_migrations_online() -> None:
     connectable = create_engine(url, future=True)
 
     try:
-        # Используем begin(), чтобы соединение само закоммитилось при выходе
-        with connectable.begin() as connection:
-            # SQLite: включаем foreign_keys (на всякий случай)
+        if hasattr(connectable, "connect"):
+            connection = connectable.connect()
+            close_connection = True
+        else:
+            connection = connectable
+            close_connection = False
+        try:
+            # Подготовка соединения в короткой транзакции, чтобы не держать долгий snapshot
             try:
-                if _is_sqlite_url(url):
-                    connection.execute(text("PRAGMA foreign_keys=ON"))
-            except Exception:
-                pass
-
-            # Диагностика подключения (без фатала при ошибке)
-            try:
-                if _is_postgres_url(url):
-                    info = connection.execute(
-                        text("select current_database(), current_user, current_schema()")
-                    ).fetchone()
-                    sp = connection.execute(text("show search_path")).scalar_one()
-                    print(f"[alembic] DB={info[0]} USER={info[1]} SCHEMA={info[2]} SEARCH_PATH={sp}")
-                elif _is_sqlite_url(url):
-                    dbfile = url.replace("sqlite:///", "")
-                    print(f"[alembic] SQLite DB file: {dbfile}")
-            except Exception as e:
-                print(f"[alembic] warn: cannot fetch connection info: {e}")
-
-            # Критично: зафиксировать search_path в сессии на public,"$user"
-            _session_set_search_path(connection, DEFAULT_SCHEMA)
-
-            if _is_postgres_url(url):
-                _ensure_alembic_version_text(connection)
-
-            # Базовая конфигурация контекста
-            version_table_schema = ALEMBIC_VERSION_TABLE_SCHEMA
-            if version_table_schema is None and _is_postgres_url(url):
-                version_table_schema = DEFAULT_SCHEMA or "public"
-
-            _configure_context(connection=connection)
-
-            # Все миграции — в одной транзакции (PostgreSQL: транзакционный DDL)
-            with context.begin_transaction():
-                # Дополнительно: убеждаемся, что таблица версий действительно в 'public'
+                trans = None
                 try:
+                    begin = getattr(connection, "begin", None)
+                    if callable(begin):
+                        trans = begin()
+
+                    # SQLite: включаем foreign_keys (на всякий случай)
+                    try:
+                        if _is_sqlite_url(url):
+                            connection.execute(text("PRAGMA foreign_keys=ON"))
+                    except Exception:
+                        pass
+
+                    # Диагностика подключения (без фатала при ошибке)
+                    try:
+                        if _is_postgres_url(url):
+                            info = connection.execute(
+                                text("select current_database(), current_user, current_schema()")
+                            ).fetchone()
+                            sp = connection.execute(text("show search_path")).scalar_one()
+                            print(
+                                f"[alembic] DB={info[0]} USER={info[1]} SCHEMA={info[2]} SEARCH_PATH={sp}"
+                            )
+                        elif _is_sqlite_url(url):
+                            dbfile = url.replace("sqlite:///", "")
+                            print(f"[alembic] SQLite DB file: {dbfile}")
+                    except Exception as e:
+                        print(f"[alembic] warn: cannot fetch connection info: {e}")
+
+                    # Критично: зафиксировать search_path в сессии на public,"$user"
+                    _session_set_search_path(connection, DEFAULT_SCHEMA)
+
+                    if _is_postgres_url(url):
+                        _ensure_alembic_version_text(connection)
+
+                    # Базовая конфигурация контекста
+                    version_table_schema = ALEMBIC_VERSION_TABLE_SCHEMA
+                    if version_table_schema is None and _is_postgres_url(url):
+                        version_table_schema = DEFAULT_SCHEMA or "public"
+
                     if _is_postgres_url(url):
                         connection.execute(text(f'CREATE SCHEMA IF NOT EXISTS "{DEFAULT_SCHEMA}";'))
-                        # Принудительно привязываем таблицу версий к нужной схеме, если её вдруг создали не там
                         connection.execute(
                             text(
                                 f"""
-                            DO $$
-                            BEGIN
-                              IF NOT EXISTS (
-                                SELECT 1
-                                  FROM information_schema.tables
-                                 WHERE table_schema = '{DEFAULT_SCHEMA}'
-                                   AND table_name = '{ALEMBIC_VERSION_TABLE}'
-                              ) THEN
-                                -- если версия где-то ещё существует, трогать не будем
-                                -- Alembic сам создаст в корректной схеме при первой миграции
-                                NULL;
-                              END IF;
-                            END$$;
-                            """
+                                DO $$
+                                BEGIN
+                                    IF NOT EXISTS (
+                                        SELECT 1
+                                          FROM information_schema.tables
+                                         WHERE table_schema = '{DEFAULT_SCHEMA}'
+                                           AND table_name = '{ALEMBIC_VERSION_TABLE}'
+                                    ) THEN
+                                        NULL;
+                                    END IF;
+                                END$$;
+                                """
                             )
                         )
-                except Exception as e:
-                    _debug(f"Проверка/создание схемы или version table пропущены: {e!r}")
+                        _ensure_version_table_size(connection, version_table_schema)
 
-                # Гарантируем, что колонка version_num достаточно длинная
-                _ensure_version_table_size(connection, version_table_schema)
+                    if trans is not None and hasattr(trans, "commit"):
+                        trans.commit()
+                except Exception:
+                    if trans is not None and hasattr(trans, "rollback"):
+                        trans.rollback()
+                    raise
+            except Exception as e:
+                _debug(f"Проверка/создание схемы или version table пропущены: {e!r}")
 
+            _configure_context(connection=connection)
+
+            with context.begin_transaction():
                 context.run_migrations()
+        finally:
+            if close_connection:
+                try:
+                    connection.close()
+                except Exception:
+                    pass
     finally:
         connectable.dispose()
 
