@@ -8,7 +8,7 @@ from sqlalchemy.orm import sessionmaker
 
 import tests.conftest as base_conftest
 from app.core.security import create_access_token, get_password_hash
-from app.models.campaign import Campaign, CampaignProcessingStatus, CampaignStatus
+from app.models.campaign import Campaign, CampaignProcessingStatus, CampaignStatus, ChannelType
 from app.models.company import Company
 from app.models.user import User
 
@@ -63,6 +63,14 @@ def _seed_due_campaign(*, company_id: int, title_suffix: str) -> int:
             company_id=company.id,
         )
         s.add(campaign)
+        s.flush()
+
+        campaign.add_message(
+            recipient="user@example.com",
+            content="Hello!",
+            channel=ChannelType.EMAIL,
+        )
+
         s.commit()
         s.refresh(campaign)
         return campaign.id

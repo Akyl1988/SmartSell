@@ -77,7 +77,7 @@ async def test_enqueue_due_campaigns_tenant_scoped(async_db_session):
 
 
 def test_scheduler_worker_calls_runner(monkeypatch):
-    called = {"enqueue": False, "process": False}
+    called = {"enqueue": False, "process": False, "schedule": False, "scheduled_ids": []}
 
     def _fake_enqueue(*_args, **_kwargs):
         called["enqueue"] = True
@@ -85,16 +85,24 @@ def test_scheduler_worker_calls_runner(monkeypatch):
 
     def _fake_process(*_args, **_kwargs):
         called["process"] = True
-        return []
+        return [{"campaign_id": 10, "status": CampaignProcessingStatus.DONE.value}]
+
+    def _fake_schedule(campaign_ids):
+        called["schedule"] = True
+        called["scheduled_ids"] = list(campaign_ids)
+        return 1
 
     monkeypatch.setattr("app.worker.scheduler_worker.enqueue_due_campaigns_sync", _fake_enqueue)
     monkeypatch.setattr("app.worker.campaign_processing.process_campaign_queue_once_sync", _fake_process)
+    monkeypatch.setattr("app.worker.scheduler_worker._schedule_pending_messages_for_campaigns", _fake_schedule)
 
     from app.worker import scheduler_worker
 
     scheduler_worker.process_scheduled_campaigns()
     assert called["enqueue"] is True
     assert called["process"] is True
+    assert called["schedule"] is True
+    assert called["scheduled_ids"] == [10]
 
 
 async def test_enqueue_then_process_campaign(async_db_session, monkeypatch):
