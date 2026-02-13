@@ -10,14 +10,19 @@ from datetime import UTC, datetime
 from enum import Enum
 from typing import Any, Literal
 
-from fastapi import APIRouter, Body, Depends, HTTPException, Path, Query, status
+from fastapi import APIRouter, Body, Depends, HTTPException, Path, Query, Request, status
 from pydantic import BaseModel, Field, ValidationError, field_validator
+from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.db import get_async_db
 from app.core.dependencies import require_active_subscription, require_company_access, require_store_admin_company
-from app.core.exceptions import ConflictError
+from app.core.exceptions import ConflictError, NotFoundError, _ensure_request_id
 from app.core.rbac import is_platform_admin, is_store_admin, is_store_manager
 from app.core.security import get_current_user
+from app.models.campaign import Campaign as DbCampaign
+from app.models.campaign import CampaignProcessingStatus as DbCampaignProcessingStatus
 from app.models.user import User
+from app.services.campaign_runner import queue_campaign_run
 
 __all__ = ["router"]
 
@@ -344,9 +349,8 @@ def ensure_owner_or_admin(camp_owner: str | None, user: User) -> None:
         return
     if is_store_admin(user) or is_store_manager(user):
         return
-    if (getattr(user, "role", None) or "").lower() != "admin":
-        if (camp_owner or "").lower() != (getattr(user, "username", "") or "").lower():
-            raise HTTPException(status_code=403, detail="only owner or admin")
+    if (camp_owner or "").lower() != (getattr(user, "username", "") or "").lower():
+        raise HTTPException(status_code=403, detail="only owner or admin")
 
 
 # ------------------------------------------------------------------------------
@@ -859,6 +863,61 @@ async def list_campaigns(
     start, end = (page - 1) * size, (page - 1) * size + size
     items = campaigns[start:end]
     return CampaignListResponse(items=items, meta=PageMeta(page=page, size=size, total=total))
+
+
+@read_router.post("/{campaign_id}/run", summary="Queue a campaign run")
+async def queue_campaign_run_store(
+    request: Request,
+    campaign_id: int,
+    user: User = Depends(_auth_user),
+    db: AsyncSession = Depends(get_async_db),
+) -> dict[str, Any]:
+    if not (is_platform_admin(user) or is_store_admin(user) or is_store_manager(user)):
+        raise HTTPException(status_code=403, detail="forbidden")
+
+    campaign = await db.get(DbCampaign, campaign_id)
+    if not campaign:
+        raise NotFoundError("campaign_not_found", code="campaign_not_found", http_status=404)
+
+    if not is_platform_admin(user):
+        user_company_id = getattr(user, "company_id", None)
+        if user_company_id is None or campaign.company_id != user_company_id:
+            raise NotFoundError("campaign_not_found", code="campaign_not_found", http_status=404)
+
+    if campaign.processing_status in (
+        DbCampaignProcessingStatus.QUEUED,
+        DbCampaignProcessingStatus.PROCESSING,
+    ):
+        return {
+            "campaign_id": campaign.id,
+            "status": campaign.processing_status.value,
+            "queued_at": campaign.queued_at.isoformat() if campaign.queued_at else None,
+            "started_at": campaign.started_at.isoformat() if campaign.started_at else None,
+            "finished_at": campaign.finished_at.isoformat() if campaign.finished_at else None,
+            "last_error": campaign.last_error,
+            "attempts": campaign.attempts,
+            "request_id": _ensure_request_id(request),
+        }
+
+    request_id = _ensure_request_id(request)
+    campaign = await queue_campaign_run(
+        db,
+        campaign,
+        requested_by_user_id=getattr(user, "id", None),
+        request_id=request_id,
+        now=datetime.now(UTC),
+    )
+
+    return {
+        "campaign_id": campaign.id,
+        "status": campaign.processing_status.value,
+        "queued_at": campaign.queued_at.isoformat() if campaign.queued_at else None,
+        "started_at": campaign.started_at.isoformat() if campaign.started_at else None,
+        "finished_at": campaign.finished_at.isoformat() if campaign.finished_at else None,
+        "last_error": campaign.last_error,
+        "attempts": campaign.attempts,
+        "request_id": request_id,
+    }
 
 
 # ---- Diagnostics / Search / Export / Import / Drafts (статические пути) ------
