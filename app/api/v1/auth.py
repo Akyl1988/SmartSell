@@ -54,6 +54,7 @@ from app.core.exceptions import (
     SmartSellValidationError,
 )
 from app.core.logging import audit_logger, get_logger
+from app.core.rbac import is_superuser
 from app.core.security import (
     create_access_token,
     create_refresh_token,
@@ -1488,7 +1489,7 @@ async def get_me(
         "role": getattr(current_user, "role", None),
         "is_active": getattr(current_user, "is_active", True),
         "is_verified": getattr(current_user, "is_verified", False),
-        "is_superuser": getattr(current_user, "is_superuser", False),
+        "is_superuser": is_superuser(current_user),
         "last_login_at": getattr(current_user, "last_login_at", None),
         "created_at": getattr(current_user, "created_at", datetime.now(UTC)),
         "updated_at": getattr(current_user, "updated_at", datetime.now(UTC)),

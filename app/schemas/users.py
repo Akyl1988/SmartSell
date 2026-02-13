@@ -9,7 +9,15 @@ from pydantic import Field, field_validator
 
 from app.schemas.base import BaseSchema
 
-_ALLOWED_ROLES = {"admin", "employee", "manager", "storekeeper", "analyst", "platform_admin"}
+_ALLOWED_ROLES = {
+    "admin",
+    "employee",
+    "manager",
+    "storekeeper",
+    "analyst",
+    "platform_admin",
+    "platform_manager",
+}
 
 
 class UserPublicOut(BaseSchema):
@@ -32,7 +40,15 @@ class UserUpdate(BaseSchema):
 
 
 class UserRoleUpdate(BaseSchema):
-    role: Literal["admin", "employee", "manager", "storekeeper", "analyst", "platform_admin"]
+    role: Literal[
+        "admin",
+        "employee",
+        "manager",
+        "storekeeper",
+        "analyst",
+        "platform_admin",
+        "platform_manager",
+    ]
 
     @field_validator("role")
     @classmethod

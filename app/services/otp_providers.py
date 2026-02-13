@@ -10,6 +10,7 @@ from fastapi import HTTPException, status
 from app.core.config import settings
 from app.core.logging import audit_logger, get_logger
 from app.core.provider_registry import ProviderRegistry
+from app.core.rbac import is_platform_admin, is_store_admin
 from app.integrations.errors import ProviderNotConfiguredError
 from app.integrations.ports.otp import OtpProvider
 from app.integrations.providers.noop.otp import NoOpOtpProvider
@@ -177,8 +178,7 @@ def require_otp_provider_or_admin_bypass(
 
     user = current_user
     if user is not None:
-        role = (getattr(user, "role", "") or "").lower()
-        is_admin = bool(getattr(user, "is_superuser", False) or role == "admin")
+        is_admin = bool(is_platform_admin(user) or is_store_admin(user))
         is_owner = bool(owner_id and getattr(user, "id", None) == owner_id)
         if is_admin or is_owner:
             audit_logger.log_system_event(
