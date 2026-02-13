@@ -491,25 +491,35 @@ class User(
 
     # ---------------- Role Checks / RBAC ----------------
     def is_admin(self) -> bool:
-        return self.role == "admin" or self.is_superuser
+        from app.core.rbac import Role, has_role
+
+        return has_role(self, Role.STORE_ADMIN.value)
 
     def is_manager(self) -> bool:
-        return self.role == "manager"
+        from app.core.rbac import Role, has_role
+
+        return has_role(self, Role.STORE_MANAGER.value)
 
     def is_storekeeper(self) -> bool:
-        return self.role == "storekeeper"
+        from app.core.rbac import has_role
+
+        return has_role(self, "storekeeper")
 
     def is_analyst(self) -> bool:
-        return self.role == "analyst"
+        from app.core.rbac import has_role
+
+        return has_role(self, "analyst")
 
     def can_manage_user(self, other: User) -> bool:
         """
         Админ может всех; менеджер — только в своей компании и не админов; остальные — никто.
         """
-        if self.is_superuser or self.is_admin():
+        from app.core.rbac import is_superuser
+
+        if is_superuser(self) or self.is_admin():
             return True
         if self.is_manager() and (self.company_id is not None) and (self.company_id == other.company_id):
-            return not (other.is_admin() or other.is_superuser)
+            return not (other.is_admin() or is_superuser(other))
         return False
 
     # ---------------- Utilities / Serialization ----------------

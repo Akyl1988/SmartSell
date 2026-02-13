@@ -15,7 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 # --- проектные зависимости (пути проверьте по вашему проекту) ---
 from app.core.db import get_async_db
-from app.core.rbac import is_platform_admin, is_store_admin, is_store_manager, normalize_role
+from app.core.rbac import has_any_role, is_platform_admin, is_store_admin, is_store_manager
 from app.core.security import (
     decode_and_validate,
     is_token_revoked,
@@ -151,15 +151,14 @@ def ensure_company_access(user, company: Company) -> None:
     Адаптируйте под ваш user/role/RBAC.
     """
     try:
-        role = normalize_role(getattr(user, "role", None))
         user_company_id = getattr(user, "company_id", None)
     except Exception:
-        role, user_company_id = None, None
+        user_company_id = None
 
     if is_platform_admin(user):
         return
     if user_company_id == company.id and (
-        is_store_admin(user) or is_store_manager(user) or role in {"owner", "company_admin"}
+        is_store_admin(user) or is_store_manager(user) or has_any_role(user, {"owner", "company_admin"})
     ):
         return
     raise HTTPException(status_code=404, detail="Company not found")

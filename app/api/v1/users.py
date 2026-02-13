@@ -234,13 +234,21 @@ async def change_user_role(
     if company and company.owner_id == user.id:
         raise AuthorizationError("Cannot change owner role", "OWNER_PROTECTED")
 
-    target_role = normalize_role(payload.role)
-    if target_role == Role.STORE_ADMIN.value and not is_owner:
+    normalized_target = normalize_role(payload.role)
+    if normalized_target == Role.STORE_ADMIN.value and not is_owner:
         raise AuthorizationError("Only owner can assign admin", "OWNER_REQUIRED")
-    if is_admin and not is_owner and target_role in {Role.STORE_ADMIN.value, Role.PLATFORM_ADMIN.value}:
+    if (
+        is_admin
+        and not is_owner
+        and normalized_target
+        in {
+            Role.STORE_ADMIN.value,
+            Role.PLATFORM_ADMIN.value,
+        }
+    ):
         raise AuthorizationError("Admin cannot assign this role", "FORBIDDEN")
 
-    user.role = target_role
+    user.role = normalized_target
     await db.commit()
 
     audit_logger.log_data_change(

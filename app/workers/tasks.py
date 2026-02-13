@@ -12,6 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.db import async_session_maker
 from app.core.logging import get_logger
+from app.core.rbac import Role
 from app.core.subscriptions.plan_catalog import get_plan_display_name, normalize_plan_id
 from app.models import AuditLog, Company, OtpAttempt, Product, ProductStock, User
 from app.services import EmailService, KaspiService
@@ -287,7 +288,7 @@ class TaskManager:
                         select(User).where(
                             and_(
                                 User.company_id == company_id,
-                                User.role == "admin",
+                                User.role == Role.STORE_ADMIN.value,
                                 User.is_active,
                                 User.email.isnot(None),
                             )
@@ -342,7 +343,7 @@ class TaskManager:
                         select(User).where(
                             and_(
                                 User.company_id == company.id,
-                                User.role == "admin",
+                                User.role == Role.STORE_ADMIN.value,
                                 User.is_active,
                                 User.email.isnot(None),
                             )
