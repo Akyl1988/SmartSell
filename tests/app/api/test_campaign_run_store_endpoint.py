@@ -115,6 +115,7 @@ async def test_campaign_run_store_admin_idempotent(async_client, async_db_sessio
     payload_first = first.json()
     assert payload_first.get("status") == CampaignProcessingStatus.QUEUED.value
     queued_at = payload_first.get("queued_at")
+    request_id = payload_first.get("request_id")
     assert queued_at
 
     second = await async_client.post(
@@ -125,6 +126,8 @@ async def test_campaign_run_store_admin_idempotent(async_client, async_db_sessio
     payload_second = second.json()
     assert payload_second.get("status") == CampaignProcessingStatus.QUEUED.value
     assert payload_second.get("queued_at") == queued_at
+    assert payload_second.get("request_id") == request_id
+    assert "failed_at" in payload_second
 
 
 async def test_campaign_run_store_manager_allowed(async_client, async_db_session, company_a_manager_headers):
@@ -155,6 +158,8 @@ async def test_campaign_run_platform_admin_allowed(async_client, async_db_sessio
         headers=auth_headers,
     )
     assert resp.status_code == 200, resp.text
+    payload = resp.json()
+    assert "failed_at" in payload
 
 
 async def test_campaign_run_superuser_allowed(async_client, async_db_session):
@@ -165,3 +170,21 @@ async def test_campaign_run_superuser_allowed(async_client, async_db_session):
         headers=_superuser_headers_without_company(),
     )
     assert resp.status_code == 200, resp.text
+    payload = resp.json()
+    assert "failed_at" in payload
+
+
+async def test_campaign_run_store_admin_other_company_not_found(
+    async_client,
+    async_db_session,
+    company_a_admin_headers,
+):
+    campaign = await _seed_campaign(async_db_session, company_id=2001, title_suffix="foreign")
+
+    resp = await async_client.post(
+        f"/api/v1/campaigns/{campaign.id}/run",
+        headers=company_a_admin_headers,
+    )
+    assert resp.status_code == 404, resp.text
+    payload = resp.json()
+    assert payload.get("code") == "campaign_not_found"

@@ -77,6 +77,7 @@ async def test_campaign_run_endpoint_idempotent(async_client, async_db_session, 
     payload_second = second.json()
     assert payload_second.get("status") == CampaignProcessingStatus.QUEUED.value
     assert payload_second.get("queued_at") == queued_at
+    assert "failed_at" in payload_second
 
 
 async def test_campaign_worker_transitions_to_done(async_db_session):
