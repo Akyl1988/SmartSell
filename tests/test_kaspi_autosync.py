@@ -12,6 +12,7 @@ tests/test_kaspi_autosync.py — Тесты для автоматической 
 from __future__ import annotations
 
 import asyncio
+import time
 from datetime import UTC, datetime, timedelta, timezone
 from decimal import Decimal
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -20,6 +21,7 @@ import pytest
 import sqlalchemy as sa
 from sqlalchemy.ext.asyncio import AsyncSession
 
+import tests.conftest as base_conftest
 from app.models import Company
 from app.models.billing import Subscription
 from app.services.kaspi_service import KaspiSyncAlreadyRunning
@@ -54,6 +56,36 @@ async def _ensure_subscription_plan(async_db_session: AsyncSession, company_id: 
         sub.plan = plan
         sub.status = "active"
     await async_db_session.commit()
+
+
+def _unique_company_id() -> int:
+    return int(time.time_ns() % 1_000_000_000)
+
+
+async def _seed_company(async_db_session: AsyncSession, *, company_id: int | None = None) -> Company:
+    cid = company_id or _unique_company_id()
+    company = Company(
+        id=cid,
+        name=f"Test Kaspi Company {cid}",
+        email=f"test{cid}@example.com",
+        is_active=True,
+        deleted_at=None,
+        kaspi_store_id=f"store_{cid}",
+    )
+    async_db_session.add(company)
+    await async_db_session.commit()
+    await async_db_session.refresh(company)
+    return company
+
+
+def _make_admin_headers(company_id: int) -> dict[str, str]:
+    phone = f"+7{company_id % 10**10:010d}"
+    return base_conftest._make_company_headers(
+        company_id=company_id,
+        role="admin",
+        phone=phone,
+        expires_delta=timedelta(days=7),
+    )
 
 
 @pytest.mark.asyncio
@@ -223,35 +255,31 @@ async def test_failed_companies_tracked_in_summary(async_db_session: AsyncSessio
 
 
 @pytest.mark.asyncio
-@pytest.mark.skip(reason="DB setup conflicts with company_id=1, needs fixture refactoring")
-async def test_manual_trigger_via_endpoint(async_client, company_a_admin_headers, async_db_session: AsyncSession):
+async def test_manual_trigger_via_endpoint(async_client, async_db_session: AsyncSession, monkeypatch):
     """
     Тест: ручной запуск авто-синхронизации через POST /api/v1/kaspi/autosync/trigger
     должен запустить синхронизацию и вернуть статус.
     """
-    # Создаём одну активную компанию с Kaspi (with unique name to avoid conflicts)
-    import time
-
-    company = Company(
-        name=f"Test Kaspi Company {int(time.time())}",
-        email=f"test{int(time.time())}@example.com",
-        is_active=True,
-        deleted_at=None,
-        kaspi_store_id="store_test_trigger",
-    )
-    async_db_session.add(company)
-    await async_db_session.commit()
-    await async_db_session.refresh(company)
+    company = await _seed_company(async_db_session)
+    await _ensure_subscription_plan(async_db_session, company_id=company.id, plan="pro")
+    headers = _make_admin_headers(company.id)
+    monkeypatch.setattr("app.core.config.settings.KASPI_AUTOSYNC_ENABLED", True)
 
     # Мокируем синхронизацию
-    with patch("app.worker.kaspi_autosync._sync_company") as mock_sync:
-        mock_sync.return_value = {"company_id": company.id, "status": "success"}
+    with patch("app.worker.kaspi_autosync.run_kaspi_autosync") as mock_run, patch(
+        "app.worker.kaspi_autosync.get_last_run_summary"
+    ) as mock_summary:
+        mock_run.return_value = {
+            "last_run_at": datetime.now(UTC).isoformat(),
+            "eligible_companies": 1,
+            "success": 1,
+            "locked": 0,
+            "failed": 0,
+        }
+        mock_summary.return_value = mock_run.return_value
 
         # Вызываем endpoint
-        response = await async_client.post(
-            "/api/v1/kaspi/autosync/trigger",
-            headers=company_a_admin_headers,
-        )
+        response = await async_client.post("/api/v1/kaspi/autosync/trigger", headers=headers)
 
         assert response.status_code == 200
         data = response.json()
@@ -261,16 +289,15 @@ async def test_manual_trigger_via_endpoint(async_client, company_a_admin_headers
 
 
 @pytest.mark.asyncio
-async def test_autosync_status_endpoint(async_client, company_a_admin_headers, async_db_session: AsyncSession):
+async def test_autosync_status_endpoint(async_client, async_db_session: AsyncSession):
     """
     Тест: GET /api/v1/kaspi/autosync/status должен возвращать последнюю статистику.
     """
-    await _ensure_subscription_plan(async_db_session, company_id=1001, plan="pro")
+    company = await _seed_company(async_db_session)
+    await _ensure_subscription_plan(async_db_session, company_id=company.id, plan="pro")
+    headers = _make_admin_headers(company.id)
 
-    response = await async_client.get(
-        "/api/v1/kaspi/autosync/status",
-        headers=company_a_admin_headers,
-    )
+    response = await async_client.get("/api/v1/kaspi/autosync/status", headers=headers)
 
     assert response.status_code == 200
     data = response.json()
@@ -283,18 +310,17 @@ async def test_autosync_status_endpoint(async_client, company_a_admin_headers, a
 
 
 @pytest.mark.asyncio
-async def test_autosync_status_disabled(async_client, company_a_admin_headers, async_db_session: AsyncSession):
+async def test_autosync_status_disabled(async_client, async_db_session: AsyncSession):
     """
     Тест: GET /api/v1/kaspi/autosync/status должен показывать enabled=False когда отключено.
     """
-    await _ensure_subscription_plan(async_db_session, company_id=1001, plan="pro")
+    company = await _seed_company(async_db_session)
+    await _ensure_subscription_plan(async_db_session, company_id=company.id, plan="pro")
+    headers = _make_admin_headers(company.id)
     with patch("app.core.config.settings") as mock_settings:
         mock_settings.KASPI_AUTOSYNC_ENABLED = False
 
-        response = await async_client.get(
-            "/api/v1/kaspi/autosync/status",
-            headers=company_a_admin_headers,
-        )
+        response = await async_client.get("/api/v1/kaspi/autosync/status", headers=headers)
 
         assert response.status_code == 200
         data = response.json()
@@ -307,18 +333,17 @@ async def test_autosync_status_disabled(async_client, company_a_admin_headers, a
 
 
 @pytest.mark.asyncio
-async def test_autosync_trigger_disabled(async_client, company_a_admin_headers, async_db_session: AsyncSession):
+async def test_autosync_trigger_disabled(async_client, async_db_session: AsyncSession):
     """
     Тест: POST /api/v1/kaspi/autosync/trigger должен возвращать 409 когда autosync отключен.
     """
-    await _ensure_subscription_plan(async_db_session, company_id=1001, plan="pro")
+    company = await _seed_company(async_db_session)
+    await _ensure_subscription_plan(async_db_session, company_id=company.id, plan="pro")
+    headers = _make_admin_headers(company.id)
     with patch("app.core.config.settings") as mock_settings:
         mock_settings.KASPI_AUTOSYNC_ENABLED = False
 
-        response = await async_client.post(
-            "/api/v1/kaspi/autosync/trigger",
-            headers=company_a_admin_headers,
-        )
+        response = await async_client.post("/api/v1/kaspi/autosync/trigger", headers=headers)
 
         assert response.status_code == 409
         data = response.json()
@@ -330,22 +355,20 @@ async def test_autosync_trigger_disabled(async_client, company_a_admin_headers, 
 @pytest.mark.asyncio
 async def test_autosync_status_includes_config(
     async_client,
-    company_a_admin_headers,
     async_db_session: AsyncSession,
 ):
     """
     Тест: GET /api/v1/kaspi/autosync/status должен включать configuration (interval, concurrency).
     """
-    await _ensure_subscription_plan(async_db_session, company_id=1001, plan="pro")
+    company = await _seed_company(async_db_session)
+    await _ensure_subscription_plan(async_db_session, company_id=company.id, plan="pro")
+    headers = _make_admin_headers(company.id)
     with patch("app.core.config.settings") as mock_settings:
         mock_settings.KASPI_AUTOSYNC_ENABLED = True
         mock_settings.KASPI_AUTOSYNC_INTERVAL_MINUTES = 30
         mock_settings.KASPI_AUTOSYNC_MAX_CONCURRENCY = 5
 
-        response = await async_client.get(
-            "/api/v1/kaspi/autosync/status",
-            headers=company_a_admin_headers,
-        )
+        response = await async_client.get("/api/v1/kaspi/autosync/status", headers=headers)
 
         assert response.status_code == 200
         data = response.json()
@@ -357,13 +380,14 @@ async def test_autosync_status_includes_config(
 @pytest.mark.asyncio
 async def test_autosync_status_includes_scheduler_state(
     async_client,
-    company_a_admin_headers,
     async_db_session: AsyncSession,
 ):
     """
     Тест: GET /api/v1/kaspi/autosync/status должен включать scheduler state (job_registered, scheduler_running).
     """
-    await _ensure_subscription_plan(async_db_session, company_id=1001, plan="pro")
+    company = await _seed_company(async_db_session)
+    await _ensure_subscription_plan(async_db_session, company_id=company.id, plan="pro")
+    headers = _make_admin_headers(company.id)
     import sys
 
     # Create mock scheduler
@@ -382,10 +406,7 @@ async def test_autosync_status_includes_scheduler_state(
         mock_settings.KASPI_AUTOSYNC_MAX_CONCURRENCY = 3
 
         with patch.dict(sys.modules, {"app.worker.scheduler_worker": mock_scheduler_module}):
-            response = await async_client.get(
-                "/api/v1/kaspi/autosync/status",
-                headers=company_a_admin_headers,
-            )
+            response = await async_client.get("/api/v1/kaspi/autosync/status", headers=headers)
 
             assert response.status_code == 200
             data = response.json()
@@ -398,13 +419,14 @@ async def test_autosync_status_includes_scheduler_state(
 @pytest.mark.asyncio
 async def test_autosync_status_job_not_registered(
     async_client,
-    company_a_admin_headers,
     async_db_session: AsyncSession,
 ):
     """
     Тест: GET /api/v1/kaspi/autosync/status должен показывать job_registered=False если job не найден.
     """
-    await _ensure_subscription_plan(async_db_session, company_id=1001, plan="pro")
+    company = await _seed_company(async_db_session)
+    await _ensure_subscription_plan(async_db_session, company_id=company.id, plan="pro")
+    headers = _make_admin_headers(company.id)
     import sys
 
     # Create mock scheduler with no job
@@ -422,10 +444,7 @@ async def test_autosync_status_job_not_registered(
         mock_settings.KASPI_AUTOSYNC_MAX_CONCURRENCY = 3
 
         with patch.dict(sys.modules, {"app.worker.scheduler_worker": mock_scheduler_module}):
-            response = await async_client.get(
-                "/api/v1/kaspi/autosync/status",
-                headers=company_a_admin_headers,
-            )
+            response = await async_client.get("/api/v1/kaspi/autosync/status", headers=headers)
 
             assert response.status_code == 200
             data = response.json()
