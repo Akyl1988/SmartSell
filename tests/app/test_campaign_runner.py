@@ -3,7 +3,9 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 
 import pytest
+from sqlalchemy.orm import sessionmaker
 
+import tests.conftest as base_conftest
 from app.models.campaign import Campaign, CampaignProcessingStatus, CampaignStatus, ChannelType, Message, MessageStatus
 from app.models.company import Company
 from app.services.campaign_runner import enqueue_due_campaigns
@@ -103,6 +105,83 @@ def test_scheduler_worker_calls_runner(monkeypatch):
     assert called["process"] is True
     assert called["schedule"] is True
     assert called["scheduled_ids"] == [10]
+
+
+def test_scheduler_tick_does_not_duplicate_jobs(monkeypatch, test_db):
+    _ = test_db
+    if base_conftest.sync_engine is None:
+        raise RuntimeError("sync_engine is not initialized; ensure test_db fixture runs first")
+
+    SessionLocal = sessionmaker(bind=base_conftest.sync_engine, expire_on_commit=False, autoflush=False)
+    with SessionLocal() as s:
+        company = s.query(Company).filter(Company.id == 5050).first()
+        if not company:
+            company = Company(id=5050, name="Company 5050")
+            s.add(company)
+            s.flush()
+
+        campaign = Campaign(
+            title="Camp 5050-ready",
+            description="test",
+            status=CampaignStatus.READY,
+            scheduled_at=None,
+            company_id=company.id,
+        )
+        s.add(campaign)
+        s.flush()
+
+        message = Message(
+            campaign_id=campaign.id,
+            recipient="user@example.com",
+            content="Hello",
+            status=MessageStatus.PENDING,
+            channel=ChannelType.EMAIL,
+        )
+        s.add(message)
+        s.commit()
+        s.refresh(campaign)
+        s.refresh(message)
+
+    from app.worker import scheduler_worker
+
+    class _Job:
+        def __init__(self, job_id: str):
+            self.id = job_id
+
+    class _StubScheduler:
+        def __init__(self) -> None:
+            self._jobs: dict[str, _Job] = {}
+
+        def get_job(self, job_id: str):
+            return self._jobs.get(job_id)
+
+        def add_job(self, *_args, id: str | None = None, **_kwargs):
+            job_id = id or f"job-{len(self._jobs) + 1}"
+            job = _Job(job_id)
+            self._jobs[job_id] = job
+            return job
+
+        def get_jobs(self):
+            return list(self._jobs.values())
+
+    stub_scheduler = _StubScheduler()
+    monkeypatch.setattr(scheduler_worker, "scheduler", stub_scheduler)
+
+    def _fake_enqueue(*_args, **_kwargs):
+        return {"queued": 0, "skipped": 0, "campaign_ids": []}
+
+    def _fake_process(*_args, **_kwargs):
+        return [{"campaign_id": campaign.id, "status": CampaignProcessingStatus.DONE.value}]
+
+    monkeypatch.setattr("app.worker.scheduler_worker.enqueue_due_campaigns_sync", _fake_enqueue)
+    monkeypatch.setattr("app.worker.campaign_processing.process_campaign_queue_once_sync", _fake_process)
+
+    scheduler_worker.process_scheduled_campaigns()
+    scheduler_worker.process_scheduled_campaigns()
+
+    jobs = stub_scheduler.get_jobs()
+    assert len(jobs) == 1
+    assert jobs[0].id == f"send_message_{message.id}"
 
 
 async def test_enqueue_then_process_campaign(async_db_session, monkeypatch):

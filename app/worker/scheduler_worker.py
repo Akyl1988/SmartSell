@@ -112,6 +112,8 @@ from app.worker import campaign_processing
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
 
+_ERROR_MESSAGE_LIMIT = 500
+
 
 # -------- Kaspi autosync mutual exclusion helper -------- #
 
@@ -192,6 +194,15 @@ def _load_smtp_config() -> SmtpConfig:
     )
 
 
+def _truncate_error(message: str | None, limit: int = _ERROR_MESSAGE_LIMIT) -> str | None:
+    if not message:
+        return None
+    cleaned = message.strip()
+    if not cleaned:
+        return None
+    return cleaned[:limit]
+
+
 @contextmanager
 def db_session():
     """Контекстный менеджер для сессии БД с корректным закрытием."""
@@ -239,12 +250,16 @@ def _send_via_smtp(smtp: SmtpConfig, msg: MIMEMultipart) -> None:
             server.send_message(msg)
 
 
-def _smtp_send_with_retry(send_fn: Callable[[], None], *, retries: int = 2, base_delay: float = 0.7) -> None:
+def _smtp_send_with_retry(
+    send_fn: Callable[[], str | None],
+    *,
+    retries: int = 2,
+    base_delay: float = 0.7,
+) -> str | None:
     last_err: Exception | None = None
     for attempt in range(retries + 1):
         try:
-            send_fn()
-            return
+            return send_fn()
         except (TimeoutError, smtplib.SMTPException, OSError) as e:
             last_err = e
             if attempt >= retries:
@@ -306,22 +321,28 @@ def send_message(message_id: int) -> None:
         logger.info("Отправка message_id=%s -> %s", message.id, recipient)
 
         try:
-            _smtp_send_with_retry(lambda: _send_via_smtp(smtp, msg))
+            provider_id = _smtp_send_with_retry(lambda: _send_via_smtp(smtp, msg))
             message.status = MessageStatus.SENT
             message.sent_at = _utcnow_naive()
             message.error_message = None
+            if provider_id:
+                message.provider_message_id = str(provider_id)
             logger.info("Сообщение %s успешно отправлено", message.id)
         except Exception as e:
             logger.error("Ошибка отправки message_id=%s: %s", message.id, e)
             message.status = MessageStatus.FAILED
-            message.error_message = f"{type(e).__name__}: {e}"
+            message.error_message = _truncate_error(f"{type(e).__name__}: {e}")
 
 
-def _schedule_message_send(message_id: int) -> None:
+def _schedule_message_send(message_id: int) -> bool:
     """
     Постановка задачи на немедленную отправку конкретного сообщения.
     """
     job_id = f"send_message_{message_id}"
+    get_job = getattr(scheduler, "get_job", None)
+    if callable(get_job) and get_job(job_id) is not None:
+        logger.info("Запланированная отправка уже существует message_id=%s (job_id=%s)", message_id, job_id)
+        return False
     scheduler.add_job(
         send_message,
         trigger=DateTrigger(run_date=_utcnow_aware()),
@@ -333,6 +354,7 @@ def _schedule_message_send(message_id: int) -> None:
         misfire_grace_time=60,
     )
     logger.info("Запланирована отправка message_id=%s (job_id=%s)", message_id, job_id)
+    return True
 
 
 def _schedule_pending_messages_for_campaigns(campaign_ids: list[int]) -> int:
@@ -347,8 +369,8 @@ def _schedule_pending_messages_for_campaigns(campaign_ids: list[int]) -> int:
             .all()
         )
         for (message_id,) in rows:
-            _schedule_message_send(message_id)
-            scheduled += 1
+            if _schedule_message_send(message_id):
+                scheduled += 1
     return scheduled
 
 
@@ -395,8 +417,8 @@ def enqueue_campaign(campaign_id: int) -> dict[str, int]:
         )
         for m in messages:
             try:
-                _schedule_message_send(m.id)
-                enqueued += 1
+                if _schedule_message_send(m.id):
+                    enqueued += 1
             except Exception as e:
                 logger.error("Ошибка постановки message_id=%s: %s", m.id, e)
                 m.status = MessageStatus.FAILED
