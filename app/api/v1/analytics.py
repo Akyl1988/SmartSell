@@ -16,7 +16,9 @@ from app.core.db import get_async_db
 from app.core.dependencies import (
     api_rate_limit_dep,
     ensure_idempotency,
+    get_current_verified_user,
     require_active_subscription,
+    require_company_access,
     require_store_roles,
 )
 from app.core.exceptions import bad_request, server_error
@@ -33,10 +35,25 @@ from app.schemas.analytics import (
 from app.utils.excel import export_analytics_to_excel
 from app.utils.pdf import export_analytics_to_pdf
 
+
+async def _require_company_context(current_user: User = Depends(get_current_verified_user)) -> User:
+    resolve_tenant_company_id(current_user, not_found_detail="Company not set")
+    return current_user
+
+
+async def require_analyst(user: User = Depends(require_store_roles("analyst", "admin", "manager"))) -> User:
+    return user
+
+
 router = APIRouter(
     prefix="/analytics",
     tags=["analytics"],
-    dependencies=[Depends(require_active_subscription)],
+    dependencies=[
+        Depends(require_company_access),
+        Depends(_require_company_context),
+        Depends(require_analyst),
+        Depends(require_active_subscription),
+    ],
 )
 
 
@@ -48,10 +65,6 @@ MAX_RANGE_DAYS = 366
 
 async def _auth_user(current_user: User = Depends(get_current_user)) -> User:
     return current_user
-
-
-async def require_analyst(user: User = Depends(require_store_roles("analyst", "admin", "manager"))) -> User:
-    return user
 
 
 def _resolve_company_id(current_user: User) -> int:
@@ -123,7 +136,7 @@ def _normalize_interval(interval: str | None) -> str:
     dependencies=[Depends(api_rate_limit_dep)],
 )
 async def get_dashboard_stats(
-    current_user: User = Depends(require_analyst),
+    current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_async_db),
 ):
     """Get dashboard statistics for current company."""
@@ -253,7 +266,7 @@ async def get_dashboard_stats(
 )
 async def get_sales_analytics(
     filter_params: AnalyticsFilter = Depends(),
-    current_user: User = Depends(require_analyst),
+    current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_async_db),
 ):
     """Get sales analytics data in a given interval."""
@@ -278,7 +291,7 @@ async def get_sales_analytics(
 )
 async def get_customer_analytics(
     filter_params: AnalyticsFilter = Depends(),
-    current_user: User = Depends(require_analyst),
+    current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_async_db),
 ):
     """Get customer analytics data."""
@@ -369,7 +382,7 @@ async def get_customer_analytics(
 )
 async def get_product_analytics(
     filter_params: AnalyticsFilter = Depends(),
-    current_user: User = Depends(require_analyst),
+    current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_async_db),
 ):
     """Get product analytics data."""
@@ -455,7 +468,7 @@ async def get_product_analytics(
 )
 async def export_analytics(
     export_request: ExportRequest,
-    current_user: User = Depends(require_analyst),
+    current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_async_db),
 ):
     """

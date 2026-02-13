@@ -12,9 +12,14 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.db import get_async_db
-from app.core.dependencies import require_store_admin, require_store_roles
-from app.core.exceptions import NotFoundError
-from app.core.rbac import is_store_admin, is_store_manager
+from app.core.dependencies import (
+    get_current_verified_user,
+    require_active_subscription,
+    require_company_access,
+    require_store_admin_company,
+)
+from app.core.exceptions import AuthorizationError, NotFoundError
+from app.core.rbac import is_platform_admin, is_store_admin, is_store_manager
 from app.core.security import resolve_tenant_company_id
 from app.models.user import User
 from app.storage.wallet_sql import WalletStorageSQL
@@ -28,7 +33,14 @@ logger = logging.getLogger(__name__)
 T = TypeVar("T")
 
 
-async def _auth_user(current_user: User = Depends(require_store_roles("admin", "manager"))) -> User:
+async def _auth_user(current_user: User = Depends(get_current_verified_user)) -> User:
+    return current_user
+
+
+async def _require_company_context(current_user: User = Depends(get_current_verified_user)) -> User:
+    if is_platform_admin(current_user):
+        raise AuthorizationError("Insufficient permissions", "FORBIDDEN")
+    resolve_tenant_company_id(current_user, not_found_detail="Company not set")
     return current_user
 
 
@@ -279,12 +291,27 @@ router = APIRouter(
         500: {"description": "Internal Server Error"},
     },
 )
+read_router = APIRouter(
+    dependencies=[
+        Depends(require_company_access),
+        Depends(_require_company_context),
+        Depends(require_active_subscription),
+    ],
+)
+admin_router = APIRouter(
+    dependencies=[
+        Depends(require_company_access),
+        Depends(_require_company_context),
+        Depends(require_store_admin_company),
+        Depends(require_active_subscription),
+    ],
+)
 
 
 # =============================================================================
 # HEALTH / STATS
 # =============================================================================
-@router.get("/health", response_model=HealthOut, summary="Здоровье storage-слоя")
+@read_router.get("/health", response_model=HealthOut, summary="Здоровье storage-слоя")
 async def health(db: AsyncSession = Depends(get_async_db)) -> HealthOut:
     storage = await _get_storage(db)
     caps = _storage_caps(storage)
@@ -300,7 +327,7 @@ async def health(db: AsyncSession = Depends(get_async_db)) -> HealthOut:
     return HealthOut(ok=True, engine=_BACKEND)
 
 
-@router.get("/stats", response_model=StatsOut, summary="Агрегированная статистика")
+@read_router.get("/stats", response_model=StatsOut, summary="Агрегированная статистика")
 async def stats(db: AsyncSession = Depends(get_async_db)) -> StatsOut:
     storage = await _get_storage(db)
     caps = _storage_caps(storage)
@@ -322,7 +349,7 @@ async def stats(db: AsyncSession = Depends(get_async_db)) -> StatsOut:
 # =============================================================================
 # ACCOUNTS
 # =============================================================================
-@router.post(
+@admin_router.post(
     "/accounts",
     response_model=WalletAccountOut,
     status_code=status.HTTP_201_CREATED,
@@ -331,7 +358,7 @@ async def stats(db: AsyncSession = Depends(get_async_db)) -> StatsOut:
 async def create_account(
     req: WalletAccountCreate,
     x_request_id: str | None = Header(default=None, alias="X-Request-Id"),
-    current_user: User = Depends(require_store_roles("admin", "manager")),
+    current_user: User = Depends(get_current_verified_user),
     db: AsyncSession = Depends(get_async_db),
 ) -> WalletAccountOut:
     try:
@@ -351,7 +378,7 @@ async def create_account(
         raise HTTPException(status_code=_pick_http_status(e), detail=str(e))
 
 
-@router.get(
+@read_router.get(
     "/accounts",
     response_model=WalletAccountsPage,
     summary="Список кошельков (фильтр по user_id/currency, пагинация)",
@@ -426,7 +453,7 @@ async def list_accounts(
         raise HTTPException(status_code=_pick_http_status(e), detail=str(e))
 
 
-@router.get(
+@read_router.get(
     "/accounts/by-user",
     response_model=WalletAccountOut,
     summary="Получить кошелёк по user_id и валюте",
@@ -438,7 +465,7 @@ async def get_account_by_user_currency(
     db: AsyncSession = Depends(get_async_db),
 ) -> WalletAccountOut:
     if user_id != int(getattr(current_user, "id", 0) or 0) and not _is_privileged_wallet_user(current_user):
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="forbidden")
+        raise AuthorizationError("Insufficient permissions", "FORBIDDEN")
     await _ensure_user_in_company(user_id, current_user, db)
     storage = await _get_storage(db)
     caps = _storage_caps(storage)
@@ -472,7 +499,7 @@ async def get_account_by_user_currency(
         raise HTTPException(status_code=_pick_http_status(e), detail=str(e))
 
 
-@router.get(
+@read_router.get(
     "/accounts/{account_id}",
     response_model=WalletAccountOut,
     summary="Получить кошелёк по ID",
@@ -493,7 +520,7 @@ async def get_account(
         raise HTTPException(status_code=_pick_http_status(e), detail=str(e))
 
 
-@router.get(
+@read_router.get(
     "/accounts/{account_id}/balance",
     response_model=BalanceOut,
     summary="Баланс кошелька",
@@ -526,7 +553,7 @@ async def get_balance(
 # =============================================================================
 # MONEY OPS
 # =============================================================================
-@router.post(
+@admin_router.post(
     "/accounts/{account_id}/deposit",
     response_model=WalletTransactionOut,
     summary="Пополнение счёта",
@@ -535,7 +562,7 @@ async def deposit(
     account_id: int = Path(..., ge=1),
     req: WalletDeposit = ...,
     x_request_id: str | None = Header(default=None, alias="X-Request-Id"),
-    current_user: User = Depends(require_store_roles("admin", "manager")),
+    current_user: User = Depends(get_current_verified_user),
     db: AsyncSession = Depends(get_async_db),
 ) -> WalletTransactionOut:
     try:
@@ -563,7 +590,7 @@ async def deposit(
         raise HTTPException(status_code=_pick_http_status(e), detail=str(e))
 
 
-@router.post(
+@admin_router.post(
     "/accounts/{account_id}/withdraw",
     response_model=WalletTransactionOut,
     summary="Списание со счёта",
@@ -572,7 +599,7 @@ async def withdraw(
     account_id: int = Path(..., ge=1),
     req: WalletWithdraw = ...,
     x_request_id: str | None = Header(default=None, alias="X-Request-Id"),
-    current_user: User = Depends(require_store_roles("admin", "manager")),
+    current_user: User = Depends(get_current_verified_user),
     db: AsyncSession = Depends(get_async_db),
 ) -> WalletTransactionOut:
     try:
@@ -600,7 +627,7 @@ async def withdraw(
         raise HTTPException(status_code=_pick_http_status(e), detail=str(e))
 
 
-@router.post(
+@admin_router.post(
     "/transfer",
     response_model=WalletTransferOut,
     summary="Перевод между кошельками (одна валюта)",
@@ -608,7 +635,7 @@ async def withdraw(
 async def transfer(
     req: WalletTransfer,
     x_request_id: str | None = Header(default=None, alias="X-Request-Id"),
-    current_user: User = Depends(require_store_roles("admin", "manager")),
+    current_user: User = Depends(get_current_verified_user),
     db: AsyncSession = Depends(get_async_db),
 ) -> WalletTransferOut:
     if req.source_account_id == req.destination_account_id:
@@ -666,7 +693,7 @@ async def transfer(
 # =============================================================================
 # LEDGER
 # =============================================================================
-@router.get(
+@read_router.get(
     "/accounts/{account_id}/ledger",
     response_model=LedgerPage,
     summary="Лента операций по счёту",
@@ -722,7 +749,7 @@ class AdjustIn(BaseModel):
     reference: str | None = Field(None, max_length=255)
 
 
-@router.post(
+@admin_router.post(
     "/accounts/{account_id}/adjust",
     response_model=WalletTransactionOut,
     summary="Коррекция баланса (admin, если поддерживается хранилищем)",
@@ -731,7 +758,7 @@ async def adjust_balance(
     account_id: int = Path(..., ge=1),
     payload: AdjustIn = ...,
     x_request_id: str | None = Header(default=None, alias="X-Request-Id"),
-    current_user: User = Depends(require_store_admin),
+    current_user: User = Depends(get_current_verified_user),
     db: AsyncSession = Depends(get_async_db),
 ):
     storage = await _get_storage(db)
@@ -762,3 +789,7 @@ async def adjust_balance(
     except Exception as e:
         await db.rollback()
         raise HTTPException(status_code=_pick_http_status(e), detail=str(e))
+
+
+router.include_router(read_router)
+router.include_router(admin_router)
