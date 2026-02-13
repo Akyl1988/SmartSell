@@ -103,6 +103,42 @@ def _due_campaigns_filter_with_retry(*, now: datetime) -> Any:
     )
 
 
+def _enqueue_due_campaigns_query(
+    *,
+    now: datetime,
+    company_id: int | None,
+    limit: int,
+) -> tuple[list[Any], Any, int]:
+    limit_value = max(1, int(limit))
+    where = [_due_campaigns_filter_with_retry(now=now), Campaign.deleted_at.is_(None)]
+    if company_id is not None:
+        where.append(Campaign.company_id == int(company_id))
+    claim_stmt = (
+        select(Campaign)
+        .where(*where)
+        .order_by(Campaign.scheduled_at.asc().nullsfirst(), Campaign.id.asc())
+        .limit(limit_value)
+        .with_for_update(skip_locked=True)
+    )
+    return where, claim_stmt, limit_value
+
+
+def _enqueue_due_campaigns_apply(campaigns: list[Campaign], *, now: datetime) -> list[Campaign]:
+    queued: list[Campaign] = []
+    for campaign in campaigns:
+        if campaign.processing_status in (
+            CampaignProcessingStatus.QUEUED,
+            CampaignProcessingStatus.PROCESSING,
+        ):
+            continue
+        if campaign.processing_status == CampaignProcessingStatus.DONE and campaign.queued_at is not None:
+            continue
+        campaign.processing_status = CampaignProcessingStatus.QUEUED
+        campaign.queued_at = now
+        queued.append(campaign)
+    return queued
+
+
 async def _send_message(
     provider,
     message: Message,
@@ -203,33 +239,18 @@ async def enqueue_due_campaigns(
 ) -> dict[str, Any]:
     run_id = request_id or str(uuid4())
     now = now or _now_utc()
-    limit_value = max(1, int(limit))
-
-    where = [_due_campaigns_filter_with_retry(now=now), Campaign.deleted_at.is_(None)]
-    if company_id is not None:
-        where.append(Campaign.company_id == int(company_id))
+    where, claim_stmt, limit_value = _enqueue_due_campaigns_query(
+        now=now,
+        company_id=company_id,
+        limit=limit,
+    )
 
     total_due = (await db.execute(select(func.count()).select_from(Campaign).where(*where))).scalar_one()
-    claim_stmt = (
-        select(Campaign)
-        .where(*where)
-        .order_by(Campaign.scheduled_at.asc().nullsfirst(), Campaign.id.asc())
-        .limit(limit_value)
-        .with_for_update(skip_locked=True)
-    )
     campaigns = (await db.execute(claim_stmt)).scalars().all()
 
+    queued = _enqueue_due_campaigns_apply(campaigns, now=now)
     queued_ids: list[int] = []
-    for campaign in campaigns:
-        if campaign.processing_status in (
-            CampaignProcessingStatus.QUEUED,
-            CampaignProcessingStatus.PROCESSING,
-        ):
-            continue
-        if campaign.processing_status == CampaignProcessingStatus.DONE and campaign.queued_at is not None:
-            continue
-        campaign.processing_status = CampaignProcessingStatus.QUEUED
-        campaign.queued_at = now
+    for campaign in queued:
         await _record_campaign_event(
             db,
             company_id=campaign.company_id,
@@ -486,34 +507,19 @@ def enqueue_due_campaigns_sync(
 ) -> dict[str, Any]:
     run_id = request_id or str(uuid4())
     now = now or _now_utc()
-    limit_value = max(1, int(limit))
-
-    where = [_due_campaigns_filter_with_retry(now=now), Campaign.deleted_at.is_(None)]
-    if company_id is not None:
-        where.append(Campaign.company_id == int(company_id))
+    where, claim_stmt, limit_value = _enqueue_due_campaigns_query(
+        now=now,
+        company_id=company_id,
+        limit=limit,
+    )
 
     with session_scope() as db:
         total_due = db.execute(select(func.count()).select_from(Campaign).where(*where)).scalar_one()
-        claim_stmt = (
-            select(Campaign)
-            .where(*where)
-            .order_by(Campaign.scheduled_at.asc().nullsfirst(), Campaign.id.asc())
-            .limit(limit_value)
-            .with_for_update(skip_locked=True)
-        )
         campaigns = db.execute(claim_stmt).scalars().all()
 
+        queued = _enqueue_due_campaigns_apply(campaigns, now=now)
         queued_ids: list[int] = []
-        for campaign in campaigns:
-            if campaign.processing_status in (
-                CampaignProcessingStatus.QUEUED,
-                CampaignProcessingStatus.PROCESSING,
-            ):
-                continue
-            if campaign.processing_status == CampaignProcessingStatus.DONE and campaign.queued_at is not None:
-                continue
-            campaign.processing_status = CampaignProcessingStatus.QUEUED
-            campaign.queued_at = now
+        for campaign in queued:
             _record_campaign_event_sync(
                 db,
                 company_id=campaign.company_id,
