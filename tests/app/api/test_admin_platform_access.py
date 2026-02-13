@@ -50,6 +50,21 @@ async def test_admin_tasks_subscriptions_renew_denies_store_admin(async_client, 
     assert payload.get("code") == "ADMIN_REQUIRED"
 
 
+async def test_admin_tasks_subscriptions_renew_denies_store_roles(
+    async_client,
+    company_a_manager_headers,
+    company_a_employee_headers,
+):
+    for headers in (company_a_manager_headers, company_a_employee_headers):
+        resp = await async_client.post(
+            "/api/v1/admin/tasks/subscriptions/renew/run",
+            headers=headers,
+        )
+        assert resp.status_code == 403, resp.text
+        payload = resp.json()
+        assert payload.get("code") == "ADMIN_REQUIRED"
+
+
 async def test_admin_tasks_subscriptions_renew_allows_platform_admin(async_client, auth_headers, test_db):
     _ = test_db
     resp = await async_client.post(
