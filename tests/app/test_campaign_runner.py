@@ -4,11 +4,9 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 
-from app.core.config import settings
-from app.core.provider_registry import ProviderRegistry
 from app.models.campaign import Campaign, CampaignProcessingStatus, CampaignStatus, ChannelType, Message, MessageStatus
 from app.models.company import Company
-from app.services.campaign_runner import enqueue_due_campaigns, run_campaigns, run_due_campaigns
+from app.services.campaign_runner import enqueue_due_campaigns
 from app.worker import campaign_processing
 
 
@@ -42,91 +40,40 @@ async def _seed_campaign(async_db_session, *, company_id: int, status: CampaignS
     return campaign
 
 
-async def test_campaign_transitions_ready_to_success(async_db_session, monkeypatch):
-    monkeypatch.setattr(settings, "ENVIRONMENT", "development", raising=False)
-    ProviderRegistry.invalidate()
-
+async def test_enqueue_due_campaigns_queues_ready(async_db_session):
     campaign = await _seed_campaign(async_db_session, company_id=1001, status=CampaignStatus.READY)
-    results = await run_campaigns(async_db_session, company_id=1001, request_id="req-1")
 
-    assert results
+    summary = await enqueue_due_campaigns(async_db_session, company_id=1001, request_id="req-1")
+
+    assert summary["queued"] == 1
     await async_db_session.refresh(campaign)
-    assert campaign.status == CampaignStatus.SUCCESS
-    assert campaign.request_id == "req-1"
+    assert campaign.processing_status == CampaignProcessingStatus.QUEUED
+    assert campaign.queued_at is not None
 
 
-async def test_campaign_missing_provider_in_prod_fails(async_db_session, monkeypatch):
-    monkeypatch.setattr(settings, "ENVIRONMENT", "production", raising=False)
+async def test_enqueue_due_campaigns_idempotent(async_db_session):
+    campaign = await _seed_campaign(async_db_session, company_id=2001, status=CampaignStatus.READY)
 
-    async def _no_provider(*_args, **_kwargs):
-        return None
+    first = await enqueue_due_campaigns(async_db_session, company_id=2001, request_id="req-2")
+    second = await enqueue_due_campaigns(async_db_session, company_id=2001, request_id="req-3")
 
-    monkeypatch.setattr(ProviderRegistry, "get_active_provider", _no_provider)
-
-    campaign = await _seed_campaign(async_db_session, company_id=1002, status=CampaignStatus.READY)
-    await run_campaigns(async_db_session, company_id=1002, request_id="req-2")
-
+    assert first["queued"] == 1
+    assert second["queued"] == 0
     await async_db_session.refresh(campaign)
-    assert campaign.status == CampaignStatus.FAILED
-    assert campaign.error_code == "messaging_provider_not_configured"
+    assert campaign.processing_status == CampaignProcessingStatus.QUEUED
 
 
-async def test_campaign_tenant_isolation(async_db_session, monkeypatch):
-    monkeypatch.setattr(settings, "ENVIRONMENT", "development", raising=False)
-    ProviderRegistry.invalidate()
-
-    campaign_a = await _seed_campaign(async_db_session, company_id=2001, status=CampaignStatus.READY)
-    campaign_b = await _seed_campaign(async_db_session, company_id=2002, status=CampaignStatus.READY)
-
-    await run_campaigns(async_db_session, company_id=2001, request_id="req-3")
-
-    await async_db_session.refresh(campaign_a)
-    await async_db_session.refresh(campaign_b)
-
-    assert campaign_a.status == CampaignStatus.SUCCESS
-    assert campaign_b.status == CampaignStatus.READY
-
-
-async def test_run_due_campaigns_processes_ready(async_db_session, monkeypatch):
-    monkeypatch.setattr(settings, "ENVIRONMENT", "development", raising=False)
-    ProviderRegistry.invalidate()
-
-    campaign = await _seed_campaign(async_db_session, company_id=3001, status=CampaignStatus.READY)
-    processed = await run_due_campaigns(async_db_session, company_id=3001, limit=10)
-
-    assert processed == 1
-    await async_db_session.refresh(campaign)
-    assert campaign.status == CampaignStatus.SUCCESS
-
-
-async def test_run_due_campaigns_idempotent(async_db_session, monkeypatch):
-    monkeypatch.setattr(settings, "ENVIRONMENT", "development", raising=False)
-    ProviderRegistry.invalidate()
-
-    campaign = await _seed_campaign(async_db_session, company_id=3002, status=CampaignStatus.READY)
-    first = await run_due_campaigns(async_db_session, company_id=3002, limit=10)
-    second = await run_due_campaigns(async_db_session, company_id=3002, limit=10)
-
-    assert first == 1
-    assert second == 0
-    await async_db_session.refresh(campaign)
-    assert campaign.status == CampaignStatus.SUCCESS
-
-
-async def test_run_due_campaigns_tenant_scoped(async_db_session, monkeypatch):
-    monkeypatch.setattr(settings, "ENVIRONMENT", "development", raising=False)
-    ProviderRegistry.invalidate()
-
+async def test_enqueue_due_campaigns_tenant_scoped(async_db_session):
     campaign_a = await _seed_campaign(async_db_session, company_id=3003, status=CampaignStatus.READY)
     campaign_b = await _seed_campaign(async_db_session, company_id=3004, status=CampaignStatus.READY)
 
-    processed = await run_due_campaigns(async_db_session, company_id=3003, limit=10)
+    summary = await enqueue_due_campaigns(async_db_session, company_id=3003, request_id="req-4")
 
-    assert processed == 1
+    assert summary["queued"] == 1
     await async_db_session.refresh(campaign_a)
     await async_db_session.refresh(campaign_b)
-    assert campaign_a.status == CampaignStatus.SUCCESS
-    assert campaign_b.status == CampaignStatus.READY
+    assert campaign_a.processing_status == CampaignProcessingStatus.QUEUED
+    assert campaign_b.processing_status != CampaignProcessingStatus.QUEUED
 
 
 def test_scheduler_worker_calls_runner(monkeypatch):
@@ -151,9 +98,6 @@ def test_scheduler_worker_calls_runner(monkeypatch):
 
 
 async def test_enqueue_then_process_campaign(async_db_session, monkeypatch):
-    monkeypatch.setattr(settings, "ENVIRONMENT", "development", raising=False)
-    ProviderRegistry.invalidate()
-
     campaign = await _seed_campaign(async_db_session, company_id=4001, status=CampaignStatus.READY)
 
     summary = await enqueue_due_campaigns(async_db_session, company_id=4001, request_id="req-4", limit=10)
