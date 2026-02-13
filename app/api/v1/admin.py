@@ -34,8 +34,9 @@ from app.models.kaspi_trial_grant import KaspiTrialGrant
 from app.models.subscription_override import SubscriptionOverride
 from app.models.user import User
 from app.schemas.campaign import AdminCampaignResponse
-from app.services.campaign_runner import run_due_campaigns
+from app.services.campaign_runner import enqueue_due_campaigns
 from app.services.subscriptions import activate_plan, renew_if_due
+from app.worker.campaign_processing import process_campaign_queue_once
 
 router = APIRouter(
     prefix="/api/v1/admin",
@@ -153,16 +154,22 @@ async def run_campaigns_task(
 
     rid = _ensure_request_id(request)
     if resolved_dry_run:
-        return {"processed": 0}
+        return {"queued": 0, "skipped": 0, "processed": 0, "campaign_ids": []}
 
-    processed = await run_due_campaigns(
+    enqueue_summary = await enqueue_due_campaigns(
         db,
         company_id=resolved_company_id,
         request_id=rid,
-        limit=resolved_limit,
         now=datetime.now(UTC),
+        limit=resolved_limit,
     )
-    return {"processed": processed}
+    processed = await process_campaign_queue_once(db, limit=resolved_limit, now=datetime.now(UTC))
+    return {
+        "queued": enqueue_summary.get("queued", 0),
+        "skipped": enqueue_summary.get("skipped", 0),
+        "processed": len(processed),
+        "campaign_ids": enqueue_summary.get("campaign_ids", []),
+    }
 
 
 @router.post(

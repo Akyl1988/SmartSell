@@ -9,10 +9,11 @@ from sqlalchemy import and_, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
-from app.core.db import async_session_maker
+from app.core.db import async_session_maker, session_scope
 from app.core.logging import bound_context, get_logger
 from app.integrations.errors import ProviderNotConfiguredError
-from app.models.campaign import Campaign, CampaignStatus, Message, MessageStatus
+from app.models.campaign import Campaign, CampaignProcessingStatus, CampaignStatus, Message, MessageStatus
+from app.models.integration_event import IntegrationEvent
 from app.services.integration_events import record_integration_event
 from app.services.messaging_providers import MessagingProviderResolver
 from app.services.retry_policy import RetryPolicy
@@ -64,6 +65,27 @@ async def _record_campaign_event(
         meta_json={"campaign_id": campaign_id},
         commit=False,
     )
+
+
+def _record_campaign_event_sync(
+    db,
+    *,
+    company_id: int,
+    campaign_id: int,
+    status: str,
+    request_id: str | None,
+) -> None:
+    event = IntegrationEvent(
+        company_id=company_id,
+        merchant_uid=None,
+        kind="campaigns",
+        status=status,
+        error_code=None,
+        error_message=None,
+        request_id=request_id,
+        meta_json={"campaign_id": campaign_id},
+    )
+    db.add(event)
 
 
 def _due_campaigns_filter(*, now: datetime) -> Any:
@@ -171,6 +193,63 @@ async def _process_campaign(
     return campaign.status
 
 
+async def enqueue_due_campaigns(
+    db: AsyncSession,
+    *,
+    company_id: int | None = None,
+    request_id: str | None = None,
+    now: datetime | None = None,
+    limit: int = 100,
+) -> dict[str, Any]:
+    run_id = request_id or str(uuid4())
+    now = now or _now_utc()
+    limit_value = max(1, int(limit))
+
+    where = [_due_campaigns_filter_with_retry(now=now), Campaign.deleted_at.is_(None)]
+    if company_id is not None:
+        where.append(Campaign.company_id == int(company_id))
+
+    total_due = (await db.execute(select(func.count()).select_from(Campaign).where(*where))).scalar_one()
+    claim_stmt = (
+        select(Campaign)
+        .where(*where)
+        .order_by(Campaign.scheduled_at.asc().nullsfirst(), Campaign.id.asc())
+        .limit(limit_value)
+        .with_for_update(skip_locked=True)
+    )
+    campaigns = (await db.execute(claim_stmt)).scalars().all()
+
+    queued_ids: list[int] = []
+    for campaign in campaigns:
+        if campaign.processing_status in (
+            CampaignProcessingStatus.QUEUED,
+            CampaignProcessingStatus.PROCESSING,
+        ):
+            continue
+        if campaign.processing_status == CampaignProcessingStatus.DONE and campaign.queued_at is not None:
+            continue
+        campaign.processing_status = CampaignProcessingStatus.QUEUED
+        campaign.queued_at = now
+        await _record_campaign_event(
+            db,
+            company_id=campaign.company_id,
+            campaign_id=campaign.id,
+            status="queued",
+            request_id=run_id,
+        )
+        queued_ids.append(campaign.id)
+
+    if queued_ids:
+        await db.commit()
+    else:
+        await db.rollback()
+
+    found = min(int(total_due), limit_value)
+    skipped = max(0, found - len(queued_ids))
+    return {"queued": len(queued_ids), "skipped": skipped, "campaign_ids": queued_ids}
+
+
+# Deprecated: use enqueue_due_campaigns + campaign_processing.
 async def run_campaigns(
     db: AsyncSession,
     *,
@@ -211,6 +290,7 @@ async def run_campaigns(
     return results
 
 
+# Deprecated: use enqueue_due_campaigns + campaign_processing.
 async def run_campaigns_with_claim(
     db: AsyncSession,
     *,
@@ -320,6 +400,7 @@ async def run_campaigns_with_claim(
     }
 
 
+# Deprecated: use enqueue_due_campaigns + campaign_processing.
 async def run_due_campaigns(
     db: AsyncSession,
     *,
@@ -396,6 +477,58 @@ async def run_due_campaigns(
     return processed
 
 
+def enqueue_due_campaigns_sync(
+    *,
+    company_id: int | None = None,
+    request_id: str | None = None,
+    now: datetime | None = None,
+    limit: int = 100,
+) -> dict[str, Any]:
+    run_id = request_id or str(uuid4())
+    now = now or _now_utc()
+    limit_value = max(1, int(limit))
+
+    where = [_due_campaigns_filter_with_retry(now=now), Campaign.deleted_at.is_(None)]
+    if company_id is not None:
+        where.append(Campaign.company_id == int(company_id))
+
+    with session_scope() as db:
+        total_due = db.execute(select(func.count()).select_from(Campaign).where(*where)).scalar_one()
+        claim_stmt = (
+            select(Campaign)
+            .where(*where)
+            .order_by(Campaign.scheduled_at.asc().nullsfirst(), Campaign.id.asc())
+            .limit(limit_value)
+            .with_for_update(skip_locked=True)
+        )
+        campaigns = db.execute(claim_stmt).scalars().all()
+
+        queued_ids: list[int] = []
+        for campaign in campaigns:
+            if campaign.processing_status in (
+                CampaignProcessingStatus.QUEUED,
+                CampaignProcessingStatus.PROCESSING,
+            ):
+                continue
+            if campaign.processing_status == CampaignProcessingStatus.DONE and campaign.queued_at is not None:
+                continue
+            campaign.processing_status = CampaignProcessingStatus.QUEUED
+            campaign.queued_at = now
+            _record_campaign_event_sync(
+                db,
+                company_id=campaign.company_id,
+                campaign_id=campaign.id,
+                status="queued",
+                request_id=run_id,
+            )
+            queued_ids.append(campaign.id)
+
+    found = min(int(total_due), limit_value)
+    skipped = max(0, found - len(queued_ids))
+    return {"queued": len(queued_ids), "skipped": skipped, "campaign_ids": queued_ids}
+
+
+# Deprecated: use enqueue_due_campaigns + campaign_processing.
 def run_campaigns_sync(*, company_id: int | None = None, request_id: str | None = None) -> list[dict[str, Any]]:
     async def _runner():
         async with async_session_maker() as db:
@@ -408,6 +541,7 @@ def run_campaigns_sync(*, company_id: int | None = None, request_id: str | None 
         return loop.run_until_complete(_runner())
 
 
+# Deprecated: use enqueue_due_campaigns + campaign_processing.
 async def process_scheduled_campaigns(
     *, company_id: int | None = None, request_id: str | None = None
 ) -> list[dict[str, Any]]:
@@ -416,6 +550,8 @@ async def process_scheduled_campaigns(
 
 
 __all__ = [
+    "enqueue_due_campaigns",
+    "enqueue_due_campaigns_sync",
     "run_campaigns",
     "run_campaigns_with_claim",
     "run_due_campaigns",

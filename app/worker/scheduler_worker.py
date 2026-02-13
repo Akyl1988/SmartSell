@@ -105,9 +105,9 @@ for _path in (
 if SessionLocal is None:
     raise RuntimeError("SessionLocal не найден. Проверьте, что есть app.core.db.SessionLocal")
 
-# Модели
 from app.models.campaign import Campaign, Message, MessageStatus
-from app.services.campaign_runner import run_campaigns_sync
+from app.services.campaign_runner import enqueue_due_campaigns_sync
+from app.worker import campaign_processing
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
@@ -337,14 +337,20 @@ def _schedule_message_send(message_id: int) -> None:
 
 def process_scheduled_campaigns() -> None:
     """
-    Обрабатывает активные кампании, у которых время запуска наступило:
-      - выбирает PENDING-сообщения
-      - для каждого ставит job на отправку
-      - если больше нет PENDING — помечает кампанию COMPLETED
+    Запускает конвейер кампаний:
+      - ставит due кампании в очередь
+      - обрабатывает QUEUED кампании
     """
     now = _utcnow_naive()
     logger.info("Проверка кампаний к отправке (%s)", now.isoformat())
-    run_campaigns_sync()
+    enqueue_summary = enqueue_due_campaigns_sync(now=_utcnow_aware())
+    processed = campaign_processing.process_campaign_queue_once_sync()
+    logger.info(
+        "Campaign pipeline tick: queued=%s skipped=%s processed=%s",
+        enqueue_summary.get("queued"),
+        enqueue_summary.get("skipped"),
+        len(processed),
+    )
 
 
 # -------- Публичные сервисные функции воркера -------- #

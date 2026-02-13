@@ -6,9 +6,10 @@ import pytest
 
 from app.core.config import settings
 from app.core.provider_registry import ProviderRegistry
-from app.models.campaign import Campaign, CampaignStatus, ChannelType, Message, MessageStatus
+from app.models.campaign import Campaign, CampaignProcessingStatus, CampaignStatus, ChannelType, Message, MessageStatus
 from app.models.company import Company
-from app.services.campaign_runner import run_campaigns, run_due_campaigns
+from app.services.campaign_runner import enqueue_due_campaigns, run_campaigns, run_due_campaigns
+from app.worker import campaign_processing
 
 
 async def _seed_campaign(async_db_session, *, company_id: int, status: CampaignStatus, scheduled_at=None):
@@ -129,15 +130,41 @@ async def test_run_due_campaigns_tenant_scoped(async_db_session, monkeypatch):
 
 
 def test_scheduler_worker_calls_runner(monkeypatch):
-    called = {"ok": False}
+    called = {"enqueue": False, "process": False}
 
-    def _fake_runner(*_args, **_kwargs):
-        called["ok"] = True
+    def _fake_enqueue(*_args, **_kwargs):
+        called["enqueue"] = True
+        return {"queued": 0, "skipped": 0, "campaign_ids": []}
+
+    def _fake_process(*_args, **_kwargs):
+        called["process"] = True
         return []
 
-    monkeypatch.setattr("app.worker.scheduler_worker.run_campaigns_sync", _fake_runner)
+    monkeypatch.setattr("app.worker.scheduler_worker.enqueue_due_campaigns_sync", _fake_enqueue)
+    monkeypatch.setattr("app.worker.campaign_processing.process_campaign_queue_once_sync", _fake_process)
 
     from app.worker import scheduler_worker
 
     scheduler_worker.process_scheduled_campaigns()
-    assert called["ok"] is True
+    assert called["enqueue"] is True
+    assert called["process"] is True
+
+
+async def test_enqueue_then_process_campaign(async_db_session, monkeypatch):
+    monkeypatch.setattr(settings, "ENVIRONMENT", "development", raising=False)
+    ProviderRegistry.invalidate()
+
+    campaign = await _seed_campaign(async_db_session, company_id=4001, status=CampaignStatus.READY)
+
+    summary = await enqueue_due_campaigns(async_db_session, company_id=4001, request_id="req-4", limit=10)
+    assert summary["queued"] == 1
+
+    await async_db_session.refresh(campaign)
+    assert campaign.processing_status == CampaignProcessingStatus.QUEUED
+    assert campaign.queued_at is not None
+
+    results = await campaign_processing.process_campaign_queue_once(async_db_session, limit=5)
+    assert results
+
+    await async_db_session.refresh(campaign)
+    assert campaign.processing_status in {CampaignProcessingStatus.DONE, CampaignProcessingStatus.FAILED}

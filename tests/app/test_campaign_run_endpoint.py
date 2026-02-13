@@ -8,7 +8,7 @@ from sqlalchemy.orm import sessionmaker
 
 import tests.conftest as base_conftest
 from app.core.security import create_access_token, get_password_hash
-from app.models.campaign import Campaign, CampaignStatus
+from app.models.campaign import Campaign, CampaignProcessingStatus, CampaignStatus
 from app.models.company import Company
 from app.models.user import User
 
@@ -89,13 +89,14 @@ async def test_campaign_run_ok(async_client, test_db):
     )
     assert resp.status_code == 200, resp.text
     payload = resp.json()
+    assert payload.get("queued") == 1
     assert payload.get("processed") == 1
 
     SessionLocal = sessionmaker(bind=base_conftest.sync_engine, expire_on_commit=False, autoflush=False)
     with SessionLocal() as s:
         campaign = s.query(Campaign).filter(Campaign.id == campaign_id).first()
         assert campaign is not None
-        assert campaign.status == CampaignStatus.SUCCESS
+        assert campaign.processing_status == CampaignProcessingStatus.DONE
 
 
 async def test_campaign_run_claims_once(async_client, test_db):
@@ -109,6 +110,7 @@ async def test_campaign_run_claims_once(async_client, test_db):
     )
     assert first.status_code == 200, first.text
     payload_first = first.json()
+    assert payload_first.get("queued") == 1
     assert payload_first.get("processed") == 1
 
     second = await async_client.post(
@@ -117,6 +119,7 @@ async def test_campaign_run_claims_once(async_client, test_db):
     )
     assert second.status_code == 200, second.text
     payload_second = second.json()
+    assert payload_second.get("queued") == 0
     assert payload_second.get("processed") == 0
 
 
@@ -132,13 +135,14 @@ async def test_campaign_run_company_id_from_body(async_client, test_db):
     )
     assert resp.status_code == 200, resp.text
     payload = resp.json()
+    assert payload.get("queued") == 1
     assert payload.get("processed") == 1
 
     SessionLocal = sessionmaker(bind=base_conftest.sync_engine, expire_on_commit=False, autoflush=False)
     with SessionLocal() as s:
         campaign = s.query(Campaign).filter(Campaign.id == campaign_id).first()
         assert campaign is not None
-        assert campaign.status == CampaignStatus.SUCCESS
+        assert campaign.processing_status == CampaignProcessingStatus.DONE
 
 
 async def test_campaign_run_missing_company_id_returns_400(async_client, test_db):
@@ -173,13 +177,14 @@ async def test_campaign_seed_and_run(async_client, test_db):
     )
     assert run.status_code == 200, run.text
     run_payload = run.json()
+    assert run_payload.get("queued") == 1
     assert run_payload.get("processed") == 1
 
     SessionLocal = sessionmaker(bind=base_conftest.sync_engine, expire_on_commit=False, autoflush=False)
     with SessionLocal() as s:
         campaign = s.query(Campaign).filter(Campaign.id == campaign_id).first()
         assert campaign is not None
-        assert campaign.status == CampaignStatus.SUCCESS
+        assert campaign.processing_status == CampaignProcessingStatus.DONE
 
 
 async def test_campaign_seed_without_company_id(async_client, async_db_session, test_db):
