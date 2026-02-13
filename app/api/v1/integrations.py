@@ -17,6 +17,10 @@ from app.models.user import User
 router = APIRouter(prefix="/api/v1/integrations", tags=["integrations"])
 
 
+async def _auth_admin_company_id(current_user: User = Depends(require_store_admin)) -> int:
+    return resolve_tenant_company_id(current_user, not_found_detail="Company not set")
+
+
 class IntegrationEventOut(BaseModel):
     id: int
     company_id: int
@@ -38,10 +42,11 @@ class IntegrationEventOut(BaseModel):
 async def list_integration_events(
     kind: str | None = Query(None),
     limit: int = Query(100, ge=1, le=200),
+    company_id: int = Depends(_auth_admin_company_id),
     current_user: User = Depends(require_store_admin),
     session: AsyncSession = Depends(get_async_db),
 ) -> list[IntegrationEventOut]:
-    company_id = resolve_tenant_company_id(current_user, not_found_detail="Company not set")
+    _ = current_user
 
     stmt = sa.select(IntegrationEvent).where(IntegrationEvent.company_id == company_id)
     if kind:
