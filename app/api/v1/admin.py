@@ -184,6 +184,7 @@ async def queue_campaign_run(
     db: AsyncSession = Depends(get_async_db),
 ) -> dict:
     _ = admin
+    request_id = _ensure_request_id(request)
     campaign = await db.get(Campaign, campaign_id)
     if not campaign:
         raise NotFoundError("campaign_not_found", code="campaign_not_found", http_status=404)
@@ -195,12 +196,12 @@ async def queue_campaign_run(
             "queued_at": campaign.queued_at.isoformat() if campaign.queued_at else None,
             "started_at": campaign.started_at.isoformat() if campaign.started_at else None,
             "finished_at": campaign.finished_at.isoformat() if campaign.finished_at else None,
+            "failed_at": campaign.failed_at.isoformat() if campaign.failed_at else None,
             "last_error": campaign.last_error,
             "attempts": campaign.attempts,
-            "request_id": _ensure_request_id(request),
+            "request_id": campaign.request_id or request_id,
         }
 
-    request_id = _ensure_request_id(request)
     campaign = await queue_campaign_run_service(
         db,
         campaign,
@@ -215,6 +216,7 @@ async def queue_campaign_run(
         "queued_at": campaign.queued_at.isoformat() if campaign.queued_at else None,
         "started_at": campaign.started_at.isoformat() if campaign.started_at else None,
         "finished_at": campaign.finished_at.isoformat() if campaign.finished_at else None,
+        "failed_at": campaign.failed_at.isoformat() if campaign.failed_at else None,
         "last_error": campaign.last_error,
         "attempts": campaign.attempts,
         "request_id": request_id,

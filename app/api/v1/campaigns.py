@@ -865,13 +865,14 @@ async def list_campaigns(
     return CampaignListResponse(items=items, meta=PageMeta(page=page, size=size, total=total))
 
 
-@read_router.post("/{campaign_id}/run", summary="Queue a campaign run")
+@router.post("/{campaign_id}/run", summary="Queue a campaign run")
 async def queue_campaign_run_store(
     request: Request,
     campaign_id: int,
     user: User = Depends(_auth_user),
     db: AsyncSession = Depends(get_async_db),
 ) -> dict[str, Any]:
+    request_id = _ensure_request_id(request)
     if not (is_platform_admin(user) or is_store_admin(user) or is_store_manager(user)):
         raise HTTPException(status_code=403, detail="forbidden")
 
@@ -883,6 +884,7 @@ async def queue_campaign_run_store(
         user_company_id = getattr(user, "company_id", None)
         if user_company_id is None or campaign.company_id != user_company_id:
             raise NotFoundError("campaign_not_found", code="campaign_not_found", http_status=404)
+        await require_active_subscription(request=request, current_user=user, db=db)
 
     if campaign.processing_status in (
         DbCampaignProcessingStatus.QUEUED,
@@ -894,12 +896,12 @@ async def queue_campaign_run_store(
             "queued_at": campaign.queued_at.isoformat() if campaign.queued_at else None,
             "started_at": campaign.started_at.isoformat() if campaign.started_at else None,
             "finished_at": campaign.finished_at.isoformat() if campaign.finished_at else None,
+            "failed_at": campaign.failed_at.isoformat() if campaign.failed_at else None,
             "last_error": campaign.last_error,
             "attempts": campaign.attempts,
-            "request_id": _ensure_request_id(request),
+            "request_id": campaign.request_id or request_id,
         }
 
-    request_id = _ensure_request_id(request)
     campaign = await queue_campaign_run(
         db,
         campaign,
@@ -914,6 +916,7 @@ async def queue_campaign_run_store(
         "queued_at": campaign.queued_at.isoformat() if campaign.queued_at else None,
         "started_at": campaign.started_at.isoformat() if campaign.started_at else None,
         "finished_at": campaign.finished_at.isoformat() if campaign.finished_at else None,
+        "failed_at": campaign.failed_at.isoformat() if campaign.failed_at else None,
         "last_error": campaign.last_error,
         "attempts": campaign.attempts,
         "request_id": request_id,
