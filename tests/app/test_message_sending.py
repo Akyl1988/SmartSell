@@ -8,7 +8,7 @@ from app.models.company import Company
 from app.worker import scheduler_worker
 
 
-def _seed_message(*, company_id: int, title_suffix: str) -> int:
+def _seed_message(*, company_id: int, title_suffix: str, status: MessageStatus = MessageStatus.PENDING) -> int:
     if base_conftest.sync_engine is None:
         raise RuntimeError("sync_engine is not initialized; ensure test_db fixture runs first")
 
@@ -34,7 +34,7 @@ def _seed_message(*, company_id: int, title_suffix: str) -> int:
             campaign_id=campaign.id,
             recipient="user@example.com",
             content="Hello",
-            status=MessageStatus.PENDING,
+            status=status,
             channel=ChannelType.EMAIL,
         )
         s.add(message)
@@ -68,6 +68,22 @@ def test_send_message_idempotent(monkeypatch, test_db):
         assert message.sent_at is not None
         assert message.error_message is None
         assert message.provider_message_id == "provider-123"
+
+
+def test_send_message_skips_non_pending(monkeypatch, test_db):
+    _ = test_db
+    message_id = _seed_message(company_id=9303, title_suffix="sent", status=MessageStatus.SENT)
+
+    call_count = {"count": 0}
+
+    def _fake_send(_smtp, _msg):
+        call_count["count"] += 1
+
+    monkeypatch.setattr(scheduler_worker, "_send_via_smtp", _fake_send)
+
+    scheduler_worker.send_message(message_id)
+
+    assert call_count["count"] == 0
 
 
 def test_send_message_failure_sets_failed(monkeypatch, test_db):

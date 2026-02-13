@@ -115,6 +115,7 @@ class CampaignProcessingStatus(str, enum.Enum):
 
 class MessageStatus(str, enum.Enum):
     PENDING = "pending"
+    SENDING = "sending"
     SENT = "sent"
     DELIVERED = "delivered"
     FAILED = "failed"

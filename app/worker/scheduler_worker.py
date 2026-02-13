@@ -32,6 +32,8 @@ from datetime import UTC, datetime
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 
+from sqlalchemy import update
+
 try:
     from apscheduler.events import EVENT_JOB_ERROR, EVENT_JOB_MAX_INSTANCES, EVENT_JOB_MISSED
     from apscheduler.schedulers.background import BackgroundScheduler
@@ -304,13 +306,21 @@ def send_message(message_id: int) -> None:
     """
     smtp = _load_smtp_config()
     with db_session() as db:
-        message: Message | None = db.query(Message).filter(Message.id == message_id).first()
-        if not message:
-            logger.error("Message %s не найден", message_id)
+        claim = (
+            update(Message)
+            .where(Message.id == message_id, Message.status == MessageStatus.PENDING)
+            .values(status=MessageStatus.SENDING)
+        )
+        result = db.execute(claim)
+        if not result.rowcount:
+            logger.info("Message %s уже обработан или отсутствует", message_id)
             return
 
-        if message.status != MessageStatus.PENDING:
-            logger.info("Message %s уже обработан (status=%s)", message_id, message.status)
+        db.commit()
+
+        message: Message | None = db.query(Message).filter(Message.id == message_id).first()
+        if not message:
+            logger.error("Message %s не найден после claim", message_id)
             return
 
         recipient = message.recipient
@@ -328,10 +338,12 @@ def send_message(message_id: int) -> None:
             if provider_id:
                 message.provider_message_id = str(provider_id)
             logger.info("Сообщение %s успешно отправлено", message.id)
+            db.commit()
         except Exception as e:
             logger.error("Ошибка отправки message_id=%s: %s", message.id, e)
             message.status = MessageStatus.FAILED
             message.error_message = _truncate_error(f"{type(e).__name__}: {e}")
+            db.commit()
 
 
 def _schedule_message_send(message_id: int) -> bool:
