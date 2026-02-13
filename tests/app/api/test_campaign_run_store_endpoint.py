@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 
 import pytest
+from sqlalchemy import select
 from sqlalchemy.orm import sessionmaker
 
 import tests.conftest as base_conftest
@@ -53,32 +54,49 @@ def _superuser_headers_without_company() -> dict[str, str]:
     return {"Authorization": f"Bearer {token}"}
 
 
-async def _seed_campaign(async_db_session, *, company_id: int, title_suffix: str) -> Campaign:
+async def _ensure_subscription(async_db_session, *, company_id: int, status: str = "active") -> None:
+    subscription = (
+        await async_db_session.execute(
+            select(Subscription)
+            .where(Subscription.company_id == company_id)
+            .where(Subscription.deleted_at.is_(None))
+            .limit(1)
+        )
+    ).scalar_one_or_none()
+    if subscription:
+        subscription.status = status
+        return
+
+    async_db_session.add(
+        Subscription(
+            company_id=company_id,
+            plan=normalize_plan_id("start") or "trial",
+            status=status,
+            billing_cycle="monthly",
+            price=0,
+            currency="KZT",
+        )
+    )
+
+
+async def _seed_campaign(
+    async_db_session,
+    *,
+    company_id: int,
+    title_suffix: str,
+    subscription_status: str = "active",
+) -> Campaign:
     company = await async_db_session.get(Company, company_id)
     if not company:
         company = Company(id=company_id, name=f"Company {company_id}")
         async_db_session.add(company)
         await async_db_session.flush()
 
-    existing_sub = (
-        await async_db_session.execute(
-            Subscription.__table__.select().where(
-                Subscription.company_id == company_id,
-                Subscription.deleted_at.is_(None),
-            )
-        )
-    ).first()
-    if not existing_sub:
-        async_db_session.add(
-            Subscription(
-                company_id=company_id,
-                plan=normalize_plan_id("start") or "trial",
-                status="active",
-                billing_cycle="monthly",
-                price=0,
-                currency="KZT",
-            )
-        )
+    await _ensure_subscription(
+        async_db_session,
+        company_id=company_id,
+        status=subscription_status,
+    )
 
     campaign = Campaign(
         title=f"Run campaign {title_suffix}",
@@ -188,3 +206,31 @@ async def test_campaign_run_store_admin_other_company_not_found(
     assert resp.status_code == 404, resp.text
     payload = resp.json()
     assert payload.get("code") == "campaign_not_found"
+
+
+async def test_campaign_run_store_admin_requires_active_subscription(
+    async_client,
+    async_db_session,
+    company_a_admin_headers,
+):
+    campaign = await _seed_campaign(
+        async_db_session,
+        company_id=1001,
+        title_suffix="inactive-sub",
+        subscription_status="canceled",
+    )
+
+    denied = await async_client.post(
+        f"/api/v1/campaigns/{campaign.id}/run",
+        headers=company_a_admin_headers,
+    )
+    assert denied.status_code == 402, denied.text
+
+    await _ensure_subscription(async_db_session, company_id=1001, status="active")
+    await async_db_session.commit()
+
+    allowed = await async_client.post(
+        f"/api/v1/campaigns/{campaign.id}/run",
+        headers=company_a_admin_headers,
+    )
+    assert allowed.status_code == 200, allowed.text

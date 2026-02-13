@@ -67,7 +67,9 @@ async def test_campaign_run_endpoint_idempotent(async_client, async_db_session, 
     payload_first = first.json()
     assert payload_first.get("status") == CampaignProcessingStatus.QUEUED.value
     queued_at = payload_first.get("queued_at")
+    request_id = payload_first.get("request_id")
     assert queued_at
+    assert request_id
 
     second = await async_client.post(
         f"/api/v1/admin/campaigns/{campaign.id}/run",
@@ -77,6 +79,7 @@ async def test_campaign_run_endpoint_idempotent(async_client, async_db_session, 
     payload_second = second.json()
     assert payload_second.get("status") == CampaignProcessingStatus.QUEUED.value
     assert payload_second.get("queued_at") == queued_at
+    assert payload_second.get("request_id") == request_id
     assert "failed_at" in payload_second
 
 
