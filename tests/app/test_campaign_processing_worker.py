@@ -3,8 +3,10 @@ from __future__ import annotations
 from datetime import UTC, datetime
 
 import pytest
+from sqlalchemy import select
 
-from app.models.campaign import Campaign, CampaignProcessingStatus, CampaignStatus
+from app.core.config import settings
+from app.models.campaign import Campaign, CampaignProcessingStatus, CampaignStatus, Message
 from app.models.company import Company
 from app.worker import campaign_processing
 
@@ -119,3 +121,45 @@ async def test_campaign_worker_lock_prevents_processing(async_db_session, monkey
 
     await async_db_session.refresh(campaign)
     assert campaign.processing_status == CampaignProcessingStatus.QUEUED
+
+
+async def test_campaign_worker_blocks_placeholder_in_production(async_db_session, monkeypatch):
+    monkeypatch.setattr(settings, "ENVIRONMENT", "production", raising=False)
+    campaign = await _seed_campaign(
+        async_db_session,
+        company_id=91050,
+        processing_status=CampaignProcessingStatus.QUEUED,
+    )
+
+    results = await campaign_processing.process_campaign_queue_once(async_db_session, limit=5)
+    assert results
+
+    await async_db_session.refresh(campaign)
+    assert campaign.processing_status == CampaignProcessingStatus.FAILED
+    assert campaign.last_error
+    assert "campaign_placeholder_not_allowed_in_production" in campaign.last_error
+
+    message = (
+        await async_db_session.execute(select(Message.id).where(Message.campaign_id == campaign.id).limit(1))
+    ).scalar_one_or_none()
+    assert message is None
+
+
+async def test_campaign_worker_allows_placeholder_in_dev(async_db_session, monkeypatch):
+    monkeypatch.setattr(settings, "ENVIRONMENT", "development", raising=False)
+    campaign = await _seed_campaign(
+        async_db_session,
+        company_id=91060,
+        processing_status=CampaignProcessingStatus.QUEUED,
+    )
+
+    results = await campaign_processing.process_campaign_queue_once(async_db_session, limit=5)
+    assert results
+
+    await async_db_session.refresh(campaign)
+    assert campaign.processing_status == CampaignProcessingStatus.DONE
+
+    message = (
+        await async_db_session.execute(select(Message.id).where(Message.campaign_id == campaign.id).limit(1))
+    ).scalar_one_or_none()
+    assert message is not None
