@@ -7,14 +7,20 @@ from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import Session
 
+from app.core.config import settings
 from app.core.db import session_scope
 from app.models.campaign import Campaign, CampaignProcessingStatus, ChannelType, Message, MessageStatus
 
 _ERROR_MESSAGE_LIMIT = 500
+_PLACEHOLDER_BLOCKED = "campaign_placeholder_not_allowed_in_production"
 
 
 def _utcnow() -> datetime:
     return datetime.now(UTC)
+
+
+def _is_prod() -> bool:
+    return str(getattr(settings, "ENVIRONMENT", "")).lower() == "production"
 
 
 def _truncate_error(message: str | None, limit: int = _ERROR_MESSAGE_LIMIT) -> str | None:
@@ -46,6 +52,9 @@ async def _perform_campaign_action(db: AsyncSession, campaign: Campaign) -> None
     if existing.scalar() is not None:
         return
 
+    if _is_prod():
+        raise RuntimeError(_PLACEHOLDER_BLOCKED)
+
     message = Message(
         campaign_id=campaign.id,
         recipient="placeholder@example.com",
@@ -60,6 +69,9 @@ def _perform_campaign_action_sync(db: Session, campaign: Campaign) -> None:
     existing = db.execute(select(Message.id).where(Message.campaign_id == campaign.id).limit(1)).scalar()
     if existing is not None:
         return
+
+    if _is_prod():
+        raise RuntimeError(_PLACEHOLDER_BLOCKED)
 
     message = Message(
         campaign_id=campaign.id,
