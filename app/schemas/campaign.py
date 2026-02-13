@@ -33,7 +33,7 @@ class MessageResponse(BaseModel):
     recipient: str
     content: str
     status: MessageStatus
-    created_at: datetime
+    created_at: datetime | None = None
     sent_at: datetime | None = None
     error_message: str | None = None
 

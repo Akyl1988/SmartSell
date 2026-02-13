@@ -105,7 +105,7 @@ for _path in (
 if SessionLocal is None:
     raise RuntimeError("SessionLocal не найден. Проверьте, что есть app.core.db.SessionLocal")
 
-from app.models.campaign import Campaign, Message, MessageStatus
+from app.models.campaign import Campaign, CampaignProcessingStatus, Message, MessageStatus
 from app.services.campaign_runner import enqueue_due_campaigns_sync
 from app.worker import campaign_processing
 
@@ -335,6 +335,23 @@ def _schedule_message_send(message_id: int) -> None:
     logger.info("Запланирована отправка message_id=%s (job_id=%s)", message_id, job_id)
 
 
+def _schedule_pending_messages_for_campaigns(campaign_ids: list[int]) -> int:
+    if not campaign_ids:
+        return 0
+
+    scheduled = 0
+    with db_session() as db:
+        rows = (
+            db.query(Message.id)
+            .filter(Message.campaign_id.in_(campaign_ids), Message.status == MessageStatus.PENDING)
+            .all()
+        )
+        for (message_id,) in rows:
+            _schedule_message_send(message_id)
+            scheduled += 1
+    return scheduled
+
+
 def process_scheduled_campaigns() -> None:
     """
     Запускает конвейер кампаний:
@@ -345,11 +362,16 @@ def process_scheduled_campaigns() -> None:
     logger.info("Проверка кампаний к отправке (%s)", now.isoformat())
     enqueue_summary = enqueue_due_campaigns_sync(now=_utcnow_aware())
     processed = campaign_processing.process_campaign_queue_once_sync()
+    processed_ids = [
+        item["campaign_id"] for item in processed if item.get("status") == CampaignProcessingStatus.DONE.value
+    ]
+    scheduled = _schedule_pending_messages_for_campaigns(processed_ids)
     logger.info(
-        "Campaign pipeline tick: queued=%s skipped=%s processed=%s",
+        "Campaign pipeline tick: queued=%s skipped=%s processed=%s scheduled=%s",
         enqueue_summary.get("queued"),
         enqueue_summary.get("skipped"),
         len(processed),
+        scheduled,
     )
 
 

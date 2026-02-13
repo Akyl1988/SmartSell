@@ -5,8 +5,7 @@ from datetime import UTC, datetime
 import pytest
 from sqlalchemy import select
 
-from app.core.config import settings
-from app.models.campaign import Campaign, CampaignProcessingStatus, CampaignStatus, Message
+from app.models.campaign import Campaign, CampaignProcessingStatus, CampaignStatus, ChannelType, Message, MessageStatus
 from app.models.company import Company
 from app.worker import campaign_processing
 
@@ -18,6 +17,7 @@ async def _seed_campaign(
     *,
     company_id: int,
     processing_status: CampaignProcessingStatus,
+    add_message: bool = True,
 ) -> Campaign:
     company = await async_db_session.get(Company, company_id)
     if not company:
@@ -35,6 +35,18 @@ async def _seed_campaign(
         queued_at=datetime.now(UTC) if processing_status == CampaignProcessingStatus.QUEUED else None,
     )
     async_db_session.add(campaign)
+    await async_db_session.flush()
+
+    if add_message:
+        message = Message(
+            campaign_id=campaign.id,
+            recipient="user@example.com",
+            content="Hello",
+            status=MessageStatus.PENDING,
+            channel=ChannelType.EMAIL,
+        )
+        async_db_session.add(message)
+
     await async_db_session.commit()
     await async_db_session.refresh(campaign)
     return campaign
@@ -123,12 +135,12 @@ async def test_campaign_worker_lock_prevents_processing(async_db_session, monkey
     assert campaign.processing_status == CampaignProcessingStatus.QUEUED
 
 
-async def test_campaign_worker_blocks_placeholder_in_production(async_db_session, monkeypatch):
-    monkeypatch.setattr(settings, "ENVIRONMENT", "production", raising=False)
+async def test_campaign_worker_requires_messages(async_db_session):
     campaign = await _seed_campaign(
         async_db_session,
         company_id=91050,
         processing_status=CampaignProcessingStatus.QUEUED,
+        add_message=False,
     )
 
     results = await campaign_processing.process_campaign_queue_once(async_db_session, limit=5)
@@ -137,29 +149,9 @@ async def test_campaign_worker_blocks_placeholder_in_production(async_db_session
     await async_db_session.refresh(campaign)
     assert campaign.processing_status == CampaignProcessingStatus.FAILED
     assert campaign.last_error
-    assert "campaign_placeholder_not_allowed_in_production" in campaign.last_error
+    assert "campaign_has_no_messages" in campaign.last_error
 
     message = (
         await async_db_session.execute(select(Message.id).where(Message.campaign_id == campaign.id).limit(1))
     ).scalar_one_or_none()
     assert message is None
-
-
-async def test_campaign_worker_allows_placeholder_in_dev(async_db_session, monkeypatch):
-    monkeypatch.setattr(settings, "ENVIRONMENT", "development", raising=False)
-    campaign = await _seed_campaign(
-        async_db_session,
-        company_id=91060,
-        processing_status=CampaignProcessingStatus.QUEUED,
-    )
-
-    results = await campaign_processing.process_campaign_queue_once(async_db_session, limit=5)
-    assert results
-
-    await async_db_session.refresh(campaign)
-    assert campaign.processing_status == CampaignProcessingStatus.DONE
-
-    message = (
-        await async_db_session.execute(select(Message.id).where(Message.campaign_id == campaign.id).limit(1))
-    ).scalar_one_or_none()
-    assert message is not None
