@@ -1,11 +1,15 @@
 name: Security Scan
 
+# NOTE: PR checks require the pull_request trigger; without it, gh pr checks shows no checks.
 on:
-  push:
-    branches: [ main, dev, "release/**" ]
   pull_request:
     branches: [ main, dev, "release/**" ]
+  schedule:
+    - cron: "0 3 * * 1"
   workflow_dispatch:
+
+permissions:
+  contents: read
 
 jobs:
   trivy:
