@@ -28,7 +28,7 @@ import time
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi import APIRouter, Body, Depends, HTTPException, Query, Request
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel, Field
 from sqlalchemy import select, update
@@ -61,8 +61,10 @@ from app.core.security import (
     decode_and_validate,
     denylist_key_for_token,
     get_password_hash,
+    get_refresh_from_cookie,
     resolve_tenant_company_id,
     revoke_token,
+    validate_csrf_token,
     validate_password_policy,
     verify_password,
 )
@@ -255,6 +257,23 @@ def _hash_refresh_token(token: str) -> str:
 def _sms_text_for_otp(code: str, purpose: str) -> str:
     p = purpose or "login"
     return f"{PROJECT_NAME}: код подтверждения {code} для {p}. Никому не сообщайте."
+
+
+def _csrf_header(request: Request) -> str | None:
+    return request.headers.get("X-CSRF-Token") or request.headers.get("X-CSRF")
+
+
+def _require_csrf_header(request: Request) -> str:
+    token = _csrf_header(request)
+    if not token:
+        raise AuthorizationError("csrf_required", "csrf_required", http_status=403)
+    return token
+
+
+def _validate_csrf_for_session(request: Request, session_id: int | str) -> None:
+    token = _require_csrf_header(request)
+    if not validate_csrf_token(str(session_id), token):
+        raise AuthorizationError("csrf_invalid", "csrf_invalid", http_status=403)
 
 
 def _mask_phone(value: str) -> str:
@@ -594,8 +613,8 @@ async def login(login_data: UserLogin, request: Request, db: AsyncSession = Depe
 
 @router.post("/refresh", response_model=TokenResponse)
 async def refresh_token(
-    refresh_data: RefreshTokenRequest,
     request: Request,
+    refresh_data: RefreshTokenRequest | None = Body(default=None),
     db: AsyncSession = Depends(get_async_db),
 ):
     """
@@ -603,7 +622,13 @@ async def refresh_token(
     Refresh при этом ротируется (one-time use).
     """
     client_info = get_client_info(request)
-    raw_refresh = (refresh_data.refresh_token or "").strip()
+    raw_refresh = (refresh_data.refresh_token or "").strip() if refresh_data else ""
+    cookie_refresh = get_refresh_from_cookie(request)
+    cookie_mode = False
+    if not raw_refresh and cookie_refresh:
+        raw_refresh = cookie_refresh
+        cookie_mode = True
+        _require_csrf_header(request)
     if not raw_refresh:
         await _enforce_refresh_rate_limit(client_info["ip_address"])
         raise AuthenticationError("refresh_invalid", "INVALID_REFRESH_TOKEN")
@@ -623,6 +648,9 @@ async def refresh_token(
     if not session:
         await _enforce_refresh_rate_limit(client_info["ip_address"])
         raise AuthenticationError("refresh_invalid", "INVALID_REFRESH_TOKEN")
+
+    if cookie_mode:
+        _validate_csrf_for_session(request, session.id)
 
     session_id = getattr(session, "id", None)
     ident = f"refresh:session:{session_id}" if session_id is not None else f"refresh:user:{session.user_id}"
@@ -672,12 +700,12 @@ async def refresh_token(
 
 @router.post("/token/refresh", response_model=TokenResponse)
 async def refresh_token_alias(
-    refresh_data: RefreshTokenRequest,
     request: Request,
+    refresh_data: RefreshTokenRequest | None = Body(default=None),
     db: AsyncSession = Depends(get_async_db),
 ):
     """Legacy alias for /auth/refresh used by tests/older clients."""
-    return await refresh_token(refresh_data, request, db)
+    return await refresh_token(request, refresh_data, db)
 
 
 @router.post("/logout", response_model=SuccessResponse)
@@ -727,8 +755,17 @@ async def logout(
             token_invalid = True
             token = None
 
+    cookie_refresh = get_refresh_from_cookie(request)
+    cookie_mode = False
+    raw_refresh = ""
     if refresh_data and refresh_data.refresh_token:
         raw_refresh = (refresh_data.refresh_token or "").strip()
+    elif cookie_refresh:
+        raw_refresh = cookie_refresh
+        cookie_mode = True
+        _require_csrf_header(request)
+
+    if raw_refresh:
         token_hash = _hash_refresh_token(raw_refresh) if raw_refresh else ""
         res = await db.execute(
             select(UserSession).where(
@@ -737,6 +774,9 @@ async def logout(
             )
         )
         session = res.scalars().first()
+
+        if cookie_mode and session:
+            _validate_csrf_for_session(request, session.id)
 
         if session:
             await _enforce_logout_rate_limit(f"user:{session.user_id}")

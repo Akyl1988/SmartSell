@@ -512,7 +512,7 @@ class Settings(BaseSettings):
     PUBLIC_URL: AnyHttpUrl | None = Field(default=None, description="Public API URL", validation_alias="PUBLIC_URL")
 
     # ---- security/JWT
-    SECRET_KEY: str = Field(default="changeme", description="JWT secret key", validation_alias="SECRET_KEY")
+    SECRET_KEY: str = Field(default="", description="JWT secret key", validation_alias="SECRET_KEY")
     INVITE_TOKEN_SECRET: str | None = Field(
         default=None, description="Invitation token secret", validation_alias="INVITE_TOKEN_SECRET"
     )
@@ -2052,6 +2052,12 @@ def get_settings() -> Settings:
     # ensure TESTING flag reflects env/pytest for downstream checks
     if _under_pytest() and not s.TESTING:
         object.__setattr__(s, "TESTING", True)
+
+    # Non-production safety: ensure a deterministic dev secret is present
+    if not s.is_production:
+        current_secret = (s.SECRET_KEY or "").strip()
+        if (not current_secret) or (current_secret.lower() in {"changeme", "secret", "password"}):
+            object.__setattr__(s, "SECRET_KEY", "dev-secret-key-only-not-for-prod")
 
     # Export password to PGPASSWORD when present (helps psycopg2/Alembic)
     try:

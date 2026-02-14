@@ -260,6 +260,10 @@ curl -H "Authorization: Bearer YOUR_JWT_TOKEN" \
      http://localhost:8000/api/v1/users/me
 ```
 
+Cookie-mode refresh/logout: if you use the refresh token via HttpOnly cookies, the client must send an
+`X-CSRF-Token` header bound to the refresh session (see `generate_csrf_token`/`validate_csrf_token` in
+app/core/security.py). Requests without a valid CSRF token are rejected with 403.
+
 ## 🚀 Deployment
 
 ### Production Checklist
