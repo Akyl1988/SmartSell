@@ -18,6 +18,8 @@ async def _seed_campaign(
     company_id: int,
     processing_status: CampaignProcessingStatus,
     add_message: bool = True,
+    attempts: int = 0,
+    request_id: str | None = None,
 ) -> Campaign:
     company = await async_db_session.get(Company, company_id)
     if not company:
@@ -33,6 +35,8 @@ async def _seed_campaign(
         company_id=company_id,
         processing_status=processing_status,
         queued_at=datetime.now(UTC) if processing_status == CampaignProcessingStatus.QUEUED else None,
+        attempts=attempts,
+        request_id=request_id,
     )
     async_db_session.add(campaign)
     await async_db_session.flush()
@@ -105,6 +109,7 @@ async def test_campaign_worker_failure_sets_error(async_db_session, monkeypatch)
         async_db_session,
         company_id=91030,
         processing_status=CampaignProcessingStatus.QUEUED,
+        request_id="req-keep",
     )
 
     async def _boom(*_args, **_kwargs):
@@ -120,6 +125,7 @@ async def test_campaign_worker_failure_sets_error(async_db_session, monkeypatch)
     assert "boom" in campaign.last_error
     assert campaign.attempts == 1
     assert campaign.failed_at is not None
+    assert campaign.request_id == "req-keep"
 
 
 async def test_campaign_worker_lock_prevents_processing(async_db_session, monkeypatch):
@@ -139,6 +145,58 @@ async def test_campaign_worker_lock_prevents_processing(async_db_session, monkey
 
     await async_db_session.refresh(campaign)
     assert campaign.processing_status == CampaignProcessingStatus.QUEUED
+
+
+async def test_campaign_worker_queue_lock_prevents_processing(async_db_session, monkeypatch):
+    campaign = await _seed_campaign(
+        async_db_session,
+        company_id=91041,
+        processing_status=CampaignProcessingStatus.QUEUED,
+    )
+
+    async def _deny_queue_lock(*_args, **_kwargs):
+        return False
+
+    monkeypatch.setattr(campaign_processing, "_try_queue_advisory_lock", _deny_queue_lock)
+
+    results = await campaign_processing.process_campaign_queue_once(async_db_session, limit=5)
+    assert results == []
+
+    await async_db_session.refresh(campaign)
+    assert campaign.processing_status == CampaignProcessingStatus.QUEUED
+
+
+async def test_campaign_worker_batch_limit(async_db_session):
+    campaigns = []
+    for idx in range(60):
+        campaigns.append(
+            await _seed_campaign(
+                async_db_session,
+                company_id=92000 + idx,
+                processing_status=CampaignProcessingStatus.QUEUED,
+            )
+        )
+
+    results = await campaign_processing.process_campaign_queue_once(async_db_session, limit=200)
+    assert len(results) == campaign_processing._MAX_BATCH
+
+
+async def test_campaign_worker_max_attempts(async_db_session):
+    campaign = await _seed_campaign(
+        async_db_session,
+        company_id=93000,
+        processing_status=CampaignProcessingStatus.QUEUED,
+        attempts=campaign_processing._MAX_ATTEMPTS,
+    )
+
+    results = await campaign_processing.process_campaign_queue_once(async_db_session, limit=5)
+    assert results
+
+    await async_db_session.refresh(campaign)
+    assert campaign.processing_status == CampaignProcessingStatus.FAILED
+    assert campaign.failed_at is not None
+    assert campaign.started_at is None
+    assert campaign.attempts == campaign_processing._MAX_ATTEMPTS
 
 
 async def test_campaign_worker_requires_messages(async_db_session):

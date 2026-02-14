@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from datetime import UTC, datetime
 from typing import Any
 
@@ -12,6 +13,9 @@ from app.models.campaign import Campaign, CampaignProcessingStatus, Message
 
 _ERROR_MESSAGE_LIMIT = 500
 _NO_MESSAGES_ERROR = "campaign_has_no_messages"
+_MAX_BATCH = 50
+_MAX_ATTEMPTS = int(os.getenv("CAMPAIGN_MAX_ATTEMPTS", "3"))
+_QUEUE_LOCK_KEY = 0x43505051  # "CPPQ"
 
 
 def _utcnow() -> datetime:
@@ -30,6 +34,16 @@ def _truncate_error(message: str | None, limit: int = _ERROR_MESSAGE_LIMIT) -> s
 def _campaign_lock_key(campaign_id: int) -> int:
     namespace = 0x434D50  # "CMP"
     return (namespace << 32) ^ int(campaign_id)
+
+
+async def _try_queue_advisory_lock(db: AsyncSession) -> bool:
+    res = await db.execute(text("SELECT pg_try_advisory_xact_lock(:k)").bindparams(k=_QUEUE_LOCK_KEY))
+    return bool(res.scalar())
+
+
+def _try_queue_advisory_lock_sync(db: Session) -> bool:
+    res = db.execute(text("SELECT pg_try_advisory_xact_lock(:k)"), {"k": _QUEUE_LOCK_KEY})
+    return bool(res.scalar())
 
 
 async def _try_campaign_advisory_lock(db: AsyncSession, campaign_id: int) -> bool:
@@ -65,6 +79,9 @@ async def process_campaign_queue_once(
     now: datetime | None = None,
 ) -> list[dict[str, Any]]:
     now = now or _utcnow()
+    if not await _try_queue_advisory_lock(db):
+        return []
+    batch_limit = min(_MAX_BATCH, max(1, int(limit)))
     claim_stmt = (
         select(Campaign.id)
         .where(
@@ -72,7 +89,7 @@ async def process_campaign_queue_once(
             Campaign.deleted_at.is_(None),
         )
         .order_by(Campaign.queued_at.asc().nullsfirst(), Campaign.id.asc())
-        .limit(max(1, int(limit)))
+        .limit(batch_limit)
         .with_for_update(skip_locked=True)
     )
     campaign_ids = [row[0] for row in (await db.execute(claim_stmt)).all()]
@@ -89,6 +106,16 @@ async def process_campaign_queue_once(
                 await db.execute(select(Campaign).where(Campaign.id == campaign_id).with_for_update())
             ).scalar_one()
             if campaign.processing_status != CampaignProcessingStatus.QUEUED:
+                continue
+
+            attempts = int(campaign.attempts or 0)
+            if _MAX_ATTEMPTS > 0 and attempts >= _MAX_ATTEMPTS:
+                campaign.processing_status = CampaignProcessingStatus.FAILED
+                if not campaign.last_error:
+                    campaign.last_error = "max_attempts_exceeded"
+                campaign.finished_at = _utcnow()
+                campaign.failed_at = campaign.finished_at
+                results.append({"campaign_id": campaign.id, "status": campaign.processing_status.value})
                 continue
 
             campaign.processing_status = CampaignProcessingStatus.PROCESSING
@@ -122,6 +149,9 @@ def process_campaign_queue_once_sync(
 ) -> list[dict[str, Any]]:
     now = now or _utcnow()
     with session_scope() as db:
+        if not _try_queue_advisory_lock_sync(db):
+            return []
+        batch_limit = min(_MAX_BATCH, max(1, int(limit)))
         claim_stmt = (
             select(Campaign.id)
             .where(
@@ -129,7 +159,7 @@ def process_campaign_queue_once_sync(
                 Campaign.deleted_at.is_(None),
             )
             .order_by(Campaign.queued_at.asc().nullsfirst(), Campaign.id.asc())
-            .limit(max(1, int(limit)))
+            .limit(batch_limit)
             .with_for_update(skip_locked=True)
         )
         campaign_ids = [row[0] for row in db.execute(claim_stmt).all()]
@@ -143,6 +173,16 @@ def process_campaign_queue_once_sync(
 
                 campaign = db.execute(select(Campaign).where(Campaign.id == campaign_id).with_for_update()).scalar_one()
                 if campaign.processing_status != CampaignProcessingStatus.QUEUED:
+                    continue
+
+                attempts = int(campaign.attempts or 0)
+                if _MAX_ATTEMPTS > 0 and attempts >= _MAX_ATTEMPTS:
+                    campaign.processing_status = CampaignProcessingStatus.FAILED
+                    if not campaign.last_error:
+                        campaign.last_error = "max_attempts_exceeded"
+                    campaign.finished_at = _utcnow()
+                    campaign.failed_at = campaign.finished_at
+                    results.append({"campaign_id": campaign.id, "status": campaign.processing_status.value})
                     continue
 
                 campaign.processing_status = CampaignProcessingStatus.PROCESSING

@@ -31,8 +31,9 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
+from typing import Any
 
-from sqlalchemy import update
+from sqlalchemy import text, update
 
 try:
     from apscheduler.events import EVENT_JOB_ERROR, EVENT_JOB_MAX_INSTANCES, EVENT_JOB_MISSED
@@ -115,6 +116,7 @@ logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
 
 _ERROR_MESSAGE_LIMIT = 500
+_SCHEDULER_LOCK_KEY = 0x53434844  # "SCHD"
 
 
 # -------- Kaspi autosync mutual exclusion helper -------- #
@@ -203,6 +205,27 @@ def _truncate_error(message: str | None, limit: int = _ERROR_MESSAGE_LIMIT) -> s
     if not cleaned:
         return None
     return cleaned[:limit]
+
+
+def _try_scheduler_advisory_lock() -> tuple[bool, Any | None]:
+    db = SessionLocal()
+    try:
+        acquired = bool(db.execute(text("SELECT pg_try_advisory_lock(:k)"), {"k": _SCHEDULER_LOCK_KEY}).scalar())
+    except Exception:
+        db.close()
+        raise
+
+    if not acquired:
+        db.close()
+        return False, None
+    return True, db
+
+
+def _release_scheduler_advisory_lock(db) -> None:
+    try:
+        db.execute(text("SELECT pg_advisory_unlock(:k)"), {"k": _SCHEDULER_LOCK_KEY})
+    finally:
+        db.close()
 
 
 @contextmanager
@@ -392,21 +415,29 @@ def process_scheduled_campaigns() -> None:
       - ставит due кампании в очередь
       - обрабатывает QUEUED кампании
     """
+    acquired, lock_db = _try_scheduler_advisory_lock()
+    if not acquired:
+        logger.info("Campaign pipeline tick skipped: scheduler lock busy")
+        return
     now = _utcnow_naive()
-    logger.info("Проверка кампаний к отправке (%s)", now.isoformat())
-    enqueue_summary = enqueue_due_campaigns_sync(now=_utcnow_aware())
-    processed = campaign_processing.process_campaign_queue_once_sync()
-    processed_ids = [
-        item["campaign_id"] for item in processed if item.get("status") == CampaignProcessingStatus.DONE.value
-    ]
-    scheduled = _schedule_pending_messages_for_campaigns(processed_ids)
-    logger.info(
-        "Campaign pipeline tick: queued=%s skipped=%s processed=%s scheduled=%s",
-        enqueue_summary.get("queued"),
-        enqueue_summary.get("skipped"),
-        len(processed),
-        scheduled,
-    )
+    try:
+        logger.info("Проверка кампаний к отправке (%s)", now.isoformat())
+        enqueue_summary = enqueue_due_campaigns_sync(now=_utcnow_aware())
+        processed = campaign_processing.process_campaign_queue_once_sync()
+        processed_ids = [
+            item["campaign_id"] for item in processed if item.get("status") == CampaignProcessingStatus.DONE.value
+        ]
+        scheduled = _schedule_pending_messages_for_campaigns(processed_ids)
+        logger.info(
+            "Campaign pipeline tick: queued=%s skipped=%s processed=%s scheduled=%s",
+            enqueue_summary.get("queued"),
+            enqueue_summary.get("skipped"),
+            len(processed),
+            scheduled,
+        )
+    finally:
+        if lock_db is not None:
+            _release_scheduler_advisory_lock(lock_db)
 
 
 # -------- Публичные сервисные функции воркера -------- #
