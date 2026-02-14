@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import hashlib
-import hmac
 import json
 import time
 
@@ -9,19 +7,21 @@ import pytest
 from sqlalchemy import select
 
 from app.core.config import settings
+from app.integrations.providers.tiptop.webhook_security import (
+    TIPTOP_SIGN_MODE_RAW,
+    TIPTOP_SIGN_MODE_TIMESTAMP_DOT_BODY,
+    sign_tiptop_webhook_payload,
+)
 from app.models.idempotency_key import IdempotencyKey
 
 pytestmark = pytest.mark.asyncio
-
-
-def _sign(payload: bytes, secret: str) -> str:
-    return hmac.new(secret.encode("utf-8"), payload, hashlib.sha256).hexdigest()
 
 
 async def test_tiptop_webhook_invalid_signature(async_client, monkeypatch):
     monkeypatch.setattr(settings, "ENVIRONMENT", "development", raising=False)
     monkeypatch.setattr(settings, "TIPTOP_API_SECRET", "s1", raising=False)
     monkeypatch.setattr(settings, "TIPTOP_API_KEY", "k1", raising=False)
+    monkeypatch.setenv("TIPTOP_WEBHOOK_SIGN_MODE", TIPTOP_SIGN_MODE_RAW)
 
     payload = {"event_id": "evt-1", "company_id": 1001}
     body = json.dumps(payload).encode("utf-8")
@@ -40,21 +40,32 @@ async def test_tiptop_webhook_invalid_signature(async_client, monkeypatch):
     assert resp.json().get("detail") == "invalid_signature"
 
 
-async def test_tiptop_webhook_valid_signature(async_client, monkeypatch):
+@pytest.mark.parametrize(
+    "sign_mode",
+    [TIPTOP_SIGN_MODE_RAW, TIPTOP_SIGN_MODE_TIMESTAMP_DOT_BODY],
+)
+async def test_tiptop_webhook_valid_signature(async_client, monkeypatch, sign_mode):
     monkeypatch.setattr(settings, "ENVIRONMENT", "development", raising=False)
     monkeypatch.setattr(settings, "TIPTOP_API_SECRET", "s1", raising=False)
     monkeypatch.setattr(settings, "TIPTOP_API_KEY", "k1", raising=False)
+    monkeypatch.setenv("TIPTOP_WEBHOOK_SIGN_MODE", sign_mode)
 
     payload = {"event_id": "evt-ok-1", "company_id": 1001}
     body = json.dumps(payload).encode("utf-8")
-    signature = _sign(body, "s1")
+    ts = str(int(time.time()))
+    signature = sign_tiptop_webhook_payload(
+        body=body,
+        secret="s1",
+        timestamp=ts,
+        sign_mode=sign_mode,
+    )
 
     resp = await async_client.post(
         "/api/v1/payments/webhooks/tiptop",
         content=body,
         headers={
             "X-TipTop-Signature": signature,
-            "X-TipTop-Timestamp": str(int(time.time())),
+            "X-TipTop-Timestamp": ts,
             "Content-Type": "application/json",
         },
     )
@@ -67,6 +78,7 @@ async def test_tiptop_webhook_missing_secret_in_prod(async_client, monkeypatch):
     monkeypatch.setattr(settings, "ENVIRONMENT", "production", raising=False)
     monkeypatch.setattr(settings, "TIPTOP_API_SECRET", None, raising=False)
     monkeypatch.setattr(settings, "TIPTOP_API_KEY", None, raising=False)
+    monkeypatch.setenv("TIPTOP_WEBHOOK_SIGN_MODE", TIPTOP_SIGN_MODE_RAW)
 
     payload = {"event_id": "evt-2", "company_id": 1001}
     body = json.dumps(payload).encode("utf-8")
@@ -88,14 +100,21 @@ async def test_tiptop_webhook_idempotent(async_client, monkeypatch, async_db_ses
     monkeypatch.setattr(settings, "ENVIRONMENT", "development", raising=False)
     monkeypatch.setattr(settings, "TIPTOP_API_SECRET", "s1", raising=False)
     monkeypatch.setattr(settings, "TIPTOP_API_KEY", "k1", raising=False)
+    monkeypatch.setenv("TIPTOP_WEBHOOK_SIGN_MODE", TIPTOP_SIGN_MODE_RAW)
 
     payload = {"event_id": "evt-dup-1", "company_id": 1001}
     body = json.dumps(payload).encode("utf-8")
-    signature = _sign(body, "s1")
+    ts = str(int(time.time()))
+    signature = sign_tiptop_webhook_payload(
+        body=body,
+        secret="s1",
+        timestamp=ts,
+        sign_mode=TIPTOP_SIGN_MODE_RAW,
+    )
 
     headers = {
         "X-TipTop-Signature": signature,
-        "X-TipTop-Timestamp": str(int(time.time())),
+        "X-TipTop-Timestamp": ts,
         "Content-Type": "application/json",
     }
 
