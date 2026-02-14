@@ -311,7 +311,7 @@ admin_router = APIRouter(
 # =============================================================================
 # HEALTH / STATS
 # =============================================================================
-@read_router.get("/health", response_model=HealthOut, summary="Здоровье storage-слоя")
+@router.get("/health", response_model=HealthOut, summary="Здоровье storage-слоя")
 async def health(db: AsyncSession = Depends(get_async_db)) -> HealthOut:
     storage = await _get_storage(db)
     caps = _storage_caps(storage)
