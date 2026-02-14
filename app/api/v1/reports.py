@@ -1,13 +1,14 @@
 from __future__ import annotations
 
+import csv
 import os
 import re
 from datetime import UTC, date, datetime, time
 from decimal import Decimal
-from io import BytesIO
+from io import BytesIO, StringIO
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Response
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from fastapi.responses import StreamingResponse
 from reportlab.lib import colors
 from reportlab.lib.pagesizes import A4
@@ -24,8 +25,10 @@ from app.core.dependencies import (
     require_company_access,
     require_store_admin_company,
 )
+from app.core.exceptions import AuthorizationError, NotFoundError
+from app.core.rbac import is_platform_admin, is_store_admin, is_store_manager
 from app.core.security import resolve_tenant_company_id
-from app.models.billing import BillingInvoice
+from app.models.billing import BillingInvoice, WalletBalance, WalletTransaction
 from app.models.order import Order, OrderItem
 from app.models.user import User
 from app.services.reports.sales_pdf import build_sales_pdf
@@ -33,6 +36,8 @@ from app.utils.pii import mask_phone
 
 
 async def _require_company_context(current_user: User = Depends(get_current_verified_user)) -> User:
+    if is_platform_admin(current_user):
+        return current_user
     resolve_tenant_company_id(current_user, not_found_detail="Company not set")
     return current_user
 
@@ -77,6 +82,164 @@ def _date_bounds(date_from: date | None, date_to: date | None) -> tuple[datetime
     start_dt = datetime.combine(date_from, time.min) if date_from else None
     end_dt = datetime.combine(date_to, time.max) if date_to else None
     return start_dt, end_dt
+
+
+def _resolve_wallet_report_company_id(
+    current_user: User,
+    company_id: int | None,
+) -> int:
+    if is_platform_admin(current_user):
+        if company_id is not None:
+            return int(company_id)
+        return resolve_tenant_company_id(current_user, not_found_detail="Company not set")
+    if not (is_store_admin(current_user) or is_store_manager(current_user)):
+        raise AuthorizationError("Admin role required", "ADMIN_REQUIRED")
+    resolved_company_id = resolve_tenant_company_id(current_user, not_found_detail="Company not set")
+    if company_id is not None and int(company_id) != int(resolved_company_id):
+        raise NotFoundError("company_not_found", code="company_not_found", http_status=404)
+    return int(resolved_company_id)
+
+
+def _safe_reference(reference_type: str | None, reference_id: int | None) -> str:
+    ref = (reference_type or "").strip()
+    if not ref:
+        return ""
+    if reference_id is None:
+        return ref
+    return f"{ref}:{reference_id}"
+
+
+def _resolve_company_id_param(request: Request, company_id: int | None) -> int | None:
+    if company_id is not None:
+        return int(company_id)
+    raw = request.query_params.get("company_id")
+    if raw is None:
+        return None
+    try:
+        return int(raw)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="company_id must be integer") from exc
+
+
+def _csv_stream(rows: list[dict[str, str]], headers: list[str]) -> Any:
+    buffer = StringIO()
+    writer = csv.writer(buffer, lineterminator="\n")
+    writer.writerow(headers)
+    yield buffer.getvalue().encode("utf-8")
+    buffer.seek(0)
+    buffer.truncate(0)
+    for row in rows:
+        writer.writerow([row.get(col, "") for col in headers])
+        yield buffer.getvalue().encode("utf-8")
+        buffer.seek(0)
+        buffer.truncate(0)
+
+
+async def _fetch_wallet_transactions(
+    db: AsyncSession,
+    *,
+    company_id: int,
+    date_from: datetime | None,
+    date_to: datetime | None,
+    limit: int,
+) -> list[dict[str, str]]:
+    stmt = (
+        select(
+            WalletTransaction.id,
+            WalletTransaction.created_at,
+            WalletTransaction.amount,
+            WalletTransaction.transaction_type,
+            WalletTransaction.reference_type,
+            WalletTransaction.reference_id,
+            WalletTransaction.balance_after,
+            WalletBalance.currency,
+        )
+        .join(WalletBalance, WalletBalance.id == WalletTransaction.wallet_id)
+        .where(WalletBalance.company_id == company_id)
+    )
+    if date_from:
+        stmt = stmt.where(WalletTransaction.created_at >= date_from)
+    if date_to:
+        stmt = stmt.where(WalletTransaction.created_at <= date_to)
+    if hasattr(WalletTransaction, "deleted_at"):
+        stmt = stmt.where(WalletTransaction.deleted_at.is_(None))
+    if hasattr(WalletBalance, "deleted_at"):
+        stmt = stmt.where(WalletBalance.deleted_at.is_(None))
+
+    stmt = stmt.order_by(WalletTransaction.created_at.desc(), WalletTransaction.id.desc()).limit(limit)
+    rows = (await db.execute(stmt)).all()
+    items: list[dict[str, str]] = []
+    for (
+        trx_id,
+        created_at,
+        amount,
+        transaction_type,
+        reference_type,
+        reference_id,
+        balance_after,
+        currency,
+    ) in rows:
+        items.append(
+            {
+                "transaction_id": str(trx_id),
+                "created_at": created_at.isoformat() if created_at else "",
+                "amount": str(amount) if amount is not None else "",
+                "currency": str(currency or ""),
+                "type": str(transaction_type or ""),
+                "reference": _safe_reference(reference_type, reference_id),
+                "balance_after": str(balance_after) if balance_after is not None else "",
+            }
+        )
+    return items
+
+
+@router.get(
+    "/wallet/transactions.csv",
+    responses={
+        200: {
+            "content": {"text/csv": {"schema": {"type": "string", "format": "binary"}}},
+            "description": "Wallet transactions CSV",
+        }
+    },
+)
+async def report_wallet_transactions_csv(
+    request: Request,
+    limit: int = Query(default=500, ge=1, le=5000),
+    date_from: str | None = Query(default=None),
+    date_to: str | None = Query(default=None),
+    companyId: int | None = Query(default=None, ge=1, alias="companyId"),
+    admin: User = Depends(get_current_verified_user),
+    db: AsyncSession = Depends(get_async_db),
+) -> StreamingResponse:
+    _ = admin
+    company_id = _resolve_company_id_param(request, companyId)
+    resolved_company_id = _resolve_wallet_report_company_id(admin, company_id)
+    df = _parse_dt(date_from, "date_from")
+    dt = _parse_dt(date_to, "date_to")
+
+    rows = await _fetch_wallet_transactions(
+        db,
+        company_id=resolved_company_id,
+        date_from=df,
+        date_to=dt,
+        limit=limit,
+    )
+
+    headers = [
+        "transaction_id",
+        "created_at",
+        "amount",
+        "currency",
+        "type",
+        "reference",
+        "balance_after",
+    ]
+
+    return StreamingResponse(
+        _csv_stream(rows, headers),
+        media_type="text/csv; charset=utf-8",
+        headers={"Content-Disposition": "attachment; filename=wallet-transactions.csv"},
+    )
 
 
 async def _fetch_orders(
