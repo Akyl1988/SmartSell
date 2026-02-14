@@ -2,9 +2,7 @@
 from __future__ import annotations
 
 import hashlib
-import hmac
 import logging
-import time
 from decimal import Decimal
 from typing import Any
 
@@ -22,8 +20,13 @@ from app.core.dependencies import (
     require_store_admin,
 )
 from app.core.idempotency import IdempotencyEnforcer
+from app.core.provider_registry import ProviderRegistry
 from app.core.security import get_current_user, require_manager, resolve_tenant_company_id
 from app.integrations.errors import ProviderNotConfiguredError
+from app.integrations.providers.tiptop.webhook_security import (
+    TipTopWebhookVerificationError,
+    verify_tiptop_webhook_signature,
+)
 from app.models.user import User
 from app.services.payment_providers import PaymentProviderResolver
 from app.storage.payments_sql import PaymentIntentsStorageSQL, PaymentsStorageSQL, payment_intents
@@ -224,14 +227,6 @@ async def health():
     return {"status": "ok", "backend": _BACKEND}
 
 
-def _extract_webhook_signature(headers: dict[str, str]) -> str | None:
-    return headers.get("x-tiptop-signature") or headers.get("x-signature")
-
-
-def _extract_webhook_timestamp(headers: dict[str, str]) -> str | None:
-    return headers.get("x-tiptop-timestamp") or headers.get("x-timestamp")
-
-
 def _extract_webhook_event_id(payload: dict[str, Any], body: bytes) -> str:
     for key in ("event_id", "id", "payment_id", "invoice_id", "refund_id"):
         value = payload.get(key)
@@ -262,6 +257,44 @@ async def _resolve_webhook_company_id(payload: dict[str, Any], db: AsyncSession)
     return None
 
 
+async def _ensure_tiptop_webhook_enabled(payload: dict[str, Any], db: AsyncSession) -> None:
+    if not settings.is_production:
+        return
+
+    company_id = await _resolve_webhook_company_id(payload, db)
+    domain_candidates: list[str]
+    if company_id is not None:
+        domain_candidates = [f"payments:{company_id}", "payments"]
+    else:
+        domain_candidates = ["payments"]
+
+    entry = None
+    for domain in domain_candidates:
+        entry = await ProviderRegistry.get_active_provider(db, domain)
+        if entry:
+            break
+
+    if not entry:
+        raise HTTPException(status_code=503, detail="payment_provider_not_configured")
+
+    provider_name = (entry.provider or "").strip().lower()
+    if provider_name.startswith("noop") or provider_name in {
+        "placeholder",
+        "payment-placeholder",
+        "payments-placeholder",
+        "stub",
+        "dummy",
+        "manual",
+        "manual-pay",
+        "payments-manual",
+        "manual-billing",
+    }:
+        raise HTTPException(status_code=503, detail="payment_provider_unavailable")
+
+    if provider_name not in {"tiptop", "tiptop-pay", "tippay", "tiptop-payment"}:
+        raise HTTPException(status_code=503, detail="payment_provider_unavailable")
+
+
 @router.post("/webhooks/tiptop")
 async def tiptop_webhook(
     request: Request,
@@ -276,28 +309,21 @@ async def tiptop_webhook(
     except Exception:
         raise HTTPException(status_code=400, detail="invalid_json")
 
+    await _ensure_tiptop_webhook_enabled(payload, db)
+
     if settings.is_production and (not settings.TIPTOP_API_SECRET or not settings.TIPTOP_API_KEY):
         raise HTTPException(status_code=503, detail="payment_provider_not_configured")
 
-    signature = _extract_webhook_signature({k.lower(): v for k, v in request.headers.items()})
-    if not signature:
-        raise HTTPException(status_code=401, detail="missing_signature")
-
-    if not settings.TIPTOP_API_SECRET:
-        raise HTTPException(status_code=503, detail="payment_provider_not_configured")
-
-    expected = hmac.new(settings.TIPTOP_API_SECRET.encode("utf-8"), body, hashlib.sha256).hexdigest()
-    if not hmac.compare_digest(signature, expected):
-        raise HTTPException(status_code=401, detail="invalid_signature")
-
-    ts_header = _extract_webhook_timestamp({k.lower(): v for k, v in request.headers.items()})
-    if ts_header:
-        try:
-            ts = int(ts_header)
-        except Exception:
-            raise HTTPException(status_code=401, detail="invalid_timestamp")
-        if abs(int(time.time()) - ts) > 300:
-            raise HTTPException(status_code=401, detail="invalid_timestamp")
+    normalized_headers = {k.lower(): v for k, v in request.headers.items()}
+    try:
+        verify_tiptop_webhook_signature(
+            body=body,
+            headers=normalized_headers,
+            secret=settings.TIPTOP_API_SECRET,
+            is_production=settings.is_production,
+        )
+    except TipTopWebhookVerificationError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.detail)
 
     event_id = _extract_webhook_event_id(payload, body)
     company_id = await _resolve_webhook_company_id(payload, db)

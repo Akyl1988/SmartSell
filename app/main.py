@@ -674,6 +674,28 @@ async def _check_provider_registry() -> dict[str, dict[str, Any]]:
                 if not provider_name or provider_name.startswith("noop"):
                     results[domain] = {"ok": False, "detail": "provider_noop"}
                     continue
+                if domain == "payments" and provider_name in {
+                    "placeholder",
+                    "payment-placeholder",
+                    "payments-placeholder",
+                    "stub",
+                    "dummy",
+                }:
+                    results[domain] = {"ok": False, "detail": "provider_placeholder"}
+                    continue
+                if domain == "payments" and provider_name in {
+                    "manual",
+                    "manual-pay",
+                    "payments-manual",
+                    "manual-billing",
+                }:
+                    results[domain] = {
+                        "ok": True,
+                        "detail": "manual_billing_only",
+                        "provider": entry.provider,
+                        "version": entry.version,
+                    }
+                    continue
                 if domain == "otp" and provider_name in {"mobizon", "otp-mobizon", "mobizon-otp"}:
                     missing: list[str] = []
                     if not settings.MOBIZON_API_KEY:
@@ -695,6 +717,15 @@ async def _check_provider_registry() -> dict[str, dict[str, Any]]:
                         missing.append("SMTP_FROM_EMAIL")
                     if missing:
                         results[domain] = {"ok": False, "detail": "smtp_missing_config", "missing": missing}
+                        continue
+                if domain == "payments" and provider_name in {"tiptop", "tiptop-pay", "tippay", "tiptop-payment"}:
+                    missing: list[str] = []
+                    if not settings.TIPTOP_API_KEY:
+                        missing.append("TIPTOP_API_KEY")
+                    if not settings.TIPTOP_API_SECRET:
+                        missing.append("TIPTOP_API_SECRET")
+                    if missing:
+                        results[domain] = {"ok": False, "detail": "tiptop_missing_config", "missing": missing}
                         continue
                 results[domain] = {
                     "ok": True,
