@@ -22,7 +22,7 @@ from app.core.security import get_current_user
 from app.models.campaign import Campaign as DbCampaign
 from app.models.campaign import CampaignProcessingStatus as DbCampaignProcessingStatus
 from app.models.user import User
-from app.services.campaign_runner import queue_campaign_run
+from app.services.campaign_runner import queue_campaign_run, should_force_requeue
 
 __all__ = ["router"]
 
@@ -889,7 +889,7 @@ async def queue_campaign_run_store(
     if campaign.processing_status in (
         DbCampaignProcessingStatus.QUEUED,
         DbCampaignProcessingStatus.PROCESSING,
-    ):
+    ) and not should_force_requeue(campaign):
         return {
             "campaign_id": campaign.id,
             "status": campaign.processing_status.value,

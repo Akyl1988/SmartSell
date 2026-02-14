@@ -34,8 +34,13 @@ from app.models.kaspi_trial_grant import KaspiTrialGrant
 from app.models.subscription_override import SubscriptionOverride
 from app.models.user import User
 from app.schemas.campaign import AdminCampaignResponse
-from app.services.campaign_runner import enqueue_due_campaigns
-from app.services.campaign_runner import queue_campaign_run as queue_campaign_run_service
+from app.services.campaign_runner import (
+    enqueue_due_campaigns,
+    should_force_requeue,
+)
+from app.services.campaign_runner import (
+    queue_campaign_run as queue_campaign_run_service,
+)
 from app.services.subscriptions import activate_plan, renew_if_due
 from app.worker.campaign_processing import process_campaign_queue_once
 
@@ -189,7 +194,10 @@ async def queue_campaign_run(
     if not campaign:
         raise NotFoundError("campaign_not_found", code="campaign_not_found", http_status=404)
 
-    if campaign.processing_status in (CampaignProcessingStatus.QUEUED, CampaignProcessingStatus.PROCESSING):
+    if campaign.processing_status in (
+        CampaignProcessingStatus.QUEUED,
+        CampaignProcessingStatus.PROCESSING,
+    ) and not should_force_requeue(campaign):
         return {
             "campaign_id": campaign.id,
             "status": campaign.processing_status.value,

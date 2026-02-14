@@ -5,6 +5,7 @@ from datetime import UTC, datetime
 import pytest
 from sqlalchemy import select
 
+from app.core.config import settings
 from app.models.campaign import Campaign, CampaignProcessingStatus, CampaignStatus, ChannelType, Message, MessageStatus
 from app.models.company import Company
 from app.worker import campaign_processing
@@ -85,6 +86,33 @@ async def test_campaign_run_endpoint_idempotent(async_client, async_db_session, 
     assert payload_second.get("queued_at") == queued_at
     assert payload_second.get("request_id") == request_id
     assert "failed_at" in payload_second
+
+
+async def test_campaign_manual_run_resets_attempts(async_client, async_db_session, auth_headers):
+    campaign = await _seed_campaign(
+        async_db_session,
+        company_id=91011,
+        processing_status=CampaignProcessingStatus.QUEUED,
+    )
+    campaign.attempts = settings.CAMPAIGN_MAX_ATTEMPTS
+    campaign.last_error = "max_attempts_exceeded"
+    campaign.failed_at = datetime.now(UTC)
+    campaign.finished_at = campaign.failed_at
+    await async_db_session.commit()
+
+    resp = await async_client.post(
+        f"/api/v1/admin/campaigns/{campaign.id}/run",
+        headers=auth_headers,
+    )
+    assert resp.status_code == 200, resp.text
+
+    await async_db_session.refresh(campaign)
+    assert campaign.processing_status == CampaignProcessingStatus.QUEUED
+    assert campaign.attempts == 0
+    assert campaign.last_error is None
+    assert campaign.failed_at is None
+    assert campaign.finished_at is None
+    assert campaign.queued_at is not None
 
 
 async def test_campaign_worker_transitions_to_done(async_db_session):
@@ -168,7 +196,8 @@ async def test_campaign_worker_queue_lock_prevents_processing(async_db_session, 
 
 async def test_campaign_worker_batch_limit(async_db_session):
     campaigns = []
-    for idx in range(60):
+    batch_size = int(settings.CAMPAIGN_PROCESS_BATCH)
+    for idx in range(batch_size + 10):
         campaigns.append(
             await _seed_campaign(
                 async_db_session,
@@ -178,7 +207,7 @@ async def test_campaign_worker_batch_limit(async_db_session):
         )
 
     results = await campaign_processing.process_campaign_queue_once(async_db_session, limit=200)
-    assert len(results) == campaign_processing._MAX_BATCH
+    assert len(results) == batch_size
 
 
 async def test_campaign_worker_max_attempts(async_db_session):
@@ -186,7 +215,7 @@ async def test_campaign_worker_max_attempts(async_db_session):
         async_db_session,
         company_id=93000,
         processing_status=CampaignProcessingStatus.QUEUED,
-        attempts=campaign_processing._MAX_ATTEMPTS,
+        attempts=settings.CAMPAIGN_MAX_ATTEMPTS,
     )
 
     results = await campaign_processing.process_campaign_queue_once(async_db_session, limit=5)
@@ -196,7 +225,7 @@ async def test_campaign_worker_max_attempts(async_db_session):
     assert campaign.processing_status == CampaignProcessingStatus.FAILED
     assert campaign.failed_at is not None
     assert campaign.started_at is None
-    assert campaign.attempts == campaign_processing._MAX_ATTEMPTS
+    assert campaign.attempts == settings.CAMPAIGN_MAX_ATTEMPTS
 
 
 async def test_campaign_worker_requires_messages(async_db_session):

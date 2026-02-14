@@ -54,6 +54,8 @@
 | SMTP_HOST          | smtp.gmail.com                              |
 | SMTP_PORT          | 587                                         |
 | SMTP_USER          | your-email@gmail.com                        |
+| CAMPAIGN_PROCESS_BATCH | 50                                      |
+| CAMPAIGN_MAX_ATTEMPTS  | 3                                       |
 | CLOUDINARY_CLOUD_NAME | your-cloud-name                          |
 | CLOUDINARY_API_KEY | your-cloudinary-api-key                     |
 | CLOUDINARY_API_SECRET | your-cloudinary-api-secret               |
