@@ -233,6 +233,34 @@ def _extract_webhook_timestamp(headers: dict[str, str]) -> str | None:
     return headers.get("x-tiptop-timestamp") or headers.get("x-timestamp")
 
 
+def _verify_tiptop_signature(*, body: bytes, headers: dict[str, str]) -> None:
+    # NOTE: TipTop webhook signature assumed as HMAC-SHA256 over raw body.
+    signature = _extract_webhook_signature(headers)
+    if not signature:
+        raise HTTPException(status_code=403, detail="missing_signature")
+
+    if not settings.TIPTOP_API_SECRET:
+        raise HTTPException(status_code=503, detail="payment_provider_not_configured")
+
+    expected = hmac.new(settings.TIPTOP_API_SECRET.encode("utf-8"), body, hashlib.sha256).hexdigest()
+    if not hmac.compare_digest(signature, expected):
+        raise HTTPException(status_code=403, detail="invalid_signature")
+
+
+def _verify_tiptop_timestamp(*, headers: dict[str, str]) -> None:
+    ts_header = _extract_webhook_timestamp(headers)
+    if not ts_header:
+        if settings.is_production:
+            raise HTTPException(status_code=403, detail="missing_timestamp")
+        return
+    try:
+        ts = int(ts_header)
+    except Exception:
+        raise HTTPException(status_code=403, detail="invalid_timestamp")
+    if abs(int(time.time()) - ts) > 300:
+        raise HTTPException(status_code=403, detail="invalid_timestamp")
+
+
 def _extract_webhook_event_id(payload: dict[str, Any], body: bytes) -> str:
     for key in ("event_id", "id", "payment_id", "invoice_id", "refund_id"):
         value = payload.get(key)
@@ -320,25 +348,9 @@ async def tiptop_webhook(
     if settings.is_production and (not settings.TIPTOP_API_SECRET or not settings.TIPTOP_API_KEY):
         raise HTTPException(status_code=503, detail="payment_provider_not_configured")
 
-    signature = _extract_webhook_signature({k.lower(): v for k, v in request.headers.items()})
-    if not signature:
-        raise HTTPException(status_code=401, detail="missing_signature")
-
-    if not settings.TIPTOP_API_SECRET:
-        raise HTTPException(status_code=503, detail="payment_provider_not_configured")
-
-    expected = hmac.new(settings.TIPTOP_API_SECRET.encode("utf-8"), body, hashlib.sha256).hexdigest()
-    if not hmac.compare_digest(signature, expected):
-        raise HTTPException(status_code=401, detail="invalid_signature")
-
-    ts_header = _extract_webhook_timestamp({k.lower(): v for k, v in request.headers.items()})
-    if ts_header:
-        try:
-            ts = int(ts_header)
-        except Exception:
-            raise HTTPException(status_code=401, detail="invalid_timestamp")
-        if abs(int(time.time()) - ts) > 300:
-            raise HTTPException(status_code=401, detail="invalid_timestamp")
+    normalized_headers = {k.lower(): v for k, v in request.headers.items()}
+    _verify_tiptop_signature(body=body, headers=normalized_headers)
+    _verify_tiptop_timestamp(headers=normalized_headers)
 
     event_id = _extract_webhook_event_id(payload, body)
     company_id = await _resolve_webhook_company_id(payload, db)
