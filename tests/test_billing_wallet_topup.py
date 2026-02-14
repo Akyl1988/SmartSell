@@ -6,10 +6,14 @@ from decimal import Decimal
 
 import pytest
 import sqlalchemy as sa
+from sqlalchemy.orm import sessionmaker
 
+import tests.conftest as base_conftest
+from app.core.security import create_access_token, get_password_hash
 from app.core.subscriptions import plan_catalog
 from app.models.billing import Subscription, WalletBalance, WalletTransaction
 from app.models.company import Company
+from app.models.user import User
 from app.services.subscriptions import activate_plan, renew_if_due
 
 pytestmark = pytest.mark.asyncio
@@ -29,6 +33,36 @@ def _add_months_anchor(dt: datetime, anchor_day: int, months: int) -> datetime:
     last_day = monthrange(year, month)[1]
     day = min(max(anchor_day, 1), last_day)
     return dt.replace(year=year, month=month, day=day)
+
+
+def _superuser_headers_without_company() -> dict[str, str]:
+    if base_conftest.sync_engine is None:
+        raise RuntimeError("sync_engine is not initialized; ensure test_db fixture runs first")
+
+    SessionLocal = sessionmaker(bind=base_conftest.sync_engine, expire_on_commit=False, autoflush=False)
+    with SessionLocal() as s:
+        user = s.query(User).filter(User.phone == "+79999990022").first()
+        if not user:
+            user = User(
+                phone="+79999990022",
+                company_id=None,
+                hashed_password=get_password_hash("Secret123!"),
+                role="admin",
+                is_superuser=True,
+                is_active=True,
+                is_verified=True,
+            )
+            s.add(user)
+        else:
+            user.company_id = None
+            user.role = "admin"
+            user.is_superuser = True
+            user.is_active = True
+            user.is_verified = True
+        s.commit()
+        s.refresh(user)
+        token = create_access_token(subject=user.id)
+    return {"Authorization": f"Bearer {token}"}
 
 
 async def _ensure_company(async_db_session, company_id: int, *, plan: str = "start") -> Company:
@@ -77,6 +111,51 @@ async def test_manual_topup_increases_balance_and_records_ledger(
     assert row is not None
     assert row.transaction_type == "manual_topup"
     assert row.client_request_id == "topup-001"
+
+
+async def test_manual_topup_denies_store_admin(async_client, async_db_session, company_a_admin_headers):
+    company = Company(id=9011, name="Topup Denied Co")
+    async_db_session.add(company)
+    await async_db_session.commit()
+
+    resp = await async_client.post(
+        "/api/v1/admin/wallet/topup",
+        headers=company_a_admin_headers,
+        json={
+            "companyId": company.id,
+            "amount": "10.00",
+            "currency": "KZT",
+            "external_reference": "topup-deny-001",
+            "comment": "store admin",
+        },
+    )
+    assert resp.status_code == 403, resp.text
+    payload = resp.json()
+    assert payload.get("code") == "ADMIN_REQUIRED"
+
+
+async def test_manual_topup_allows_superuser(async_client, async_db_session, test_db):
+    _ = test_db
+    headers = _superuser_headers_without_company()
+    company = Company(id=9012, name="Topup Superuser Co")
+    async_db_session.add(company)
+    await async_db_session.commit()
+
+    resp = await async_client.post(
+        "/api/v1/admin/wallet/topup",
+        headers=headers,
+        json={
+            "companyId": company.id,
+            "amount": "25.00",
+            "currency": "KZT",
+            "external_reference": "topup-su-001",
+            "comment": "superuser credit",
+        },
+    )
+    assert resp.status_code == 200, resp.text
+    wallet = await WalletBalance.get_for_company_async(async_db_session, company.id)
+    await async_db_session.refresh(wallet)
+    assert wallet.balance == Decimal("25.00")
 
 
 async def test_manual_topup_idempotent(async_client, async_db_session, auth_headers):

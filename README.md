@@ -264,6 +264,9 @@ Cookie-mode refresh/logout: if you use the refresh token via HttpOnly cookies, t
 `X-CSRF-Token` header bound to the refresh session (see `generate_csrf_token`/`validate_csrf_token` in
 app/core/security.py). Requests without a valid CSRF token are rejected with 403.
 
+Manual wallet top-up is platform-only: `POST /api/v1/admin/wallet/topup` is available only to
+platform admins (or superuser break-glass) and does not depend on payments providers.
+
 ## 🚀 Deployment
 
 ### Production Checklist
