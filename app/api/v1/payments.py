@@ -22,6 +22,7 @@ from app.core.dependencies import (
     require_store_admin,
 )
 from app.core.idempotency import IdempotencyEnforcer
+from app.core.provider_registry import ProviderRegistry
 from app.core.security import get_current_user, require_manager, resolve_tenant_company_id
 from app.integrations.errors import ProviderNotConfiguredError
 from app.models.user import User
@@ -262,6 +263,44 @@ async def _resolve_webhook_company_id(payload: dict[str, Any], db: AsyncSession)
     return None
 
 
+async def _ensure_tiptop_webhook_enabled(payload: dict[str, Any], db: AsyncSession) -> None:
+    if not settings.is_production:
+        return
+
+    company_id = await _resolve_webhook_company_id(payload, db)
+    domain_candidates: list[str]
+    if company_id is not None:
+        domain_candidates = [f"payments:{company_id}", "payments"]
+    else:
+        domain_candidates = ["payments"]
+
+    entry = None
+    for domain in domain_candidates:
+        entry = await ProviderRegistry.get_active_provider(db, domain)
+        if entry:
+            break
+
+    if not entry:
+        raise HTTPException(status_code=503, detail="payment_provider_not_configured")
+
+    provider_name = (entry.provider or "").strip().lower()
+    if provider_name.startswith("noop") or provider_name in {
+        "placeholder",
+        "payment-placeholder",
+        "payments-placeholder",
+        "stub",
+        "dummy",
+        "manual",
+        "manual-pay",
+        "payments-manual",
+        "manual-billing",
+    }:
+        raise HTTPException(status_code=503, detail="payment_provider_unavailable")
+
+    if provider_name not in {"tiptop", "tiptop-pay", "tippay", "tiptop-payment"}:
+        raise HTTPException(status_code=503, detail="payment_provider_unavailable")
+
+
 @router.post("/webhooks/tiptop")
 async def tiptop_webhook(
     request: Request,
@@ -275,6 +314,8 @@ async def tiptop_webhook(
         payload = await request.json()
     except Exception:
         raise HTTPException(status_code=400, detail="invalid_json")
+
+    await _ensure_tiptop_webhook_enabled(payload, db)
 
     if settings.is_production and (not settings.TIPTOP_API_SECRET or not settings.TIPTOP_API_KEY):
         raise HTTPException(status_code=503, detail="payment_provider_not_configured")

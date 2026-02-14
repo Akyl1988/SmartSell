@@ -217,3 +217,21 @@ async def test_payment_provider_noop_disallowed_in_prod(monkeypatch):
 
     with pytest.raises(ProviderNotConfiguredError, match="payment_provider_not_configured"):
         await PaymentProviderResolver.resolve(None, domain="payments")
+
+
+@pytest.mark.asyncio
+async def test_payment_provider_placeholder_disallowed_in_prod(monkeypatch):
+    monkeypatch.setattr(settings, "ENVIRONMENT", "production", raising=False)
+
+    async def fake_get_active(db, domain):
+        return CachedProvider(
+            provider="placeholder",
+            config={},
+            version=1,
+            cached_at=time.monotonic(),
+        )
+
+    monkeypatch.setattr(ProviderRegistry, "get_active_provider", staticmethod(fake_get_active))
+
+    with pytest.raises(ProviderNotConfiguredError, match="payment_provider_unavailable"):
+        await PaymentProviderResolver.resolve(None, domain="payments")

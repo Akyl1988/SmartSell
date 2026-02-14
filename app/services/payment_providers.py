@@ -8,8 +8,10 @@ from app.core.logging import get_logger
 from app.core.provider_registry import ProviderRegistry
 from app.integrations.errors import ProviderNotConfiguredError
 from app.integrations.ports.payments import PaymentGateway
+from app.integrations.providers.manual.payments import ManualPaymentGateway
 from app.integrations.providers.noop.payments import NoOpPaymentGateway
 from app.integrations.providers.placeholder.payments import PlaceholderPaymentGateway
+from app.integrations.providers.tiptop.payments import TipTopPaymentGateway
 from app.services.provider_configs import ProviderConfigService
 
 log = get_logger(__name__)
@@ -40,7 +42,15 @@ class PaymentProviderResolver:
         if normalized.startswith("noop"):
             return NoOpPaymentGateway(name=name, config=config, version=version)
 
+        if normalized in {"manual", "manual-pay", "payments-manual", "manual-billing"}:
+            return ManualPaymentGateway(name=name, config=config, version=version)
+
+        if normalized in {"tiptop", "tiptop-pay", "tippay", "tiptop-payment"}:
+            return TipTopPaymentGateway(name=name, config=config, version=version)
+
         if normalized in {"placeholder", "payment-placeholder", "payments-placeholder", "stub", "dummy"}:
+            if settings.is_production:
+                raise ProviderNotConfiguredError("payment_provider_unavailable")
             return PlaceholderPaymentGateway(name=name, config=config, version=version)
         if settings.is_production:
             raise ProviderNotConfiguredError("payment_provider_not_configured")
@@ -96,7 +106,7 @@ class PaymentProviderResolver:
 
         provider_config = entry.config or {}
 
-        if not provider_name.lower().startswith("noop"):
+        if db is not None and not provider_name.lower().startswith("noop"):
             try:
                 provider_config = await ProviderConfigService.get_provider_config(
                     db, domain=resolved_domain, provider=entry.provider
@@ -116,8 +126,17 @@ class PaymentProviderResolver:
                 provider_config = {}
 
         try:
-            if settings.is_production and (provider_name or "noop").lower().startswith("noop"):
+            normalized_provider = (provider_name or "noop").lower()
+            if settings.is_production and normalized_provider.startswith("noop"):
                 raise ProviderNotConfiguredError("payment_provider_not_configured")
+            if settings.is_production and normalized_provider in {
+                "placeholder",
+                "payment-placeholder",
+                "payments-placeholder",
+                "stub",
+                "dummy",
+            }:
+                raise ProviderNotConfiguredError("payment_provider_unavailable")
             instance = cls._build_provider(entry.provider, provider_config, int(entry.version or 0))
         except Exception as exc:  # pragma: no cover - runtime guard
             log.warning("Payment provider build failed; using noop", exc_info=exc)
@@ -130,6 +149,8 @@ class PaymentProviderResolver:
                     status="error",
                     error=str(exc),
                 )
+            if settings.is_production and isinstance(exc, ProviderNotConfiguredError):
+                raise
             if settings.is_production:
                 raise ProviderNotConfiguredError("payment_provider_not_configured")
             instance = NoOpPaymentGateway(name="noop", config={}, version=0)
