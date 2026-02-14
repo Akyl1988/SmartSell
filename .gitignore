@@ -363,6 +363,7 @@ tmp_kaspi_goods_*.json
 
 # Allow only smoke scripts in /scripts (ignore everything else)
 scripts/**
+!scripts/smoke-admin-campaign-queue.ps1
 !scripts/
 !scripts/**/
 !scripts/smoke-auth.ps1
