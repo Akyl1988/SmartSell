@@ -371,3 +371,6 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 - Database migrations with Alembic
 - Test suite with pytest
 - Production-ready configuration
+
+<!-- pr-checks-smoke -->
+

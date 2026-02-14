@@ -20,6 +20,15 @@ env:
   PYTHON_VERSION: "3.11"
 
 jobs:
+  pr-sanity:
+    name: PR sanity
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    steps:
+      - uses: actions/checkout@v4
+      - name: PR check marker
+        run: echo "PR sanity check OK"
+
   lint:
     name: Lint (ruff)
     runs-on: ubuntu-latest
