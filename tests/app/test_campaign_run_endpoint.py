@@ -43,6 +43,36 @@ def _platform_admin_headers_without_company() -> dict[str, str]:
     return {"Authorization": f"Bearer {token}"}
 
 
+def _superuser_headers_without_company() -> dict[str, str]:
+    if base_conftest.sync_engine is None:
+        raise RuntimeError("sync_engine is not initialized; ensure test_db fixture runs first")
+
+    SessionLocal = sessionmaker(bind=base_conftest.sync_engine, expire_on_commit=False, autoflush=False)
+    with SessionLocal() as s:
+        user = s.query(User).filter(User.phone == "+79999990003").first()
+        if not user:
+            user = User(
+                phone="+79999990003",
+                company_id=None,
+                hashed_password=get_password_hash("Secret123!"),
+                role="admin",
+                is_superuser=True,
+                is_active=True,
+                is_verified=True,
+            )
+            s.add(user)
+        else:
+            user.company_id = None
+            user.role = "admin"
+            user.is_superuser = True
+            user.is_active = True
+            user.is_verified = True
+        s.commit()
+        s.refresh(user)
+        token = create_access_token(subject=user.id)
+    return {"Authorization": f"Bearer {token}"}
+
+
 def _seed_due_campaign(*, company_id: int, title_suffix: str) -> int:
     if base_conftest.sync_engine is None:
         raise RuntimeError("sync_engine is not initialized; ensure test_db fixture runs first")
@@ -84,6 +114,50 @@ async def test_campaign_run_requires_platform_admin(async_client, company_a_admi
     assert resp.status_code == 403, resp.text
     payload = resp.json()
     assert payload.get("code") == "ADMIN_REQUIRED"
+
+
+async def test_campaign_process_run_requires_auth(async_client):
+    resp = await async_client.post("/api/v1/admin/tasks/campaigns/process/run")
+    assert resp.status_code == 401, resp.text
+    payload = resp.json()
+    assert payload.get("code") == "AUTH_REQUIRED"
+
+
+async def test_campaign_process_run_denies_store_admin(async_client, company_a_admin_headers):
+    resp = await async_client.post(
+        "/api/v1/admin/tasks/campaigns/process/run",
+        headers=company_a_admin_headers,
+    )
+    assert resp.status_code == 403, resp.text
+    payload = resp.json()
+    assert payload.get("code") == "ADMIN_REQUIRED"
+
+
+async def test_campaign_process_run_allows_platform_admin(async_client, test_db):
+    _ = test_db
+    headers = _platform_admin_headers_without_company()
+    _seed_due_campaign(company_id=9151, title_suffix="tick")
+
+    resp = await async_client.post(
+        "/api/v1/admin/tasks/campaigns/process/run?limit=10",
+        headers=headers,
+    )
+    assert resp.status_code == 200, resp.text
+    payload = resp.json()
+    for key in ("queued", "skipped", "processed", "scheduled", "failed"):
+        assert key in payload
+
+
+async def test_campaign_process_run_allows_superuser(async_client, test_db):
+    _ = test_db
+    headers = _superuser_headers_without_company()
+    _seed_due_campaign(company_id=9152, title_suffix="tick-su")
+
+    resp = await async_client.post(
+        "/api/v1/admin/tasks/campaigns/process/run?limit=10",
+        headers=headers,
+    )
+    assert resp.status_code == 200, resp.text
 
 
 async def test_campaign_run_ok(async_client, test_db):

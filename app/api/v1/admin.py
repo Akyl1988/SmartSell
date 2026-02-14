@@ -34,6 +34,7 @@ from app.models.kaspi_trial_grant import KaspiTrialGrant
 from app.models.subscription_override import SubscriptionOverride
 from app.models.user import User
 from app.schemas.campaign import AdminCampaignResponse
+from app.services.campaign_pipeline import campaign_pipeline_tick
 from app.services.campaign_runner import (
     enqueue_due_campaigns,
     should_force_requeue,
@@ -193,6 +194,23 @@ async def run_campaigns_task(
         "processed": len(processed),
         "campaign_ids": enqueue_summary.get("campaign_ids", []),
     }
+
+
+@router.post(
+    "/tasks/campaigns/process/run",
+    summary="Run campaign pipeline tick (dev/test only)",
+)
+async def run_campaigns_pipeline_tick(
+    request: Request,
+    limit: int = Query(100, ge=1),
+    admin: User = Depends(require_platform_admin),
+    db: AsyncSession = Depends(get_async_db),
+) -> dict:
+    _ = admin
+    if settings.is_production:
+        raise NotFoundError("not_found", code="not_found", http_status=404)
+    _ = _ensure_request_id(request)
+    return await campaign_pipeline_tick(db, limit=limit, now=datetime.now(UTC))
 
 
 @router.post(
