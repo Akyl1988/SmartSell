@@ -1,11 +1,11 @@
 from __future__ import annotations
 
 import logging
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 from uuid import uuid4
 
-from sqlalchemy import select, text
+from sqlalchemy import or_, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import Session
 
@@ -73,6 +73,15 @@ def _perform_campaign_action_sync(db: Session, campaign: Campaign) -> None:
     raise RuntimeError(_NO_MESSAGES_ERROR)
 
 
+def _compute_backoff_delay(attempts: int) -> int:
+    base_seconds = 30
+    multiplier = 2.0
+    max_seconds = 15 * 60
+    step = max(0, int(attempts) - 1)
+    delay = int(base_seconds * (multiplier**step))
+    return min(max_seconds, max(base_seconds, delay))
+
+
 async def process_campaign_queue_once(
     db: AsyncSession,
     *,
@@ -87,6 +96,7 @@ async def process_campaign_queue_once(
         select(Campaign.id)
         .where(
             Campaign.processing_status == CampaignProcessingStatus.QUEUED,
+            or_(Campaign.next_attempt_at.is_(None), Campaign.next_attempt_at <= now),
             Campaign.deleted_at.is_(None),
         )
         .order_by(Campaign.queued_at.asc().nullsfirst(), Campaign.id.asc())
@@ -120,6 +130,7 @@ async def process_campaign_queue_once(
                 campaign.last_error = "max_attempts_exceeded"
                 campaign.finished_at = _utcnow()
                 campaign.failed_at = campaign.finished_at
+                campaign.next_attempt_at = None
                 logger.warning(
                     "campaign_processing_max_attempts",
                     extra={"campaign_id": campaign.id, "request_id": request_id},
@@ -132,6 +143,7 @@ async def process_campaign_queue_once(
             campaign.finished_at = None
             campaign.failed_at = None
             campaign.last_error = None
+            campaign.next_attempt_at = None
             await db.flush()
 
             try:
@@ -139,6 +151,7 @@ async def process_campaign_queue_once(
                 campaign.processing_status = CampaignProcessingStatus.DONE
                 campaign.finished_at = _utcnow()
                 campaign.failed_at = None
+                campaign.next_attempt_at = None
                 results.append({"campaign_id": campaign.id, "status": campaign.processing_status.value})
             except Exception as exc:
                 error_message = _truncate_error(str(exc))
@@ -159,9 +172,11 @@ async def process_campaign_queue_once(
                 if max_attempts > 0 and attempts >= max_attempts:
                     campaign.processing_status = CampaignProcessingStatus.FAILED
                     campaign.last_error = "max_attempts_exceeded"
+                    campaign.next_attempt_at = None
                 else:
                     campaign.processing_status = CampaignProcessingStatus.QUEUED
                     campaign.queued_at = _utcnow()
+                    campaign.next_attempt_at = now + timedelta(seconds=_compute_backoff_delay(attempts))
                 results.append({"campaign_id": campaign.id, "status": campaign.processing_status.value})
 
     return results
@@ -181,6 +196,7 @@ def process_campaign_queue_once_sync(
             select(Campaign.id)
             .where(
                 Campaign.processing_status == CampaignProcessingStatus.QUEUED,
+                or_(Campaign.next_attempt_at.is_(None), Campaign.next_attempt_at <= now),
                 Campaign.deleted_at.is_(None),
             )
             .order_by(Campaign.queued_at.asc().nullsfirst(), Campaign.id.asc())
@@ -211,6 +227,7 @@ def process_campaign_queue_once_sync(
                     campaign.last_error = "max_attempts_exceeded"
                     campaign.finished_at = _utcnow()
                     campaign.failed_at = campaign.finished_at
+                    campaign.next_attempt_at = None
                     logger.warning(
                         "campaign_processing_max_attempts",
                         extra={"campaign_id": campaign.id, "request_id": request_id},
@@ -223,6 +240,7 @@ def process_campaign_queue_once_sync(
                 campaign.finished_at = None
                 campaign.failed_at = None
                 campaign.last_error = None
+                campaign.next_attempt_at = None
                 db.flush()
 
                 try:
@@ -230,6 +248,7 @@ def process_campaign_queue_once_sync(
                     campaign.processing_status = CampaignProcessingStatus.DONE
                     campaign.finished_at = _utcnow()
                     campaign.failed_at = None
+                    campaign.next_attempt_at = None
                     results.append({"campaign_id": campaign.id, "status": campaign.processing_status.value})
                 except Exception as exc:
                     error_message = _truncate_error(str(exc))
@@ -250,9 +269,11 @@ def process_campaign_queue_once_sync(
                     if max_attempts > 0 and attempts >= max_attempts:
                         campaign.processing_status = CampaignProcessingStatus.FAILED
                         campaign.last_error = "max_attempts_exceeded"
+                        campaign.next_attempt_at = None
                     else:
                         campaign.processing_status = CampaignProcessingStatus.QUEUED
                         campaign.queued_at = _utcnow()
+                        campaign.next_attempt_at = now + timedelta(seconds=_compute_backoff_delay(attempts))
                     results.append({"campaign_id": campaign.id, "status": campaign.processing_status.value})
 
         return results
