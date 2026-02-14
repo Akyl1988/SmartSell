@@ -126,12 +126,13 @@ async def queue_campaign_run(
     requested_by_user_id: int | None,
     request_id: str | None,
     now: datetime | None = None,
+    force: bool = False,
 ) -> Campaign:
     now = now or _now_utc()
     if campaign.processing_status in (
         CampaignProcessingStatus.QUEUED,
         CampaignProcessingStatus.PROCESSING,
-    ) and not should_force_requeue(campaign):
+    ) and not (force or should_force_requeue(campaign)):
         return campaign
 
     campaign.processing_status = CampaignProcessingStatus.QUEUED
