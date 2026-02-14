@@ -291,3 +291,17 @@ async def test_campaign_seed_without_company_id(async_client, async_db_session, 
         campaign = s.query(Campaign).filter(Campaign.id == campaign_id).first()
         assert campaign is not None
         assert campaign.company_id is not None
+
+
+async def test_campaign_admin_status_includes_next_attempt_at(async_client, test_db):
+    _ = test_db
+    headers = _platform_admin_headers_without_company()
+    campaign_id = _seed_due_campaign(company_id=9301, title_suffix="status")
+
+    resp = await async_client.get(
+        f"/api/v1/admin/campaigns/{campaign_id}",
+        headers=headers,
+    )
+    assert resp.status_code == 200, resp.text
+    payload = resp.json()
+    assert "next_attempt_at" in payload
