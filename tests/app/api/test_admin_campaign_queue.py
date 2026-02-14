@@ -113,6 +113,7 @@ async def test_admin_campaign_queue_list_filters_and_ordering(async_client, asyn
     )
     assert resp_invalid.status_code == 400, resp_invalid.text
     assert resp_invalid.json().get("code") == "invalid_processing_status"
+    assert resp_invalid.json().get("request_id")
 
 
 async def test_admin_campaign_requeue_resets_attempts_and_fields(async_client, async_db_session, auth_headers):
@@ -230,5 +231,15 @@ async def test_admin_campaign_cancel_noop_when_already_cancelled(
     await async_db_session.refresh(campaign)
     assert campaign.processing_status == CampaignProcessingStatus.FAILED
     assert campaign.last_error == "cancelled_by_admin"
+    assert campaign.failed_at == existing_time
+    assert campaign.finished_at == existing_time
+
+    resp2 = await async_client.post(
+        f"/api/v1/admin/campaigns/{campaign.id}/cancel",
+        headers=auth_headers,
+    )
+    assert resp2.status_code == 200, resp2.text
+
+    await async_db_session.refresh(campaign)
     assert campaign.failed_at == existing_time
     assert campaign.finished_at == existing_time

@@ -309,6 +309,10 @@ async def requeue_campaign(
     if campaign.processing_status == CampaignProcessingStatus.PROCESSING and not force:
         raise ConflictError("campaign_processing_conflict", code="campaign_processing_conflict", http_status=409)
 
+    prev_status = campaign.processing_status.value
+    prev_attempts = campaign.attempts
+    prev_last_error = campaign.last_error
+
     campaign = await queue_campaign_run_service(
         db,
         campaign,
@@ -331,6 +335,25 @@ async def requeue_campaign(
     }
     if force:
         payload["warning"] = "requeued_while_processing"
+
+    audit_logger.log_system_event(
+        level="info",
+        event="campaign_requeue",
+        message="Campaign requeued by admin",
+        meta={
+            "action": "campaign_requeue",
+            "campaign_id": campaign.id,
+            "admin_user_id": getattr(admin, "id", None),
+            "request_id": request_id,
+            "force": bool(force),
+            "prev_processing_status": prev_status,
+            "prev_attempts": prev_attempts,
+            "prev_last_error": prev_last_error,
+            "new_processing_status": campaign.processing_status.value,
+            "new_attempts": campaign.attempts,
+            "new_last_error": campaign.last_error,
+        },
+    )
     return payload
 
 
@@ -345,6 +368,7 @@ async def cancel_campaign(
     db: AsyncSession = Depends(get_async_db),
 ) -> dict:
     _ = admin
+    request_id = _ensure_request_id(request)
     campaign = await db.get(Campaign, campaign_id)
     if not campaign:
         raise NotFoundError("campaign_not_found", code="campaign_not_found", http_status=404)
@@ -356,6 +380,24 @@ async def cancel_campaign(
         campaign.processing_status == CampaignProcessingStatus.FAILED
         and (campaign.last_error or "") == "cancelled_by_admin"
     ):
+        audit_logger.log_system_event(
+            level="info",
+            event="campaign_cancel",
+            message="Campaign cancel requested (noop)",
+            meta={
+                "action": "campaign_cancel",
+                "campaign_id": campaign.id,
+                "admin_user_id": getattr(admin, "id", None),
+                "request_id": request_id,
+                "force": False,
+                "prev_processing_status": campaign.processing_status.value,
+                "prev_attempts": campaign.attempts,
+                "prev_last_error": campaign.last_error,
+                "new_processing_status": campaign.processing_status.value,
+                "new_attempts": campaign.attempts,
+                "new_last_error": campaign.last_error,
+            },
+        )
         return {
             "campaign_id": campaign.id,
             "status": campaign.processing_status.value,
@@ -368,6 +410,10 @@ async def cancel_campaign(
             "request_id": campaign.request_id,
         }
 
+    prev_status = campaign.processing_status.value
+    prev_attempts = campaign.attempts
+    prev_last_error = campaign.last_error
+
     now = datetime.now(UTC)
     campaign.processing_status = CampaignProcessingStatus.FAILED
     campaign.last_error = "cancelled_by_admin"
@@ -375,6 +421,25 @@ async def cancel_campaign(
     campaign.failed_at = now
     await db.commit()
     await db.refresh(campaign)
+
+    audit_logger.log_system_event(
+        level="info",
+        event="campaign_cancel",
+        message="Campaign cancelled by admin",
+        meta={
+            "action": "campaign_cancel",
+            "campaign_id": campaign.id,
+            "admin_user_id": getattr(admin, "id", None),
+            "request_id": request_id,
+            "force": False,
+            "prev_processing_status": prev_status,
+            "prev_attempts": prev_attempts,
+            "prev_last_error": prev_last_error,
+            "new_processing_status": campaign.processing_status.value,
+            "new_attempts": campaign.attempts,
+            "new_last_error": campaign.last_error,
+        },
+    )
 
     return {
         "campaign_id": campaign.id,
@@ -385,7 +450,7 @@ async def cancel_campaign(
         "failed_at": campaign.failed_at.isoformat() if campaign.failed_at else None,
         "last_error": campaign.last_error,
         "attempts": campaign.attempts,
-        "request_id": campaign.request_id,
+        "request_id": campaign.request_id or request_id,
     }
 
 

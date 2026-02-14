@@ -417,7 +417,7 @@ def process_scheduled_campaigns() -> None:
     """
     acquired, lock_db = _try_scheduler_advisory_lock()
     if not acquired:
-        logger.info("Campaign pipeline tick skipped: scheduler lock busy")
+        logger.info("campaign_tick_lock_busy: scheduler lock busy")
         return
     now = _utcnow_naive()
     try:
@@ -428,12 +428,14 @@ def process_scheduled_campaigns() -> None:
             item["campaign_id"] for item in processed if item.get("status") == CampaignProcessingStatus.DONE.value
         ]
         scheduled = _schedule_pending_messages_for_campaigns(processed_ids)
+        count_failed = sum(1 for item in processed if item.get("status") == CampaignProcessingStatus.FAILED.value)
         logger.info(
-            "Campaign pipeline tick: queued=%s skipped=%s processed=%s scheduled=%s",
+            "Campaign pipeline tick: queued=%s skipped=%s processed=%s scheduled=%s failed=%s",
             enqueue_summary.get("queued"),
             enqueue_summary.get("skipped"),
             len(processed),
             scheduled,
+            count_failed,
         )
     finally:
         if lock_db is not None:
