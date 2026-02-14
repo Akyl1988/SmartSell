@@ -49,3 +49,8 @@ async def test_wallet_platform_admin_forbidden(async_client, db_session, auth_he
     payload = resp.json()
     assert payload.get("code") == "FORBIDDEN"
     assert payload.get("request_id")
+
+
+async def test_wallet_health_public(async_client):
+    resp = await async_client.get("/api/v1/wallet/health")
+    assert resp.status_code == 200, resp.text
