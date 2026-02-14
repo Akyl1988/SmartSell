@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import os
 from datetime import UTC, datetime
 from typing import Any
 
@@ -8,13 +7,12 @@ from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import Session
 
+from app.core.config import settings
 from app.core.db import session_scope
 from app.models.campaign import Campaign, CampaignProcessingStatus, Message
 
 _ERROR_MESSAGE_LIMIT = 500
 _NO_MESSAGES_ERROR = "campaign_has_no_messages"
-_MAX_BATCH = 50
-_MAX_ATTEMPTS = int(os.getenv("CAMPAIGN_MAX_ATTEMPTS", "3"))
 _QUEUE_LOCK_KEY = 0x43505051  # "CPPQ"
 
 
@@ -81,7 +79,7 @@ async def process_campaign_queue_once(
     now = now or _utcnow()
     if not await _try_queue_advisory_lock(db):
         return []
-    batch_limit = min(_MAX_BATCH, max(1, int(limit)))
+    batch_limit = min(int(settings.CAMPAIGN_PROCESS_BATCH), max(1, int(limit)))
     claim_stmt = (
         select(Campaign.id)
         .where(
@@ -109,7 +107,8 @@ async def process_campaign_queue_once(
                 continue
 
             attempts = int(campaign.attempts or 0)
-            if _MAX_ATTEMPTS > 0 and attempts >= _MAX_ATTEMPTS:
+            max_attempts = int(settings.CAMPAIGN_MAX_ATTEMPTS)
+            if max_attempts > 0 and attempts >= max_attempts:
                 campaign.processing_status = CampaignProcessingStatus.FAILED
                 if not campaign.last_error:
                     campaign.last_error = "max_attempts_exceeded"
@@ -151,7 +150,7 @@ def process_campaign_queue_once_sync(
     with session_scope() as db:
         if not _try_queue_advisory_lock_sync(db):
             return []
-        batch_limit = min(_MAX_BATCH, max(1, int(limit)))
+        batch_limit = min(int(settings.CAMPAIGN_PROCESS_BATCH), max(1, int(limit)))
         claim_stmt = (
             select(Campaign.id)
             .where(
@@ -176,7 +175,8 @@ def process_campaign_queue_once_sync(
                     continue
 
                 attempts = int(campaign.attempts or 0)
-                if _MAX_ATTEMPTS > 0 and attempts >= _MAX_ATTEMPTS:
+                max_attempts = int(settings.CAMPAIGN_MAX_ATTEMPTS)
+                if max_attempts > 0 and attempts >= max_attempts:
                     campaign.processing_status = CampaignProcessingStatus.FAILED
                     if not campaign.last_error:
                         campaign.last_error = "max_attempts_exceeded"

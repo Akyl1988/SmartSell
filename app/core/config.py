@@ -609,6 +609,16 @@ class Settings(BaseSettings):
     SCHEDULER_TIMEZONE: str = Field(
         default="UTC", description="Scheduler timezone", validation_alias="SCHEDULER_TIMEZONE"
     )
+    CAMPAIGN_PROCESS_BATCH: int = Field(
+        default=50,
+        description="Max campaigns processed per worker tick",
+        validation_alias="CAMPAIGN_PROCESS_BATCH",
+    )
+    CAMPAIGN_MAX_ATTEMPTS: int = Field(
+        default=3,
+        description="Max campaign processing attempts (0 disables limit)",
+        validation_alias="CAMPAIGN_MAX_ATTEMPTS",
+    )
     EAGER_SIDE_EFFECTS: bool = Field(default=True, validation_alias="EAGER_SIDE_EFFECTS")
 
     # Kaspi Auto-Sync Settings

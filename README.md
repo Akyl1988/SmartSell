@@ -158,6 +158,26 @@ KASPI_MERCHANT_ID=your-merchant-id
 KASPI_API_KEY=your-api-key
 ```
 
+## Campaign Processing Pipeline
+
+Campaigns are processed in a safe, lock-protected pipeline:
+
+1. Scheduler tick runs `enqueue_due_campaigns_sync()` to queue due campaigns.
+2. Worker runs `process_campaign_queue_once_sync()` to process queued campaigns.
+3. Finished campaigns have pending messages scheduled for delivery.
+
+Concurrency safeguards:
+- Scheduler lock: `pg_try_advisory_lock` to ensure only one scheduler tick runs at a time.
+- Queue lock: `pg_try_advisory_xact_lock` to prevent concurrent queue processing in one tick.
+- Per-campaign lock: `pg_try_advisory_xact_lock` keyed by campaign id.
+
+Tuning parameters:
+- `CAMPAIGN_PROCESS_BATCH` (default 50): max campaigns processed per worker tick.
+- `CAMPAIGN_MAX_ATTEMPTS` (default 3): max processing retries; `0` disables the guard.
+
+If a campaign reaches the limit, it is marked FAILED with `last_error=max_attempts_exceeded`.
+Operators can manually re-run the campaign (admin/store run endpoints), which resets attempts and clears failure fields.
+
 ## 🧪 Testing
 
 ### Run all tests

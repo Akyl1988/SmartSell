@@ -7,6 +7,7 @@ from uuid import uuid4
 from sqlalchemy import and_, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.config import settings
 from app.core.db import session_scope
 from app.models.campaign import Campaign, CampaignProcessingStatus, CampaignStatus
 from app.models.integration_event import IntegrationEvent
@@ -106,6 +107,18 @@ def _enqueue_due_campaigns_apply(campaigns: list[Campaign], *, now: datetime) ->
     return queued
 
 
+def should_force_requeue(campaign: Campaign) -> bool:
+    max_attempts = int(settings.CAMPAIGN_MAX_ATTEMPTS)
+    if max_attempts <= 0:
+        return False
+    attempts = int(campaign.attempts or 0)
+    return (
+        campaign.processing_status == CampaignProcessingStatus.QUEUED
+        and attempts >= max_attempts
+        and (campaign.last_error or "") == "max_attempts_exceeded"
+    )
+
+
 async def queue_campaign_run(
     db: AsyncSession,
     campaign: Campaign,
@@ -118,7 +131,7 @@ async def queue_campaign_run(
     if campaign.processing_status in (
         CampaignProcessingStatus.QUEUED,
         CampaignProcessingStatus.PROCESSING,
-    ):
+    ) and not should_force_requeue(campaign):
         return campaign
 
     campaign.processing_status = CampaignProcessingStatus.QUEUED
@@ -127,6 +140,7 @@ async def queue_campaign_run(
     campaign.finished_at = None
     campaign.failed_at = None
     campaign.last_error = None
+    campaign.attempts = 0
     if request_id:
         campaign.request_id = request_id
     campaign.requested_by_user_id = requested_by_user_id
@@ -217,4 +231,5 @@ __all__ = [
     "enqueue_due_campaigns",
     "enqueue_due_campaigns_sync",
     "queue_campaign_run",
+    "should_force_requeue",
 ]
