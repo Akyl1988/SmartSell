@@ -2,8 +2,10 @@ name: Security Scan
 
 # NOTE: PR checks require the pull_request trigger; without it, gh pr checks shows no checks.
 on:
+  push:
+    branches: [ main ]
   pull_request:
-    branches: [ main, dev, "release/**" ]
+    branches: [ main ]
   schedule:
     - cron: "0 3 * * 1"
   workflow_dispatch:
@@ -14,6 +16,7 @@ permissions:
 jobs:
   trivy:
     runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main' || github.base_ref == 'main'
     env:
       ENABLE_CODE_SCANNING_UPLOAD: 'false'
     steps:
