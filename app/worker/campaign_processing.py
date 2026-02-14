@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import logging
 from datetime import UTC, datetime
 from typing import Any
+from uuid import uuid4
 
 from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -14,6 +16,7 @@ from app.models.campaign import Campaign, CampaignProcessingStatus, Message
 _ERROR_MESSAGE_LIMIT = 500
 _NO_MESSAGES_ERROR = "campaign_has_no_messages"
 _QUEUE_LOCK_KEY = 0x43505051  # "CPPQ"
+logger = logging.getLogger(__name__)
 
 
 def _utcnow() -> datetime:
@@ -106,14 +109,21 @@ async def process_campaign_queue_once(
             if campaign.processing_status != CampaignProcessingStatus.QUEUED:
                 continue
 
+            if not campaign.request_id:
+                campaign.request_id = str(uuid4())
+            request_id = campaign.request_id
+
             attempts = int(campaign.attempts or 0)
             max_attempts = int(settings.CAMPAIGN_MAX_ATTEMPTS)
             if max_attempts > 0 and attempts >= max_attempts:
                 campaign.processing_status = CampaignProcessingStatus.FAILED
-                if not campaign.last_error:
-                    campaign.last_error = "max_attempts_exceeded"
+                campaign.last_error = "max_attempts_exceeded"
                 campaign.finished_at = _utcnow()
                 campaign.failed_at = campaign.finished_at
+                logger.warning(
+                    "campaign_processing_max_attempts",
+                    extra={"campaign_id": campaign.id, "request_id": request_id},
+                )
                 results.append({"campaign_id": campaign.id, "status": campaign.processing_status.value})
                 continue
 
@@ -131,11 +141,27 @@ async def process_campaign_queue_once(
                 campaign.failed_at = None
                 results.append({"campaign_id": campaign.id, "status": campaign.processing_status.value})
             except Exception as exc:
-                campaign.processing_status = CampaignProcessingStatus.FAILED
-                campaign.last_error = _truncate_error(str(exc))
-                campaign.attempts = int(campaign.attempts or 0) + 1
+                error_message = _truncate_error(str(exc))
+                attempts = int(campaign.attempts or 0) + 1
+                campaign.attempts = attempts
                 campaign.finished_at = _utcnow()
                 campaign.failed_at = campaign.finished_at
+                campaign.last_error = error_message
+                logger.error(
+                    "campaign_processing_failed",
+                    extra={
+                        "campaign_id": campaign.id,
+                        "request_id": request_id,
+                        "attempts": attempts,
+                        "error": error_message,
+                    },
+                )
+                if max_attempts > 0 and attempts >= max_attempts:
+                    campaign.processing_status = CampaignProcessingStatus.FAILED
+                    campaign.last_error = "max_attempts_exceeded"
+                else:
+                    campaign.processing_status = CampaignProcessingStatus.QUEUED
+                    campaign.queued_at = _utcnow()
                 results.append({"campaign_id": campaign.id, "status": campaign.processing_status.value})
 
     return results
@@ -174,14 +200,21 @@ def process_campaign_queue_once_sync(
                 if campaign.processing_status != CampaignProcessingStatus.QUEUED:
                     continue
 
+                if not campaign.request_id:
+                    campaign.request_id = str(uuid4())
+                request_id = campaign.request_id
+
                 attempts = int(campaign.attempts or 0)
                 max_attempts = int(settings.CAMPAIGN_MAX_ATTEMPTS)
                 if max_attempts > 0 and attempts >= max_attempts:
                     campaign.processing_status = CampaignProcessingStatus.FAILED
-                    if not campaign.last_error:
-                        campaign.last_error = "max_attempts_exceeded"
+                    campaign.last_error = "max_attempts_exceeded"
                     campaign.finished_at = _utcnow()
                     campaign.failed_at = campaign.finished_at
+                    logger.warning(
+                        "campaign_processing_max_attempts",
+                        extra={"campaign_id": campaign.id, "request_id": request_id},
+                    )
                     results.append({"campaign_id": campaign.id, "status": campaign.processing_status.value})
                     continue
 
@@ -199,11 +232,27 @@ def process_campaign_queue_once_sync(
                     campaign.failed_at = None
                     results.append({"campaign_id": campaign.id, "status": campaign.processing_status.value})
                 except Exception as exc:
-                    campaign.processing_status = CampaignProcessingStatus.FAILED
-                    campaign.last_error = _truncate_error(str(exc))
-                    campaign.attempts = int(campaign.attempts or 0) + 1
+                    error_message = _truncate_error(str(exc))
+                    attempts = int(campaign.attempts or 0) + 1
+                    campaign.attempts = attempts
                     campaign.finished_at = _utcnow()
                     campaign.failed_at = campaign.finished_at
+                    campaign.last_error = error_message
+                    logger.error(
+                        "campaign_processing_failed",
+                        extra={
+                            "campaign_id": campaign.id,
+                            "request_id": request_id,
+                            "attempts": attempts,
+                            "error": error_message,
+                        },
+                    )
+                    if max_attempts > 0 and attempts >= max_attempts:
+                        campaign.processing_status = CampaignProcessingStatus.FAILED
+                        campaign.last_error = "max_attempts_exceeded"
+                    else:
+                        campaign.processing_status = CampaignProcessingStatus.QUEUED
+                        campaign.queued_at = _utcnow()
                     results.append({"campaign_id": campaign.id, "status": campaign.processing_status.value})
 
         return results

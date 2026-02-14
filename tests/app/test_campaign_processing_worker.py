@@ -148,12 +148,18 @@ async def test_campaign_worker_failure_sets_error(async_db_session, monkeypatch)
     await campaign_processing.process_campaign_queue_once(async_db_session, limit=5)
     await async_db_session.refresh(campaign)
 
-    assert campaign.processing_status == CampaignProcessingStatus.FAILED
-    assert campaign.last_error
-    assert "boom" in campaign.last_error
+    max_attempts = int(settings.CAMPAIGN_MAX_ATTEMPTS)
     assert campaign.attempts == 1
     assert campaign.failed_at is not None
     assert campaign.request_id == "req-keep"
+    if max_attempts > 0 and max_attempts > 1:
+        assert campaign.processing_status == CampaignProcessingStatus.QUEUED
+        assert campaign.last_error
+        assert "boom" in campaign.last_error
+        assert campaign.queued_at is not None
+    else:
+        assert campaign.processing_status == CampaignProcessingStatus.FAILED
+        assert campaign.last_error == "max_attempts_exceeded"
 
 
 async def test_campaign_worker_lock_prevents_processing(async_db_session, monkeypatch):
@@ -226,6 +232,7 @@ async def test_campaign_worker_max_attempts(async_db_session):
     assert campaign.failed_at is not None
     assert campaign.started_at is None
     assert campaign.attempts == settings.CAMPAIGN_MAX_ATTEMPTS
+    assert campaign.last_error == "max_attempts_exceeded"
 
 
 async def test_campaign_worker_requires_messages(async_db_session):
@@ -236,13 +243,15 @@ async def test_campaign_worker_requires_messages(async_db_session):
         add_message=False,
     )
 
-    results = await campaign_processing.process_campaign_queue_once(async_db_session, limit=5)
-    assert results
+    max_attempts = int(settings.CAMPAIGN_MAX_ATTEMPTS)
+    for _ in range(max(1, max_attempts)):
+        results = await campaign_processing.process_campaign_queue_once(async_db_session, limit=5)
+        assert results
 
     await async_db_session.refresh(campaign)
+    assert campaign.attempts == max_attempts
     assert campaign.processing_status == CampaignProcessingStatus.FAILED
-    assert campaign.last_error
-    assert "campaign_has_no_messages" in campaign.last_error
+    assert campaign.last_error == "max_attempts_exceeded"
     assert campaign.failed_at is not None
 
     message = (
