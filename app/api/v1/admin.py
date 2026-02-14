@@ -15,7 +15,7 @@ from app.api.admin.integrations import router as integrations_router
 from app.core.config import settings
 from app.core.db import get_async_db
 from app.core.dependencies import require_platform_admin
-from app.core.exceptions import AuthorizationError, NotFoundError, _ensure_request_id
+from app.core.exceptions import AuthorizationError, ConflictError, NotFoundError, _ensure_request_id
 from app.core.logging import audit_logger
 from app.core.subscriptions.plan_catalog import get_plan, normalize_plan_id
 from app.models.billing import Subscription, WalletBalance, WalletTransaction
@@ -129,6 +129,23 @@ class CampaignRunIn(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
 
 
+def _campaign_queue_payload(campaign: Campaign) -> dict:
+    return {
+        "id": campaign.id,
+        "company_id": campaign.company_id,
+        "title": campaign.title,
+        "processing_status": campaign.processing_status.value,
+        "queued_at": campaign.queued_at.isoformat() if campaign.queued_at else None,
+        "started_at": campaign.started_at.isoformat() if campaign.started_at else None,
+        "finished_at": campaign.finished_at.isoformat() if campaign.finished_at else None,
+        "failed_at": campaign.failed_at.isoformat() if campaign.failed_at else None,
+        "attempts": campaign.attempts,
+        "last_error": campaign.last_error,
+        "request_id": campaign.request_id,
+        "requested_by_user_id": campaign.requested_by_user_id,
+    }
+
+
 @router.post(
     "/tasks/campaigns/run",
     summary="Run campaign processing task (platform admin)",
@@ -228,6 +245,147 @@ async def queue_campaign_run(
         "last_error": campaign.last_error,
         "attempts": campaign.attempts,
         "request_id": request_id,
+    }
+
+
+@router.get(
+    "/campaigns/queue",
+    summary="List campaign processing queue (platform admin)",
+)
+async def list_campaign_queue(
+    request: Request,
+    status: str | None = Query(default=None, description="queued|processing|failed|done"),
+    limit: int = Query(50, ge=1, le=200),
+    companyId: int | None = Query(default=None, ge=1),
+    include_deleted: bool = Query(default=False),
+    admin: User = Depends(require_platform_admin),
+    db: AsyncSession = Depends(get_async_db),
+) -> list[dict]:
+    _ = admin
+    stmt = select(Campaign)
+    if not include_deleted:
+        stmt = stmt.where(Campaign.deleted_at.is_(None))
+    resolved_company_id = companyId
+    if resolved_company_id is None:
+        query_company_id = request.query_params.get("company_id")
+        if query_company_id:
+            try:
+                resolved_company_id = int(query_company_id)
+            except ValueError:
+                resolved_company_id = None
+    if resolved_company_id is not None:
+        stmt = stmt.where(Campaign.company_id == resolved_company_id)
+    if status:
+        try:
+            parsed = CampaignProcessingStatus(status)
+        except ValueError as exc:
+            raise ConflictError(
+                "invalid_processing_status",
+                code="invalid_processing_status",
+                http_status=400,
+            ) from exc
+        stmt = stmt.where(Campaign.processing_status == parsed)
+    stmt = stmt.order_by(sa.nullsfirst(Campaign.queued_at.asc()), Campaign.id.asc()).limit(limit)
+    campaigns = (await db.execute(stmt)).scalars().all()
+    return [_campaign_queue_payload(campaign) for campaign in campaigns]
+
+
+@router.post(
+    "/campaigns/{campaign_id}/requeue",
+    summary="Force requeue a campaign (platform admin)",
+)
+async def requeue_campaign(
+    request: Request,
+    campaign_id: int,
+    force: bool = Query(default=False),
+    admin: User = Depends(require_platform_admin),
+    db: AsyncSession = Depends(get_async_db),
+) -> dict:
+    _ = admin
+    request_id = _ensure_request_id(request)
+    campaign = await db.get(Campaign, campaign_id)
+    if not campaign:
+        raise NotFoundError("campaign_not_found", code="campaign_not_found", http_status=404)
+    if campaign.processing_status == CampaignProcessingStatus.PROCESSING and not force:
+        raise ConflictError("campaign_processing_conflict", code="campaign_processing_conflict", http_status=409)
+
+    campaign = await queue_campaign_run_service(
+        db,
+        campaign,
+        requested_by_user_id=getattr(admin, "id", None),
+        request_id=request_id,
+        now=datetime.now(UTC),
+        force=force,
+    )
+
+    payload = {
+        "campaign_id": campaign.id,
+        "status": campaign.processing_status.value,
+        "queued_at": campaign.queued_at.isoformat() if campaign.queued_at else None,
+        "started_at": campaign.started_at.isoformat() if campaign.started_at else None,
+        "finished_at": campaign.finished_at.isoformat() if campaign.finished_at else None,
+        "failed_at": campaign.failed_at.isoformat() if campaign.failed_at else None,
+        "last_error": campaign.last_error,
+        "attempts": campaign.attempts,
+        "request_id": campaign.request_id or request_id,
+    }
+    if force:
+        payload["warning"] = "requeued_while_processing"
+    return payload
+
+
+@router.post(
+    "/campaigns/{campaign_id}/cancel",
+    summary="Cancel a campaign run (platform admin)",
+)
+async def cancel_campaign(
+    request: Request,
+    campaign_id: int,
+    admin: User = Depends(require_platform_admin),
+    db: AsyncSession = Depends(get_async_db),
+) -> dict:
+    _ = admin
+    campaign = await db.get(Campaign, campaign_id)
+    if not campaign:
+        raise NotFoundError("campaign_not_found", code="campaign_not_found", http_status=404)
+
+    if campaign.processing_status == CampaignProcessingStatus.DONE:
+        raise ConflictError("campaign_already_done", code="campaign_already_done", http_status=409)
+
+    if (
+        campaign.processing_status == CampaignProcessingStatus.FAILED
+        and (campaign.last_error or "") == "cancelled_by_admin"
+    ):
+        return {
+            "campaign_id": campaign.id,
+            "status": campaign.processing_status.value,
+            "queued_at": campaign.queued_at.isoformat() if campaign.queued_at else None,
+            "started_at": campaign.started_at.isoformat() if campaign.started_at else None,
+            "finished_at": campaign.finished_at.isoformat() if campaign.finished_at else None,
+            "failed_at": campaign.failed_at.isoformat() if campaign.failed_at else None,
+            "last_error": campaign.last_error,
+            "attempts": campaign.attempts,
+            "request_id": campaign.request_id,
+        }
+
+    now = datetime.now(UTC)
+    campaign.processing_status = CampaignProcessingStatus.FAILED
+    campaign.last_error = "cancelled_by_admin"
+    campaign.finished_at = now
+    campaign.failed_at = now
+    await db.commit()
+    await db.refresh(campaign)
+
+    return {
+        "campaign_id": campaign.id,
+        "status": campaign.processing_status.value,
+        "queued_at": campaign.queued_at.isoformat() if campaign.queued_at else None,
+        "started_at": campaign.started_at.isoformat() if campaign.started_at else None,
+        "finished_at": campaign.finished_at.isoformat() if campaign.finished_at else None,
+        "failed_at": campaign.failed_at.isoformat() if campaign.failed_at else None,
+        "last_error": campaign.last_error,
+        "attempts": campaign.attempts,
+        "request_id": campaign.request_id,
     }
 
 
