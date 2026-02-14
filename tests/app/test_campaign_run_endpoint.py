@@ -7,6 +7,7 @@ from sqlalchemy import delete
 from sqlalchemy.orm import sessionmaker
 
 import tests.conftest as base_conftest
+from app.core.config import settings
 from app.core.security import create_access_token, get_password_hash
 from app.models.campaign import Campaign, CampaignProcessingStatus, CampaignStatus, ChannelType
 from app.models.company import Company
@@ -131,6 +132,20 @@ async def test_campaign_process_run_denies_store_admin(async_client, company_a_a
     assert resp.status_code == 403, resp.text
     payload = resp.json()
     assert payload.get("code") == "ADMIN_REQUIRED"
+
+
+async def test_campaign_process_run_prod_returns_404(async_client, test_db, monkeypatch):
+    _ = test_db
+    headers = _platform_admin_headers_without_company()
+    monkeypatch.setattr(settings, "ENVIRONMENT", "production", raising=False)
+
+    resp = await async_client.post(
+        "/api/v1/admin/tasks/campaigns/process/run",
+        headers=headers,
+    )
+    assert resp.status_code == 404, resp.text
+    payload = resp.json()
+    assert payload.get("code") == "not_found"
 
 
 async def test_campaign_process_run_allows_platform_admin(async_client, test_db):
@@ -267,6 +282,20 @@ async def test_campaign_seed_and_run(async_client, test_db):
         campaign = s.query(Campaign).filter(Campaign.id == campaign_id).first()
         assert campaign is not None
         assert campaign.processing_status == CampaignProcessingStatus.DONE
+
+
+async def test_campaign_seed_prod_returns_404(async_client, test_db, monkeypatch):
+    _ = test_db
+    headers = _platform_admin_headers_without_company()
+    monkeypatch.setattr(settings, "ENVIRONMENT", "production", raising=False)
+
+    seed = await async_client.post(
+        "/api/v1/admin/dev/seed/campaign_due?company_id=9302",
+        headers=headers,
+    )
+    assert seed.status_code == 404, seed.text
+    payload = seed.json()
+    assert payload.get("code") == "not_found"
 
 
 async def test_campaign_seed_without_company_id(async_client, async_db_session, test_db):

@@ -505,7 +505,7 @@ async def seed_due_campaign(
     db: AsyncSession = Depends(get_async_db),
 ) -> dict:
     _ = admin
-    if str(getattr(settings, "ENVIRONMENT", "")) == "production":
+    if settings.is_production:
         raise NotFoundError("not_found", code="not_found", http_status=404)
 
     query_company_id = request.query_params.get("company_id") or request.query_params.get("companyId")
