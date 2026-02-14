@@ -172,6 +172,7 @@ class Campaign(SoftDeleteMixin, Base):
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     failed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    next_attempt_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, index=True)
     last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
     attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     requested_by_user_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
@@ -205,6 +206,7 @@ class Campaign(SoftDeleteMixin, Base):
         Index("ix_campaign_company_status", "company_id", "status"),
         Index("ix_campaign_scheduled_at_status", "scheduled_at", "status"),
         Index("ix_campaign_processing_status_queued_at", "processing_status", "queued_at"),
+        Index("ix_campaign_processing_next_attempt_at", "processing_status", "next_attempt_at"),
         UniqueConstraint("company_id", "title", "scheduled_at", name="uq_campaign_company_title_scheduled"),
     )
 

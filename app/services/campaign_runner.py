@@ -64,10 +64,13 @@ def _record_campaign_event_sync(
 
 
 def _due_campaigns_filter_with_retry(*, now: datetime) -> Any:
-    return or_(
-        Campaign.status == CampaignStatus.READY,
-        Campaign.status == CampaignStatus.FAILED,
-        and_(Campaign.status == CampaignStatus.SCHEDULED, Campaign.scheduled_at <= now),
+    return and_(
+        or_(Campaign.next_attempt_at.is_(None), Campaign.next_attempt_at <= now),
+        or_(
+            Campaign.status == CampaignStatus.READY,
+            Campaign.status == CampaignStatus.FAILED,
+            and_(Campaign.status == CampaignStatus.SCHEDULED, Campaign.scheduled_at <= now),
+        ),
     )
 
 
@@ -103,6 +106,7 @@ def _enqueue_due_campaigns_apply(campaigns: list[Campaign], *, now: datetime) ->
             continue
         campaign.processing_status = CampaignProcessingStatus.QUEUED
         campaign.queued_at = now
+        campaign.next_attempt_at = None
         queued.append(campaign)
     return queued
 
@@ -137,6 +141,7 @@ async def queue_campaign_run(
 
     campaign.processing_status = CampaignProcessingStatus.QUEUED
     campaign.queued_at = now
+    campaign.next_attempt_at = None
     campaign.started_at = None
     campaign.finished_at = None
     campaign.failed_at = None

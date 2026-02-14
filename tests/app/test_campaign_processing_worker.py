@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 import pytest
 from sqlalchemy import select
@@ -21,6 +21,7 @@ async def _seed_campaign(
     add_message: bool = True,
     attempts: int = 0,
     request_id: str | None = None,
+    next_attempt_at: datetime | None = None,
 ) -> Campaign:
     company = await async_db_session.get(Company, company_id)
     if not company:
@@ -38,6 +39,7 @@ async def _seed_campaign(
         queued_at=datetime.now(UTC) if processing_status == CampaignProcessingStatus.QUEUED else None,
         attempts=attempts,
         request_id=request_id,
+        next_attempt_at=next_attempt_at,
     )
     async_db_session.add(campaign)
     await async_db_session.flush()
@@ -157,6 +159,7 @@ async def test_campaign_worker_failure_sets_error(async_db_session, monkeypatch)
         assert campaign.last_error
         assert "boom" in campaign.last_error
         assert campaign.queued_at is not None
+        assert campaign.next_attempt_at is not None
     else:
         assert campaign.processing_status == CampaignProcessingStatus.FAILED
         assert campaign.last_error == "max_attempts_exceeded"
@@ -233,6 +236,7 @@ async def test_campaign_worker_max_attempts(async_db_session):
     assert campaign.started_at is None
     assert campaign.attempts == settings.CAMPAIGN_MAX_ATTEMPTS
     assert campaign.last_error == "max_attempts_exceeded"
+    assert campaign.next_attempt_at is None
 
 
 async def test_campaign_worker_requires_messages(async_db_session):
@@ -244,17 +248,102 @@ async def test_campaign_worker_requires_messages(async_db_session):
     )
 
     max_attempts = int(settings.CAMPAIGN_MAX_ATTEMPTS)
+    now = datetime(2026, 2, 14, 12, 0, tzinfo=UTC)
     for _ in range(max(1, max_attempts)):
-        results = await campaign_processing.process_campaign_queue_once(async_db_session, limit=5)
+        results = await campaign_processing.process_campaign_queue_once(async_db_session, limit=5, now=now)
+        if not results:
+            await async_db_session.refresh(campaign)
+            if campaign.next_attempt_at is not None:
+                now = campaign.next_attempt_at
+            results = await campaign_processing.process_campaign_queue_once(async_db_session, limit=5, now=now)
         assert results
+        now = now + timedelta(seconds=30)
 
     await async_db_session.refresh(campaign)
     assert campaign.attempts == max_attempts
     assert campaign.processing_status == CampaignProcessingStatus.FAILED
     assert campaign.last_error == "max_attempts_exceeded"
     assert campaign.failed_at is not None
+    assert campaign.next_attempt_at is None
 
     message = (
         await async_db_session.execute(select(Message.id).where(Message.campaign_id == campaign.id).limit(1))
     ).scalar_one_or_none()
     assert message is None
+
+
+async def test_campaign_worker_failure_sets_backoff(async_db_session, monkeypatch):
+    monkeypatch.setattr(settings, "CAMPAIGN_MAX_ATTEMPTS", 3, raising=False)
+    campaign = await _seed_campaign(
+        async_db_session,
+        company_id=94000,
+        processing_status=CampaignProcessingStatus.QUEUED,
+    )
+
+    async def _boom(*_args, **_kwargs):
+        raise RuntimeError("boom")
+
+    now = datetime(2026, 2, 14, 12, 0, tzinfo=UTC)
+    monkeypatch.setattr(campaign_processing, "_perform_campaign_action", _boom)
+
+    await campaign_processing.process_campaign_queue_once(async_db_session, limit=5, now=now)
+    await async_db_session.refresh(campaign)
+
+    assert campaign.processing_status == CampaignProcessingStatus.QUEUED
+    assert campaign.next_attempt_at == now + timedelta(seconds=30)
+
+
+async def test_campaign_worker_skips_future_backoff(async_db_session):
+    now = datetime(2026, 2, 14, 12, 0, tzinfo=UTC)
+    campaign = await _seed_campaign(
+        async_db_session,
+        company_id=94010,
+        processing_status=CampaignProcessingStatus.QUEUED,
+        next_attempt_at=now + timedelta(seconds=60),
+    )
+
+    results = await campaign_processing.process_campaign_queue_once(async_db_session, limit=5, now=now)
+    assert results == []
+
+    await async_db_session.refresh(campaign)
+    assert campaign.processing_status == CampaignProcessingStatus.QUEUED
+
+
+async def test_campaign_worker_resumes_after_backoff(async_db_session):
+    now = datetime(2026, 2, 14, 12, 0, tzinfo=UTC)
+    campaign = await _seed_campaign(
+        async_db_session,
+        company_id=94020,
+        processing_status=CampaignProcessingStatus.QUEUED,
+        next_attempt_at=now - timedelta(seconds=1),
+    )
+
+    results = await campaign_processing.process_campaign_queue_once(async_db_session, limit=5, now=now)
+    assert results
+
+    await async_db_session.refresh(campaign)
+    assert campaign.processing_status == CampaignProcessingStatus.DONE
+    assert campaign.next_attempt_at is None
+
+
+async def test_campaign_worker_failure_reaches_max(async_db_session, monkeypatch):
+    monkeypatch.setattr(settings, "CAMPAIGN_MAX_ATTEMPTS", 2, raising=False)
+    campaign = await _seed_campaign(
+        async_db_session,
+        company_id=94030,
+        processing_status=CampaignProcessingStatus.QUEUED,
+        attempts=1,
+    )
+
+    async def _boom(*_args, **_kwargs):
+        raise RuntimeError("boom")
+
+    now = datetime(2026, 2, 14, 12, 0, tzinfo=UTC)
+    monkeypatch.setattr(campaign_processing, "_perform_campaign_action", _boom)
+
+    await campaign_processing.process_campaign_queue_once(async_db_session, limit=5, now=now)
+    await async_db_session.refresh(campaign)
+
+    assert campaign.processing_status == CampaignProcessingStatus.FAILED
+    assert campaign.last_error == "max_attempts_exceeded"
+    assert campaign.next_attempt_at is None
