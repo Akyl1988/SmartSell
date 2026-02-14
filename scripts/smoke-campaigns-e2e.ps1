@@ -2,17 +2,17 @@
 Smoke: campaigns E2E (enqueue -> process -> queue visibility)
 
 Usage:
-  pwsh -NoProfile -File .\scripts\smoke-campaigns-e2e.ps1 -BaseUrl http://127.0.0.1:8000 -Email admin@local -Password admin -CompanyId 1
-  pwsh -NoProfile -File .\scripts\smoke-campaigns-e2e.ps1 -Email admin@local -Password admin -CompanyId 1 -Limit 20 -AllowFailure
+  pwsh -NoProfile -File .\scripts\smoke-campaigns-e2e.ps1 -BaseUrl http://127.0.0.1:8000 -Identifier admin@local -Password admin -CompanyId 1
+  pwsh -NoProfile -File .\scripts\smoke-campaigns-e2e.ps1 -Identifier admin@local -Password admin -CompanyId 1 -Limit 20 -AllowFailure
 
 Env:
-  BASE_URL, EMAIL, PASSWORD, COMPANY_ID, LIMIT
+  BASE_URL, ADMIN_IDENTIFIER, ADMIN_PASSWORD, SMARTSELL_IDENTIFIER, SMARTSELL_PASSWORD, COMPANY_ID, LIMIT
 #>
 
 param(
   [string]$BaseUrl = $env:BASE_URL,
-  [string]$Email = $env:EMAIL,
-  [string]$Password = $env:PASSWORD,
+  [Alias("AdminIdentifier")][string]$Identifier = $env:ADMIN_IDENTIFIER,
+  [Alias("AdminPassword")][string]$Password = $env:ADMIN_PASSWORD,
   [int]$CompanyId = $(if ($env:COMPANY_ID) { [int]$env:COMPANY_ID } else { 0 }),
   [int]$Limit = $(if ($env:LIMIT) { [int]$env:LIMIT } else { 50 }),
   [switch]$AllowFailure
@@ -33,6 +33,13 @@ function Fail([string]$msg) { Write-Host "[FAIL] $msg" -ForegroundColor Red; exi
 function Ok([string]$msg) { Write-Host "[OK] $msg" -ForegroundColor Green }
 function Info([string]$msg) { Write-Host "[INFO] $msg" -ForegroundColor Cyan }
 
+function Token-Prefix([string]$Value) {
+  if ([string]::IsNullOrWhiteSpace($Value)) { return "" }
+  $token = $Value.Trim()
+  if ($token.Length -le 4) { return ($token + "...") }
+  return ($token.Substring(0, 4) + "...")
+}
+
 function Assert-Status([object]$Resp, [int[]]$Allowed, [string]$Label) {
   $status = [int]($Resp.StatusCode ?? 0)
   if ($Allowed -notcontains $status) {
@@ -52,24 +59,49 @@ if (-not $BaseUrl) { $BaseUrl = "http://127.0.0.1:8000" }
 $scriptDir = Get-ScriptDir
 . (Join-Path $scriptDir "_smoke-lib.ps1")
 
-if ([string]::IsNullOrWhiteSpace($Email) -or [string]::IsNullOrWhiteSpace($Password)) {
-  Fail "Missing credentials. Provide -Email and -Password or set EMAIL/PASSWORD."
+$identifierProvided = $PSBoundParameters.ContainsKey("Identifier") -or $PSBoundParameters.ContainsKey("AdminIdentifier")
+$passwordProvided = $PSBoundParameters.ContainsKey("Password") -or $PSBoundParameters.ContainsKey("AdminPassword")
+
+if (-not $identifierProvided -and -not $Identifier) { $Identifier = $env:ADMIN_IDENTIFIER }
+if (-not $passwordProvided -and -not $Password) { $Password = $env:ADMIN_PASSWORD }
+if (-not $Identifier) { $Identifier = $env:SMARTSELL_IDENTIFIER }
+if (-not $Password) { $Password = $env:SMARTSELL_PASSWORD }
+
+$access = $null
+$refresh = $null
+if ([string]::IsNullOrWhiteSpace($Identifier) -or [string]::IsNullOrWhiteSpace($Password)) {
+  $cached = Load-SmartsellTokensFromCache -BaseUrl $BaseUrl
+  if ($cached) {
+    $cachedAccess = Normalize-JwtToken -Value $cached.access
+    $cachedRefresh = Normalize-JwtToken -Value $cached.refresh
+    if ($cachedAccess) { $access = $cachedAccess }
+    if ($cachedRefresh) { $refresh = $cachedRefresh }
+  }
+}
+
+if (-not $access -and ([string]::IsNullOrWhiteSpace($Identifier) -or [string]::IsNullOrWhiteSpace($Password))) {
+  Fail "Set ADMIN_IDENTIFIER/ADMIN_PASSWORD or run scripts/smoke-auth.ps1 to populate .smoke-cache.json"
 }
 if ($CompanyId -le 0) {
   Fail "CompanyId is required. Provide -CompanyId or set COMPANY_ID."
 }
 
-Info "Login"
-$tokens = Get-SmartsellTokens -BaseUrl $BaseUrl -Identifier $Email -Password $Password
-$access = $tokens.access
-$refresh = $tokens.refresh
-Set-SmartsellTokens -AccessToken $access -RefreshToken $refresh -BaseUrl $BaseUrl
-Ok ("Token loaded: " + (Mask-Secret $access))
+if ($access) {
+  Set-SmartsellTokens -AccessToken $access -RefreshToken $refresh -BaseUrl $BaseUrl
+  Ok ("Token loaded: " + (Token-Prefix $access))
+} else {
+  Info "Login"
+  $tokens = Get-SmartsellTokens -BaseUrl $BaseUrl -Identifier $Identifier -Password $Password
+  $access = $tokens.access
+  $refresh = $tokens.refresh
+  Set-SmartsellTokens -AccessToken $access -RefreshToken $refresh -BaseUrl $BaseUrl
+  Ok ("Token loaded: " + (Token-Prefix $access))
+}
 
 $campaignId = $null
 $seedUrl = "$BaseUrl/api/v1/admin/dev/seed/campaign_due?company_id=$CompanyId"
 Info "Seed campaign (dev/test endpoint): $seedUrl"
-$seedResp = Invoke-SmartsellApi -Method "POST" -Url $seedUrl -TimeoutSec 20 -AccessToken $access -RefreshToken $refresh -Identifier $Email -Password $Password
+$seedResp = Invoke-SmartsellApi -Method "POST" -Url $seedUrl -TimeoutSec 20 -AccessToken $access -RefreshToken $refresh -Identifier $Identifier -Password $Password
 if ($seedResp.StatusCode -ge 200 -and $seedResp.StatusCode -lt 300) {
   $campaignId = $seedResp.Body.campaign_id
   if ($campaignId) { Ok "Seeded campaign_id=$campaignId" }
@@ -89,7 +121,7 @@ if (-not $campaignId) {
     active = $true
   }
   Info "Create campaign via /api/v1/campaigns/ (store admin only)"
-  $createResp = Invoke-SmartsellApi -Method "POST" -Url $createUrl -Body $payload -TimeoutSec 20 -AccessToken $access -RefreshToken $refresh -Identifier $Email -Password $Password
+  $createResp = Invoke-SmartsellApi -Method "POST" -Url $createUrl -Body $payload -TimeoutSec 20 -AccessToken $access -RefreshToken $refresh -Identifier $Identifier -Password $Password
   if ($createResp.StatusCode -ge 200 -and $createResp.StatusCode -lt 300) {
     $campaignId = $createResp.Body.id
     if ($campaignId) { Ok "Created campaign_id=$campaignId" }
@@ -100,13 +132,13 @@ if (-not $campaignId) {
 
 $runUrl = "$BaseUrl/api/v1/admin/tasks/campaigns/run?company_id=$CompanyId"
 Info "POST $runUrl"
-$runResp = Invoke-SmartsellApi -Method "POST" -Url $runUrl -Body @{} -TimeoutSec 30 -AccessToken $access -RefreshToken $refresh -Identifier $Email -Password $Password
+$runResp = Invoke-SmartsellApi -Method "POST" -Url $runUrl -Body @{} -TimeoutSec 30 -AccessToken $access -RefreshToken $refresh -Identifier $Identifier -Password $Password
 Assert-Status -Resp $runResp -Allowed @(200) -Label "campaigns run"
 Write-Host ("run response: " + ($runResp.Body | ConvertTo-Json -Depth 20))
 
 $queueUrl = "$BaseUrl/api/v1/admin/campaigns/queue?companyId=$CompanyId&limit=$Limit"
 Info "GET $queueUrl"
-$queueResp = Invoke-SmartsellApi -Method "GET" -Url $queueUrl -TimeoutSec 20 -AccessToken $access -RefreshToken $refresh -Identifier $Email -Password $Password
+$queueResp = Invoke-SmartsellApi -Method "GET" -Url $queueUrl -TimeoutSec 20 -AccessToken $access -RefreshToken $refresh -Identifier $Identifier -Password $Password
 Assert-Status -Resp $queueResp -Allowed @(200) -Label "queue list"
 $items = $queueResp.Body
 Print-Queue -Items $items -Max $Limit
@@ -123,7 +155,7 @@ if (-not $campaignId) {
 
 function Get-CampaignStatus([int]$Id) {
   $url = "$BaseUrl/api/v1/admin/campaigns/$Id"
-  $resp = Invoke-SmartsellApi -Method "GET" -Url $url -TimeoutSec 20 -AccessToken $access -RefreshToken $refresh -Identifier $Email -Password $Password
+  $resp = Invoke-SmartsellApi -Method "GET" -Url $url -TimeoutSec 20 -AccessToken $access -RefreshToken $refresh -Identifier $Identifier -Password $Password
   return $resp
 }
 
@@ -145,11 +177,11 @@ if ($finalResp -and $finalResp.StatusCode -ge 200 -and $finalResp.StatusCode -lt
   if ($status -eq "failed" -and $lastError -eq "max_attempts_exceeded") {
     $requeueUrl = "$BaseUrl/api/v1/admin/campaigns/$campaignId/requeue?force=false"
     Info "Requeue due to max_attempts_exceeded: $requeueUrl"
-    $requeueResp = Invoke-SmartsellApi -Method "POST" -Url $requeueUrl -TimeoutSec 20 -AccessToken $access -RefreshToken $refresh -Identifier $Email -Password $Password
+    $requeueResp = Invoke-SmartsellApi -Method "POST" -Url $requeueUrl -TimeoutSec 20 -AccessToken $access -RefreshToken $refresh -Identifier $Identifier -Password $Password
     Assert-Status -Resp $requeueResp -Allowed @(200, 409) -Label "requeue"
 
     Info "Re-run campaigns task"
-    $rerunResp = Invoke-SmartsellApi -Method "POST" -Url $runUrl -Body @{} -TimeoutSec 30 -AccessToken $access -RefreshToken $refresh -Identifier $Email -Password $Password
+    $rerunResp = Invoke-SmartsellApi -Method "POST" -Url $runUrl -Body @{} -TimeoutSec 30 -AccessToken $access -RefreshToken $refresh -Identifier $Identifier -Password $Password
     Assert-Status -Resp $rerunResp -Allowed @(200) -Label "campaigns run (retry)"
 
     $finalResp = Get-CampaignStatus -Id $campaignId
