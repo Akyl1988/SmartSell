@@ -97,6 +97,8 @@ def test_scheduler_worker_calls_runner(monkeypatch):
     monkeypatch.setattr("app.worker.scheduler_worker.enqueue_due_campaigns_sync", _fake_enqueue)
     monkeypatch.setattr("app.worker.campaign_processing.process_campaign_queue_once_sync", _fake_process)
     monkeypatch.setattr("app.worker.scheduler_worker._schedule_pending_messages_for_campaigns", _fake_schedule)
+    monkeypatch.setattr("app.worker.scheduler_worker._try_scheduler_advisory_lock", lambda: (True, object()))
+    monkeypatch.setattr("app.worker.scheduler_worker._release_scheduler_advisory_lock", lambda *_args, **_kwargs: None)
 
     from app.worker import scheduler_worker
 
@@ -175,6 +177,8 @@ def test_scheduler_tick_does_not_duplicate_jobs(monkeypatch, test_db):
 
     monkeypatch.setattr("app.worker.scheduler_worker.enqueue_due_campaigns_sync", _fake_enqueue)
     monkeypatch.setattr("app.worker.campaign_processing.process_campaign_queue_once_sync", _fake_process)
+    monkeypatch.setattr("app.worker.scheduler_worker._try_scheduler_advisory_lock", lambda: (True, object()))
+    monkeypatch.setattr("app.worker.scheduler_worker._release_scheduler_advisory_lock", lambda *_args, **_kwargs: None)
 
     scheduler_worker.process_scheduled_campaigns()
     scheduler_worker.process_scheduled_campaigns()
