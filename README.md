@@ -190,6 +190,31 @@ poetry run pytest
 poetry run pytest --cov=app --cov-report=html
 ```
 
+## Release gate
+
+Run the standard pre-release checks locally:
+
+```powershell
+pwsh -NoProfile -File .\scripts\prod-gate.ps1 -BaseUrl http://127.0.0.1:8000
+```
+
+What it checks:
+- `ruff format --check`, `ruff check`, `pytest -q`
+- Alembic sanity: `alembic heads` and `alembic history`
+- Reports smoke (optional): `scripts/smoke-reports-all.ps1`
+
+Skip smoke if the API is not running:
+
+```powershell
+pwsh -NoProfile -File .\scripts\prod-gate.ps1 -SkipSmoke
+```
+
+Skip format check if needed:
+
+```powershell
+pwsh -NoProfile -File .\scripts\prod-gate.ps1 -SkipFormatCheck
+```
+
 ## 🔧 Development
 
 ### Code Quality
