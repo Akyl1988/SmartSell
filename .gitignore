@@ -409,5 +409,6 @@ openapi.json
 # allowlist tracked smoke scripts (keep scripts/** ignored by default)
 !scripts/_smoke-lib.ps1
 !scripts/smoke-admin-campaign-cleanup.ps1
+!scripts/smoke-reports-order-items.ps1
 !scripts/smoke-reports-wallet-transactions.ps1
 
