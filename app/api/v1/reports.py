@@ -25,7 +25,8 @@ from app.core.dependencies import (
     require_company_access,
     require_store_admin_company,
 )
-from app.core.exceptions import AuthorizationError, NotFoundError
+from app.core.exceptions import AuthorizationError, NotFoundError, _ensure_request_id
+from app.core.logging import audit_logger
 from app.core.rbac import is_platform_admin, is_store_admin, is_store_manager
 from app.core.security import resolve_tenant_company_id
 from app.models.billing import BillingInvoice, WalletBalance, WalletTransaction
@@ -133,6 +134,32 @@ def _csv_stream(rows: list[dict[str, str]], headers: list[str]) -> Any:
         yield buffer.getvalue().encode("utf-8")
         buffer.seek(0)
         buffer.truncate(0)
+
+
+def _log_report_event(
+    *,
+    request: Request,
+    event: str,
+    resolved_company_id: int,
+    date_from: str | None,
+    date_to: str | None,
+    limit: int,
+    rows_count: int,
+) -> None:
+    request_id = _ensure_request_id(request)
+    audit_logger.log_system_event(
+        level="info",
+        event=event,
+        message="CSV report generated",
+        meta={
+            "request_id": request_id,
+            "company_id": resolved_company_id,
+            "date_from": date_from,
+            "date_to": date_to,
+            "limit": limit,
+            "rows_count": rows_count,
+        },
+    )
 
 
 async def _fetch_wallet_transactions(
@@ -370,6 +397,16 @@ async def report_wallet_transactions_csv(
         limit=limit,
     )
 
+    _log_report_event(
+        request=request,
+        event="report_wallet_transactions_csv",
+        resolved_company_id=resolved_company_id,
+        date_from=date_from,
+        date_to=date_to,
+        limit=limit,
+        rows_count=len(rows),
+    )
+
     headers = [
         "transaction_id",
         "created_at",
@@ -419,6 +456,16 @@ async def report_orders_csv(
         limit=limit,
     )
 
+    _log_report_event(
+        request=request,
+        event="report_orders_csv",
+        resolved_company_id=resolved_company_id,
+        date_from=date_from,
+        date_to=date_to,
+        limit=limit,
+        rows_count=len(rows),
+    )
+
     headers = [
         "order_id",
         "created_at",
@@ -466,6 +513,16 @@ async def report_order_items_csv(
         date_from=df,
         date_to=dt,
         limit=limit,
+    )
+
+    _log_report_event(
+        request=request,
+        event="report_order_items_csv",
+        resolved_company_id=resolved_company_id,
+        date_from=date_from,
+        date_to=date_to,
+        limit=limit,
+        rows_count=len(rows),
     )
 
     headers = [

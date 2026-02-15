@@ -410,5 +410,6 @@ openapi.json
 !scripts/_smoke-lib.ps1
 !scripts/smoke-admin-campaign-cleanup.ps1
 !scripts/smoke-reports-order-items.ps1
+!scripts/smoke-reports-orders.ps1
 !scripts/smoke-reports-wallet-transactions.ps1
 

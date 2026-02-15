@@ -140,3 +140,35 @@ async def test_order_items_csv_platform_admin(async_client, auth_headers, test_d
     assert resp.status_code == 200, resp.text
     rows = _parse_csv(resp.text)
     assert rows
+
+
+async def test_order_items_csv_audit_log(async_client, company_a_admin_headers, test_db, monkeypatch):
+    _ = test_db
+    now = datetime.now(UTC)
+    _seed_order_item(
+        company_id=1001,
+        order_number="ORD-ITEM-AUDIT",
+        created_at=now,
+        total_amount=Decimal("24.00"),
+    )
+
+    events: list[dict[str, object]] = []
+
+    def _capture_event(**kwargs):
+        events.append(kwargs)
+
+    from app.core import logging as logging_mod
+
+    monkeypatch.setattr(logging_mod.audit_logger, "log_system_event", _capture_event)
+
+    resp = await async_client.get(
+        "/api/v1/reports/order_items.csv?limit=1",
+        headers=company_a_admin_headers,
+    )
+    assert resp.status_code == 200, resp.text
+    assert events
+    event = events[-1]
+    assert event.get("event") == "report_order_items_csv"
+    meta = event.get("meta") or {}
+    assert meta.get("company_id") == 1001
+    assert meta.get("limit") == 1
