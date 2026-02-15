@@ -193,7 +193,6 @@ scripts/.smoke-cache.json
 
 # Keep shared smoke scripts tracked
 !scripts/smoke-kaspi-onboard.ps1
-!scripts/_smoke-lib.ps1
 
 # =========================
 #         Docker
@@ -365,7 +364,9 @@ tmp_kaspi_goods_*.json
 scripts/**
 # NOTE: allowlist entries must be below scripts/** to override the ignore.
 !scripts/smoke-campaigns-e2e.ps1
+!scripts/smoke-admin-campaign-cleanup.ps1
 !scripts/smoke-admin-campaign-queue.ps1
+!scripts/_smoke-lib.ps1
 !scripts/
 !scripts/**/
 !scripts/smoke-auth.ps1
@@ -373,6 +374,11 @@ scripts/**
 !scripts/smoke-core.ps1
 !scripts/prod-gate.ps1
 !scripts/smoke-kaspi-sync-now.ps1
+!scripts/smoke-reports-wallet-transactions.ps1
+!scripts/smoke-reports-orders.ps1
+!scripts/smoke-reports-order-items.ps1
+!scripts/smoke-reports-orders-pdf.ps1
+!scripts/smoke-reports-sales-pdf.ps1
 
 
 # local audit / plans (do not commit)
@@ -406,10 +412,4 @@ openapi.json
 !scripts/openapi_report.py
 
 
-# allowlist tracked smoke scripts (keep scripts/** ignored by default)
-!scripts/_smoke-lib.ps1
-!scripts/smoke-admin-campaign-cleanup.ps1
-!scripts/smoke-reports-order-items.ps1
-!scripts/smoke-reports-orders.ps1
-!scripts/smoke-reports-wallet-transactions.ps1
 
