@@ -162,6 +162,37 @@ def _log_report_event(
     )
 
 
+def _log_report_pdf_event(
+    *,
+    request: Request,
+    event: str,
+    resolved_company_id: int,
+    date_from: str | None,
+    date_to: str | None,
+    limit: int,
+    rows_count: int | None = None,
+    extra_meta: dict[str, Any] | None = None,
+) -> None:
+    request_id = _ensure_request_id(request)
+    meta: dict[str, Any] = {
+        "request_id": request_id,
+        "company_id": resolved_company_id,
+        "date_from": date_from,
+        "date_to": date_to,
+        "limit": limit,
+    }
+    if rows_count is not None:
+        meta["rows_count"] = rows_count
+    if extra_meta:
+        meta.update(extra_meta)
+    audit_logger.log_system_event(
+        level="info",
+        event=event,
+        message="PDF report generated",
+        meta=meta,
+    )
+
+
 async def _fetch_wallet_transactions(
     db: AsyncSession,
     *,
@@ -657,18 +688,37 @@ async def _fetch_sales_metrics(
 
 @router.get("/orders.pdf")
 async def report_orders_pdf(
+    request: Request,
     date_from: str | None = Query(default=None),
     date_to: str | None = Query(default=None),
     limit: int = Query(default=1000, ge=1, le=5000),
+    companyId: int | None = Query(default=None, ge=1, alias="companyId"),
     admin: User = Depends(get_current_verified_user),
     db: AsyncSession = Depends(get_async_db),
 ) -> Response:
     _ = admin
-    company_id = resolve_tenant_company_id(admin, not_found_detail="Company not set")
+    company_id = _resolve_company_id_param(request, companyId)
+    resolved_company_id = _resolve_wallet_report_company_id(admin, company_id)
     df = _parse_dt(date_from, "date_from")
     dt = _parse_dt(date_to, "date_to")
 
-    rows = await _fetch_orders(db, company_id=company_id, date_from=df, date_to=dt, limit=limit)
+    rows = await _fetch_orders(
+        db,
+        company_id=resolved_company_id,
+        date_from=df,
+        date_to=dt,
+        limit=limit,
+    )
+
+    _log_report_pdf_event(
+        request=request,
+        event="report_orders_pdf",
+        resolved_company_id=resolved_company_id,
+        date_from=date_from,
+        date_to=date_to,
+        limit=limit,
+        rows_count=len(rows),
+    )
 
     total_orders = len(rows)
     total_sum = sum(float(r.get("total_price") or 0) for r in rows)
@@ -739,18 +789,39 @@ async def report_orders_pdf(
 
 @router.get("/sales.pdf")
 async def report_sales_pdf(
+    request: Request,
     date_from: str | None = Query(default=None),
     date_to: str | None = Query(default=None),
     limit: int = Query(default=1000, ge=1, le=5000),
+    companyId: int | None = Query(default=None, ge=1, alias="companyId"),
     admin: User = Depends(get_current_verified_user),
     db: AsyncSession = Depends(get_async_db),
 ) -> StreamingResponse:
     _ = admin
     _ = limit
-    company_id = resolve_tenant_company_id(admin, not_found_detail="Company not set")
+    company_id = _resolve_company_id_param(request, companyId)
+    resolved_company_id = _resolve_wallet_report_company_id(admin, company_id)
     start_dt, end_dt = _date_bounds(_parse_date(date_from, "date_from"), _parse_date(date_to, "date_to"))
 
-    metrics, top_skus = await _fetch_sales_metrics(db, company_id=company_id, date_from=start_dt, date_to=end_dt)
+    metrics, top_skus = await _fetch_sales_metrics(
+        db,
+        company_id=resolved_company_id,
+        date_from=start_dt,
+        date_to=end_dt,
+    )
+    _log_report_pdf_event(
+        request=request,
+        event="report_sales_pdf",
+        resolved_company_id=resolved_company_id,
+        date_from=date_from,
+        date_to=date_to,
+        limit=limit,
+        extra_meta={
+            "total_orders": metrics.get("total_orders"),
+            "items_sold_total": metrics.get("items_sold_total"),
+            "top_skus_count": len(top_skus),
+        },
+    )
     content = build_sales_pdf(
         metrics=metrics,
         top_skus=top_skus,
