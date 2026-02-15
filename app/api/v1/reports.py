@@ -247,6 +247,97 @@ async def _fetch_orders_csv_rows(
     return items
 
 
+async def _fetch_order_items_csv_rows(
+    db: AsyncSession,
+    *,
+    company_id: int,
+    date_from: datetime | None,
+    date_to: datetime | None,
+    limit: int,
+) -> list[dict[str, str]]:
+    item_created_col = getattr(OrderItem, "created_at", None)
+    has_item_created = item_created_col is not None
+
+    columns = [
+        OrderItem.id,
+        OrderItem.product_id,
+        OrderItem.sku,
+        OrderItem.name,
+        OrderItem.quantity,
+        OrderItem.unit_price,
+        OrderItem.total_price,
+        Order.id,
+        Order.created_at,
+        Order.status,
+        Order.external_id,
+        Order.currency,
+    ]
+    if has_item_created:
+        columns.append(item_created_col)
+
+    stmt = select(*columns).join(Order, OrderItem.order_id == Order.id).where(Order.company_id == company_id)
+    if date_from:
+        stmt = stmt.where(Order.created_at >= date_from)
+    if date_to:
+        stmt = stmt.where(Order.created_at <= date_to)
+    stmt = stmt.order_by(Order.created_at.desc(), OrderItem.id.desc()).limit(limit)
+
+    rows = (await db.execute(stmt)).all()
+    items: list[dict[str, str]] = []
+    for row in rows:
+        if has_item_created:
+            (
+                item_id,
+                product_id,
+                sku,
+                name,
+                quantity,
+                unit_price,
+                total_price,
+                order_id,
+                order_created_at,
+                order_status,
+                order_external_id,
+                order_currency,
+                item_created_at,
+            ) = row
+        else:
+            (
+                item_id,
+                product_id,
+                sku,
+                name,
+                quantity,
+                unit_price,
+                total_price,
+                order_id,
+                order_created_at,
+                order_status,
+                order_external_id,
+                order_currency,
+            ) = row
+            item_created_at = None
+
+        items.append(
+            {
+                "order_id": str(order_id),
+                "order_created_at": order_created_at.isoformat() if order_created_at else "",
+                "order_status": str(order_status or ""),
+                "order_external_id": str(order_external_id or ""),
+                "item_id": str(item_id),
+                "product_id": str(product_id) if product_id is not None else "",
+                "sku": str(sku or ""),
+                "name": str(name or ""),
+                "quantity": str(int(quantity or 0)),
+                "unit_price": str(unit_price) if unit_price is not None else "",
+                "total_price": str(total_price) if total_price is not None else "",
+                "currency": str(order_currency or ""),
+                "created_at": item_created_at.isoformat() if item_created_at else "",
+            }
+        )
+    return items
+
+
 @router.get(
     "/wallet/transactions.csv",
     responses={
@@ -342,6 +433,61 @@ async def report_orders_csv(
         _csv_stream(rows, headers),
         media_type="text/csv; charset=utf-8",
         headers={"Content-Disposition": "attachment; filename=orders.csv"},
+    )
+
+
+@router.get(
+    "/order_items.csv",
+    responses={
+        200: {
+            "content": {"text/csv": {"schema": {"type": "string", "format": "binary"}}},
+            "description": "Order items CSV",
+        }
+    },
+)
+async def report_order_items_csv(
+    request: Request,
+    limit: int = Query(default=500, ge=1, le=5000),
+    date_from: str | None = Query(default=None),
+    date_to: str | None = Query(default=None),
+    companyId: int | None = Query(default=None, ge=1, alias="companyId"),
+    admin: User = Depends(get_current_verified_user),
+    db: AsyncSession = Depends(get_async_db),
+) -> StreamingResponse:
+    _ = admin
+    company_id = _resolve_company_id_param(request, companyId)
+    resolved_company_id = _resolve_wallet_report_company_id(admin, company_id)
+    df = _parse_dt(date_from, "date_from")
+    dt = _parse_dt(date_to, "date_to")
+
+    rows = await _fetch_order_items_csv_rows(
+        db,
+        company_id=resolved_company_id,
+        date_from=df,
+        date_to=dt,
+        limit=limit,
+    )
+
+    headers = [
+        "order_id",
+        "order_created_at",
+        "order_status",
+        "order_external_id",
+        "item_id",
+        "product_id",
+        "sku",
+        "name",
+        "quantity",
+        "unit_price",
+        "total_price",
+        "currency",
+        "created_at",
+    ]
+
+    return StreamingResponse(
+        _csv_stream(rows, headers),
+        media_type="text/csv; charset=utf-8",
+        headers={"Content-Disposition": "attachment; filename=order-items.csv"},
     )
 
 

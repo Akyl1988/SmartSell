@@ -43,6 +43,11 @@ async def test_openapi_hides_legacy_api_and_exposes_v1(async_client):
     orders_content = orders_report.get("get", {}).get("responses", {}).get("200", {}).get("content", {})
     assert "text/csv" in orders_content
 
+    order_items_report = paths.get("/api/v1/reports/order_items.csv", {})
+    assert "get" in order_items_report
+    order_items_content = order_items_report.get("get", {}).get("responses", {}).get("200", {}).get("content", {})
+    assert "text/csv" in order_items_content
+
 
 @pytest.mark.asyncio
 async def test_openapi_kaspi_catalog_template_has_binary_types(async_client):
