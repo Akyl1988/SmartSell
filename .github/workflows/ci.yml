@@ -104,7 +104,7 @@ jobs:
       - name: Run migrations (sync driver)
         env:
           DATABASE_URL: postgresql+psycopg://postgres:postgres@localhost:5432/smartsell_test
-          ENVIRONMENT: testing
+          ENVIRONMENT: test
           TESTING: "True"
         run: alembic upgrade head
 

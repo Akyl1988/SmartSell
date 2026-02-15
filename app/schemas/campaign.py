@@ -93,6 +93,7 @@ class CampaignResponse(BaseModel):
     queued_at: datetime | None = None
     started_at: datetime | None = None
     finished_at: datetime | None = None
+    next_attempt_at: datetime | None = None
     last_error: str | None = None
     attempts: int
     created_at: datetime
@@ -112,6 +113,7 @@ class AdminCampaignResponse(BaseModel):
     queued_at: datetime | None = None
     started_at: datetime | None = None
     finished_at: datetime | None = None
+    next_attempt_at: datetime | None = None
     last_error: str | None = None
     attempts: int
     created_at: datetime | None = None

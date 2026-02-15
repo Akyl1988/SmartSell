@@ -34,6 +34,7 @@ from app.models.kaspi_trial_grant import KaspiTrialGrant
 from app.models.subscription_override import SubscriptionOverride
 from app.models.user import User
 from app.schemas.campaign import AdminCampaignResponse
+from app.services.campaign_cleanup import campaign_cleanup_run
 from app.services.campaign_pipeline import campaign_pipeline_tick
 from app.services.campaign_runner import (
     enqueue_due_campaigns,
@@ -140,6 +141,7 @@ def _campaign_queue_payload(campaign: Campaign) -> dict:
         "started_at": campaign.started_at.isoformat() if campaign.started_at else None,
         "finished_at": campaign.finished_at.isoformat() if campaign.finished_at else None,
         "failed_at": campaign.failed_at.isoformat() if campaign.failed_at else None,
+        "next_attempt_at": campaign.next_attempt_at.isoformat() if campaign.next_attempt_at else None,
         "attempts": campaign.attempts,
         "last_error": campaign.last_error,
         "request_id": campaign.request_id,
@@ -214,6 +216,44 @@ async def run_campaigns_pipeline_tick(
 
 
 @router.post(
+    "/tasks/campaigns/cleanup/run",
+    summary="Run campaign cleanup task (platform admin)",
+)
+async def run_campaigns_cleanup(
+    request: Request,
+    done_days: int = Query(14, ge=1, le=365),
+    failed_days: int = Query(30, ge=1, le=365),
+    limit: int = Query(..., ge=1, le=5000),
+    admin: User = Depends(require_platform_admin),
+    db: AsyncSession = Depends(get_async_db),
+) -> dict:
+    _ = admin
+    request_id = _ensure_request_id(request)
+    counters = await campaign_cleanup_run(
+        db,
+        done_days=done_days,
+        failed_days=failed_days,
+        limit=limit,
+        now=datetime.now(UTC),
+    )
+    await db.commit()
+
+    audit_logger.log_system_event(
+        level="info",
+        event="campaign_cleanup_run",
+        message="Campaign cleanup task executed",
+        meta={
+            "request_id": request_id,
+            "done_days": done_days,
+            "failed_days": failed_days,
+            "limit": limit,
+            **counters,
+        },
+    )
+    return {**counters, "request_id": request_id}
+
+
+@router.post(
     "/campaigns/{campaign_id}/run",
     summary="Queue a campaign run (platform admin)",
 )
@@ -240,6 +280,7 @@ async def queue_campaign_run(
             "started_at": campaign.started_at.isoformat() if campaign.started_at else None,
             "finished_at": campaign.finished_at.isoformat() if campaign.finished_at else None,
             "failed_at": campaign.failed_at.isoformat() if campaign.failed_at else None,
+            "next_attempt_at": campaign.next_attempt_at.isoformat() if campaign.next_attempt_at else None,
             "last_error": campaign.last_error,
             "attempts": campaign.attempts,
             "request_id": campaign.request_id or request_id,
@@ -260,6 +301,7 @@ async def queue_campaign_run(
         "started_at": campaign.started_at.isoformat() if campaign.started_at else None,
         "finished_at": campaign.finished_at.isoformat() if campaign.finished_at else None,
         "failed_at": campaign.failed_at.isoformat() if campaign.failed_at else None,
+        "next_attempt_at": campaign.next_attempt_at.isoformat() if campaign.next_attempt_at else None,
         "last_error": campaign.last_error,
         "attempts": campaign.attempts,
         "request_id": request_id,
@@ -347,6 +389,7 @@ async def requeue_campaign(
         "started_at": campaign.started_at.isoformat() if campaign.started_at else None,
         "finished_at": campaign.finished_at.isoformat() if campaign.finished_at else None,
         "failed_at": campaign.failed_at.isoformat() if campaign.failed_at else None,
+        "next_attempt_at": campaign.next_attempt_at.isoformat() if campaign.next_attempt_at else None,
         "last_error": campaign.last_error,
         "attempts": campaign.attempts,
         "request_id": campaign.request_id or request_id,
@@ -423,6 +466,7 @@ async def cancel_campaign(
             "started_at": campaign.started_at.isoformat() if campaign.started_at else None,
             "finished_at": campaign.finished_at.isoformat() if campaign.finished_at else None,
             "failed_at": campaign.failed_at.isoformat() if campaign.failed_at else None,
+            "next_attempt_at": campaign.next_attempt_at.isoformat() if campaign.next_attempt_at else None,
             "last_error": campaign.last_error,
             "attempts": campaign.attempts,
             "request_id": campaign.request_id,
@@ -466,6 +510,7 @@ async def cancel_campaign(
         "started_at": campaign.started_at.isoformat() if campaign.started_at else None,
         "finished_at": campaign.finished_at.isoformat() if campaign.finished_at else None,
         "failed_at": campaign.failed_at.isoformat() if campaign.failed_at else None,
+        "next_attempt_at": campaign.next_attempt_at.isoformat() if campaign.next_attempt_at else None,
         "last_error": campaign.last_error,
         "attempts": campaign.attempts,
         "request_id": campaign.request_id or request_id,
@@ -499,7 +544,7 @@ async def seed_due_campaign(
     db: AsyncSession = Depends(get_async_db),
 ) -> dict:
     _ = admin
-    if str(getattr(settings, "ENVIRONMENT", "")) == "production":
+    if settings.is_production:
         raise NotFoundError("not_found", code="not_found", http_status=404)
 
     query_company_id = request.query_params.get("company_id") or request.query_params.get("companyId")

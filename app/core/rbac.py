@@ -51,7 +51,9 @@ STORE_ROLES = {Role.STORE_ADMIN.value, Role.STORE_MANAGER.value, Role.STORE_EMPL
 def is_superuser(user: Any) -> bool:
     if user is None:
         return False
-    return bool(getattr(user, "is_superuser", False))
+    from app.core.security import is_superuser as security_is_superuser
+
+    return security_is_superuser(user)
 
 
 def is_platform_admin(user: Any) -> bool:

@@ -468,9 +468,10 @@ def _configure_structlog() -> None:
         structlog.processors.StackInfoRenderer(),
         structlog.processors.UnicodeDecoder(),
     ]
+    environment = getattr(settings, "ENVIRONMENT", "development")
     renderer = (
         structlog.processors.JSONRenderer()
-        if getattr(settings, "ENVIRONMENT", "development") == "production"
+        if environment in ("production", "test")
         else structlog.dev.ConsoleRenderer()
     )
     processors.append(renderer)

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from time import perf_counter
 from typing import Any
 from uuid import uuid4
 
@@ -11,6 +12,7 @@ from app.core.config import settings
 from app.core.db import session_scope
 from app.models.campaign import Campaign, CampaignProcessingStatus, CampaignStatus
 from app.models.integration_event import IntegrationEvent
+from app.services.campaign_events import log_campaign_event
 from app.services.integration_events import record_integration_event
 
 
@@ -94,9 +96,10 @@ def _enqueue_due_campaigns_query(
     return where, claim_stmt, limit_value
 
 
-def _enqueue_due_campaigns_apply(campaigns: list[Campaign], *, now: datetime) -> list[Campaign]:
-    queued: list[Campaign] = []
+def _enqueue_due_campaigns_apply(campaigns: list[Campaign], *, now: datetime) -> list[tuple[Campaign, str]]:
+    queued: list[tuple[Campaign, str]] = []
     for campaign in campaigns:
+        prev_status = campaign.processing_status.value
         if campaign.processing_status in (
             CampaignProcessingStatus.QUEUED,
             CampaignProcessingStatus.PROCESSING,
@@ -107,7 +110,7 @@ def _enqueue_due_campaigns_apply(campaigns: list[Campaign], *, now: datetime) ->
         campaign.processing_status = CampaignProcessingStatus.QUEUED
         campaign.queued_at = now
         campaign.next_attempt_at = None
-        queued.append(campaign)
+        queued.append((campaign, prev_status))
     return queued
 
 
@@ -166,6 +169,7 @@ async def enqueue_due_campaigns(
 ) -> dict[str, Any]:
     run_id = request_id or str(uuid4())
     now = now or _now_utc()
+    start = perf_counter()
     where, claim_stmt, limit_value = _enqueue_due_campaigns_query(
         now=now,
         company_id=company_id,
@@ -177,13 +181,24 @@ async def enqueue_due_campaigns(
 
     queued = _enqueue_due_campaigns_apply(campaigns, now=now)
     queued_ids: list[int] = []
-    for campaign in queued:
+    for campaign, prev_status in queued:
         await _record_campaign_event(
             db,
             company_id=campaign.company_id,
             campaign_id=campaign.id,
             status="queued",
             request_id=run_id,
+        )
+        log_campaign_event(
+            event="campaign_enqueued",
+            message="Campaign queued",
+            request_id=run_id,
+            company_id=campaign.company_id,
+            campaign_id=campaign.id,
+            run_id=run_id,
+            status_before=prev_status,
+            status_after=campaign.processing_status.value,
+            attempt=int(campaign.attempts or 0),
         )
         queued_ids.append(campaign.id)
 
@@ -194,6 +209,24 @@ async def enqueue_due_campaigns(
 
     found = min(int(total_due), limit_value)
     skipped = max(0, found - len(queued_ids))
+    duration_ms = int((perf_counter() - start) * 1000)
+    log_campaign_event(
+        event="campaign_enqueue_due",
+        message="Enqueue due campaigns",
+        request_id=run_id,
+        company_id=company_id,
+        campaign_id=None,
+        run_id=run_id,
+        status_before=None,
+        status_after=None,
+        attempt=None,
+        meta={
+            "queued": len(queued_ids),
+            "skipped": skipped,
+            "total_due": int(total_due),
+            "duration_ms": duration_ms,
+        },
+    )
     return {"queued": len(queued_ids), "skipped": skipped, "campaign_ids": queued_ids}
 
 
@@ -206,6 +239,7 @@ def enqueue_due_campaigns_sync(
 ) -> dict[str, Any]:
     run_id = request_id or str(uuid4())
     now = now or _now_utc()
+    start = perf_counter()
     where, claim_stmt, limit_value = _enqueue_due_campaigns_query(
         now=now,
         company_id=company_id,
@@ -218,7 +252,7 @@ def enqueue_due_campaigns_sync(
 
         queued = _enqueue_due_campaigns_apply(campaigns, now=now)
         queued_ids: list[int] = []
-        for campaign in queued:
+        for campaign, prev_status in queued:
             _record_campaign_event_sync(
                 db,
                 company_id=campaign.company_id,
@@ -226,10 +260,39 @@ def enqueue_due_campaigns_sync(
                 status="queued",
                 request_id=run_id,
             )
+            log_campaign_event(
+                event="campaign_enqueued",
+                message="Campaign queued",
+                request_id=run_id,
+                company_id=campaign.company_id,
+                campaign_id=campaign.id,
+                run_id=run_id,
+                status_before=prev_status,
+                status_after=campaign.processing_status.value,
+                attempt=int(campaign.attempts or 0),
+            )
             queued_ids.append(campaign.id)
 
     found = min(int(total_due), limit_value)
     skipped = max(0, found - len(queued_ids))
+    duration_ms = int((perf_counter() - start) * 1000)
+    log_campaign_event(
+        event="campaign_enqueue_due",
+        message="Enqueue due campaigns",
+        request_id=run_id,
+        company_id=company_id,
+        campaign_id=None,
+        run_id=run_id,
+        status_before=None,
+        status_after=None,
+        attempt=None,
+        meta={
+            "queued": len(queued_ids),
+            "skipped": skipped,
+            "total_due": int(total_due),
+            "duration_ms": duration_ms,
+        },
+    )
     return {"queued": len(queued_ids), "skipped": skipped, "campaign_ids": queued_ids}
 
 

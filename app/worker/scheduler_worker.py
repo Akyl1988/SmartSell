@@ -21,6 +21,7 @@ APScheduler worker для SmartSell:
 
 from __future__ import annotations
 
+import asyncio
 import atexit
 import logging
 import smtplib
@@ -32,6 +33,7 @@ from datetime import UTC, datetime
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from typing import Any
+from uuid import uuid4
 
 from sqlalchemy import text, update
 
@@ -109,6 +111,7 @@ if SessionLocal is None:
     raise RuntimeError("SessionLocal не найден. Проверьте, что есть app.core.db.SessionLocal")
 
 from app.models.campaign import Campaign, CampaignProcessingStatus, Message, MessageStatus
+from app.services.campaign_cleanup import campaign_cleanup_run
 from app.services.campaign_runner import enqueue_due_campaigns_sync
 from app.worker import campaign_processing
 
@@ -117,6 +120,7 @@ logger.setLevel(logging.INFO)
 
 _ERROR_MESSAGE_LIMIT = 500
 _SCHEDULER_LOCK_KEY = 0x53434844  # "SCHD"
+_CLEANUP_LOCK_KEY = 0x43434C55  # "CCLU"
 
 
 # -------- Kaspi autosync mutual exclusion helper -------- #
@@ -221,9 +225,30 @@ def _try_scheduler_advisory_lock() -> tuple[bool, Any | None]:
     return True, db
 
 
+def _try_cleanup_advisory_lock() -> tuple[bool, Any | None]:
+    db = SessionLocal()
+    try:
+        acquired = bool(db.execute(text("SELECT pg_try_advisory_lock(:k)"), {"k": _CLEANUP_LOCK_KEY}).scalar())
+    except Exception:
+        db.close()
+        raise
+
+    if not acquired:
+        db.close()
+        return False, None
+    return True, db
+
+
 def _release_scheduler_advisory_lock(db) -> None:
     try:
         db.execute(text("SELECT pg_advisory_unlock(:k)"), {"k": _SCHEDULER_LOCK_KEY})
+    finally:
+        db.close()
+
+
+def _release_cleanup_advisory_lock(db) -> None:
+    try:
+        db.execute(text("SELECT pg_advisory_unlock(:k)"), {"k": _CLEANUP_LOCK_KEY})
     finally:
         db.close()
 
@@ -305,6 +330,7 @@ scheduler = BackgroundScheduler(
 
 _JOB_ID_PROCESS_CAMPAIGNS = "process_campaigns"
 _JOB_ID_KASPI_AUTOSYNC = "kaspi_autosync"
+_JOB_ID_CAMPAIGN_CLEANUP = "campaign_cleanup"
 
 
 # События планировщика для детального лога
@@ -442,6 +468,74 @@ def process_scheduled_campaigns() -> None:
             _release_scheduler_advisory_lock(lock_db)
 
 
+def _scheduler_enabled() -> bool:
+    import os
+
+    return _env_truthy(os.getenv("ENABLE_SCHEDULER", "0")) or bool(getattr(settings, "ENABLE_SCHEDULER", False))
+
+
+async def _run_campaign_cleanup_async(
+    *,
+    request_id: str,
+    done_days: int,
+    failed_days: int,
+    limit: int,
+    now: datetime,
+) -> dict:
+    from app.core.db import async_session_maker
+
+    async_session = async_session_maker()
+    async with async_session as db:
+        counters = await campaign_cleanup_run(
+            db,
+            done_days=done_days,
+            failed_days=failed_days,
+            limit=limit,
+            now=now,
+        )
+        await db.commit()
+    counters["request_id"] = request_id
+    return counters
+
+
+async def run_campaign_cleanup_job_async() -> dict | None:
+    if not _scheduler_enabled():
+        logger.info("Campaign cleanup skipped: ENABLE_SCHEDULER=False")
+        return None
+
+    acquired, lock_db = _try_cleanup_advisory_lock()
+    if not acquired:
+        logger.info("campaign_cleanup_lock_busy: scheduler lock busy")
+        return None
+
+    request_id = f"cleanup-{uuid4()}"
+    cleanup_now = _utcnow_aware()
+    try:
+        counters = await _run_campaign_cleanup_async(
+            request_id=request_id,
+            done_days=14,
+            failed_days=30,
+            limit=5000,
+            now=cleanup_now,
+        )
+        logger.info(
+            "Campaign cleanup job finished request_id=%s scanned_done=%s scanned_failed=%s deleted_campaigns=%s deleted_messages=%s",
+            request_id,
+            counters.get("scanned_done"),
+            counters.get("scanned_failed"),
+            counters.get("deleted_campaigns"),
+            counters.get("deleted_messages"),
+        )
+        return counters
+    finally:
+        if lock_db is not None:
+            _release_cleanup_advisory_lock(lock_db)
+
+
+def run_campaign_cleanup_job() -> None:
+    asyncio.run(run_campaign_cleanup_job_async())
+
+
 # -------- Публичные сервисные функции воркера -------- #
 
 
@@ -490,6 +584,17 @@ def start() -> None:
         max_instances=1,
         coalesce=True,  # слить пропущенные запуски в один
         misfire_grace_time=60,  # допуск по пропуску
+    )
+
+    # Cleanup job: every 12 hours to keep retention predictable without cron/timezone edge cases.
+    scheduler.add_job(
+        run_campaign_cleanup_job,
+        trigger=IntervalTrigger(hours=12),
+        id=_JOB_ID_CAMPAIGN_CLEANUP,
+        replace_existing=True,
+        max_instances=1,
+        coalesce=True,
+        misfire_grace_time=300,
     )
 
     # Kaspi auto-sync job (mutual exclusion with runner)

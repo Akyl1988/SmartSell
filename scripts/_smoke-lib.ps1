@@ -87,6 +87,141 @@ function Save-SmartsellTokensToCache {
   return (Write-SmokeCache -Data $cache)
 }
 
+function Get-SmokeCacheEntry {
+  param([string]$BaseUrl)
+  if (-not $BaseUrl) { return $null }
+  $cache = Read-SmokeCache
+  if (-not $cache.ContainsKey($BaseUrl)) { return $null }
+  return $cache[$BaseUrl]
+}
+
+function Save-SmokeCacheEntry {
+  param(
+    [string]$BaseUrl,
+    [hashtable]$Entry
+  )
+  if (-not $BaseUrl) { return $false }
+  $cache = Read-SmokeCache
+  $cache[$BaseUrl] = $Entry
+  return (Write-SmokeCache -Data $cache)
+}
+
+function Invoke-SmokeRefresh {
+  param(
+    [string]$BaseUrl,
+    [string]$RefreshToken,
+    [int]$TimeoutSec = 20
+  )
+  if (-not $BaseUrl) { throw "BaseUrl is required" }
+  if (-not $RefreshToken) { throw "No refresh token cached; run smoke-auth or login first" }
+
+  $refreshUrl = "$BaseUrl/api/v1/auth/refresh"
+  $body = @{ refresh_token = $RefreshToken } | ConvertTo-Json
+  $resp = Invoke-WebRequestSafe -Params @{
+    Method = "POST"
+    Uri = $refreshUrl
+    TimeoutSec = $TimeoutSec
+    ContentType = "application/json"
+    Body = $body
+  }
+
+  $status = $resp.StatusCode
+  if ($status -lt 200 -or $status -ge 300) {
+    $text = $resp.Content
+    throw "refresh failed: status=$status body=$text"
+  }
+
+  $payload = $null
+  try {
+    $payload = $resp.Content | ConvertFrom-Json
+  } catch {
+    throw "refresh failed: invalid json"
+  }
+
+  $access = $payload.access_token
+  if (-not $access) { $access = $payload.accessToken }
+  $refresh = $payload.refresh_token
+  if (-not $refresh) { $refresh = $payload.refreshToken }
+
+  $access = Normalize-JwtToken -Value $access
+  $refresh = Normalize-JwtToken -Value $refresh
+  if (-not $access) { throw "refresh failed: missing access token" }
+  if (-not $refresh) { throw "refresh failed: missing refresh token" }
+
+  return @{
+    access = $access
+    refresh = $refresh
+  }
+}
+
+function Get-SmokeAuthHeader {
+  param(
+    [string]$BaseUrl,
+    [switch]$ForceRefresh
+  )
+  if (-not $BaseUrl) { throw "BaseUrl is required" }
+
+  $entry = Get-SmokeCacheEntry -BaseUrl $BaseUrl
+  $access = Normalize-JwtToken -Value $entry.access
+  $refresh = Normalize-JwtToken -Value $entry.refresh
+
+  function Invoke-AuthMe([string]$Token) {
+    if (-not $Token) {
+      return [PSCustomObject]@{ StatusCode = 401; Body = @{ code = "AUTH_REQUIRED" } }
+    }
+    $resp = Invoke-WebRequestSafe -Params @{
+      Method = "GET"
+      Uri = "$BaseUrl/api/v1/auth/me"
+      Headers = @{ Authorization = "Bearer $Token" }
+      TimeoutSec = 20
+    }
+    $status = $resp.StatusCode
+    $body = $null
+    if ($resp.Content) {
+      try { $body = $resp.Content | ConvertFrom-Json } catch { $body = $resp.Content }
+    }
+    return [PSCustomObject]@{ StatusCode = $status; Body = $body }
+  }
+
+  if ($ForceRefresh -or -not $access) {
+    if (-not $refresh) { throw "No refresh token cached; run smoke-auth or login first" }
+    $tokens = Invoke-SmokeRefresh -BaseUrl $BaseUrl -RefreshToken $refresh
+    $access = $tokens.access
+    $refresh = $tokens.refresh
+    $entry = @{ access = $access; refresh = $refresh; updated_at = (Get-Date).ToString("o") }
+    Save-SmokeCacheEntry -BaseUrl $BaseUrl -Entry $entry | Out-Null
+    $me = Invoke-AuthMe -Token $access
+    if ($me.StatusCode -ne 200) {
+      $text = $me.Body | ConvertTo-Json -Depth 10
+      throw "auth/me failed after refresh: status=$($me.StatusCode) body=$text"
+    }
+    return @{ Authorization = "Bearer $access" }
+  }
+
+  $me = Invoke-AuthMe -Token $access
+  if ($me.StatusCode -eq 200) {
+    return @{ Authorization = "Bearer $access" }
+  }
+
+  if (Test-AuthExpired -StatusCode $me.StatusCode -Body $me.Body) {
+    if (-not $refresh) { throw "No refresh token cached; run smoke-auth or login first" }
+    $tokens = Invoke-SmokeRefresh -BaseUrl $BaseUrl -RefreshToken $refresh
+    $access = $tokens.access
+    $refresh = $tokens.refresh
+    $entry = @{ access = $access; refresh = $refresh; updated_at = (Get-Date).ToString("o") }
+    Save-SmokeCacheEntry -BaseUrl $BaseUrl -Entry $entry | Out-Null
+    $me2 = Invoke-AuthMe -Token $access
+    if ($me2.StatusCode -ne 200) {
+      $text = $me2.Body | ConvertTo-Json -Depth 10
+      throw "auth/me failed after refresh: status=$($me2.StatusCode) body=$text"
+    }
+    return @{ Authorization = "Bearer $access" }
+  }
+
+  $fallback = $me.Body | ConvertTo-Json -Depth 10
+  throw "auth/me failed: status=$($me.StatusCode) body=$fallback"
+}
+
 function Invoke-WebRequestSafe {
   param([hashtable]$Params)
   if ((Get-Command Invoke-WebRequest).Parameters.ContainsKey("SkipHttpErrorCheck")) {

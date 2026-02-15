@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 from datetime import UTC, datetime, timedelta
+from time import perf_counter
 from typing import Any
 from uuid import uuid4
 
@@ -12,6 +13,7 @@ from sqlalchemy.orm import Session
 from app.core.config import settings
 from app.core.db import session_scope
 from app.models.campaign import Campaign, CampaignProcessingStatus, Message
+from app.services.campaign_events import log_campaign_event
 
 _ERROR_MESSAGE_LIMIT = 500
 _NO_MESSAGES_ERROR = "campaign_has_no_messages"
@@ -126,11 +128,25 @@ async def process_campaign_queue_once(
             attempts = int(campaign.attempts or 0)
             max_attempts = int(settings.CAMPAIGN_MAX_ATTEMPTS)
             if max_attempts > 0 and attempts >= max_attempts:
+                status_before = campaign.processing_status.value
                 campaign.processing_status = CampaignProcessingStatus.FAILED
                 campaign.last_error = "max_attempts_exceeded"
                 campaign.finished_at = _utcnow()
                 campaign.failed_at = campaign.finished_at
                 campaign.next_attempt_at = None
+                log_campaign_event(
+                    event="campaign_worker_failed",
+                    message="Campaign failed: max attempts exceeded",
+                    request_id=request_id,
+                    company_id=campaign.company_id,
+                    campaign_id=campaign.id,
+                    run_id=None,
+                    status_before=status_before,
+                    status_after=campaign.processing_status.value,
+                    attempt=attempts,
+                    meta={"reason": "max_attempts_exceeded"},
+                    level="warning",
+                )
                 logger.warning(
                     "campaign_processing_max_attempts",
                     extra={"campaign_id": campaign.id, "request_id": request_id},
@@ -138,6 +154,7 @@ async def process_campaign_queue_once(
                 results.append({"campaign_id": campaign.id, "status": campaign.processing_status.value})
                 continue
 
+            status_before = campaign.processing_status.value
             campaign.processing_status = CampaignProcessingStatus.PROCESSING
             campaign.started_at = now
             campaign.finished_at = None
@@ -146,12 +163,38 @@ async def process_campaign_queue_once(
             campaign.next_attempt_at = None
             await db.flush()
 
+            started_at = perf_counter()
+            log_campaign_event(
+                event="campaign_worker_start",
+                message="Campaign processing started",
+                request_id=request_id,
+                company_id=campaign.company_id,
+                campaign_id=campaign.id,
+                run_id=None,
+                status_before=status_before,
+                status_after=campaign.processing_status.value,
+                attempt=attempts,
+            )
+
             try:
                 await _perform_campaign_action(db, campaign)
                 campaign.processing_status = CampaignProcessingStatus.DONE
                 campaign.finished_at = _utcnow()
                 campaign.failed_at = None
                 campaign.next_attempt_at = None
+                duration_ms = int((perf_counter() - started_at) * 1000)
+                log_campaign_event(
+                    event="campaign_worker_success",
+                    message="Campaign processing succeeded",
+                    request_id=request_id,
+                    company_id=campaign.company_id,
+                    campaign_id=campaign.id,
+                    run_id=None,
+                    status_before=CampaignProcessingStatus.PROCESSING.value,
+                    status_after=campaign.processing_status.value,
+                    attempt=attempts,
+                    meta={"duration_ms": duration_ms},
+                )
                 results.append({"campaign_id": campaign.id, "status": campaign.processing_status.value})
             except Exception as exc:
                 error_message = _truncate_error(str(exc))
@@ -160,6 +203,7 @@ async def process_campaign_queue_once(
                 campaign.finished_at = _utcnow()
                 campaign.failed_at = campaign.finished_at
                 campaign.last_error = error_message
+                duration_ms = int((perf_counter() - started_at) * 1000)
                 logger.error(
                     "campaign_processing_failed",
                     extra={
@@ -173,10 +217,53 @@ async def process_campaign_queue_once(
                     campaign.processing_status = CampaignProcessingStatus.FAILED
                     campaign.last_error = "max_attempts_exceeded"
                     campaign.next_attempt_at = None
+                    log_campaign_event(
+                        event="campaign_worker_failed",
+                        message="Campaign failed: max attempts exceeded",
+                        request_id=request_id,
+                        company_id=campaign.company_id,
+                        campaign_id=campaign.id,
+                        run_id=None,
+                        status_before=CampaignProcessingStatus.PROCESSING.value,
+                        status_after=campaign.processing_status.value,
+                        attempt=attempts,
+                        meta={"duration_ms": duration_ms, "error": error_message},
+                        level="warning",
+                    )
                 else:
                     campaign.processing_status = CampaignProcessingStatus.QUEUED
                     campaign.queued_at = _utcnow()
                     campaign.next_attempt_at = now + timedelta(seconds=_compute_backoff_delay(attempts))
+                    log_campaign_event(
+                        event="campaign_worker_failed",
+                        message="Campaign processing failed",
+                        request_id=request_id,
+                        company_id=campaign.company_id,
+                        campaign_id=campaign.id,
+                        run_id=None,
+                        status_before=CampaignProcessingStatus.PROCESSING.value,
+                        status_after=campaign.processing_status.value,
+                        attempt=attempts,
+                        meta={"duration_ms": duration_ms, "error": error_message},
+                        level="warning",
+                    )
+                    log_campaign_event(
+                        event="campaign_worker_retry_scheduled",
+                        message="Campaign retry scheduled",
+                        request_id=request_id,
+                        company_id=campaign.company_id,
+                        campaign_id=campaign.id,
+                        run_id=None,
+                        status_before=CampaignProcessingStatus.PROCESSING.value,
+                        status_after=campaign.processing_status.value,
+                        attempt=attempts,
+                        meta={
+                            "next_attempt_at": campaign.next_attempt_at.isoformat()
+                            if campaign.next_attempt_at
+                            else None,
+                            "duration_ms": duration_ms,
+                        },
+                    )
                 results.append({"campaign_id": campaign.id, "status": campaign.processing_status.value})
 
     return results
@@ -223,11 +310,25 @@ def process_campaign_queue_once_sync(
                 attempts = int(campaign.attempts or 0)
                 max_attempts = int(settings.CAMPAIGN_MAX_ATTEMPTS)
                 if max_attempts > 0 and attempts >= max_attempts:
+                    status_before = campaign.processing_status.value
                     campaign.processing_status = CampaignProcessingStatus.FAILED
                     campaign.last_error = "max_attempts_exceeded"
                     campaign.finished_at = _utcnow()
                     campaign.failed_at = campaign.finished_at
                     campaign.next_attempt_at = None
+                    log_campaign_event(
+                        event="campaign_worker_failed",
+                        message="Campaign failed: max attempts exceeded",
+                        request_id=request_id,
+                        company_id=campaign.company_id,
+                        campaign_id=campaign.id,
+                        run_id=None,
+                        status_before=status_before,
+                        status_after=campaign.processing_status.value,
+                        attempt=attempts,
+                        meta={"reason": "max_attempts_exceeded"},
+                        level="warning",
+                    )
                     logger.warning(
                         "campaign_processing_max_attempts",
                         extra={"campaign_id": campaign.id, "request_id": request_id},
@@ -235,6 +336,7 @@ def process_campaign_queue_once_sync(
                     results.append({"campaign_id": campaign.id, "status": campaign.processing_status.value})
                     continue
 
+                status_before = campaign.processing_status.value
                 campaign.processing_status = CampaignProcessingStatus.PROCESSING
                 campaign.started_at = now
                 campaign.finished_at = None
@@ -243,12 +345,38 @@ def process_campaign_queue_once_sync(
                 campaign.next_attempt_at = None
                 db.flush()
 
+                started_at = perf_counter()
+                log_campaign_event(
+                    event="campaign_worker_start",
+                    message="Campaign processing started",
+                    request_id=request_id,
+                    company_id=campaign.company_id,
+                    campaign_id=campaign.id,
+                    run_id=None,
+                    status_before=status_before,
+                    status_after=campaign.processing_status.value,
+                    attempt=attempts,
+                )
+
                 try:
                     _perform_campaign_action_sync(db, campaign)
                     campaign.processing_status = CampaignProcessingStatus.DONE
                     campaign.finished_at = _utcnow()
                     campaign.failed_at = None
                     campaign.next_attempt_at = None
+                    duration_ms = int((perf_counter() - started_at) * 1000)
+                    log_campaign_event(
+                        event="campaign_worker_success",
+                        message="Campaign processing succeeded",
+                        request_id=request_id,
+                        company_id=campaign.company_id,
+                        campaign_id=campaign.id,
+                        run_id=None,
+                        status_before=CampaignProcessingStatus.PROCESSING.value,
+                        status_after=campaign.processing_status.value,
+                        attempt=attempts,
+                        meta={"duration_ms": duration_ms},
+                    )
                     results.append({"campaign_id": campaign.id, "status": campaign.processing_status.value})
                 except Exception as exc:
                     error_message = _truncate_error(str(exc))
@@ -257,6 +385,7 @@ def process_campaign_queue_once_sync(
                     campaign.finished_at = _utcnow()
                     campaign.failed_at = campaign.finished_at
                     campaign.last_error = error_message
+                    duration_ms = int((perf_counter() - started_at) * 1000)
                     logger.error(
                         "campaign_processing_failed",
                         extra={
@@ -270,10 +399,53 @@ def process_campaign_queue_once_sync(
                         campaign.processing_status = CampaignProcessingStatus.FAILED
                         campaign.last_error = "max_attempts_exceeded"
                         campaign.next_attempt_at = None
+                        log_campaign_event(
+                            event="campaign_worker_failed",
+                            message="Campaign failed: max attempts exceeded",
+                            request_id=request_id,
+                            company_id=campaign.company_id,
+                            campaign_id=campaign.id,
+                            run_id=None,
+                            status_before=CampaignProcessingStatus.PROCESSING.value,
+                            status_after=campaign.processing_status.value,
+                            attempt=attempts,
+                            meta={"duration_ms": duration_ms, "error": error_message},
+                            level="warning",
+                        )
                     else:
                         campaign.processing_status = CampaignProcessingStatus.QUEUED
                         campaign.queued_at = _utcnow()
                         campaign.next_attempt_at = now + timedelta(seconds=_compute_backoff_delay(attempts))
+                        log_campaign_event(
+                            event="campaign_worker_failed",
+                            message="Campaign processing failed",
+                            request_id=request_id,
+                            company_id=campaign.company_id,
+                            campaign_id=campaign.id,
+                            run_id=None,
+                            status_before=CampaignProcessingStatus.PROCESSING.value,
+                            status_after=campaign.processing_status.value,
+                            attempt=attempts,
+                            meta={"duration_ms": duration_ms, "error": error_message},
+                            level="warning",
+                        )
+                        log_campaign_event(
+                            event="campaign_worker_retry_scheduled",
+                            message="Campaign retry scheduled",
+                            request_id=request_id,
+                            company_id=campaign.company_id,
+                            campaign_id=campaign.id,
+                            run_id=None,
+                            status_before=CampaignProcessingStatus.PROCESSING.value,
+                            status_after=campaign.processing_status.value,
+                            attempt=attempts,
+                            meta={
+                                "next_attempt_at": campaign.next_attempt_at.isoformat()
+                                if campaign.next_attempt_at
+                                else None,
+                                "duration_ms": duration_ms,
+                            },
+                        )
                     results.append({"campaign_id": campaign.id, "status": campaign.processing_status.value})
 
         return results
