@@ -379,6 +379,7 @@ scripts/**
 !scripts/smoke-reports-order-items.ps1
 !scripts/smoke-reports-orders-pdf.ps1
 !scripts/smoke-reports-sales-pdf.ps1
+!scripts/smoke-reports-all.ps1
 
 
 # local audit / plans (do not commit)

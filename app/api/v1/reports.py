@@ -686,7 +686,15 @@ async def _fetch_sales_metrics(
     return metrics, top_skus
 
 
-@router.get("/orders.pdf")
+@router.get(
+    "/orders.pdf",
+    responses={
+        200: {
+            "content": {"application/pdf": {"schema": {"type": "string", "format": "binary"}}},
+            "description": "Orders PDF",
+        }
+    },
+)
 async def report_orders_pdf(
     request: Request,
     date_from: str | None = Query(default=None),
@@ -787,7 +795,15 @@ async def report_orders_pdf(
     )
 
 
-@router.get("/sales.pdf")
+@router.get(
+    "/sales.pdf",
+    responses={
+        200: {
+            "content": {"application/pdf": {"schema": {"type": "string", "format": "binary"}}},
+            "description": "Sales PDF",
+        }
+    },
+)
 async def report_sales_pdf(
     request: Request,
     date_from: str | None = Query(default=None),
