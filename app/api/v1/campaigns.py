@@ -256,7 +256,7 @@ _STORAGE_INSTANCE: Any | None = None
 
 
 def _truthy_env(name: str) -> bool:
-    return (os.getenv(name, "").strip().lower() in {"1", "true", "yes", "on"})
+    return os.getenv(name, "").strip().lower() in {"1", "true", "yes", "on"}
 
 
 def _resolve_campaigns_storage_backend() -> str:

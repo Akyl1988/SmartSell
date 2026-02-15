@@ -278,6 +278,12 @@ curl -sS http://127.0.0.1:8000/openapi.json -o openapi.json
 Invoke-WebRequest "http://127.0.0.1:8000/openapi.json" -OutFile .\openapi.json
 ```
 
+### Dev-only schema check
+
+```powershell
+python .\scripts\print_campaigns_columns.py
+```
+
 ## Branching & Releases
 
 - **Branches**: `dev` is the main development branch. `main` updates only via PRs (usually from release branches). Release preparation happens on `release/*` (e.g., `release/v0.1.0`) branched off `dev`.
