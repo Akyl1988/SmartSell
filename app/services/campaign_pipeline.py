@@ -2,12 +2,14 @@ from __future__ import annotations
 
 import logging
 from datetime import UTC, datetime
+from time import perf_counter
 from uuid import uuid4
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.campaign import CampaignProcessingStatus, Message, MessageStatus
+from app.services.campaign_events import log_campaign_event
 from app.services.campaign_runner import enqueue_due_campaigns
 from app.worker import campaign_processing
 from app.worker.scheduler_worker import _schedule_message_send
@@ -26,9 +28,11 @@ async def campaign_pipeline_tick(
     now: datetime | None = None,
 ) -> dict:
     tick_now = now or _utcnow()
+    run_id = str(uuid4())
+    start = perf_counter()
     enqueue_summary = await enqueue_due_campaigns(
         db,
-        request_id=str(uuid4()),
+        request_id=run_id,
         now=tick_now,
         limit=limit,
     )
@@ -71,6 +75,27 @@ async def campaign_pipeline_tick(
         "processed_ids": processed_ids,
         "scheduled_message_ids": scheduled_message_ids,
     }
+
+    duration_ms = int((perf_counter() - start) * 1000)
+    log_campaign_event(
+        event="campaign_pipeline_tick",
+        message="Campaign pipeline tick",
+        request_id=run_id,
+        company_id=None,
+        campaign_id=None,
+        run_id=run_id,
+        status_before=None,
+        status_after=None,
+        attempt=None,
+        meta={
+            "queued": counters["queued"],
+            "skipped": counters["skipped"],
+            "processed": counters["processed"],
+            "scheduled": counters["scheduled"],
+            "failed": counters["failed"],
+            "duration_ms": duration_ms,
+        },
+    )
 
     logger.info(
         "campaign_pipeline_tick: queued=%s skipped=%s processed=%s scheduled=%s failed=%s",
