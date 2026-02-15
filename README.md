@@ -180,6 +180,12 @@ Operators can manually re-run the campaign (admin/store run endpoints), which re
 
 ## 🧪 Testing
 
+### How tests pick the database
+
+Pytest resolves the test database using TEST_ASYNC_DATABASE_URL (preferred) or TEST_DATABASE_URL.
+The test harness sets DATABASE_URL to the sync test URL, so dev DB settings do not leak into tests.
+Use a separate database for tests (for example smartsell_test) and keep it isolated from dev data.
+
 ### Run all tests
 ```bash
 poetry run pytest
@@ -216,6 +222,28 @@ pwsh -NoProfile -File .\scripts\prod-gate.ps1 -SkipFormatCheck
 ```
 
 ## 🔧 Development
+
+### Windows one-button dev (PowerShell)
+
+1) Create scripts/env.local.ps1 (do not commit secrets) with DATABASE_URL and optional REDIS_URL.
+2) Run the one-button entrypoint:
+
+```powershell
+.\scripts\dev.ps1 up
+.\scripts\dev.ps1 api
+```
+
+Common commands:
+
+```powershell
+.\scripts\dev.ps1 up     # start db+redis (docker compose if present) + run migrations
+.\scripts\dev.ps1 api    # start uvicorn and stream logs to logs/api.log
+.\scripts\dev.ps1 down   # stop services if docker compose is used
+.\scripts\dev.ps1 reset  # DEV ONLY: drop schema, re-run migrations (optional -Seed)
+```
+
+Campaigns storage is explicit via SMARTSELL_CAMPAIGNS_STORAGE=sql|memory (default: sql).
+Tests force in-memory backends via FORCE_INMEMORY_BACKENDS=1 to keep isolation.
 
 ### Code Quality
 

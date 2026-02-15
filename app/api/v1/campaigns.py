@@ -249,24 +249,69 @@ class InMemoryStorage:
 
 
 # ------------------------------------------------------------------------------
-# Выбор активного STORAGE
-# По умолчанию — только in-memory. SQL включается ТОЛЬКО если SMARTSELL_USE_SQL=1.
-# Это избавляет от неожиданных сидов/данных в тестовой среде.
+# Выбор активного STORAGE (lazy, без сайд-эффектов на import)
 # ------------------------------------------------------------------------------
-_STORAGE_BACKEND = "memory"
-storage: Any
+_STORAGE_BACKEND: str | None = None
+_STORAGE_INSTANCE: Any | None = None
 
-if os.getenv("SMARTSELL_USE_SQL") == "1":
-    try:
-        from app.storage.campaigns_sql import CampaignsStorageSQL  # type: ignore
 
-        storage = CampaignsStorageSQL()
-        _STORAGE_BACKEND = "sql"
-    except Exception as _e:  # noqa: N816
-        logger.info("SQL storage not available, using in-memory: %s", _e)
-        storage = InMemoryStorage()
-else:
-    storage = InMemoryStorage()
+def _truthy_env(name: str) -> bool:
+    return (os.getenv(name, "").strip().lower() in {"1", "true", "yes", "on"})
+
+
+def _resolve_campaigns_storage_backend() -> str:
+    if _truthy_env("FORCE_INMEMORY_BACKENDS"):
+        return "memory"
+
+    raw = (os.getenv("SMARTSELL_CAMPAIGNS_STORAGE") or "").strip().lower()
+    if raw in {"sql", "memory"}:
+        return raw
+
+    # Backward compatibility
+    if _truthy_env("SMARTSELL_USE_SQL"):
+        return "sql"
+
+    # Default: SQL for dev/prod
+    return "sql"
+
+
+def _init_campaigns_storage() -> Any:
+    global _STORAGE_BACKEND, _STORAGE_INSTANCE
+    if _STORAGE_INSTANCE is not None:
+        return _STORAGE_INSTANCE
+
+    backend = _resolve_campaigns_storage_backend()
+    if backend == "sql":
+        try:
+            from app.storage.campaigns_sql import CampaignsStorageSQL  # type: ignore
+
+            _STORAGE_INSTANCE = CampaignsStorageSQL()
+            _STORAGE_BACKEND = "sql"
+            return _STORAGE_INSTANCE
+        except Exception as exc:
+            logger.warning("Campaigns SQL storage unavailable; falling back to memory: %s", exc)
+
+    _STORAGE_INSTANCE = InMemoryStorage()
+    _STORAGE_BACKEND = "memory"
+    return _STORAGE_INSTANCE
+
+
+def _get_campaigns_storage() -> Any:
+    return _init_campaigns_storage()
+
+
+def _get_campaigns_storage_backend() -> str:
+    if _STORAGE_BACKEND is not None:
+        return _STORAGE_BACKEND
+    return _resolve_campaigns_storage_backend()
+
+
+class _StorageProxy:
+    def __getattr__(self, name: str) -> Any:
+        return getattr(_get_campaigns_storage(), name)
+
+
+storage: Any = _StorageProxy()
 
 
 # ------------------------------------------------------------------------------
@@ -928,7 +973,7 @@ async def queue_campaign_run_store(
 async def campaign_health_check():
     return {
         "status": "ok",
-        "storage": _STORAGE_BACKEND,
+        "storage": _get_campaigns_storage_backend(),
         "campaigns": len(storage.list_campaigns()),
         "messages": len(storage.list_messages()),
         "audit_records": len(_AUDIT),
@@ -942,7 +987,7 @@ async def debug_backends():
     _maybe_init_celery()
     _maybe_init_rq()
     return {
-        "storage": _STORAGE_BACKEND,
+        "storage": _get_campaigns_storage_backend(),
         "celery": bool(_CELERY_APP),
         "rq": bool(_RQ_QUEUE),
         "time": _now_iso(),

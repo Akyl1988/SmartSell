@@ -48,9 +48,6 @@ def _load_db_url(db_url: str | None = None) -> str:
     raise RuntimeError("DATABASE_URL or DB_URL is required for campaigns storage")
 
 
-_DB_URL = _load_db_url()
-
-
 def _pool_int(name: str, default: int) -> int:
     try:
         v = int(os.getenv(name, "").strip() or default)
@@ -76,10 +73,10 @@ def _create_engine(db_url: str) -> Engine:
     )
 
 
-# production-friendly engine
-_ENGINE: Engine = _create_engine(_DB_URL)
-
-_SessionLocal = sessionmaker(bind=_ENGINE, autoflush=False, autocommit=False, future=True)
+# Lazy-initialized engine/session (avoid import-time side effects)
+_DB_URL: Optional[str] = None
+_ENGINE: Optional[Engine] = None
+_SessionLocal: Optional[sessionmaker] = None
 
 metadata = MetaData(schema=None)  # при необходимости можно указать схему
 
@@ -136,9 +133,37 @@ Index("ix_messages_status", messages.c.status)
 Index("ix_messages_channel", messages.c.channel)
 
 
+def _ensure_engine(db_url: str | None = None) -> Engine:
+    global _DB_URL, _ENGINE, _SessionLocal
+    if _ENGINE is not None and (not db_url or not db_url.strip()):
+        return _ENGINE
+
+    resolved = _load_db_url(db_url)
+    if _ENGINE is not None and _DB_URL == resolved:
+        return _ENGINE
+    _DB_URL = resolved
+    _ENGINE = _create_engine(_DB_URL)
+    _SessionLocal = sessionmaker(bind=_ENGINE, autoflush=False, autocommit=False, future=True)
+    return _ENGINE
+
+
+def _get_engine() -> Engine:
+    if _ENGINE is None:
+        return _ensure_engine()
+    return _ENGINE
+
+
+def _get_sessionmaker() -> sessionmaker:
+    if _SessionLocal is None:
+        _ensure_engine()
+    if _SessionLocal is None:
+        raise RuntimeError("Campaigns storage engine is not initialized")
+    return _SessionLocal
+
+
 def _is_postgres() -> bool:
     try:
-        return _ENGINE.dialect.name.lower().startswith("postgres")
+        return _get_engine().dialect.name.lower().startswith("postgres")
     except Exception:
         return False
 
@@ -152,7 +177,7 @@ def _drop_message_fk_if_exists() -> None:
     if not _is_postgres():
         return
     try:
-        with _ENGINE.begin() as conn:
+        with _get_engine().begin() as conn:
             # Попробуем известное имя ограничения
             conn.execute(
                 text("ALTER TABLE campaign_messages DROP CONSTRAINT IF EXISTS campaign_messages_campaign_id_fkey")
@@ -201,7 +226,7 @@ def _ensure_db_objects() -> None:
                 logger.debug("Sequence ensure skipped/failed: %s", e)
 
     # Сначала создаём таблицы (если их не было)
-    metadata.create_all(_ENGINE, checkfirst=True)
+    metadata.create_all(_get_engine(), checkfirst=True)
 
     # Затем удаляем FK у messages.campaign_id (если он появился в прошлых версиях схемы)
     _drop_message_fk_if_exists()
@@ -209,7 +234,7 @@ def _ensure_db_objects() -> None:
     # Готовим колонку company_id и уникальный индекс по (company_id, title)
     if _is_postgres():
         try:
-            with _ENGINE.begin() as conn:
+            with _get_engine().begin() as conn:
                 conn.execute(text("ALTER TABLE campaigns ADD COLUMN IF NOT EXISTS company_id INTEGER"))
                 conn.execute(text("ALTER TABLE campaigns DROP CONSTRAINT IF EXISTS uq_campaign_title"))
                 conn.execute(
@@ -244,13 +269,16 @@ def _ensure_db_objects() -> None:
             logger.debug("Ensure company_id/index skipped: %s", e)
 
 
-_ensure_db_objects()
+def ensure_schema(db_url: str | None = None) -> None:
+    """Public initializer for schema creation (safe to call multiple times)."""
+    _ensure_engine(db_url)
+    _ensure_db_objects()
 
 
 @contextmanager
 def session_scope():
     """Контекстный менеджер для сессии SQLAlchemy."""
-    session = _SessionLocal()
+    session = _get_sessionmaker()()
     try:
         yield session
         session.commit()
@@ -375,23 +403,20 @@ class CampaignsStorageSQL:
     """Production SQL storage for campaigns/messages (sync)."""
 
     def __init__(self, *, db_url: str | None = None) -> None:
-        global _DB_URL, _ENGINE, _SessionLocal
-        if db_url and db_url.strip() and db_url.strip() != _DB_URL:
-            _DB_URL = _load_db_url(db_url)
-            _ENGINE = _create_engine(_DB_URL)
-            _SessionLocal = sessionmaker(bind=_ENGINE, autoflush=False, autocommit=False, future=True)
-        logger.info("CampaignsStorageSQL active (DB): %s (dialect=%s)", _DB_URL, _ENGINE.dialect.name)
+        engine = _ensure_engine(db_url)
+        _ensure_db_objects()
+        logger.info("CampaignsStorageSQL active (DB): %s (dialect=%s)", _DB_URL, engine.dialect.name)
 
     # ---- генерация ID (как в InMemory), с fallback для non-Postgres
     def next_id(self, kind: str) -> int:
         seq = SEQ_CAMPAIGNS if kind == "campaigns" else SEQ_MESSAGES
         if _is_postgres():
-            with _ENGINE.begin() as conn:
+            with _get_engine().begin() as conn:
                 res = conn.execute(text("SELECT nextval(:seq) AS id"), {"seq": seq}).mappings().first()
                 return int(res["id"])
         # Fallback: безопасно вычислим max(id)+1 в транзакции (для sqlite/др. диалектов)
         table = campaigns if kind == "campaigns" else messages
-        with _ENGINE.begin() as conn:
+        with _get_engine().begin() as conn:
             last_id = conn.execute(select(func.coalesce(func.max(table.c.id), 0))).scalar_one()
             return int(last_id) + 1
 
