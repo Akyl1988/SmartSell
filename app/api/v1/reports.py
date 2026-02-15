@@ -193,6 +193,60 @@ async def _fetch_wallet_transactions(
     return items
 
 
+async def _fetch_orders_csv_rows(
+    db: AsyncSession,
+    *,
+    company_id: int,
+    date_from: datetime | None,
+    date_to: datetime | None,
+    limit: int,
+) -> list[dict[str, str]]:
+    items_count_sq = (
+        select(
+            OrderItem.order_id.label("oid"),
+            func.count(OrderItem.id).label("items_count"),
+        )
+        .group_by(OrderItem.order_id)
+        .subquery()
+    )
+    items_count = func.coalesce(items_count_sq.c.items_count, 0).label("items_count")
+
+    stmt = (
+        select(
+            Order.id,
+            Order.created_at,
+            Order.status,
+            Order.total_amount,
+            Order.currency,
+            Order.external_id,
+            items_count,
+        )
+        .outerjoin(items_count_sq, items_count_sq.c.oid == Order.id)
+        .where(Order.company_id == company_id)
+    )
+    if date_from:
+        stmt = stmt.where(Order.created_at >= date_from)
+    if date_to:
+        stmt = stmt.where(Order.created_at <= date_to)
+    stmt = stmt.order_by(Order.created_at.desc(), Order.id.desc()).limit(limit)
+
+    rows = (await db.execute(stmt)).all()
+    items: list[dict[str, str]] = []
+    for order_id, created_at, status, total_amount, currency, external_id, count in rows:
+        items.append(
+            {
+                "order_id": str(order_id),
+                "created_at": created_at.isoformat() if created_at else "",
+                "status": str(status or ""),
+                "total_amount": str(total_amount) if total_amount is not None else "",
+                "currency": str(currency or ""),
+                "external_id": str(external_id or ""),
+                "items_count": str(int(count or 0)),
+            }
+        )
+    return items
+
+
 @router.get(
     "/wallet/transactions.csv",
     responses={
@@ -239,6 +293,55 @@ async def report_wallet_transactions_csv(
         _csv_stream(rows, headers),
         media_type="text/csv; charset=utf-8",
         headers={"Content-Disposition": "attachment; filename=wallet-transactions.csv"},
+    )
+
+
+@router.get(
+    "/orders.csv",
+    responses={
+        200: {
+            "content": {"text/csv": {"schema": {"type": "string", "format": "binary"}}},
+            "description": "Orders CSV",
+        }
+    },
+)
+async def report_orders_csv(
+    request: Request,
+    limit: int = Query(default=500, ge=1, le=5000),
+    date_from: str | None = Query(default=None),
+    date_to: str | None = Query(default=None),
+    companyId: int | None = Query(default=None, ge=1, alias="companyId"),
+    admin: User = Depends(get_current_verified_user),
+    db: AsyncSession = Depends(get_async_db),
+) -> StreamingResponse:
+    _ = admin
+    company_id = _resolve_company_id_param(request, companyId)
+    resolved_company_id = _resolve_wallet_report_company_id(admin, company_id)
+    df = _parse_dt(date_from, "date_from")
+    dt = _parse_dt(date_to, "date_to")
+
+    rows = await _fetch_orders_csv_rows(
+        db,
+        company_id=resolved_company_id,
+        date_from=df,
+        date_to=dt,
+        limit=limit,
+    )
+
+    headers = [
+        "order_id",
+        "created_at",
+        "status",
+        "total_amount",
+        "currency",
+        "external_id",
+        "items_count",
+    ]
+
+    return StreamingResponse(
+        _csv_stream(rows, headers),
+        media_type="text/csv; charset=utf-8",
+        headers={"Content-Disposition": "attachment; filename=orders.csv"},
     )
 
 
