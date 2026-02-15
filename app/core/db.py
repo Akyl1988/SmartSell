@@ -23,6 +23,7 @@ Unified database configuration and session management for SmartSell (async + syn
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 import time as _time
@@ -33,7 +34,7 @@ from contextvars import ContextVar
 from sqlalchemy import create_engine, event, text
 from sqlalchemy.engine import Engine
 from sqlalchemy.engine.url import make_url
-from sqlalchemy.exc import OperationalError, SQLAlchemyError
+from sqlalchemy.exc import IllegalStateChangeError, OperationalError, SQLAlchemyError
 from sqlalchemy.ext.asyncio import (
     AsyncEngine,
     AsyncSession,
@@ -409,6 +410,14 @@ def async_session_maker(**kwargs):
     return maker(**kwargs)
 
 
+def get_async_session_maker() -> async_sessionmaker[AsyncSession]:
+    """Return the shared async sessionmaker (initialized lazily)."""
+    _get_async_engine()
+    if _ASYNC_SESSION_MAKER is None:
+        raise RuntimeError("Async session maker is not initialized")
+    return _ASYNC_SESSION_MAKER
+
+
 def _get_async_engine() -> AsyncEngine:
     """Создаёт и кэширует async engine лениво (без подключения)."""
     global _ASYNC_ENGINE, _ASYNC_REPLICA_ENGINE, _ASYNC_SESSION_MAKER
@@ -601,7 +610,10 @@ async def get_async_db(use_routing: bool = False) -> AsyncIterator[AsyncSession]
     try:
         yield session
     finally:
-        await session.close()
+        try:
+            await asyncio.shield(session.close())
+        except IllegalStateChangeError as exc:
+            logger.debug("Async session close skipped: %s", exc)
 
 
 # ✅ Совместимый алиас для старых импортов

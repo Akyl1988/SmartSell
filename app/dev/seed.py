@@ -7,7 +7,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
-from app.core.db import get_async_db
+from app.core.db import get_async_session_maker
 from app.core.security import get_password_hash
 from app.models.company import Company
 from app.models.user import User
@@ -115,21 +115,10 @@ async def ensure_dev_seed(*, session: AsyncSession | None = None) -> None:
 
     company_name = (os.getenv("SMARTSELL_COMPANY_NAME") or "Dev Company").strip() or "Dev Company"
 
-    owns_session = False
-    if session is None:
-        owns_session = True
-        async for s in get_async_db():
-            session = s
-            break
-
-    if session is None:
-        logger.warning("dev_seed: no db session available")
-        return
-
-    try:
-        company = await _ensure_company(session, company_name)
+    async def _run_seed(target_session: AsyncSession) -> None:
+        company = await _ensure_company(target_session, company_name)
         user = await _ensure_user(
-            session,
+            target_session,
             identifier=identifier,
             password=password,
             role="admin",
@@ -142,18 +131,29 @@ async def ensure_dev_seed(*, session: AsyncSession | None = None) -> None:
         platform_password = _get_platform_password()
         if platform_ident and platform_password:
             await _ensure_user(
-                session,
+                target_session,
                 identifier=platform_ident,
                 password=platform_password,
                 role="platform_admin",
                 company=company,
             )
 
-        await session.commit()
-        logger.info("dev_seed: ensured user/company")
-    except Exception as exc:
-        await session.rollback()
-        logger.warning("dev_seed failed: %s", exc)
-    finally:
-        if owns_session:
-            await session.close()
+    if session is not None:
+        try:
+            await _run_seed(session)
+            await session.commit()
+            logger.info("dev_seed: ensured user/company")
+        except Exception as exc:
+            await session.rollback()
+            logger.warning("dev_seed failed: %s", exc)
+        return
+
+    maker = get_async_session_maker()
+    async with maker() as local_session:
+        try:
+            await _run_seed(local_session)
+            await local_session.commit()
+            logger.info("dev_seed: ensured user/company")
+        except Exception as exc:
+            await local_session.rollback()
+            logger.warning("dev_seed failed: %s", exc)
