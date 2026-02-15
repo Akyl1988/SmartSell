@@ -123,6 +123,40 @@ function Save-SmokeCacheEntry {
   return (Write-SmokeCache -Data $cache)
 }
 
+function Test-SmokeApiUp {
+  param(
+    [string]$BaseUrl,
+    [int]$TimeoutSec = 3
+  )
+  if (-not $BaseUrl) { throw "BaseUrl is required" }
+
+  $targets = @(
+    "$BaseUrl/api/v1/wallet/health",
+    "$BaseUrl/api/v1/health"
+  )
+
+  foreach ($url in $targets) {
+    try {
+      Invoke-WebRequestSafe -Params @{
+        Method = "GET"
+        Uri = $url
+        TimeoutSec = $TimeoutSec
+      } | Out-Null
+      return $true
+    } catch {
+      $ex = $_.Exception
+      $msg = ""
+      try { $msg = $ex.Message } catch { }
+      $isConnRefused = ($ex -is [System.Net.WebException]) -or ($msg -match "refused|No connection could be made|actively refused")
+      if ($isConnRefused) {
+        throw "API is not running at $BaseUrl. Start it via scripts/run-api-dev.ps1 (or dev.ps1 api)."
+      }
+    }
+  }
+
+  return $true
+}
+
 function Invoke-SmokeRefresh {
   param(
     [string]$BaseUrl,
@@ -131,6 +165,8 @@ function Invoke-SmokeRefresh {
   )
   if (-not $BaseUrl) { throw "BaseUrl is required" }
   if (-not $RefreshToken) { throw "No refresh token cached; run smoke-auth or login first" }
+
+  Test-SmokeApiUp -BaseUrl $BaseUrl -TimeoutSec 3 | Out-Null
 
   $refreshUrl = "$BaseUrl/api/v1/auth/refresh"
   $body = @{ refresh_token = $RefreshToken } | ConvertTo-Json
@@ -187,6 +223,9 @@ function Get-SmokeAuthHeader {
     }
   }
 
+  Test-SmokeApiUp -BaseUrl $BaseUrl -TimeoutSec 3 | Out-Null
+
+  # Returns headers for Invoke-WebRequest -Headers (not curl -H).
   $entry = Get-SmokeCacheEntry -BaseUrl $BaseUrl
   $access = Normalize-JwtToken -Value $entry.access
   $refresh = Normalize-JwtToken -Value $entry.refresh
@@ -403,6 +442,7 @@ function Get-SmartsellTokens {
     [string]$Password,
     [int]$TimeoutSec = 20
   )
+  Test-SmokeApiUp -BaseUrl $BaseUrl -TimeoutSec 3 | Out-Null
   $loginUrl = "$BaseUrl/api/v1/auth/login"
   $login = Invoke-RestMethod -Method POST -Uri $loginUrl -TimeoutSec $TimeoutSec -ContentType "application/json" -Body (@{ identifier = $Identifier; password = $Password } | ConvertTo-Json)
 
@@ -447,6 +487,7 @@ function Refresh-SmartsellAccessToken {
     [int]$TimeoutSec = 20
   )
   if (-not $RefreshToken) { return $null }
+  Test-SmokeApiUp -BaseUrl $BaseUrl -TimeoutSec 3 | Out-Null
   $refreshUrl = "$BaseUrl/api/v1/auth/refresh"
   $body = @{ refresh_token = $RefreshToken } | ConvertTo-Json
   $data = Invoke-RestMethod -Method POST -Uri $refreshUrl -TimeoutSec $TimeoutSec -ContentType "application/json" -Body $body
@@ -540,13 +581,7 @@ function Invoke-SmartsellMultipart {
     } catch {
       $errMsg = "request failed"
       try { $errMsg = $_.Exception.Message } catch { }
-      return [PSCustomObject]@{
-        StatusCode = 0
-        Headers = $null
-        Body = $null
-        RequestId = ""
-        Error = $errMsg
-      }
+      throw "request failed: status=(no response) body=$errMsg"
     }
 
     $status = $resp.StatusCode
@@ -734,13 +769,7 @@ function Invoke-SmartsellApi {
     } catch {
       $errMsg = "request failed"
       try { $errMsg = $_.Exception.Message } catch { }
-      return [PSCustomObject]@{
-        StatusCode = 0
-        Headers = $null
-        Body = $null
-        RequestId = ""
-        Error = $errMsg
-      }
+      throw "request failed: status=(no response) body=$errMsg"
     }
 
     $status = $resp.StatusCode
