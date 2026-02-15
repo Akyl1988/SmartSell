@@ -88,6 +88,37 @@ os.environ.setdefault("CSRF_SECRET", "test-csrf-secret-32-chars-minimum")
 os.environ["KASPI_STUB"] = "0"
 os.environ.setdefault("SMARTSELL_BACKGROUND_TASKS", "0")
 
+
+def _configure_structlog_for_tests() -> None:
+    try:
+        import structlog
+
+        processors = [
+            structlog.stdlib.filter_by_level,
+            structlog.stdlib.add_logger_name,
+            structlog.stdlib.add_log_level,
+            structlog.stdlib.PositionalArgumentsFormatter(),
+            structlog.processors.TimeStamper(fmt="iso"),
+            structlog.processors.StackInfoRenderer(),
+            structlog.processors.UnicodeDecoder(),
+            structlog.processors.JSONRenderer(),
+        ]
+        structlog.configure(
+            processors=processors,
+            context_class=dict,
+            logger_factory=structlog.stdlib.LoggerFactory(),
+            wrapper_class=structlog.stdlib.BoundLogger,
+            cache_logger_on_first_use=True,
+        )
+    except Exception:
+        return
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _structlog_renderer_for_tests() -> None:
+    _configure_structlog_for_tests()
+
+
 # РЇРІРЅРѕ СѓРєР°Р¶РµРј "СЃРѕРІСЂРµРјРµРЅРЅС‹Р№" strict-СЂРµР¶РёРј asyncio, РµСЃР»Рё РїР»Р°РіРёРЅ РЅРµ РґРµР»Р°РµС‚ СЌС‚РѕРіРѕ СЃР°Рј.
 os.environ.setdefault("PYTEST_ASYNCIO_MODE", "strict")
 
