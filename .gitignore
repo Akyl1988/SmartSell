@@ -77,6 +77,7 @@ hypothesis/
 # =========================
 .env
 .env.*
+!.env.example.prod
 .venv/
 venv/
 ENV/

@@ -1,17 +1,20 @@
 version: "3.8"
 
 services:
-  app:
+  api:
     build:
       context: .
       target: runtime
     env_file:
-      - ./.env
+      - ./.env.prod
     environment:
       ENVIRONMENT: production
       DATABASE_URL: ${DATABASE_URL:-postgresql+psycopg://postgres:postgres@postgres:5432/smartsell}
       REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
       SECRET_KEY: ${SECRET_KEY}
+      CSRF_SECRET: ${CSRF_SECRET}
+      CORS_ORIGINS: ${CORS_ORIGINS}
+      BACKEND_CORS_ORIGINS: ${BACKEND_CORS_ORIGINS}
       API_V1_STR: ${API_V1_STR:-/api/v1}
       HOST: 0.0.0.0
       PORT: 8000
