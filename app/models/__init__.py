@@ -162,6 +162,10 @@ _LAZY_MODELS: dict[str, tuple[str, str]] = {
     "Category": ("app.models.product", "Category"),
     "Product": ("app.models.product", "Product"),
     "ProductVariant": ("app.models.product", "ProductVariant"),
+    "RepricingRule": ("app.models.repricing", "RepricingRule"),
+    "RepricingRun": ("app.models.repricing", "RepricingRun"),
+    "RepricingDiff": ("app.models.repricing", "RepricingDiff"),
+    "Preorder": ("app.models.preorder", "Preorder"),
     # пользователи
     "User": ("app.models.user", "User"),
     "UserSession": ("app.models.user", "UserSession"),
@@ -209,6 +213,8 @@ _DOMAIN_MODULES: tuple[str, ...] = (
     "app.models.order",
     "app.models.payment",
     "app.models.product",
+    "app.models.repricing",
+    "app.models.preorder",
     "app.models.user",
     "app.models.otp",  # добавлено: явный модуль OTP
     "app.models.warehouse",
@@ -233,6 +239,8 @@ _CRITICAL_MODULES: tuple[str, ...] = (
     "app.models.company",
     "app.models.customer",
     "app.models.product",
+    "app.models.repricing",
+    "app.models.preorder",
     "app.models.warehouse",
     "app.models.user",
     "app.models.otp",  # добавлено: гарантируем регистрацию OTP для админок/интроспекции

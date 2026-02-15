@@ -51,6 +51,57 @@ def _get_platform_password() -> str | None:
     return pwd or None
 
 
+def _apply_platform_identity(user: User, identifier: str) -> None:
+    ident = (identifier or "").strip()
+    if not ident:
+        return
+    if "@" in ident:
+        user.email = ident
+    elif ident.isdigit():
+        user.phone = ident
+    else:
+        user.email = f"{ident}@local.dev"
+
+
+async def _ensure_platform_admin(
+    session: AsyncSession,
+    *,
+    identifier: str,
+    password: str,
+) -> User:
+    ident = (identifier or "").strip()
+    user = None
+    if "@" in ident:
+        res = await session.execute(select(User).where(User.email == ident))
+        user = res.scalars().first()
+    elif ident.isdigit():
+        res = await session.execute(select(User).where(User.phone == ident))
+        user = res.scalars().first()
+    else:
+        alt_email = f"{ident}@local.dev"
+        res = await session.execute(select(User).where(User.email == alt_email))
+        user = res.scalars().first()
+
+    if not user:
+        res = await session.execute(select(User).where(User.role == "platform_admin"))
+        for candidate in res.scalars().all():
+            if not (candidate.email or candidate.phone):
+                user = candidate
+                break
+
+    if not user:
+        user = User()
+        session.add(user)
+
+    _apply_platform_identity(user, ident)
+    user.hashed_password = get_password_hash(password)
+    user.role = "platform_admin"
+    user.is_active = True
+    user.is_verified = True
+    await session.flush()
+    return user
+
+
 async def _ensure_company(session: AsyncSession, name: str) -> Company:
     res = await session.execute(select(Company).where(Company.name == name))
     company = res.scalars().first()
@@ -130,13 +181,12 @@ async def ensure_dev_seed(*, session: AsyncSession | None = None) -> None:
         platform_ident = _get_platform_identifier()
         platform_password = _get_platform_password()
         if platform_ident and platform_password:
-            await _ensure_user(
+            await _ensure_platform_admin(
                 target_session,
                 identifier=platform_ident,
                 password=platform_password,
-                role="platform_admin",
-                company=company,
             )
+            logger.info("dev_seed: ensured platform_admin user identifier=%s", platform_ident)
 
     if session is not None:
         try:
