@@ -80,6 +80,7 @@ def _try_import(path: str) -> Any | None:
 auth_mod = _try_import("app.api.v1.auth")
 users_mod = _try_import("app.api.v1.users")
 products_mod = _try_import("app.api.v1.products")
+orders_mod = _try_import("app.api.v1.orders")
 campaigns_mod = _try_import("app.api.v1.campaigns")
 analytics_mod = _try_import("app.api.v1.analytics")
 exports_mod = _try_import("app.api.v1.exports")
@@ -98,6 +99,7 @@ admin_mod = _try_import("app.api.v1.admin")
 auth = auth_mod
 users = users_mod
 products = products_mod
+orders = orders_mod
 campaigns = campaigns_mod
 billing = campaigns_mod  # исторический алиас
 kaspi = kaspi_mod  # ⬅ добавлено
@@ -107,6 +109,7 @@ __all__ = [
     "auth",
     "users",
     "products",
+    "orders",
     "campaigns",
     "billing",
     "wallet",
@@ -146,6 +149,8 @@ if users_mod and _router_or_none(users_mod):
     V1_ROUTERS.append(("users", users_mod.router, False))
 if products_mod and _router_or_none(products_mod):
     V1_ROUTERS.append(("products", products_mod.router, False))
+if orders_mod and _router_or_none(orders_mod):
+    V1_ROUTERS.append(("orders", orders_mod.router, False))
 if campaigns_mod and _router_or_none(campaigns_mod):
     # в этом модуле prefix уже абсолютный '/api/v1/campaigns'
     V1_ROUTERS.append(("campaigns", campaigns_mod.router, True))
