@@ -89,4 +89,18 @@ async def build_subscription_required_payload_for_company(db: AsyncSession, comp
     return await _build_payload(db, company_id)
 
 
-__all__ = ["build_subscription_required_payload", "build_subscription_required_payload_for_company"]
+def build_limit_exceeded_payload(*, feature: str, limit: int, used: int) -> dict:
+    return {
+        "code": "LIMIT_EXCEEDED",
+        "detail": "Feature limit exceeded",
+        "feature": feature,
+        "limit": limit,
+        "used": used,
+    }
+
+
+__all__ = [
+    "build_subscription_required_payload",
+    "build_subscription_required_payload_for_company",
+    "build_limit_exceeded_payload",
+]

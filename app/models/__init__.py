@@ -142,6 +142,10 @@ _LAZY_MODELS: dict[str, tuple[str, str]] = {
     "Subscription": ("app.models.billing", "Subscription"),
     "WalletBalance": ("app.models.billing", "WalletBalance"),
     "WalletTransaction": ("app.models.billing", "WalletTransaction"),
+    "Plan": ("app.models.subscription_catalog", "Plan"),
+    "Feature": ("app.models.subscription_catalog", "Feature"),
+    "PlanFeature": ("app.models.subscription_catalog", "PlanFeature"),
+    "FeatureUsage": ("app.models.subscription_catalog", "FeatureUsage"),
     # маркетинг
     "Campaign": ("app.models.campaign", "Campaign"),
     "Message": ("app.models.campaign", "Message"),

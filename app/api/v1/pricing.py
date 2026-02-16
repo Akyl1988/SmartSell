@@ -14,12 +14,12 @@ from app.core.dependencies import (
     api_rate_limit,
     get_current_verified_user,
     get_pagination,
-    require_active_subscription,
     require_company_access,
     require_store_roles,
 )
 from app.core.exceptions import NotFoundError, SmartSellValidationError
 from app.core.security import resolve_tenant_company_id
+from app.core.subscriptions.features import require_feature
 from app.models.product import Product
 from app.models.repricing import RepricingDiff, RepricingRule, RepricingRun, repricing_run_stats
 from app.models.user import User
@@ -35,6 +35,9 @@ from app.schemas.pricing import (
     PricingRuleUpdate,
 )
 from app.services.pricing_engine import RuleConfig, evaluate_product
+from app.services.subscription_features import enforce_feature_limit
+
+FEATURE_REPRICING = "repricing"
 
 router = APIRouter()
 
@@ -52,7 +55,7 @@ read_router = APIRouter(
         Depends(require_company_access),
         Depends(require_store_roles("admin", "manager", "employee")),
         Depends(_require_company_context),
-        Depends(require_active_subscription),
+        Depends(require_feature(FEATURE_REPRICING)),
     ],
 )
 admin_router = APIRouter(
@@ -63,7 +66,7 @@ admin_router = APIRouter(
         Depends(require_company_access),
         Depends(_require_company_context),
         Depends(require_store_roles("admin", "manager")),
-        Depends(require_active_subscription),
+        Depends(require_feature(FEATURE_REPRICING)),
     ],
 )
 
@@ -279,87 +282,101 @@ async def apply_pricing(
     db: AsyncSession = Depends(get_async_db),
 ):
     company_id = resolve_tenant_company_id(current_user, not_found_detail="Company not set")
-    rule = await _get_rule_or_404(db, payload.rule_id, company_id)
-    if not rule.is_active or not rule.enabled:
-        raise SmartSellValidationError("Rule is disabled", "RULE_DISABLED")
+    nested = db.in_transaction()
+    tx = db.begin_nested() if nested else db.begin()
+    async with tx:
+        rule = await _get_rule_or_404(db, payload.rule_id, company_id)
+        if not rule.is_active or not rule.enabled:
+            raise SmartSellValidationError("Rule is disabled", "RULE_DISABLED")
 
-    now = datetime.utcnow()
-    run = RepricingRun(
-        company_id=company_id,
-        rule_id=rule.id,
-        status="running",
-        started_at=now,
-        requested_by_user_id=getattr(current_user, "id", None),
-        request_id=request.headers.get("X-Request-ID") or request.headers.get("X-Correlation-ID"),
-    )
-    db.add(run)
-    await db.flush()
+        now = datetime.utcnow()
+        run = RepricingRun(
+            company_id=company_id,
+            rule_id=rule.id,
+            status="running",
+            started_at=now,
+            requested_by_user_id=getattr(current_user, "id", None),
+            request_id=request.headers.get("X-Request-ID") or request.headers.get("X-Correlation-ID"),
+        )
+        db.add(run)
+        await db.flush()
 
-    rule_cfg = _rule_config_from_model(rule)
-    stmt = select(Product).where(Product.company_id == company_id, Product.deleted_at.is_(None))
-    stmt = _apply_product_filters(stmt, payload.filters)
-    stmt = _apply_scope_filters(stmt, rule.scope or {})
-    stmt = stmt.order_by(Product.id.asc()).with_for_update()
-    if payload.filters and payload.filters.limit:
-        stmt = stmt.limit(payload.filters.limit)
-    products = (await db.execute(stmt)).scalars().all()
+        rule_cfg = _rule_config_from_model(rule)
+        stmt = select(Product).where(Product.company_id == company_id, Product.deleted_at.is_(None))
+        stmt = _apply_product_filters(stmt, payload.filters)
+        stmt = _apply_scope_filters(stmt, rule.scope or {})
+        stmt = stmt.order_by(Product.id.asc()).with_for_update()
+        if payload.filters and payload.filters.limit:
+            stmt = stmt.limit(payload.filters.limit)
+        products = (await db.execute(stmt)).scalars().all()
 
-    processed = 0
-    changed = 0
-    skipped = 0
-    errors = 0
-    diffs: list[PricingPreviewItem] = []
-
-    for product in products:
-        processed += 1
-        try:
-            decision = evaluate_product(product, rule_cfg, now=now)
-            if decision.new_price is None:
-                skipped += 1
-                diffs.append(
-                    PricingPreviewItem(
-                        product_id=decision.product_id,
-                        old_price=decision.old_price,
-                        new_price=decision.new_price,
-                        reason=decision.reason,
-                    )
-                )
-                continue
-
-            product.set_price_guarded(decision.new_price, update_timestamps=True, respect_bounds=True)
-            product.repriced_at = now
-            changed += 1
-            diffs.append(
-                PricingPreviewItem(
+        decisions: list[tuple[Product, PricingPreviewItem, dict[str, Any] | None]] = []
+        changed_count = 0
+        for product in products:
+            try:
+                decision = evaluate_product(product, rule_cfg, now=now)
+                item = PricingPreviewItem(
                     product_id=decision.product_id,
                     old_price=decision.old_price,
                     new_price=decision.new_price,
                     reason=decision.reason,
                 )
-            )
-            db.add(
-                RepricingDiff(
-                    company_id=company_id,
-                    rule_id=rule.id,
-                    run_id=run.id,
-                    product_id=product.id,
-                    sku=product.sku,
-                    old_price=decision.old_price,
-                    new_price=decision.new_price,
-                    reason=decision.reason,
-                    meta=decision.meta,
-                )
-            )
-        except Exception as exc:
-            errors += 1
-            diffs.append(
-                PricingPreviewItem(
+                decisions.append((product, item, decision.meta))
+                if decision.new_price is not None:
+                    changed_count += 1
+            except Exception as exc:
+                item = PricingPreviewItem(
                     product_id=int(getattr(product, "id", 0) or 0),
                     old_price=getattr(product, "price", None),
                     new_price=None,
                     reason="error",
                 )
-            )
+                decisions.append((product, item, {"error": str(exc)}))
+
+        await enforce_feature_limit(
+            db,
+            company_id=company_id,
+            feature_code=FEATURE_REPRICING,
+            increment_by=changed_count,
+            limit_key="max_products_per_period",
+            now=now,
+        )
+
+        processed = 0
+        changed = 0
+        skipped = 0
+        errors = 0
+        diffs: list[PricingPreviewItem] = []
+
+        for product, item, meta in decisions:
+            processed += 1
+            if item.reason == "error":
+                errors += 1
+                diffs.append(item)
+                db.add(
+                    RepricingDiff(
+                        company_id=company_id,
+                        rule_id=rule.id,
+                        run_id=run.id,
+                        product_id=product.id,
+                        sku=product.sku,
+                        old_price=getattr(product, "price", None),
+                        new_price=None,
+                        reason="error",
+                        meta=meta or {},
+                    )
+                )
+                continue
+
+            if item.new_price is None:
+                skipped += 1
+                diffs.append(item)
+                continue
+
+            product.set_price_guarded(item.new_price, update_timestamps=True, respect_bounds=True)
+            product.repriced_at = now
+            changed += 1
+            diffs.append(item)
             db.add(
                 RepricingDiff(
                     company_id=company_id,
@@ -367,20 +384,20 @@ async def apply_pricing(
                     run_id=run.id,
                     product_id=product.id,
                     sku=product.sku,
-                    old_price=getattr(product, "price", None),
-                    new_price=None,
-                    reason="error",
-                    meta={"error": str(exc)},
+                    old_price=item.old_price,
+                    new_price=item.new_price,
+                    reason=item.reason,
+                    meta=meta or {},
                 )
             )
 
-    run.stats = repricing_run_stats(processed=processed, changed=changed, skipped=skipped, errors=errors)
-    run.status = "completed_with_errors" if errors else "completed"
-    run.finished_at = datetime.utcnow()
+        run.stats = repricing_run_stats(processed=processed, changed=changed, skipped=skipped, errors=errors)
+        run.status = "completed_with_errors" if errors else "completed"
+        run.finished_at = datetime.utcnow()
 
-    await db.commit()
+    if nested:
+        await db.commit()
     await db.refresh(run)
-
     return PricingApplyResponse(run_id=run.id, stats=run.stats or {}, diffs=diffs)
 
 

@@ -72,6 +72,21 @@ function Normalize-JwtToken {
   return $null
 }
 
+function Resolve-TokenField {
+  param(
+    [object]$Entry,
+    [string[]]$Names
+  )
+  if (-not $Entry) { return $null }
+  foreach ($name in $Names) {
+    $prop = $Entry.PSObject.Properties[$name]
+    if ($prop -and -not [string]::IsNullOrWhiteSpace([string]$prop.Value)) {
+      return @{ name = $name; value = $prop.Value }
+    }
+  }
+  return $null
+}
+
 function Load-SmartsellTokensFromCache {
   param([string]$BaseUrl)
   if (-not $BaseUrl) { return $null }
@@ -79,8 +94,12 @@ function Load-SmartsellTokensFromCache {
   if (-not $cache.ContainsKey($BaseUrl)) { return $null }
   $entry = $cache[$BaseUrl]
   if (-not $entry) { return $null }
-  $access = Normalize-JwtToken -Value $entry.access
-  $refresh = Normalize-JwtToken -Value $entry.refresh
+  $accessField = Resolve-TokenField -Entry $entry -Names @("access", "access_token", "token")
+  $refreshField = Resolve-TokenField -Entry $entry -Names @("refresh", "refresh_token")
+  $access = $null
+  $refresh = $null
+  if ($accessField -and $accessField.value) { $access = Normalize-JwtToken -Value $accessField.value }
+  if ($refreshField -and $refreshField.value) { $refresh = Normalize-JwtToken -Value $refreshField.value }
   if (-not $access -and -not $refresh) { return $null }
   return @{
     access = $access
@@ -227,8 +246,21 @@ function Get-SmokeAuthHeader {
 
   # Returns headers for Invoke-WebRequest -Headers (not curl -H).
   $entry = Get-SmokeCacheEntry -BaseUrl $BaseUrl
-  $access = Normalize-JwtToken -Value $entry.access
-  $refresh = Normalize-JwtToken -Value $entry.refresh
+  $accessField = Resolve-TokenField -Entry $entry -Names @("access", "access_token", "token")
+  $refreshField = Resolve-TokenField -Entry $entry -Names @("refresh", "refresh_token")
+  if ($accessField) {
+    Write-Host ("[INFO] smoke-cache access field: {0}" -f $accessField.name)
+  } elseif ($entry) {
+    $keys = @($entry.PSObject.Properties.Name) -join ","
+    Write-Host ("[WARN] smoke-cache entry missing access token field (keys={0})" -f $keys)
+  }
+  $access = $null
+  $refresh = $null
+  if ($accessField -and $accessField.value) { $access = Normalize-JwtToken -Value $accessField.value }
+  if ($refreshField -and $refreshField.value) {
+    Write-Host ("[INFO] smoke-cache refresh field: {0}" -f $refreshField.name)
+    $refresh = Normalize-JwtToken -Value $refreshField.value
+  }
 
   function Invoke-AuthMe([string]$Token) {
     if (-not $Token) {

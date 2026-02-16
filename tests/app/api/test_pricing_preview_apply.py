@@ -8,6 +8,7 @@ from sqlalchemy import select
 
 from app.models.product import Product
 from app.models.repricing import RepricingDiff, RepricingRun
+from app.models.subscription_catalog import Feature, Plan, PlanFeature
 from app.models.user import User
 
 pytestmark = pytest.mark.asyncio
@@ -231,3 +232,63 @@ async def test_pricing_bounds_and_max_delta(
 
     await async_db_session.refresh(product)
     assert product.price == Decimal("98.00")
+
+
+async def test_pricing_apply_respects_feature_limit(
+    async_client,
+    db_session,
+    async_db_session,
+    company_a_admin_headers,
+):
+    user_a = _get_user_by_phone(db_session, "+70000010001")
+
+    plan_feature = (
+        (
+            await async_db_session.execute(
+                select(PlanFeature)
+                .join(Plan, Plan.id == PlanFeature.plan_id)
+                .join(Feature, Feature.id == PlanFeature.feature_id)
+                .where(Plan.code == "pro")
+                .where(Feature.code == "repricing")
+            )
+        )
+        .scalars()
+        .first()
+    )
+    assert plan_feature is not None
+    plan_feature.limits_json = {"max_products_per_period": 2}
+    await async_db_session.commit()
+
+    product_a = await _create_product(async_db_session, user_a.company_id, price=Decimal("100.00"))
+    product_b = await _create_product(async_db_session, user_a.company_id, price=Decimal("110.00"))
+
+    rule = await _create_rule(
+        async_client,
+        company_a_admin_headers,
+        scope={"type": "product_ids", "product_ids": [product_a.id, product_b.id]},
+    )
+
+    first = await async_client.post(
+        "/api/v1/pricing/apply",
+        json={"rule_id": rule.get("id")},
+        headers=company_a_admin_headers,
+    )
+    assert first.status_code == 200, first.text
+
+    product_c = await _create_product(async_db_session, user_a.company_id, price=Decimal("120.00"))
+    updated = await async_client.patch(
+        f"/api/v1/pricing/rules/{rule.get('id')}",
+        json={"scope": {"type": "product_ids", "product_ids": [product_c.id]}},
+        headers=company_a_admin_headers,
+    )
+    assert updated.status_code == 200, updated.text
+
+    second = await async_client.post(
+        "/api/v1/pricing/apply",
+        json={"rule_id": rule.get("id")},
+        headers=company_a_admin_headers,
+    )
+    assert second.status_code == 402, second.text
+    detail = second.json().get("detail")
+    assert isinstance(detail, dict)
+    assert detail.get("code") == "LIMIT_EXCEEDED"

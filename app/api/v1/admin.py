@@ -12,12 +12,15 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.admin.integrations import router as integrations_router
+from app.api.v1.admin_plans import router as plans_router
 from app.core.config import settings
 from app.core.db import get_async_db
 from app.core.dependencies import require_platform_admin
 from app.core.exceptions import AuthorizationError, ConflictError, NotFoundError, _ensure_request_id
 from app.core.logging import audit_logger
-from app.core.subscriptions.plan_catalog import get_plan, normalize_plan_id
+from app.core.subscriptions.catalog import get_plan_by_code
+from app.core.subscriptions.plan_catalog import get_plan as get_plan_legacy
+from app.core.subscriptions.plan_catalog import normalize_plan_id
 from app.models.billing import Subscription, WalletBalance, WalletTransaction
 from app.models.campaign import (
     Campaign,
@@ -52,6 +55,7 @@ router = APIRouter(
     dependencies=[Depends(require_platform_admin)],
 )
 router.include_router(integrations_router)
+router.include_router(plans_router)
 
 
 class SubscriptionOverrideIn(BaseModel):
@@ -637,10 +641,20 @@ async def _grant_trial_subscription(
     trial_days: int,
     now: datetime | None = None,
 ) -> Subscription:
-    plan_id = normalize_plan_id(plan_code, default=None)
-    plan = get_plan(plan_id, default=None)
-    if not plan_id or plan is None:
-        raise AuthorizationError("plan_not_found", code="plan_not_found", http_status=400)
+    plan_id = normalize_plan_id(plan_code, default=plan_code) or plan_code
+    plan = await get_plan_by_code(db, plan_id)
+    plan_price = None
+    plan_currency = None
+    if plan is None:
+        legacy = get_plan_legacy(normalize_plan_id(plan_id, default=None), default=None)
+        if legacy is None:
+            raise AuthorizationError("plan_not_found", code="plan_not_found", http_status=400)
+        plan_id = legacy.plan_id
+        plan_price = legacy.price
+        plan_currency = legacy.currency
+    else:
+        plan_price = plan.price
+        plan_currency = plan.currency
 
     now = now or _utc_now()
     period_end = now + timedelta(days=trial_days)
@@ -655,8 +669,8 @@ async def _grant_trial_subscription(
     sub.plan = plan_id
     sub.status = "trialing"
     sub.billing_cycle = "monthly"
-    sub.price = Decimal(plan.price)
-    sub.currency = plan.currency
+    sub.price = Decimal(str(plan_price or 0))
+    sub.currency = plan_currency or "KZT"
     sub.started_at = now
     sub.period_start = now
     sub.period_end = period_end

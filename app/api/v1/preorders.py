@@ -14,18 +14,21 @@ from app.core.dependencies import (
     api_rate_limit,
     get_current_verified_user,
     get_pagination,
-    require_active_subscription,
     require_company_access,
     require_store_roles,
 )
 from app.core.exceptions import NotFoundError, SmartSellValidationError
 from app.core.security import resolve_tenant_company_id
+from app.core.subscriptions.features import require_feature
 from app.models.order import Order, OrderItem, OrderSource, OrderStatus
 from app.models.preorder import Preorder, PreorderStatus
 from app.models.product import Product
 from app.models.user import User
 from app.schemas.base import PaginatedResponse
 from app.schemas.preorder import PreorderCreate, PreorderListFilters, PreorderResponse
+from app.services.subscription_features import enforce_feature_limit
+
+FEATURE_PREORDERS = "preorders"
 
 router = APIRouter()
 
@@ -43,7 +46,7 @@ read_router = APIRouter(
         Depends(require_company_access),
         Depends(require_store_roles("admin", "manager", "employee")),
         Depends(_require_company_context),
-        Depends(require_active_subscription),
+        Depends(require_feature(FEATURE_PREORDERS)),
     ],
 )
 admin_router = APIRouter(
@@ -54,7 +57,7 @@ admin_router = APIRouter(
         Depends(require_company_access),
         Depends(require_store_roles("admin", "manager")),
         Depends(_require_company_context),
-        Depends(require_active_subscription),
+        Depends(require_feature(FEATURE_PREORDERS)),
     ],
 )
 
@@ -113,31 +116,45 @@ async def create_preorder(
     db: AsyncSession = Depends(get_async_db),
 ):
     company_id = resolve_tenant_company_id(current_user, not_found_detail="Company not set")
-    product = await _get_product_or_404(db, company_id, payload.product_id)
+    now = datetime.utcnow()
+    nested = db.in_transaction()
+    tx = db.begin_nested() if nested else db.begin()
+    async with tx:
+        product = await _get_product_or_404(db, company_id, payload.product_id)
 
-    if not product.is_preorder_enabled:
-        raise SmartSellValidationError("Product is not available for preorder", "PREORDER_DISABLED")
+        if not product.is_preorder_enabled:
+            raise SmartSellValidationError("Product is not available for preorder", "PREORDER_DISABLED")
 
-    if product.preorder_until is not None:
-        now_epoch = int(datetime.utcnow().timestamp())
-        if int(product.preorder_until) < now_epoch:
-            raise SmartSellValidationError("Preorder window has expired", "PREORDER_EXPIRED")
+        if product.preorder_until is not None:
+            now_epoch = int(now.timestamp())
+            if int(product.preorder_until) < now_epoch:
+                raise SmartSellValidationError("Preorder window has expired", "PREORDER_EXPIRED")
 
-    preorder = Preorder(
-        company_id=company_id,
-        product_id=product.id,
-        qty=int(payload.qty),
-        customer_name=payload.customer_name,
-        customer_phone=payload.customer_phone,
-        comment=payload.comment,
-        status=PreorderStatus.CREATED,
-    )
-    preorder.snapshot_from_product(
-        preorder_until=product.preorder_until,
-        deposit=product.preorder_deposit,
-    )
-    db.add(preorder)
-    await db.commit()
+        await enforce_feature_limit(
+            db,
+            company_id=company_id,
+            feature_code=FEATURE_PREORDERS,
+            increment_by=1,
+            limit_key="max_preorders_per_period",
+            now=now,
+        )
+
+        preorder = Preorder(
+            company_id=company_id,
+            product_id=product.id,
+            qty=int(payload.qty),
+            customer_name=payload.customer_name,
+            customer_phone=payload.customer_phone,
+            comment=payload.comment,
+            status=PreorderStatus.CREATED,
+        )
+        preorder.snapshot_from_product(
+            preorder_until=product.preorder_until,
+            deposit=product.preorder_deposit,
+        )
+        db.add(preorder)
+    if nested:
+        await db.commit()
     await db.refresh(preorder)
     return preorder
 
@@ -226,8 +243,9 @@ async def convert_preorder_to_order(
     db: AsyncSession = Depends(get_async_db),
 ):
     company_id = resolve_tenant_company_id(current_user, not_found_detail="Company not set")
-
-    async with db.begin():
+    nested = db.in_transaction()
+    tx = db.begin_nested() if nested else db.begin()
+    async with tx:
         preorder = await _get_preorder_locked(db, company_id, preorder_id)
         if preorder.status == PreorderStatus.CONVERTED or preorder.converted_order_id:
             raise SmartSellValidationError(
@@ -275,7 +293,8 @@ async def convert_preorder_to_order(
         await db.flush()
 
         preorder.mark_converted(order.id)
-
+    if nested:
+        await db.commit()
     await db.refresh(preorder)
     return preorder
 

@@ -5,8 +5,10 @@ from datetime import datetime, timedelta
 from decimal import Decimal
 
 import pytest
+from sqlalchemy import select
 
 from app.models.product import Product
+from app.models.subscription_catalog import Feature, Plan, PlanFeature
 from app.models.user import User
 
 pytestmark = pytest.mark.asyncio
@@ -80,3 +82,58 @@ async def test_preorders_crud_and_rbac(
     assert other_list.status_code == 200, other_list.text
     other_items = other_list.json().get("items") or []
     assert all(item.get("company_id") == user_b.company_id for item in other_items)
+
+
+async def test_preorders_respect_feature_limit(
+    async_client,
+    db_session,
+    async_db_session,
+    company_a_admin_headers,
+):
+    user_a = _get_user_by_phone(db_session, "+70000010001")
+
+    plan_feature = (
+        (
+            await async_db_session.execute(
+                select(PlanFeature)
+                .join(Plan, Plan.id == PlanFeature.plan_id)
+                .join(Feature, Feature.id == PlanFeature.feature_id)
+                .where(Plan.code == "pro")
+                .where(Feature.code == "preorders")
+            )
+        )
+        .scalars()
+        .first()
+    )
+    assert plan_feature is not None
+    plan_feature.limits_json = {"max_preorders_per_period": 1}
+    await async_db_session.commit()
+
+    product = await _create_product(async_db_session, user_a.company_id)
+
+    first = await async_client.post(
+        "/api/v1/preorders",
+        json={
+            "product_id": product.id,
+            "qty": 1,
+            "customer_name": "Alice",
+            "customer_phone": "+77000000000",
+        },
+        headers=company_a_admin_headers,
+    )
+    assert first.status_code == 201, first.text
+
+    second = await async_client.post(
+        "/api/v1/preorders",
+        json={
+            "product_id": product.id,
+            "qty": 1,
+            "customer_name": "Bob",
+            "customer_phone": "+77000000001",
+        },
+        headers=company_a_admin_headers,
+    )
+    assert second.status_code == 402, second.text
+    detail = second.json().get("detail")
+    assert isinstance(detail, dict)
+    assert detail.get("code") == "LIMIT_EXCEEDED"

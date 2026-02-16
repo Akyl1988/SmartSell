@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import os
+from decimal import Decimal
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -10,6 +11,7 @@ from app.core.config import settings
 from app.core.db import get_async_session_maker
 from app.core.security import get_password_hash
 from app.models.company import Company
+from app.models.subscription_catalog import Feature, Plan, PlanFeature
 from app.models.user import User
 
 logger = logging.getLogger(__name__)
@@ -146,6 +148,102 @@ async def _ensure_user(
     return user
 
 
+async def _ensure_plan(
+    session: AsyncSession,
+    *,
+    code: str,
+    name: str,
+    price: str,
+    currency: str = "KZT",
+    is_active: bool = True,
+    trial_days_default: int = 14,
+) -> Plan:
+    normalized = (code or "").strip().lower()
+    res = await session.execute(select(Plan).where(Plan.code == normalized))
+    plan = res.scalars().first()
+    if plan:
+        plan.name = name
+        plan.price = Decimal(str(price))
+        plan.currency = currency
+        plan.is_active = is_active
+        plan.trial_days_default = trial_days_default
+        await session.flush()
+        return plan
+
+    plan = Plan(
+        code=normalized,
+        name=name,
+        price=Decimal(str(price)),
+        currency=currency,
+        is_active=is_active,
+        trial_days_default=trial_days_default,
+    )
+    session.add(plan)
+    await session.flush()
+    return plan
+
+
+async def _ensure_feature(
+    session: AsyncSession,
+    *,
+    code: str,
+    name: str,
+    description: str | None = None,
+    is_active: bool = True,
+) -> Feature:
+    normalized = (code or "").strip().lower()
+    res = await session.execute(select(Feature).where(Feature.code == normalized))
+    feature = res.scalars().first()
+    if feature:
+        feature.name = name
+        feature.description = description
+        feature.is_active = is_active
+        await session.flush()
+        return feature
+
+    feature = Feature(
+        code=normalized,
+        name=name,
+        description=description,
+        is_active=is_active,
+    )
+    session.add(feature)
+    await session.flush()
+    return feature
+
+
+async def _ensure_plan_feature(
+    session: AsyncSession,
+    *,
+    plan: Plan,
+    feature: Feature,
+    enabled: bool,
+    limits: dict | None = None,
+) -> PlanFeature:
+    res = await session.execute(
+        select(PlanFeature).where(
+            PlanFeature.plan_id == plan.id,
+            PlanFeature.feature_id == feature.id,
+        )
+    )
+    plan_feature = res.scalars().first()
+    if plan_feature:
+        plan_feature.enabled = enabled
+        plan_feature.limits_json = limits
+        await session.flush()
+        return plan_feature
+
+    plan_feature = PlanFeature(
+        plan_id=plan.id,
+        feature_id=feature.id,
+        enabled=enabled,
+        limits_json=limits,
+    )
+    session.add(plan_feature)
+    await session.flush()
+    return plan_feature
+
+
 async def ensure_dev_seed(*, session: AsyncSession | None = None) -> None:
     if not _is_dev_env():
         return
@@ -177,6 +275,43 @@ async def ensure_dev_seed(*, session: AsyncSession | None = None) -> None:
         )
         if not company.owner_id:
             company.owner_id = user.id
+
+        basic = await _ensure_plan(
+            target_session,
+            code="basic",
+            name="Basic",
+            price="0.00",
+            currency="KZT",
+            is_active=True,
+            trial_days_default=14,
+        )
+        pro = await _ensure_plan(
+            target_session,
+            code="pro",
+            name="Pro",
+            price="0.00",
+            currency="KZT",
+            is_active=True,
+            trial_days_default=14,
+        )
+        repricing = await _ensure_feature(
+            target_session,
+            code="repricing",
+            name="Repricing",
+            description="Dynamic pricing and repricing rules",
+            is_active=True,
+        )
+        preorders = await _ensure_feature(
+            target_session,
+            code="preorders",
+            name="Preorders",
+            description="Preorders flow and conversion",
+            is_active=True,
+        )
+        await _ensure_plan_feature(target_session, plan=pro, feature=repricing, enabled=True, limits={})
+        await _ensure_plan_feature(target_session, plan=pro, feature=preorders, enabled=True, limits={})
+        await _ensure_plan_feature(target_session, plan=basic, feature=repricing, enabled=False, limits={})
+        await _ensure_plan_feature(target_session, plan=basic, feature=preorders, enabled=False, limits={})
 
         platform_ident = _get_platform_identifier()
         platform_password = _get_platform_password()

@@ -862,6 +862,7 @@ _CRITICAL_MODULES: tuple[str, ...] = (
     "app.models.audit_log",
     # дополнительно: иначе падало на 'Subscription' / 'Campaign' / биллинг
     "app.models.billing",
+    "app.models.subscription_catalog",
     "app.models.campaign",
     # ДОБАВЛЕНО: чтобы гарантировать наличие таблиц для FK payments.customer_id и otp
     "app.models.customer",

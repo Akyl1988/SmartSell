@@ -1167,11 +1167,57 @@ async def _ensure_active_subscription(async_db_session: AsyncSession, request):
 
     from sqlalchemy import select
 
-    from app.core.subscriptions.plan_catalog import normalize_plan_id
     from app.models.billing import Subscription
     from app.models.company import Company
+    from app.models.subscription_catalog import Feature, Plan, PlanFeature
 
     now = datetime.now(UTC)
+
+    async def _ensure_plan(code: str, name: str) -> Plan:
+        normalized = code.strip().lower()
+        existing_plan = (await async_db_session.execute(select(Plan).where(Plan.code == normalized))).scalars().first()
+        if existing_plan:
+            return existing_plan
+        plan = Plan(code=normalized, name=name, price=Decimal("0.00"), currency="KZT", is_active=True)
+        async_db_session.add(plan)
+        await async_db_session.flush()
+        return plan
+
+    async def _ensure_feature(code: str, name: str) -> Feature:
+        normalized = code.strip().lower()
+        existing_feature = (
+            (await async_db_session.execute(select(Feature).where(Feature.code == normalized))).scalars().first()
+        )
+        if existing_feature:
+            return existing_feature
+        feature = Feature(code=normalized, name=name, is_active=True)
+        async_db_session.add(feature)
+        await async_db_session.flush()
+        return feature
+
+    async def _ensure_plan_feature(plan: Plan, feature: Feature, enabled: bool) -> None:
+        existing_pf = (
+            (
+                await async_db_session.execute(
+                    select(PlanFeature).where(
+                        PlanFeature.plan_id == plan.id,
+                        PlanFeature.feature_id == feature.id,
+                    )
+                )
+            )
+            .scalars()
+            .first()
+        )
+        if existing_pf:
+            existing_pf.enabled = enabled
+            return
+        async_db_session.add(PlanFeature(plan_id=plan.id, feature_id=feature.id, enabled=enabled, limits_json={}))
+
+    pro_plan = await _ensure_plan("pro", "Pro")
+    repricing_feature = await _ensure_feature("repricing", "Repricing")
+    preorders_feature = await _ensure_feature("preorders", "Preorders")
+    await _ensure_plan_feature(pro_plan, repricing_feature, True)
+    await _ensure_plan_feature(pro_plan, preorders_feature, True)
     for company_id in (1001, 2001):
         existing_company = (
             (await async_db_session.execute(select(Company).where(Company.id == company_id))).scalars().first()
@@ -1196,7 +1242,7 @@ async def _ensure_active_subscription(async_db_session: AsyncSession, request):
 
         sub = Subscription(
             company_id=company_id,
-            plan=normalize_plan_id("start") or "trial",
+            plan="pro",
             status="active",
             billing_cycle="monthly",
             price=Decimal("0.00"),
