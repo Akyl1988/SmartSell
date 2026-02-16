@@ -12,6 +12,7 @@ Product management endpoints (enterprise-ready).
 
 from __future__ import annotations
 
+from datetime import datetime, timedelta
 from enum import Enum
 from typing import Any
 
@@ -309,7 +310,13 @@ async def update_product(
     try:
         changes: dict[str, Any] = {}
 
-        for field, value in product_update.model_dump(exclude_unset=True).items():
+        payload = product_update.model_dump(exclude_unset=True)
+        if "preorder_lead_days" in payload and "preorder_until" not in payload:
+            lead_days = payload.get("preorder_lead_days")
+            if lead_days is not None:
+                payload["preorder_until"] = int((datetime.utcnow() + timedelta(days=lead_days)).timestamp())
+
+        for field, value in payload.items():
             if hasattr(product, field):
                 if field == "sku" and value is not None:
                     value = value.strip().upper()
