@@ -213,6 +213,13 @@ class ProductUpdate(BaseSchema):
     is_featured: bool | None = None
     is_digital: bool | None = None
 
+    is_preorder_enabled: bool | None = None
+    preorder_until: int | None = Field(None, ge=0)
+    preorder_deposit: Decimal | None = Field(None, ge=0, max_digits=10, decimal_places=2)
+    preorder_note: str | None = Field(None, max_length=500)
+    preorder_lead_days: int | None = Field(None, ge=0)
+    preorder_show_zero_stock: bool | None = None
+
     meta_title: str | None = Field(None, max_length=255)
     meta_description: str | None = Field(None, max_length=500)
     meta_keywords: str | None = Field(None, max_length=500)
@@ -246,6 +253,7 @@ class ProductUpdate(BaseSchema):
         "meta_description",
         "meta_keywords",
         "image_url",
+        "preorder_note",
         mode="before",
     )
     def _trim_strings(cls, v):
@@ -265,6 +273,12 @@ class ProductUpdate(BaseSchema):
 class ProductResponse(ProductBase, TimestampedSchema):
     """Schema for product response."""
 
+    is_preorder_enabled: bool
+    preorder_until: int | None = None
+    preorder_deposit: Decimal | None = None
+    preorder_note: str | None = None
+    preorder_lead_days: int | None = None
+    preorder_show_zero_stock: bool | None = None
     category: CategoryResponse | None = None
 
 
