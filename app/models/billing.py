@@ -41,6 +41,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import Mapped, Session, backref, mapped_column, relationship, validates
 from sqlalchemy.orm.exc import StaleDataError
 
+from app.core.money import MoneyNormalizationError, normalize_money
 from app.models.base import BaseModel, SoftDeleteMixin
 
 if TYPE_CHECKING:
@@ -75,6 +76,13 @@ def _to_decimal(v: Any) -> Decimal:
         return Decimal(str(v)).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
     except Exception:
         return Decimal("0.00")
+
+
+def _normalize_money_amount(amount: Decimal | int | float, currency: str | None) -> Decimal:
+    try:
+        return normalize_money(amount, currency, non_kzt_places=0)
+    except MoneyNormalizationError as exc:
+        raise ValueError(str(exc)) from exc
 
 
 def _json_dumps(data: Any) -> str | None:
@@ -471,7 +479,7 @@ class Subscription(BaseModel, SoftDeleteMixin):
     )  # active|trialing|past_due|frozen|canceled
     billing_cycle: Mapped[str] = mapped_column(String(32), nullable=False, default="monthly")
 
-    price: Mapped[Decimal] = mapped_column(Numeric(14, 2), nullable=False)
+    price: Mapped[Decimal] = mapped_column(Numeric(14, 0), nullable=False)
     currency: Mapped[str] = mapped_column(String(8), nullable=False, default="KZT")
 
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
@@ -1097,13 +1105,13 @@ class WalletBalance(BaseModel, SoftDeleteMixin):
         ForeignKey("companies.id", ondelete="CASCADE"), nullable=False, unique=True, index=True
     )
 
-    balance: Mapped[Decimal] = mapped_column(Numeric(14, 2), nullable=False, default=0)
+    balance: Mapped[Decimal] = mapped_column(Numeric(14, 0), nullable=False, default=0)
     currency: Mapped[str] = mapped_column(String(8), nullable=False, default="KZT")
-    credit_limit: Mapped[Decimal | None] = mapped_column(Numeric(14, 2), default=0)
+    credit_limit: Mapped[Decimal | None] = mapped_column(Numeric(14, 0), default=0)
 
     auto_topup_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
-    auto_topup_threshold: Mapped[Decimal | None] = mapped_column(Numeric(14, 2))
-    auto_topup_amount: Mapped[Decimal | None] = mapped_column(Numeric(14, 2))
+    auto_topup_threshold: Mapped[Decimal | None] = mapped_column(Numeric(14, 0))
+    auto_topup_amount: Mapped[Decimal | None] = mapped_column(Numeric(14, 0))
 
     # Optimistic locking
     version_id: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
@@ -1260,12 +1268,13 @@ class WalletBalance(BaseModel, SoftDeleteMixin):
         if amount <= 0:
             raise ValueError("Credit amount must be positive")
         before = self.balance or Decimal("0")
-        after = before + _to_decimal(amount)
+        amt = _normalize_money_amount(amount, self.currency)
+        after = before + amt
         self.balance = after
         trx = WalletTransaction(
             wallet_id=self.id,
             transaction_type="credit",
-            amount=_to_decimal(amount),
+            amount=amt,
             balance_before=before,
             balance_after=after,
             description=description,
@@ -1286,7 +1295,7 @@ class WalletBalance(BaseModel, SoftDeleteMixin):
         reference_type: str | None = None,
         reference_id: int | None = None,
     ) -> WalletTransaction:
-        amt = _to_decimal(amount)
+        amt = _normalize_money_amount(amount, self.currency)
         if amt <= 0:
             raise ValueError("Credit amount must be positive")
         before = self.balance or Decimal("0")
@@ -1319,7 +1328,7 @@ class WalletBalance(BaseModel, SoftDeleteMixin):
         if amount <= 0:
             raise ValueError("Debit amount must be positive")
         before = self.balance or Decimal("0")
-        amt = _to_decimal(amount)
+        amt = _normalize_money_amount(amount, self.currency)
         if before < amt:
             deficit = amt - before
             if session is None:
@@ -1355,7 +1364,7 @@ class WalletBalance(BaseModel, SoftDeleteMixin):
         reference_id: int | None = None,
         idempotency_key: str | None = None,
     ) -> WalletTransaction:
-        amt = _to_decimal(amount)
+        amt = _normalize_money_amount(amount, self.currency)
         if amt <= 0:
             raise ValueError("Debit amount must be positive")
         before = self.balance or Decimal("0")
@@ -1396,7 +1405,7 @@ class WalletBalance(BaseModel, SoftDeleteMixin):
         skip_locked: bool = False,
         idempotency_key: str | None = None,
     ) -> WalletTransaction:
-        amt = _to_decimal(amount)
+        amt = _normalize_money_amount(amount, self.currency)
         attempt = 0
         _last_exc: Exception | None = None
         while attempt <= retries:
@@ -1450,7 +1459,7 @@ class WalletBalance(BaseModel, SoftDeleteMixin):
         skip_locked: bool = False,
         idempotency_key: str | None = None,
     ) -> WalletTransaction:
-        amt = _to_decimal(amount)
+        amt = _normalize_money_amount(amount, self.currency)
         attempt = 0
         _last_exc: Exception | None = None
         while attempt <= retries:
@@ -1503,7 +1512,7 @@ class WalletBalance(BaseModel, SoftDeleteMixin):
         if self.auto_topup_threshold is None or self.auto_topup_amount is None:
             return None
         if (self.balance or Decimal("0")) <= (self.auto_topup_threshold or Decimal("0")):
-            amount = _to_decimal(self.auto_topup_amount)
+            amount = _normalize_money_amount(self.auto_topup_amount, self.currency)
             trx = self.credit(
                 amount,
                 session=session,
@@ -1520,7 +1529,11 @@ class WalletBalance(BaseModel, SoftDeleteMixin):
         return None
 
     def maybe_notify_low_balance(self, *, threshold: Decimal | None = None) -> bool:
-        thr = _to_decimal(threshold) if threshold is not None else (self.auto_topup_threshold or Decimal("0"))
+        thr = (
+            _normalize_money_amount(threshold, self.currency)
+            if threshold is not None
+            else (self.auto_topup_threshold or Decimal("0"))
+        )
         if (self.balance or Decimal("0")) <= thr:
             if self.on_low_balance:
                 try:
@@ -1538,7 +1551,7 @@ class WalletBalance(BaseModel, SoftDeleteMixin):
         idempotency_key: str | None = None,
         description: str = "gateway_charge",
     ) -> WalletTransaction:
-        amt = _to_decimal(amount)
+        amt = _normalize_money_amount(amount, self.currency)
         if amt <= 0:
             raise ValueError("Amount must be positive")
         if self.gateway_charge:
@@ -1578,7 +1591,7 @@ class WalletBalance(BaseModel, SoftDeleteMixin):
         idempotency_key: str | None = None,
         description: str = "gateway_topup",
     ) -> WalletTransaction:
-        amt = _to_decimal(amount)
+        amt = _normalize_money_amount(amount, self.currency)
         if amt <= 0:
             raise ValueError("Amount must be positive")
         if self.gateway_topup:
@@ -1632,14 +1645,14 @@ class WalletBalance(BaseModel, SoftDeleteMixin):
         use_locking: bool = True,
         retries: int = 3,
     ) -> dict[str, Any]:
-        req = _to_decimal(amount)
+        req = _normalize_money_amount(amount, currency)
         if req <= 0:
             raise ValueError("Amount must be positive")
 
         self._ensure_currency_compat(expected_currency=currency)
 
         def _compute_spend(current: Decimal) -> tuple[Decimal, Decimal]:
-            min_keep = _to_decimal(min_positive_balance) if leave_min_positive else Decimal("0")
+            min_keep = _normalize_money_amount(min_positive_balance, currency) if leave_min_positive else Decimal("0")
             if allow_zero_balance and min_keep > 0:
                 min_keep = min(min_keep, Decimal("0.00"))
             effective_min = Decimal("0.00") if allow_zero_balance else max(min_keep, Decimal("0.01"))
@@ -1784,13 +1797,13 @@ class WalletBalance(BaseModel, SoftDeleteMixin):
         use_locking: bool = True,
         retries: int = 3,
     ) -> dict[str, Any]:
-        req = _to_decimal(amount)
+        req = _normalize_money_amount(amount, currency)
         if req <= 0:
             raise ValueError("Amount must be positive")
         self._ensure_currency_compat(expected_currency=currency)
 
         def _compute_spend(current: Decimal) -> tuple[Decimal, Decimal]:
-            min_keep = _to_decimal(min_positive_balance) if leave_min_positive else Decimal("0")
+            min_keep = _normalize_money_amount(min_positive_balance, currency) if leave_min_positive else Decimal("0")
             if allow_zero_balance and min_keep > 0:
                 min_keep = min(min_keep, Decimal("0.00"))
             effective_min = Decimal("0.00") if allow_zero_balance else max(min_keep, Decimal("0.01"))
@@ -2036,10 +2049,10 @@ class WalletTransaction(BaseModel, SoftDeleteMixin):
     )
 
     transaction_type: Mapped[str] = mapped_column(String(32), nullable=False, index=True)  # credit|debit|adjustment
-    amount: Mapped[Decimal] = mapped_column(Numeric(14, 2), nullable=False)
+    amount: Mapped[Decimal] = mapped_column(Numeric(14, 0), nullable=False)
 
-    balance_before: Mapped[Decimal] = mapped_column(Numeric(14, 2), nullable=False)
-    balance_after: Mapped[Decimal] = mapped_column(Numeric(14, 2), nullable=False)
+    balance_before: Mapped[Decimal] = mapped_column(Numeric(14, 0), nullable=False)
+    balance_after: Mapped[Decimal] = mapped_column(Numeric(14, 0), nullable=False)
 
     reference_type: Mapped[str | None] = mapped_column(String(32))
     reference_id: Mapped[int | None] = mapped_column(Integer, index=True)

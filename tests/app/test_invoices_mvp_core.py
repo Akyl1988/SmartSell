@@ -122,7 +122,7 @@ async def test_invoice_pay_idempotent(
     )
     assert issue.status_code == 200, issue.text
 
-    wallet = WalletBalance(company_id=1001, balance=Decimal("100.00"), currency="KZT")
+    wallet = WalletBalance(company_id=1001, balance=Decimal("100"), currency="KZT")
     async_db_session.add(wallet)
     await async_db_session.commit()
 
@@ -166,7 +166,7 @@ async def test_invoices_subscription_inactive_blocked(
         plan=normalize_plan_id("start") or "trial",
         status="canceled",
         billing_cycle="monthly",
-        price=Decimal("0.00"),
+        price=Decimal("0"),
         currency="KZT",
         started_at=now,
         period_start=now,

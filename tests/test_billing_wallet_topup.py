@@ -180,12 +180,13 @@ async def test_manual_topup_idempotent(async_client, async_db_session, auth_head
     data2 = resp2.json()
 
     assert data2["transaction_id"] == data1["transaction_id"]
-    assert data2["balance"] == data1["balance"]
+    assert Decimal(str(data2["balance"])) == Decimal(str(data1["balance"]))
+    assert Decimal(str(data2["balance"])) == Decimal("100")
 
     wallet = (
         await async_db_session.execute(sa.select(WalletBalance).where(WalletBalance.company_id == company.id))
     ).scalar_one()
-    assert str(wallet.balance) == "100.00"
+    assert wallet.balance == Decimal("100")
 
 
 async def test_activate_plan_charges_wallet_and_sets_period(async_db_session, monkeypatch):
@@ -344,7 +345,7 @@ async def test_renewal_within_grace_reactivates_and_extends(async_db_session, mo
     assert sub.status == "active"
     assert sub.grace_until is None
     assert sub.period_end == datetime(2026, 2, 28, 0, 0, tzinfo=UTC)
-    assert str(wallet.balance) == "70.00"
+    assert wallet.balance == Decimal("70")
 
 
 async def test_anchor_day_rolls_to_month_end(async_db_session, monkeypatch):

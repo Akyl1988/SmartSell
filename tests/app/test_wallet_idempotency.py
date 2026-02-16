@@ -53,7 +53,7 @@ async def test_wallet_idempotency(async_client: AsyncClient, async_db_session: A
     balance_before = await _get_balance(async_client, account_a_id, company_a_admin_headers)
     first = await async_client.post(
         f"/api/v1/wallet/accounts/{account_a_id}/deposit",
-        json={"amount": "100.00", "reference": "seed"},
+        json={"amount": "100", "reference": "seed"},
         headers={**company_a_admin_headers, "X-Request-Id": dep_id},
     )
     assert first.status_code == 200, first.text
@@ -64,7 +64,7 @@ async def test_wallet_idempotency(async_client: AsyncClient, async_db_session: A
 
     second = await async_client.post(
         f"/api/v1/wallet/accounts/{account_a_id}/deposit",
-        json={"amount": "100.00", "reference": "seed"},
+        json={"amount": "100", "reference": "seed"},
         headers={**company_a_admin_headers, "X-Request-Id": dep_id},
     )
     assert second.status_code == 200, second.text
@@ -78,7 +78,7 @@ async def test_wallet_idempotency(async_client: AsyncClient, async_db_session: A
     balance_before = await _get_balance(async_client, account_a_id, company_a_admin_headers)
     first = await async_client.post(
         f"/api/v1/wallet/accounts/{account_a_id}/withdraw",
-        json={"amount": "30.00", "reference": "wd"},
+        json={"amount": "30", "reference": "wd"},
         headers={**company_a_admin_headers, "X-Request-Id": wd_id},
     )
     assert first.status_code == 200, first.text
@@ -89,7 +89,7 @@ async def test_wallet_idempotency(async_client: AsyncClient, async_db_session: A
 
     second = await async_client.post(
         f"/api/v1/wallet/accounts/{account_a_id}/withdraw",
-        json={"amount": "30.00", "reference": "wd"},
+        json={"amount": "30", "reference": "wd"},
         headers={**company_a_admin_headers, "X-Request-Id": wd_id},
     )
     assert second.status_code == 200, second.text
@@ -105,7 +105,7 @@ async def test_wallet_idempotency(async_client: AsyncClient, async_db_session: A
         json={
             "source_account_id": account_a_id,
             "destination_account_id": account_b_id,
-            "amount": "20.00",
+            "amount": "20",
             "reference": "tx",
         },
         headers={**company_a_admin_headers, "X-Request-Id": tx_id},
@@ -120,7 +120,7 @@ async def test_wallet_idempotency(async_client: AsyncClient, async_db_session: A
         json={
             "source_account_id": account_a_id,
             "destination_account_id": account_b_id,
-            "amount": "20.00",
+            "amount": "20",
             "reference": "tx",
         },
         headers={**company_a_admin_headers, "X-Request-Id": tx_id},

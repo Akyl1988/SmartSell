@@ -21,7 +21,7 @@ async def test_plan_feature_toggle_affects_pricing_access(
         json={
             "code": "basic",
             "name": "Basic",
-            "price": "0.00",
+            "price": "0",
             "currency": "KZT",
             "is_active": True,
             "trial_days_default": 14,

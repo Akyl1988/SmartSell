@@ -1178,7 +1178,7 @@ async def _ensure_active_subscription(async_db_session: AsyncSession, request):
         existing_plan = (await async_db_session.execute(select(Plan).where(Plan.code == normalized))).scalars().first()
         if existing_plan:
             return existing_plan
-        plan = Plan(code=normalized, name=name, price=Decimal("0.00"), currency="KZT", is_active=True)
+        plan = Plan(code=normalized, name=name, price=Decimal("0"), currency="KZT", is_active=True)
         async_db_session.add(plan)
         await async_db_session.flush()
         return plan
@@ -1245,7 +1245,7 @@ async def _ensure_active_subscription(async_db_session: AsyncSession, request):
             plan="pro",
             status="active",
             billing_cycle="monthly",
-            price=Decimal("0.00"),
+            price=Decimal("0"),
             currency="KZT",
             started_at=now,
             period_start=now,

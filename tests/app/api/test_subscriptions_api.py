@@ -15,7 +15,7 @@ async def test_create_subscription_trial_ok(client, auth_headers, async_db_sessi
         json={
             "plan": "Pro",
             "billing_cycle": "monthly",
-            "price": "24900.00",
+            "price": "24900",
             "currency": "KZT",
             "trial_days": 7,
         },
@@ -36,7 +36,7 @@ async def test_create_subscription_trial_blocked_for_non_admin(client, company_a
         json={
             "plan": "Pro",
             "billing_cycle": "monthly",
-            "price": "24900.00",
+            "price": "24900",
             "currency": "KZT",
             "trial_days": 15,
         },
@@ -54,7 +54,7 @@ async def test_create_subscription_without_trial_ok(client, company_a_admin_head
         json={
             "plan": "Start",
             "billing_cycle": "monthly",
-            "price": "0.00",
+            "price": "0",
             "currency": "KZT",
             "trial_days": 0,
         },
@@ -71,7 +71,7 @@ async def test_create_subscription_without_trial_ok(client, company_a_admin_head
         json={
             "plan": "Pro",
             "billing_cycle": "monthly",
-            "price": "24900.00",
+            "price": "24900",
             "currency": "KZT",
             "trial_days": 15,
         },
@@ -89,7 +89,7 @@ async def test_forbid_second_active_subscription(client, company_a_admin_headers
         json={
             "plan": "Start",
             "billing_cycle": "monthly",
-            "price": "1000.00",
+            "price": "1000",
             "currency": "KZT",
             "trial_days": 0,
         },
@@ -102,7 +102,7 @@ async def test_forbid_second_active_subscription(client, company_a_admin_headers
         json={
             "plan": "Pro",
             "billing_cycle": "monthly",
-            "price": "2000.00",
+            "price": "2000",
             "currency": "KZT",
             "trial_days": 0,
         },
@@ -118,7 +118,7 @@ async def test_update_cancel_resume_renew_flow(client, company_a_admin_headers):
         json={
             "plan": "Start",
             "billing_cycle": "yearly",
-            "price": "12000.00",
+            "price": "12000",
             "currency": "KZT",
             "trial_days": 0,
         },
@@ -128,7 +128,7 @@ async def test_update_cancel_resume_renew_flow(client, company_a_admin_headers):
     sid = sub["id"]
 
     upd = await client.patch(
-        f"{BASE}/{sid}", json={"plan": "Business", "price": "33900.00"}, headers=company_a_admin_headers
+        f"{BASE}/{sid}", json={"plan": "Business", "price": "33900"}, headers=company_a_admin_headers
     )
     assert upd.status_code == 200 and upd.json()["plan"] == "Business"
 
@@ -152,7 +152,7 @@ async def test_current_and_filters(client, company_a_admin_headers):
         json={
             "plan": "Pro",
             "billing_cycle": "monthly",
-            "price": "5000.00",
+            "price": "5000",
             "currency": "KZT",
             "trial_days": 0,
         },

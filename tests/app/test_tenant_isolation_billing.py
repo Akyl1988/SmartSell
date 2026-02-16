@@ -41,7 +41,7 @@ async def _ensure_active_subscription(async_db_session, company_id: int) -> None
         plan=normalize_plan_id("start") or "trial",
         status="active",
         billing_cycle="monthly",
-        price=Decimal("0.00"),
+        price=Decimal("0"),
         currency="KZT",
         started_at=now,
         period_start=now,
@@ -70,7 +70,7 @@ async def test_wallet_isolation_between_companies(
 
     seeded = await client.post(
         f"/api/v1/wallet/accounts/{account_id}/deposit",
-        json={"amount": "5.00", "reference": "seed"},
+        json={"amount": "5", "reference": "seed"},
         headers=company_b_admin_headers,
     )
     assert seeded.status_code == 200, seeded.text
@@ -110,7 +110,7 @@ async def test_payments_isolation_between_companies(
         json={
             "user_id": user_b.id,
             "wallet_account_id": account_id,
-            "amount": "10.00",
+            "amount": "10",
             "currency": "KZT",
             "reference": "tenant-iso",
         },
@@ -139,7 +139,7 @@ async def test_subscriptions_isolation_between_companies(
         json={
             "plan": "Beta",
             "billing_cycle": "monthly",
-            "price": "100.00",
+            "price": "100",
             "currency": "KZT",
             "trial_days": 0,
         },
@@ -171,7 +171,7 @@ async def test_subscriptions_get_by_id_cross_company_forbidden(
         json={
             "plan": "Beta",
             "billing_cycle": "monthly",
-            "price": "100.00",
+            "price": "100",
             "currency": "KZT",
             "trial_days": 0,
         },
@@ -200,7 +200,7 @@ async def test_subscriptions_payments_cross_company_forbidden(
         json={
             "plan": "Gamma",
             "billing_cycle": "monthly",
-            "price": "50.00",
+            "price": "50",
             "currency": "KZT",
             "trial_days": 0,
         },
@@ -311,7 +311,7 @@ async def test_rbac_roles_restricted_actions(
     # Storekeeper cannot deposit
     denied_deposit = await client.post(
         f"/api/v1/wallet/accounts/{account_id}/deposit",
-        json={"amount": "5.00", "reference": "nope"},
+        json={"amount": "5", "reference": "nope"},
         headers=company_a_storekeeper_headers,
     )
     assert denied_deposit.status_code in (401, 403)
@@ -322,7 +322,7 @@ async def test_rbac_roles_restricted_actions(
         json={
             "user_id": user_a.id,
             "wallet_account_id": account_id,
-            "amount": "5.00",
+            "amount": "5",
             "currency": "KZT",
             "reference": "rbac",
         },
@@ -336,7 +336,7 @@ async def test_rbac_roles_restricted_actions(
         json={
             "user_id": user_a.id,
             "wallet_account_id": account_id,
-            "amount": "5.00",
+            "amount": "5",
             "currency": "KZT",
             "reference": "ok",
         },

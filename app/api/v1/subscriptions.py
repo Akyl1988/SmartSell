@@ -62,7 +62,7 @@ FINAL_STATES = {"canceled", "expired", "ended"}
 class SubscriptionCreate(BaseModel):
     plan: PlanName
     billing_cycle: Cycle = "monthly"
-    price: condecimal(max_digits=14, decimal_places=2) = Decimal("0.00")
+    price: condecimal(max_digits=14, decimal_places=0) = Decimal("0")
     currency: CurrencyCode = "KZT"
     trial_days: int = Field(0, ge=0, le=60)
 
@@ -70,7 +70,7 @@ class SubscriptionCreate(BaseModel):
 class SubscriptionUpdate(BaseModel):
     plan: PlanName | None = None
     billing_cycle: Cycle | None = None
-    price: condecimal(max_digits=14, decimal_places=2) | None = None
+    price: condecimal(max_digits=14, decimal_places=0) | None = None
     currency: CurrencyCode | None = None
 
 

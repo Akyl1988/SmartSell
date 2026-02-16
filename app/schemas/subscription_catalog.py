@@ -14,7 +14,7 @@ CurrencyCode = constr(min_length=3, max_length=8)
 class PlanCreate(BaseModel):
     code: PlanCode
     name: str = Field(..., min_length=2, max_length=128)
-    price: condecimal(max_digits=14, decimal_places=2) = Decimal("0.00")
+    price: condecimal(max_digits=14, decimal_places=0) = Decimal("0")
     currency: CurrencyCode = "KZT"
     is_active: bool = True
     trial_days_default: int = Field(default=14, ge=0, le=60)
@@ -22,7 +22,7 @@ class PlanCreate(BaseModel):
 
 class PlanUpdate(BaseModel):
     name: str | None = Field(default=None, min_length=2, max_length=128)
-    price: condecimal(max_digits=14, decimal_places=2) | None = None
+    price: condecimal(max_digits=14, decimal_places=0) | None = None
     currency: CurrencyCode | None = None
     is_active: bool | None = None
     trial_days_default: int | None = Field(default=None, ge=0, le=60)

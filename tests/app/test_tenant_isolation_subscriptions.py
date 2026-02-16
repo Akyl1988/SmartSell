@@ -10,7 +10,7 @@ async def test_subscriptions_list_isolated_between_companies(
     payload = {
         "plan": "basic",
         "billing_cycle": "monthly",
-        "price": "10.00",
+        "price": "10",
         "currency": "KZT",
     }
     created = await async_client.post(BASE, json=payload, headers=company_a_admin_headers)
@@ -29,7 +29,7 @@ async def test_subscription_payments_hidden_from_other_company(
         "company_id": 1001,
         "plan": "pro",
         "billing_cycle": "monthly",
-        "price": "25.00",
+        "price": "25",
         "currency": "KZT",
     }
     created = await async_client.post(BASE, json=payload, headers=company_a_admin_headers)
