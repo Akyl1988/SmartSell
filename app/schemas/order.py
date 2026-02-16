@@ -49,7 +49,7 @@ class OrderCreate(BaseCreateSchema):
     delivery_date: str | None = None
     delivery_time: str | None = None
     notes: str | None = None
-    items: list[OrderItemCreate] = Field(..., min_items=1)
+    items: list[OrderItemCreate] = Field(..., min_length=1)
 
 
 class OrderUpdate(BaseUpdateSchema):
