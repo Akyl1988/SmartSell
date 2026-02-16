@@ -18,6 +18,8 @@ from typing import Any, Generic, Literal, TypeVar
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+from app.core.money import MoneyNormalizationError, normalize_money
+
 # ====== Вспомогательные утилиты ==============================================
 
 _DEC_PLACES = 6  # под DECIMAL(18,6)
@@ -39,6 +41,13 @@ def _quantize(d: Decimal, places: int = _DEC_PLACES) -> Decimal:
     """
     q = Decimal(1) / (Decimal(10) ** places)
     return d.quantize(q, rounding=ROUND_HALF_UP)
+
+
+def _quantize_money(value: Any, currency: str | None) -> Decimal:
+    try:
+        return normalize_money(value, currency, non_kzt_places=_DEC_PLACES)
+    except MoneyNormalizationError as exc:
+        raise ValueError(str(exc)) from exc
 
 
 def _normalize_currency(code: str) -> str:
@@ -112,10 +121,15 @@ class WalletAccountCreate(WalletAccountBase):
 
     @field_validator("balance", mode="before")
     @classmethod
-    def _balance_to_decimal(cls, v: Any) -> Decimal:
+    def _balance_to_decimal(cls, v: Any, info) -> Decimal:
         if v is None:
             return Decimal("0")
-        return _quantize(_to_decimal(v))
+        currency = None
+        try:
+            currency = info.data.get("currency")
+        except Exception:
+            currency = None
+        return _quantize_money(v, currency)
 
 
 class WalletAccountOut(WalletAccountBase):
@@ -128,8 +142,13 @@ class WalletAccountOut(WalletAccountBase):
 
     @field_validator("balance", mode="before")
     @classmethod
-    def _balance_to_decimal_out(cls, v: Any) -> Decimal:
-        return _quantize(_to_decimal(v))
+    def _balance_to_decimal_out(cls, v: Any, info) -> Decimal:
+        currency = None
+        try:
+            currency = info.data.get("currency")
+        except Exception:
+            currency = None
+        return _quantize_money(v, currency)
 
 
 class WalletAccountsPage(Page[WalletAccountOut]):
@@ -204,8 +223,13 @@ class WalletTransactionOut(WalletTransactionBase):
 
     @field_validator("balance_after", mode="before")
     @classmethod
-    def _balance_after_to_decimal(cls, v: Any) -> Decimal:
-        return _quantize(_to_decimal(v))
+    def _balance_after_to_decimal(cls, v: Any, info) -> Decimal:
+        currency = None
+        try:
+            currency = info.data.get("currency")
+        except Exception:
+            currency = None
+        return _quantize_money(v, currency)
 
     @field_validator("currency", mode="before")
     @classmethod
@@ -228,8 +252,13 @@ class BalanceOut(BaseModel):
 
     @field_validator("balance", mode="before")
     @classmethod
-    def _balance_to_decimal_bal(cls, v: Any) -> Decimal:
-        return _quantize(_to_decimal(v))
+    def _balance_to_decimal_bal(cls, v: Any, info) -> Decimal:
+        currency = None
+        try:
+            currency = info.data.get("currency")
+        except Exception:
+            currency = None
+        return _quantize_money(v, currency)
 
     @field_validator("currency", mode="before")
     @classmethod

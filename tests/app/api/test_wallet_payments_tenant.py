@@ -56,7 +56,7 @@ async def test_payments_hidden_across_companies(
         json={
             "user_id": user_a.id,
             "wallet_account_id": account_id,
-            "amount": "10.00",
+            "amount": "10",
             "currency": "KZT",
             "reference": "isolation",
         },
@@ -123,7 +123,7 @@ async def test_deposit_cross_tenant_forbidden(client, db_session, company_a_admi
 
     resp = await client.post(
         f"/api/v1/wallet/accounts/{account_id}/deposit",
-        json={"amount": "5.00", "reference": "x"},
+        json={"amount": "5", "reference": "x"},
         headers=company_b_admin_headers,
     )
     assert resp.status_code == 404
@@ -143,14 +143,14 @@ async def test_withdraw_cross_tenant_forbidden(client, db_session, company_a_adm
     # топ-up, чтобы не зависеть от баланса при проверке изоляции
     topup = await client.post(
         f"/api/v1/wallet/accounts/{account_id}/deposit",
-        json={"amount": "10.00", "reference": "seed"},
+        json={"amount": "10", "reference": "seed"},
         headers=company_a_admin_headers,
     )
     assert topup.status_code == 200, topup.text
 
     resp = await client.post(
         f"/api/v1/wallet/accounts/{account_id}/withdraw",
-        json={"amount": "1.00", "reference": "steal"},
+        json={"amount": "1", "reference": "steal"},
         headers=company_b_admin_headers,
     )
     assert resp.status_code == 404
@@ -185,7 +185,7 @@ async def test_transfer_cross_tenant_destination_forbidden(
     # пополняем источник, чтобы не упереться в баланс
     seed = await client.post(
         f"/api/v1/wallet/accounts/{account_a_id}/deposit",
-        json={"amount": "10.00", "reference": "seed"},
+        json={"amount": "10", "reference": "seed"},
         headers=company_a_admin_headers,
     )
     assert seed.status_code == 200, seed.text
@@ -195,7 +195,7 @@ async def test_transfer_cross_tenant_destination_forbidden(
         json={
             "source_account_id": account_a_id,
             "destination_account_id": account_b_id,
-            "amount": "1.00",
+            "amount": "1",
             "reference": "cross",
         },
         headers=company_a_admin_headers,
@@ -226,7 +226,7 @@ async def test_payment_create_cross_tenant_forbidden(
         json={
             "user_id": user_b.id,
             "wallet_account_id": account_id,
-            "amount": "5.00",
+            "amount": "5",
             "currency": "KZT",
             "reference": "cross",
         },
@@ -254,7 +254,7 @@ async def test_payments_list_scoped_by_token(
         json={
             "user_id": user_a.id,
             "wallet_account_id": account_id,
-            "amount": "5.00",
+            "amount": "5",
             "currency": "KZT",
             "reference": "scoped",
         },

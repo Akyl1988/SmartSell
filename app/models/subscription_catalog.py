@@ -17,7 +17,7 @@ class Plan(BaseModel):
 
     code: Mapped[str] = mapped_column(TrimmedString(32, lowercase=True), nullable=False, unique=True, index=True)
     name: Mapped[str] = mapped_column(TrimmedString(128), nullable=False)
-    price: Mapped[Decimal] = mapped_column(Numeric(14, 2), nullable=False, default=Decimal("0.00"))
+    price: Mapped[Decimal] = mapped_column(Numeric(14, 0), nullable=False, default=Decimal("0"))
     currency: Mapped[str] = mapped_column(String(8), nullable=False, default="KZT")
     is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     trial_days_default: Mapped[int] = mapped_column(Integer, nullable=False, default=14)

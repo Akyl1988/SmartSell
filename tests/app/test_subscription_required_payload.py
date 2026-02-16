@@ -37,7 +37,7 @@ async def test_build_subscription_required_payload_with_wallet_and_grace(async_d
         plan="business",
         status="past_due",
         billing_cycle="monthly",
-        price=Decimal("30.00"),
+        price=Decimal("30"),
         currency="KZT",
         started_at=now,
         period_start=now,
@@ -47,7 +47,7 @@ async def test_build_subscription_required_payload_with_wallet_and_grace(async_d
     )
     async_db_session.add(sub)
 
-    wallet = WalletBalance(company_id=company.id, balance=Decimal("123.45"), currency="KZT")
+    wallet = WalletBalance(company_id=company.id, balance=Decimal("123"), currency="KZT")
     async_db_session.add(wallet)
 
     await async_db_session.commit()
@@ -59,5 +59,5 @@ async def test_build_subscription_required_payload_with_wallet_and_grace(async_d
     assert payload["subscription"]["plan"] == "business"
     assert payload["subscription"]["period_end"] == period_end.isoformat()
     assert payload["subscription"]["grace_until"] == grace_until.isoformat()
-    assert payload["wallet"]["balance"] == "123.45"
+    assert payload["wallet"]["balance"] == "123"
     assert payload["wallet"]["currency"] == "KZT"

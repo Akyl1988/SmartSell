@@ -21,7 +21,7 @@ async def test_forbid_multiple_active_exclude_id(async_db_session):
         plan="basic",
         status="active",
         billing_cycle="monthly",
-        price=Decimal("10.00"),
+        price=Decimal("10"),
         currency="KZT",
     )
     async_db_session.add(sub1)
@@ -44,7 +44,7 @@ async def test_unique_active_subscription_guard(async_db_session):
         plan="pro",
         status="active",
         billing_cycle="monthly",
-        price=Decimal("20.00"),
+        price=Decimal("20"),
         currency="KZT",
     )
     async_db_session.add(sub_active)
@@ -55,7 +55,7 @@ async def test_unique_active_subscription_guard(async_db_session):
         plan="pro",
         status="trial",
         billing_cycle="monthly",
-        price=Decimal("0.00"),
+        price=Decimal("0"),
         currency="KZT",
     )
     async_db_session.add(sub_trial)
@@ -77,7 +77,7 @@ async def test_list_subscription_payments_isolated(async_db_session):
         plan="alpha",
         status="active",
         billing_cycle="monthly",
-        price=Decimal("10.00"),
+        price=Decimal("10"),
         currency="KZT",
     )
     sub_b = Subscription(
@@ -85,7 +85,7 @@ async def test_list_subscription_payments_isolated(async_db_session):
         plan="beta",
         status="canceled",
         billing_cycle="monthly",
-        price=Decimal("15.00"),
+        price=Decimal("15"),
         currency="KZT",
     )
     async_db_session.add_all([sub_a, sub_b])
@@ -122,7 +122,7 @@ async def test_final_statuses_visible(async_db_session):
             plan="hist-a",
             status="canceled",
             billing_cycle="monthly",
-            price=Decimal("5.00"),
+            price=Decimal("5"),
             currency="KZT",
             canceled_at=now,
         ),
@@ -131,7 +131,7 @@ async def test_final_statuses_visible(async_db_session):
             plan="hist-b",
             status="expired",
             billing_cycle="monthly",
-            price=Decimal("6.00"),
+            price=Decimal("6"),
             currency="KZT",
             expires_at=now,
         ),
@@ -140,7 +140,7 @@ async def test_final_statuses_visible(async_db_session):
             plan="hist-c",
             status="ended",
             billing_cycle="monthly",
-            price=Decimal("7.00"),
+            price=Decimal("7"),
             currency="KZT",
             ended_at=now,
         ),
@@ -174,7 +174,7 @@ async def test_archive_and_restore_flow(async_db_session):
         plan="arch",
         status="active",
         billing_cycle="monthly",
-        price=Decimal("9.00"),
+        price=Decimal("9"),
         currency="KZT",
     )
     async_db_session.add(sub)
@@ -238,7 +238,7 @@ async def test_active_uniqueness_ignores_archived(async_db_session):
         plan="u1",
         status="active",
         billing_cycle="monthly",
-        price=Decimal("10.00"),
+        price=Decimal("10"),
         currency="KZT",
     )
     async_db_session.add(first)
@@ -253,7 +253,7 @@ async def test_active_uniqueness_ignores_archived(async_db_session):
         plan="u2",
         status="active",
         billing_cycle="monthly",
-        price=Decimal("12.00"),
+        price=Decimal("12"),
         currency="KZT",
     )
     async_db_session.add(second)

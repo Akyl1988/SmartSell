@@ -98,7 +98,7 @@ async def test_wallet_invariants_deposit(
     dep_id = str(uuid.uuid4())
     resp = await async_client.post(
         f"/api/v1/wallet/accounts/{account_id}/deposit",
-        json={"amount": "100.00", "reference": "seed"},
+        json={"amount": "100", "reference": "seed"},
         headers={**company_a_admin_headers, "X-Request-Id": dep_id},
     )
     assert resp.status_code == 200, resp.text
@@ -125,7 +125,7 @@ async def test_wallet_invariants_idempotent_deposit(
     dep_id = str(uuid.uuid4())
     first = await async_client.post(
         f"/api/v1/wallet/accounts/{account_id}/deposit",
-        json={"amount": "50.00", "reference": "seed"},
+        json={"amount": "50", "reference": "seed"},
         headers={**company_a_admin_headers, "X-Request-Id": dep_id},
     )
     assert first.status_code == 200, first.text
@@ -133,7 +133,7 @@ async def test_wallet_invariants_idempotent_deposit(
 
     second = await async_client.post(
         f"/api/v1/wallet/accounts/{account_id}/deposit",
-        json={"amount": "50.00", "reference": "seed"},
+        json={"amount": "50", "reference": "seed"},
         headers={**company_a_admin_headers, "X-Request-Id": dep_id},
     )
     assert second.status_code == 200, second.text
@@ -161,7 +161,7 @@ async def test_wallet_invariants_withdraw(
 
     seed = await async_client.post(
         f"/api/v1/wallet/accounts/{account_id}/deposit",
-        json={"amount": "120.00", "reference": "seed"},
+        json={"amount": "120", "reference": "seed"},
         headers=company_a_admin_headers,
     )
     assert seed.status_code == 200, seed.text
@@ -169,7 +169,7 @@ async def test_wallet_invariants_withdraw(
     wd_id = str(uuid.uuid4())
     withdraw = await async_client.post(
         f"/api/v1/wallet/accounts/{account_id}/withdraw",
-        json={"amount": "30.00", "reference": "wd"},
+        json={"amount": "30", "reference": "wd"},
         headers={**company_a_admin_headers, "X-Request-Id": wd_id},
     )
     if withdraw.status_code == 404:
@@ -201,7 +201,7 @@ async def test_wallet_invariants_payments_refund(
 
     seed = await async_client.post(
         f"/api/v1/wallet/accounts/{account_id}/deposit",
-        json={"amount": "200.00", "reference": "seed"},
+        json={"amount": "200", "reference": "seed"},
         headers=company_a_admin_headers,
     )
     assert seed.status_code == 200, seed.text
@@ -211,7 +211,7 @@ async def test_wallet_invariants_payments_refund(
         json={
             "user_id": user_a.id,
             "wallet_account_id": account_id,
-            "amount": "40.00",
+            "amount": "40",
             "currency": "KZT",
             "reference": "inv-1",
         },
@@ -226,10 +226,64 @@ async def test_wallet_invariants_payments_refund(
 
     refund = await async_client.post(
         f"/api/v1/payments/{payment_id}/refund",
-        json={"amount": "40.00", "reference": "refund"},
+        json={"amount": "40", "reference": "refund"},
         headers=company_a_admin_headers,
     )
     assert refund.status_code == 200, refund.text
+
+
+@pytest.mark.asyncio
+async def test_wallet_rejects_fractional_kzt_deposit(
+    async_client: AsyncClient, async_db_session: AsyncSession, company_a_admin_headers
+):
+    user_a = await _get_user(async_db_session, "+70000010001")
+
+    acc_resp = await async_client.post(
+        "/api/v1/wallet/accounts",
+        json={"user_id": user_a.id, "currency": "KZT"},
+        headers=company_a_admin_headers,
+    )
+    assert acc_resp.status_code == 201, acc_resp.text
+    account_id = acc_resp.json()["id"]
+
+    resp = await async_client.post(
+        f"/api/v1/wallet/accounts/{account_id}/deposit",
+        json={"amount": "10.50", "reference": "seed"},
+        headers=company_a_admin_headers,
+    )
+    assert resp.status_code == 422, resp.text
+    payload = resp.json()
+    assert "KZT amount must be an integer" in str(payload.get("detail"))
+
+
+@pytest.mark.asyncio
+async def test_wallet_balance_returns_integer_for_kzt(
+    async_client: AsyncClient, async_db_session: AsyncSession, company_a_admin_headers
+):
+    user_a = await _get_user(async_db_session, "+70000010001")
+
+    acc_resp = await async_client.post(
+        "/api/v1/wallet/accounts",
+        json={"user_id": user_a.id, "currency": "KZT"},
+        headers=company_a_admin_headers,
+    )
+    assert acc_resp.status_code == 201, acc_resp.text
+    account_id = acc_resp.json()["id"]
+
+    dep = await async_client.post(
+        f"/api/v1/wallet/accounts/{account_id}/deposit",
+        json={"amount": "10", "reference": "seed"},
+        headers=company_a_admin_headers,
+    )
+    assert dep.status_code == 200, dep.text
+
+    bal = await async_client.get(
+        f"/api/v1/wallet/accounts/{account_id}/balance",
+        headers=company_a_admin_headers,
+    )
+    assert bal.status_code == 200, bal.text
+    balance_str = bal.json()["balance"]
+    assert "." not in balance_str
 
     await assert_wallet_invariants(
         async_db_session, account_id, async_client=async_client, headers=company_a_admin_headers
