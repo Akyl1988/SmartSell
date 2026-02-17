@@ -5,7 +5,7 @@ Warehouse Pydantic schemas.
 
 from pydantic import EmailStr, Field
 
-from app.schemas.base import BaseCreateSchema, BaseResponseSchema, BaseUpdateSchema
+from app.schemas.base import BaseCreateSchema, BaseResponseSchema, BaseSchema, BaseUpdateSchema
 
 
 class WarehouseCreate(BaseCreateSchema):
@@ -124,6 +124,22 @@ class StockMovementResponse(BaseResponseSchema):
     product_sku: str | None
     product_name: str | None
     warehouse_name: str | None
+
+
+class InventoryReservationRequest(BaseSchema):
+    product_id: int = Field(..., ge=1)
+    qty: int = Field(..., gt=0)
+    warehouse_id: int | None = Field(None, ge=1)
+    reference_type: str = Field(..., max_length=32)
+    reference_id: int = Field(..., ge=1)
+
+
+class InventoryReservationResponse(BaseSchema):
+    product_id: int
+    warehouse_id: int
+    on_hand: int
+    reserved: int
+    available: int
 
 
 class StockTransfer(BaseCreateSchema):

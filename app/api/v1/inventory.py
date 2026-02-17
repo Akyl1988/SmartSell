@@ -24,7 +24,13 @@ from app.models.product import Product
 from app.models.user import User
 from app.models.warehouse import ProductStock, StockMovement, Warehouse
 from app.schemas.base import PaginatedResponse
-from app.schemas.warehouse import ProductStockResponse, StockMovementResponse
+from app.schemas.warehouse import (
+    InventoryReservationRequest,
+    InventoryReservationResponse,
+    ProductStockResponse,
+    StockMovementResponse,
+)
+from app.services.inventory_reservations import fulfill_reservation, release_and_log, reserve_and_log
 
 router = APIRouter()
 
@@ -307,6 +313,66 @@ async def list_stock_movements(
         )
 
     return PaginatedResponse.create(items=items, total=total, page=pagination.page, per_page=pagination.per_page)
+
+
+@admin_router.post("/reservations/reserve", response_model=InventoryReservationResponse)
+async def reserve_inventory(
+    payload: InventoryReservationRequest,
+    current_user: User = Depends(get_current_verified_user),
+    db: AsyncSession = Depends(get_async_db),
+):
+    company_id = resolve_tenant_company_id(current_user, not_found_detail="Company not set")
+    result = await reserve_and_log(
+        db,
+        tenant_id=company_id,
+        product_id=payload.product_id,
+        qty=payload.qty,
+        reference_type=payload.reference_type,
+        reference_id=payload.reference_id,
+        warehouse_id=payload.warehouse_id,
+    )
+    await db.commit()
+    return InventoryReservationResponse(**result)
+
+
+@admin_router.post("/reservations/release", response_model=InventoryReservationResponse)
+async def release_inventory(
+    payload: InventoryReservationRequest,
+    current_user: User = Depends(get_current_verified_user),
+    db: AsyncSession = Depends(get_async_db),
+):
+    company_id = resolve_tenant_company_id(current_user, not_found_detail="Company not set")
+    result = await release_and_log(
+        db,
+        tenant_id=company_id,
+        product_id=payload.product_id,
+        qty=payload.qty,
+        reference_type=payload.reference_type,
+        reference_id=payload.reference_id,
+        warehouse_id=payload.warehouse_id,
+    )
+    await db.commit()
+    return InventoryReservationResponse(**result)
+
+
+@admin_router.post("/reservations/fulfill", response_model=InventoryReservationResponse)
+async def fulfill_inventory(
+    payload: InventoryReservationRequest,
+    current_user: User = Depends(get_current_verified_user),
+    db: AsyncSession = Depends(get_async_db),
+):
+    company_id = resolve_tenant_company_id(current_user, not_found_detail="Company not set")
+    result = await fulfill_reservation(
+        db,
+        tenant_id=company_id,
+        product_id=payload.product_id,
+        qty=payload.qty,
+        reference_type=payload.reference_type,
+        reference_id=payload.reference_id,
+        warehouse_id=payload.warehouse_id,
+    )
+    await db.commit()
+    return InventoryReservationResponse(**result)
 
 
 router.include_router(read_router)

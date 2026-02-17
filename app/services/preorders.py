@@ -13,7 +13,9 @@ from sqlalchemy.orm import selectinload
 from app.core.exceptions import NotFoundError, SmartSellValidationError
 from app.models.order import Order, OrderItem, OrderSource, OrderStatus
 from app.models.preorder import Preorder, PreorderItem, PreorderStatus
+from app.models.warehouse import MovementType, ProductStock, StockMovement, Warehouse
 from app.schemas.preorders import PreorderCreateIn, PreorderListFilters, PreorderUpdateIn
+from app.services.inventory_reservations import fulfill_reservation, release_and_log, reserve_and_log
 
 
 def _parse_dt(value: str | None, field: str) -> datetime | None:
@@ -169,17 +171,137 @@ def _transition(preorder: Preorder, target: PreorderStatus) -> None:
     raise SmartSellValidationError("Invalid preorder status transition", "INVALID_PREORDER_STATUS", http_status=409)
 
 
+async def _movement_exists(
+    db: AsyncSession,
+    *,
+    company_id: int,
+    movement_type: str,
+    reference_type: str,
+    reference_id: int,
+    product_id: int,
+) -> bool:
+    result = await db.execute(
+        select(StockMovement.id)
+        .join(ProductStock, ProductStock.id == StockMovement.stock_id)
+        .join(Warehouse, Warehouse.id == ProductStock.warehouse_id)
+        .where(
+            StockMovement.movement_type == movement_type,
+            StockMovement.reference_type == reference_type,
+            StockMovement.reference_id == reference_id,
+            StockMovement.product_id == product_id,
+            Warehouse.company_id == company_id,
+        )
+        .limit(1)
+    )
+    return result.scalar_one_or_none() is not None
+
+
 async def confirm_preorder(db: AsyncSession, *, company_id: int, preorder_id: int) -> Preorder:
-    preorder = await get_preorder(db, company_id=company_id, preorder_id=preorder_id)
-    _transition(preorder, PreorderStatus.CONFIRMED)
-    await db.commit()
+    nested = db.in_transaction()
+    tx = db.begin_nested() if nested else db.begin()
+    async with tx:
+        result = await db.execute(
+            select(Preorder)
+            .where(Preorder.id == preorder_id, Preorder.company_id == company_id)
+            .options(selectinload(Preorder.items))
+            .with_for_update()
+        )
+        preorder = result.scalar_one_or_none()
+        if not preorder:
+            raise NotFoundError("Preorder not found", "PREORDER_NOT_FOUND")
+
+        if preorder.status == PreorderStatus.CONFIRMED:
+            return preorder
+
+        if preorder.status != PreorderStatus.NEW:
+            raise SmartSellValidationError(
+                "Invalid preorder status transition",
+                "INVALID_PREORDER_STATUS",
+                http_status=409,
+            )
+
+        for item in preorder.items or []:
+            if not item.product_id:
+                continue
+            exists = await _movement_exists(
+                db,
+                company_id=company_id,
+                movement_type=MovementType.RESERVE.value,
+                reference_type="preorder",
+                reference_id=preorder.id,
+                product_id=item.product_id,
+            )
+            if exists:
+                continue
+            await reserve_and_log(
+                db,
+                tenant_id=company_id,
+                product_id=item.product_id,
+                qty=int(item.qty),
+                reference_type="preorder",
+                reference_id=preorder.id,
+                warehouse_id=None,
+            )
+
+        _transition(preorder, PreorderStatus.CONFIRMED)
+
+    if nested:
+        await db.commit()
     return await get_preorder(db, company_id=company_id, preorder_id=preorder.id)
 
 
 async def cancel_preorder(db: AsyncSession, *, company_id: int, preorder_id: int) -> Preorder:
-    preorder = await get_preorder(db, company_id=company_id, preorder_id=preorder_id)
-    _transition(preorder, PreorderStatus.CANCELLED)
-    await db.commit()
+    nested = db.in_transaction()
+    tx = db.begin_nested() if nested else db.begin()
+    async with tx:
+        result = await db.execute(
+            select(Preorder)
+            .where(Preorder.id == preorder_id, Preorder.company_id == company_id)
+            .options(selectinload(Preorder.items))
+            .with_for_update()
+        )
+        preorder = result.scalar_one_or_none()
+        if not preorder:
+            raise NotFoundError("Preorder not found", "PREORDER_NOT_FOUND")
+
+        if preorder.status == PreorderStatus.CANCELLED:
+            return preorder
+
+        if preorder.status == PreorderStatus.CONFIRMED:
+            for item in preorder.items or []:
+                if not item.product_id:
+                    continue
+                reserve_exists = await _movement_exists(
+                    db,
+                    company_id=company_id,
+                    movement_type=MovementType.RESERVE.value,
+                    reference_type="preorder",
+                    reference_id=preorder.id,
+                    product_id=item.product_id,
+                )
+                release_exists = await _movement_exists(
+                    db,
+                    company_id=company_id,
+                    movement_type=MovementType.RELEASE.value,
+                    reference_type="preorder",
+                    reference_id=preorder.id,
+                    product_id=item.product_id,
+                )
+                if reserve_exists and not release_exists:
+                    await release_and_log(
+                        db,
+                        tenant_id=company_id,
+                        product_id=item.product_id,
+                        qty=int(item.qty),
+                        reference_type="preorder",
+                        reference_id=preorder.id,
+                        warehouse_id=None,
+                    )
+
+        _transition(preorder, PreorderStatus.CANCELLED)
+
+    if nested:
+        await db.commit()
     return await get_preorder(db, company_id=company_id, preorder_id=preorder.id)
 
 
@@ -217,6 +339,29 @@ async def fulfill_preorder(db: AsyncSession, *, company_id: int, preorder_id: in
                     "PREORDER_ITEM_PRICE_REQUIRED",
                     http_status=422,
                 )
+
+        for item in preorder.items:
+            if not item.product_id:
+                continue
+            fulfill_exists = await _movement_exists(
+                db,
+                company_id=company_id,
+                movement_type=MovementType.FULFILL.value,
+                reference_type="preorder",
+                reference_id=preorder.id,
+                product_id=item.product_id,
+            )
+            if fulfill_exists:
+                continue
+            await fulfill_reservation(
+                db,
+                tenant_id=company_id,
+                product_id=item.product_id,
+                qty=int(item.qty),
+                reference_type="preorder",
+                reference_id=preorder.id,
+                warehouse_id=None,
+            )
 
         order = Order(
             company_id=company_id,
