@@ -69,34 +69,14 @@ if (-not $Password) { $Password = $env:SMARTSELL_PASSWORD }
 
 $access = $null
 $refresh = $null
-if ([string]::IsNullOrWhiteSpace($Identifier) -or [string]::IsNullOrWhiteSpace($Password)) {
-  $cached = Load-SmartsellTokensFromCache -BaseUrl $BaseUrl
-  if ($cached) {
-    $cachedAccess = Normalize-JwtToken -Value $cached.access
-    $cachedRefresh = Normalize-JwtToken -Value $cached.refresh
-    if ($cachedAccess) { $access = $cachedAccess }
-    if ($cachedRefresh) { $refresh = $cachedRefresh }
-  }
-}
-
-if (-not $access -and ([string]::IsNullOrWhiteSpace($Identifier) -or [string]::IsNullOrWhiteSpace($Password))) {
-  Fail "Set ADMIN_IDENTIFIER/ADMIN_PASSWORD or run scripts/smoke-auth.ps1 to populate .smoke-cache.json"
-}
 if ($CompanyId -le 0) {
   Fail "CompanyId is required. Provide -CompanyId or set COMPANY_ID."
 }
 
-if ($access) {
-  Set-SmartsellTokens -AccessToken $access -RefreshToken $refresh -BaseUrl $BaseUrl
-  Ok ("Token loaded: " + (Token-Prefix $access))
-} else {
-  Info "Login"
-  $tokens = Get-SmartsellTokens -BaseUrl $BaseUrl -Identifier $Identifier -Password $Password
-  $access = $tokens.access
-  $refresh = $tokens.refresh
-  Set-SmartsellTokens -AccessToken $access -RefreshToken $refresh -BaseUrl $BaseUrl
-  Ok ("Token loaded: " + (Token-Prefix $access))
-}
+$authHeaders = Ensure-SmartsellAuth -BaseUrl $BaseUrl -Identifier $Identifier -Password $Password -AccessToken $access -RefreshToken $refresh
+$access = (($authHeaders.Authorization ?? "") -replace "^Bearer\s+", "").Trim()
+$refresh = $script:SmartsellRefreshToken
+if ($access) { Ok ("Token loaded: " + (Token-Prefix $access)) }
 
 $campaignId = $null
 $seedUrl = "$BaseUrl/api/v1/admin/dev/seed/campaign_due?company_id=$CompanyId"

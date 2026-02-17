@@ -1,10 +1,16 @@
 import pytest
 
+from app.core.security import get_password_hash
+
 from app.models.user import User
 
 
 def _get_user_by_phone(db_session, phone: str) -> User:
     return db_session.query(User).filter(User.phone == phone).one()
+
+
+def _get_platform_admin(db_session) -> User:
+    return db_session.query(User).filter(User.phone.in_(["77000000001", "+77000000001"])).one()
 
 
 @pytest.mark.asyncio
@@ -73,6 +79,62 @@ async def test_payments_hidden_across_companies(
     body = listed.json()
     items = body.get("items") or body.get("data") or []
     assert all(it.get("id") != payment_id for it in items)
+
+
+@pytest.mark.asyncio
+async def test_platform_admin_can_access_own_wallet_accounts(client, db_session, auth_headers):
+    user = _get_platform_admin(db_session)
+
+    created = await client.post(
+        "/api/v1/wallet/accounts",
+        json={"user_id": user.id, "currency": "KZT"},
+        headers=auth_headers,
+    )
+    assert created.status_code == 201, created.text
+    account_id = created.json()["id"]
+
+    by_user = await client.get(
+        f"/api/v1/wallet/accounts/by-user?user_id={user.id}&currency=KZT",
+        headers=auth_headers,
+    )
+    assert by_user.status_code == 200, by_user.text
+    assert by_user.json().get("id") == account_id
+
+    listed = await client.get(
+        f"/api/v1/wallet/accounts?user_id={user.id}&currency=KZT",
+        headers=auth_headers,
+    )
+    assert listed.status_code == 200, listed.text
+    items = listed.json().get("items") or []
+    assert any(it.get("id") == account_id for it in items)
+
+
+@pytest.mark.asyncio
+async def test_platform_admin_forbidden_for_other_user_wallet(client, db_session, auth_headers):
+    platform_user = _get_platform_admin(db_session)
+    other_user = User(
+        phone="+77000009999",
+        company_id=platform_user.company_id,
+        hashed_password=get_password_hash("Secret123!"),
+        role="employee",
+        is_active=True,
+        is_verified=True,
+    )
+    db_session.add(other_user)
+    db_session.commit()
+    db_session.refresh(other_user)
+
+    listed = await client.get(
+        f"/api/v1/wallet/accounts?user_id={other_user.id}&currency=KZT",
+        headers=auth_headers,
+    )
+    assert listed.status_code == 403, listed.text
+
+    by_user = await client.get(
+        f"/api/v1/wallet/accounts/by-user?user_id={other_user.id}&currency=KZT",
+        headers=auth_headers,
+    )
+    assert by_user.status_code == 403, by_user.text
 
 
 @pytest.mark.asyncio

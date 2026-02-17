@@ -40,7 +40,8 @@ async def _auth_user(current_user: User = Depends(get_current_verified_user)) ->
 
 async def _require_company_context(current_user: User = Depends(get_current_verified_user)) -> User:
     if is_platform_admin(current_user):
-        raise AuthorizationError("Insufficient permissions", "FORBIDDEN")
+        resolve_tenant_company_id(current_user, not_found_detail="Company not set")
+        return current_user
     resolve_tenant_company_id(current_user, not_found_detail="Company not set")
     return current_user
 
@@ -408,6 +409,11 @@ async def list_accounts(
     db: AsyncSession = Depends(get_async_db),
 ) -> WalletAccountsPage:
     try:
+        if is_platform_admin(current_user):
+            if user_id is None:
+                raise AuthorizationError("Insufficient permissions", "FORBIDDEN")
+            if user_id != int(getattr(current_user, "id", 0) or 0):
+                raise AuthorizationError("Insufficient permissions", "FORBIDDEN")
         resolved_company_id = resolve_tenant_company_id(current_user, not_found_detail="Company not set")
         ccy = _norm_ccy(currency) if currency else None
         if user_id is not None:
@@ -463,6 +469,8 @@ async def list_accounts(
 
         meta = {"page": page, "size": size, "total": total}
         return WalletAccountsPage(items=[WalletAccountOut(**r) for r in page_items], meta=PageMeta(**meta))
+    except AuthorizationError:
+        raise
     except HTTPException:
         raise
     except Exception as e:
@@ -529,6 +537,11 @@ async def get_account(
         acc = await _ensure_account_access(account_id, current_user, db)
         acc["currency"] = _norm_ccy(acc.get("currency", ""))
         acc["balance"] = _to_dec_str(acc.get("balance", "0"), acc.get("currency", ""))
+        if is_platform_admin(current_user):
+            if user_id is None:
+                raise AuthorizationError("Insufficient permissions", "FORBIDDEN")
+            if user_id != int(getattr(current_user, "id", 0) or 0):
+                raise AuthorizationError("Insufficient permissions", "FORBIDDEN")
         return WalletAccountOut(**acc)
     except HTTPException:
         raise
@@ -560,6 +573,8 @@ async def get_balance(
         acc = await storage.get_account(account_id)
         ccy = _norm_ccy(acc["currency"]) if acc and "currency" in acc else ""
         return BalanceOut(account_id=account_id, currency=ccy, balance=_to_dec_str(bal, ccy))
+    except AuthorizationError:
+        raise
     except HTTPException:
         raise
     except Exception as e:
