@@ -17,6 +17,7 @@ async def test_preorders_openapi_contract(async_client):
 
     preorder_detail = paths.get("/api/v1/preorders/{preorder_id}", {})
     assert "get" in preorder_detail
+    assert "patch" in preorder_detail
 
     confirm_path = paths.get("/api/v1/preorders/{preorder_id}/confirm", {})
     assert "post" in confirm_path
@@ -24,5 +25,5 @@ async def test_preorders_openapi_contract(async_client):
     cancel_path = paths.get("/api/v1/preorders/{preorder_id}/cancel", {})
     assert "post" in cancel_path
 
-    convert_path = paths.get("/api/v1/preorders/{preorder_id}/convert-to-order", {})
-    assert "post" in convert_path
+    fulfill_path = paths.get("/api/v1/preorders/{preorder_id}/fulfill", {})
+    assert "post" in fulfill_path

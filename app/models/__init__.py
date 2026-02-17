@@ -171,6 +171,7 @@ _LAZY_MODELS: dict[str, tuple[str, str]] = {
     "RepricingDiff": ("app.models.repricing", "RepricingDiff"),
     "RepricingRunItem": ("app.models.repricing", "RepricingRunItem"),
     "Preorder": ("app.models.preorder", "Preorder"),
+    "PreorderItem": ("app.models.preorder", "PreorderItem"),
     # пользователи
     "User": ("app.models.user", "User"),
     "UserSession": ("app.models.user", "UserSession"),

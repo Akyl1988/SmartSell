@@ -72,9 +72,16 @@ async def test_update_product_enables_preorder_and_allows_preorder_creation(
         "/api/v1/preorders",
         headers=company_a_admin_headers,
         json={
-            "product_id": product_id,
-            "qty": 1,
+            "currency": "KZT",
             "customer_name": "Alice",
+            "items": [
+                {
+                    "sku": f"PRE-{product_id}",
+                    "name": "Preorder Item",
+                    "qty": 1,
+                    "price": "100.00",
+                }
+            ],
         },
     )
     assert preorder_created.status_code == 201, preorder_created.text
