@@ -1,0 +1,1 @@
+"""Kaspi marketplace integration."""
