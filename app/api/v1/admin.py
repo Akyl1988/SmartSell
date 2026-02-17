@@ -46,6 +46,7 @@ from app.services.campaign_runner import (
 from app.services.campaign_runner import (
     queue_campaign_run as queue_campaign_run_service,
 )
+from app.services.repricing import run_reprcing_for_company
 from app.services.subscriptions import activate_plan, renew_if_due
 from app.worker.campaign_processing import process_campaign_queue_once
 
@@ -255,6 +256,37 @@ async def run_campaigns_cleanup(
         },
     )
     return {**counters, "request_id": request_id}
+
+
+@router.post(
+    "/tasks/repricing/run",
+    summary="Run repricing task for a company (platform admin)",
+)
+async def run_repricing_task(
+    request: Request,
+    dry_run: bool = Query(False),
+    admin: User = Depends(require_platform_admin),
+    db: AsyncSession = Depends(get_async_db),
+) -> dict:
+    _ = admin
+    request_id = _ensure_request_id(request)
+    company_id = request.query_params.get("company_id") or request.query_params.get("companyId")
+    if not company_id:
+        raise NotFoundError("company_id_required", code="company_id_required", http_status=400)
+    try:
+        resolved_company_id = int(company_id)
+    except ValueError as exc:
+        raise NotFoundError("company_id_required", code="company_id_required", http_status=400) from exc
+    run = await run_reprcing_for_company(
+        db,
+        resolved_company_id,
+        triggered_by_user_id=getattr(admin, "id", None),
+        dry_run=dry_run,
+        request_id=request_id,
+    )
+    await db.commit()
+    await db.refresh(run)
+    return {"run_id": run.id, "status": run.status, "request_id": request_id}
 
 
 @router.post(

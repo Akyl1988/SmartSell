@@ -81,6 +81,7 @@ auth_mod = _try_import("app.api.v1.auth")
 users_mod = _try_import("app.api.v1.users")
 products_mod = _try_import("app.api.v1.products")
 pricing_mod = _try_import("app.api.v1.pricing")
+repricing_mod = _try_import("app.api.v1.repricing")
 preorders_mod = _try_import("app.api.v1.preorders")
 warehouses_mod = _try_import("app.api.v1.warehouses")
 inventory_mod = _try_import("app.api.v1.inventory")
@@ -104,6 +105,7 @@ auth = auth_mod
 users = users_mod
 products = products_mod
 pricing = pricing_mod
+repricing = repricing_mod
 preorders = preorders_mod
 warehouses = warehouses_mod
 inventory = inventory_mod
@@ -118,6 +120,7 @@ __all__ = [
     "users",
     "products",
     "pricing",
+    "repricing",
     "preorders",
     "warehouses",
     "inventory",
@@ -163,6 +166,8 @@ if products_mod and _router_or_none(products_mod):
     V1_ROUTERS.append(("products", products_mod.router, False))
 if pricing_mod and _router_or_none(pricing_mod):
     V1_ROUTERS.append(("pricing", pricing_mod.router, False))
+if repricing_mod and _router_or_none(repricing_mod):
+    V1_ROUTERS.append(("repricing", repricing_mod.router, False))
 if preorders_mod and _router_or_none(preorders_mod):
     V1_ROUTERS.append(("preorders", preorders_mod.router, False))
 if warehouses_mod and _router_or_none(warehouses_mod):
