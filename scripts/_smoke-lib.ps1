@@ -430,7 +430,8 @@ function Ensure-SmartsellAuth {
     [string]$Identifier = $null,
     [string]$Password = $null,
     [string]$AccessToken = $null,
-    [string]$RefreshToken = $null
+    [string]$RefreshToken = $null,
+    [switch]$DisableEnvTokens
   )
   if (-not $BaseUrl) {
     $BaseUrl = $env:BASE_URL
@@ -441,13 +442,17 @@ function Ensure-SmartsellAuth {
   Test-SmokeApiUp -BaseUrl $BaseUrl -TimeoutSec 3 | Out-Null
 
   $envAccess = $null
-  if ($env:SMARTSELL_ACCESS_TOKEN) { $envAccess = Normalize-JwtToken -Value $env:SMARTSELL_ACCESS_TOKEN }
-  if (-not $envAccess -and $env:ACCESS_TOKEN) { $envAccess = Normalize-JwtToken -Value $env:ACCESS_TOKEN }
-  if ($envAccess) { $AccessToken = $envAccess }
+  if (-not $DisableEnvTokens) {
+    if ($env:SMARTSELL_ACCESS_TOKEN) { $envAccess = Normalize-JwtToken -Value $env:SMARTSELL_ACCESS_TOKEN }
+    if (-not $envAccess -and $env:ACCESS_TOKEN) { $envAccess = Normalize-JwtToken -Value $env:ACCESS_TOKEN }
+    if ($envAccess) { $AccessToken = $envAccess }
+  }
 
   $envRefresh = $null
-  if ($env:SMARTSELL_REFRESH_TOKEN) { $envRefresh = Normalize-JwtToken -Value $env:SMARTSELL_REFRESH_TOKEN }
-  if ($envRefresh) { $RefreshToken = $envRefresh }
+  if (-not $DisableEnvTokens) {
+    if ($env:SMARTSELL_REFRESH_TOKEN) { $envRefresh = Normalize-JwtToken -Value $env:SMARTSELL_REFRESH_TOKEN }
+    if ($envRefresh) { $RefreshToken = $envRefresh }
+  }
 
   if (-not $AccessToken -or -not $RefreshToken) {
     $cached = Load-SmartsellTokensFromCache -BaseUrl $BaseUrl
@@ -487,7 +492,11 @@ function Ensure-SmartsellAuth {
       Body = $body
     }
     if ($resp.StatusCode -lt 200 -or $resp.StatusCode -ge 300) {
-      return @{ ok = $false; status = $resp.StatusCode; body = $resp.Content }
+      $payload = $null
+      if ($resp.Content) {
+        try { $payload = $resp.Content | ConvertFrom-Json } catch { $payload = $resp.Content }
+      }
+      return @{ ok = $false; status = $resp.StatusCode; body = $payload }
     }
     $payload = $null
     try { $payload = $resp.Content | ConvertFrom-Json } catch { $payload = $null }
@@ -503,6 +512,9 @@ function Ensure-SmartsellAuth {
   if (-not $Identifier) { $Identifier = $env:SMARTSELL_IDENTIFIER }
   if (-not $Password) { $Password = $env:SMARTSELL_PASSWORD }
 
+  $tokenProvided = $false
+  if ($AccessToken -or $RefreshToken -or $envAccess -or $envRefresh) { $tokenProvided = $true }
+
   if ($AccessToken) {
     $me = Invoke-AuthMe -Token $AccessToken
     $errCode = Get-SmokeErrorCode -Body $me.Body
@@ -517,12 +529,66 @@ function Ensure-SmartsellAuth {
     return @{ Authorization = "Bearer $($refreshResult.access)" }
   }
 
+  if ($refreshResult -and -not $refreshResult.ok) {
+    $errCode = Get-SmokeErrorCode -Body $refreshResult.body
+    if ($errCode -match "INVALID_TOKEN|TOKEN_EXPIRED" -or $refreshResult.status -eq 401) {
+      throw "Refresh token expired. Run .\scripts\smoke-auth.ps1 with valid credentials to refresh cache."
+    }
+    if ($tokenProvided) {
+      throw "Refresh failed. Provide a valid refresh token or run .\scripts\smoke-auth.ps1 to refresh the cache."
+    }
+  }
+
+  if ($tokenProvided) {
+    throw "Access token expired and no valid refresh token available."
+  }
+
   if ($Identifier -and $Password) {
     $tokens = Get-SmartsellTokens -BaseUrl $BaseUrl -Identifier $Identifier -Password $Password -TimeoutSec 20
     return @{ Authorization = "Bearer $($tokens.access)" }
   }
 
-  throw "No valid auth token; set SMARTSELL_ACCESS_TOKEN/SMARTSELL_REFRESH_TOKEN or SMARTSELL_IDENTIFIER/SMARTSELL_PASSWORD"
+  throw "No valid auth token; set STORE_ACCESS_TOKEN/STORE_REFRESH_TOKEN or STORE_IDENTIFIER/STORE_PASSWORD (store_admin)."
+}
+
+function Get-StoreAuthHeader {
+  param(
+    [string]$BaseUrl,
+    [string]$Identifier = $null,
+    [string]$Password = $null,
+    [string]$AccessToken = $null,
+    [string]$RefreshToken = $null
+  )
+  if (-not $Identifier) { $Identifier = $env:STORE_IDENTIFIER }
+  if (-not $Password) { $Password = $env:STORE_PASSWORD }
+  if (-not $Identifier) { $Identifier = $env:ADMIN_IDENTIFIER }
+  if (-not $Password) { $Password = $env:ADMIN_PASSWORD }
+  if (-not $AccessToken -and $env:STORE_ACCESS_TOKEN) { $AccessToken = Normalize-JwtToken -Value $env:STORE_ACCESS_TOKEN }
+  if (-not $RefreshToken -and $env:STORE_REFRESH_TOKEN) { $RefreshToken = Normalize-JwtToken -Value $env:STORE_REFRESH_TOKEN }
+  if (-not $Identifier) { $Identifier = $env:SMARTSELL_IDENTIFIER }
+  if (-not $Password) { $Password = $env:SMARTSELL_PASSWORD }
+  if (-not $AccessToken -and $env:SMARTSELL_ACCESS_TOKEN) { $AccessToken = Normalize-JwtToken -Value $env:SMARTSELL_ACCESS_TOKEN }
+  if (-not $RefreshToken -and $env:SMARTSELL_REFRESH_TOKEN) { $RefreshToken = Normalize-JwtToken -Value $env:SMARTSELL_REFRESH_TOKEN }
+  return Ensure-SmartsellAuth -BaseUrl $BaseUrl -Identifier $Identifier -Password $Password -AccessToken $AccessToken -RefreshToken $RefreshToken
+}
+
+function Get-PlatformAuthHeader {
+  param(
+    [string]$BaseUrl,
+    [string]$Identifier = $null,
+    [string]$Password = $null,
+    [string]$AccessToken = $null,
+    [string]$RefreshToken = $null
+  )
+  if (-not $Identifier) { $Identifier = $env:PLATFORM_IDENTIFIER }
+  if (-not $Password) { $Password = $env:PLATFORM_PASSWORD }
+  if (-not $Identifier) { $Identifier = $env:SMARTSELL_PLATFORM_IDENTIFIER }
+  if (-not $Password) { $Password = $env:SMARTSELL_PLATFORM_PASSWORD }
+  if (-not $Identifier) { $Identifier = $env:SMARTSELL_PLATFORM_ADMIN_IDENTIFIER }
+  if (-not $Password) { $Password = $env:SMARTSELL_PLATFORM_ADMIN_PASSWORD }
+  if (-not $AccessToken -and $env:PLATFORM_ACCESS_TOKEN) { $AccessToken = Normalize-JwtToken -Value $env:PLATFORM_ACCESS_TOKEN }
+  if (-not $RefreshToken -and $env:PLATFORM_REFRESH_TOKEN) { $RefreshToken = Normalize-JwtToken -Value $env:PLATFORM_REFRESH_TOKEN }
+  return Ensure-SmartsellAuth -BaseUrl $BaseUrl -Identifier $Identifier -Password $Password -AccessToken $AccessToken -RefreshToken $RefreshToken -DisableEnvTokens
 }
 
 function Invoke-WebRequestSafe {
@@ -897,8 +963,12 @@ function Invoke-SmartsellApi {
     }
   }
 
+  if (-not $Identifier) { $Identifier = $env:STORE_IDENTIFIER }
+  if (-not $Password) { $Password = $env:STORE_PASSWORD }
   if (-not $Identifier) { $Identifier = $env:ADMIN_IDENTIFIER }
   if (-not $Password) { $Password = $env:ADMIN_PASSWORD }
+  if (-not $Identifier) { $Identifier = $env:SMARTSELL_IDENTIFIER }
+  if (-not $Password) { $Password = $env:SMARTSELL_PASSWORD }
   if (-not $Identifier) { $Identifier = $env:PLATFORM_IDENTIFIER }
   if (-not $Password) { $Password = $env:PLATFORM_PASSWORD }
 

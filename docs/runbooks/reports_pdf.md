@@ -8,7 +8,7 @@
 ## Parameters
 
 Common:
-- companyId (int, optional): Tenant override for platform admins only.
+- companyId (int, optional): Tenant override for platform_admins only.
 - date_from (string, optional):
   - orders.pdf expects ISO 8601 datetime (e.g., 2026-02-01T00:00:00Z)
   - sales.pdf expects YYYY-MM-DD
@@ -26,7 +26,7 @@ Common:
 
 ### curl
 
-Orders PDF (store admin):
+Orders PDF (store_admin):
 
 ```bash
 curl -sS -H "Authorization: Bearer <token>" \
@@ -34,7 +34,7 @@ curl -sS -H "Authorization: Bearer <token>" \
   -o orders.pdf
 ```
 
-Sales PDF (platform admin + tenant override):
+Sales PDF (platform_admin + tenant override):
 
 ```bash
 curl -sS -H "Authorization: Bearer <token>" \
@@ -67,4 +67,4 @@ pwsh -NoProfile -File .\scripts\smoke-reports-sales-pdf.ps1 -BaseUrl http://127.
 
 Notes:
 - Smoke scripts use cached tokens from scripts/.smoke-cache.json and auto-refresh when needed.
-- Use -CompanyId for platform admin tenant override.
+- Use -CompanyId for platform_admin tenant override.

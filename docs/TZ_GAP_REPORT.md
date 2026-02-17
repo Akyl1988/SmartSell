@@ -39,7 +39,7 @@ Legend: ✅ implemented, ⚠️ partially implemented, ❌ no evidence found
 | Exports | Orders/Sales/Products XLSX | ✅ | [app/api/v1/exports.py](app/api/v1/exports.py#L202-L276) |
 | Campaigns | Campaigns API scaffold + run endpoint | ⚠️ | [app/api/v1/campaigns.py](app/api/v1/campaigns.py#L765-L872) |
 | Campaigns | Background processing worker | ✅ | [app/worker/campaign_processing.py](app/worker/campaign_processing.py#L1-L200) |
-| Admin | Platform admin task endpoints | ✅ | [app/api/v1/admin.py](app/api/v1/admin.py#L30-L230) |
+| Platform | platform_admin task endpoints | ✅ | [app/api/v1/admin.py](app/api/v1/admin.py#L30-L230) |
 | Audit | Audit log model | ⚠️ | [app/models/audit_log.py](app/models/audit_log.py#L1-L120) |
 | Warehouse/Inventory | Warehouse + stock movement models | ⚠️ | [app/models/warehouse.py](app/models/warehouse.py#L1-L200) |
 | Integrations | Kaspi router endpoints | ✅ | [app/api/v1/kaspi.py](app/api/v1/kaspi.py#L1-L121) |

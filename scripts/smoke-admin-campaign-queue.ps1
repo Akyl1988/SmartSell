@@ -1,18 +1,18 @@
 <#
-Smoke: admin campaign queue ops
+Smoke: platform_admin campaign queue ops
 
 Usage:
-  pwsh -NoProfile -File .\scripts\smoke-admin-campaign-queue.ps1 -BaseUrl http://127.0.0.1:8000 -Email admin@local -Password admin
-  pwsh -NoProfile -File .\scripts\smoke-admin-campaign-queue.ps1 -Email admin@local -Password admin -CompanyId 123 -Limit 10
+  pwsh -NoProfile -File .\scripts\smoke-admin-campaign-queue.ps1 -BaseUrl http://127.0.0.1:8000 -Email platform@local -Password admin
+  pwsh -NoProfile -File .\scripts\smoke-admin-campaign-queue.ps1 -Email platform@local -Password admin -CompanyId 123 -Limit 10
 
 Env:
-  BASE_URL, EMAIL, PASSWORD, COMPANY_ID, LIMIT
+  BASE_URL, PLATFORM_IDENTIFIER, PLATFORM_PASSWORD, SMARTSELL_PLATFORM_*, EMAIL, PASSWORD, COMPANY_ID, LIMIT
 #>
 
 param(
   [string]$BaseUrl = $env:BASE_URL,
-  [string]$Email = $env:EMAIL,
-  [string]$Password = $env:PASSWORD,
+  [string]$Email = $(if ($env:PLATFORM_IDENTIFIER) { $env:PLATFORM_IDENTIFIER } else { $env:EMAIL }),
+  [string]$Password = $(if ($env:PLATFORM_PASSWORD) { $env:PLATFORM_PASSWORD } else { $env:PASSWORD }),
   [int]$CompanyId = $(if ($env:COMPANY_ID) { [int]$env:COMPANY_ID } else { 0 }),
   [int]$Limit = $(if ($env:LIMIT) { [int]$env:LIMIT } else { 20 })
 )
@@ -46,8 +46,13 @@ if (-not $BaseUrl) { $BaseUrl = "http://127.0.0.1:8000" }
 $scriptDir = Get-ScriptDir
 . (Join-Path $scriptDir "_smoke-lib.ps1")
 
+if ([string]::IsNullOrWhiteSpace($Email)) { $Email = $env:SMARTSELL_PLATFORM_IDENTIFIER }
+if ([string]::IsNullOrWhiteSpace($Password)) { $Password = $env:SMARTSELL_PLATFORM_PASSWORD }
+if ([string]::IsNullOrWhiteSpace($Email)) { $Email = $env:SMARTSELL_PLATFORM_ADMIN_IDENTIFIER }
+if ([string]::IsNullOrWhiteSpace($Password)) { $Password = $env:SMARTSELL_PLATFORM_ADMIN_PASSWORD }
+
 if ([string]::IsNullOrWhiteSpace($Email) -or [string]::IsNullOrWhiteSpace($Password)) {
-  Fail "Missing credentials. Provide -Email and -Password or set EMAIL/PASSWORD."
+  Fail "platform_admin creds required. Set PLATFORM_IDENTIFIER/PLATFORM_PASSWORD (or SMARTSELL_PLATFORM_*)."
 }
 
 Info "Login"

@@ -4,7 +4,7 @@ This runbook describes how to clean up old campaign queue records.
 
 ## When to run
 
-- The admin campaign queue is large and full of old DONE/FAILED entries.
+- The platform_admin campaign queue is large and full of old DONE/FAILED entries.
 - You want to keep the queue manageable without touching active items.
 
 ## Endpoint
@@ -39,7 +39,7 @@ Invoke-RestMethod -Method POST -Uri "http://127.0.0.1:8000/api/v1/admin/tasks/ca
 
 - Only DONE/FAILED campaigns older than the cutoff are cleaned up.
 - Queued/processing/retrying campaigns are untouched.
-- In production, this endpoint is allowed for platform admins and superusers.
+- In production, this endpoint is allowed for platform_admins and superusers.
 
 ## Automatic scheduler mode
 

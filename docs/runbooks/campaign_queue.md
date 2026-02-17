@@ -14,7 +14,7 @@ A campaign can be marked as failed with:
 - `last_error=max_attempts_exceeded`
 
 This means automatic retries stopped. To recover:
-1) Use the admin requeue endpoint or the admin run endpoint.
+1) Use the platform_admin requeue endpoint or the platform_admin run endpoint.
 2) Confirm attempts reset and status is `queued`.
 
 ## Scheduler lock busy
@@ -35,5 +35,5 @@ worker is processing the campaign.
 Use the smoke script for quick checks:
 
 ```
-pwsh -NoProfile -File .\scripts\smoke-admin-campaign-queue.ps1 -BaseUrl http://127.0.0.1:8000 -Email admin@local -Password admin
+pwsh -NoProfile -File .\scripts\smoke-admin-campaign-queue.ps1 -BaseUrl http://127.0.0.1:8000 -Email platform@local -Password admin
 ```

@@ -202,7 +202,7 @@ pg_restore -d smartsell smartsell.dump
 
 See the step-by-step playbook in [UPGRADE_PLAYBOOK.md](UPGRADE_PLAYBOOK.md).
 
-## Password reset / admin recovery
+## Password reset / platform_admin recovery
 
 Use the CLI tool:
 

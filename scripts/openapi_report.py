@@ -85,7 +85,7 @@ def build_report(spec: dict[str, Any]) -> str:
     kaspi_ops.sort(key=lambda item: (item[0], item[1]))
     auth_ops.sort(key=lambda item: (item[0], item[1]))
 
-    lines: list[str] = ["# OpenAPI report", "", "## Admin endpoints"]
+    lines: list[str] = ["# OpenAPI report", "", "## platform_admin endpoints"]
     if admin_ops:
         lines.extend([_row(p, m, o) for p, m, o in admin_ops])
     else:

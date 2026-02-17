@@ -8,6 +8,7 @@ from app.core.exceptions import AuthorizationError
 from app.core.security import resolve_tenant_company_id
 
 
+# Terminology guard: users.role="admin" maps to store_admin; users.role="platform_admin" maps to platform_admin.
 class Role(str, Enum):
     PLATFORM_ADMIN = "platform_admin"
     PLATFORM_MANAGER = "platform_manager"
@@ -143,13 +144,13 @@ def has_any_role(user: Any, roles: set[str]) -> bool:
 
 def require_platform_admin(user: Any) -> Any:
     if not is_platform_admin(user):
-        raise AuthorizationError("Admin role required", "ADMIN_REQUIRED")
+        raise AuthorizationError("platform_admin required", "ADMIN_REQUIRED")
     return user
 
 
 def require_store_admin(user: Any) -> Any:
     if not is_store_admin(user):
-        raise AuthorizationError("Admin role required", "ADMIN_REQUIRED")
+        raise AuthorizationError("store_admin required (users.role='admin')", "ADMIN_REQUIRED")
     return user
 
 

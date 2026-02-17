@@ -35,7 +35,7 @@
 
 | Module | MVP % | Prod % | Confidence % | Evidence / Notes |
 | --- | --- | --- | --- | --- |
-| Auth / Users / RBAC | 85 | 70 | 70 | Auth flows stabilized; error-contract enforced; smoke-auth covers logout/refresh; admin bootstrap without OTP documented. |
+| Auth / Users / RBAC | 85 | 70 | 70 | Auth flows stabilized; error-contract enforced; smoke-auth covers logout/refresh; platform_admin bootstrap without OTP documented. |
 | Wallet / Billing / Subscriptions | 75 | 60 | 65 | Wallet invariants tests, payment intents contract, subscription enforcement skeleton + plan matrix; prod checklist flags remain. |
 | Invoices (MVP core) | 70 | 55 | 60 | Invoices MVP core exists and tested (journal); production hardening pending. |
 | Kaspi — Orders sync | 80 | 65 | 70 | Sync runner doc + tests, autosync mutual exclusion documented. |

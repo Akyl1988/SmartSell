@@ -3,7 +3,7 @@
 ## Overview
 This runbook explains how to manage plans, features, and limits without deployment.
 
-## Admin Endpoints (platform_admin)
+## platform_admin Endpoints
 - `POST /api/v1/admin/plans` create a plan (code is immutable)
 - `PATCH /api/v1/admin/plans/{code}` update name/price/is_active/trial_days_default
 - `POST /api/v1/admin/features` create a feature (code is immutable)

@@ -5,7 +5,7 @@ This smoke test verifies the campaign pipeline end-to-end: enqueue, process, and
 ## Run
 
 ```
-pwsh -NoProfile -File .\scripts\smoke-campaigns-e2e.ps1 -BaseUrl http://127.0.0.1:8000 -Email admin@local -Password admin -CompanyId 1
+pwsh -NoProfile -File .\scripts\smoke-campaigns-e2e.ps1 -BaseUrl http://127.0.0.1:8000 -Email platform@local -Password admin -CompanyId 1
 ```
 
 Optional flags:
