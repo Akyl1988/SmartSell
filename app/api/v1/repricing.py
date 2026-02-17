@@ -29,7 +29,7 @@ from app.schemas.repricing import (
     RepricingRunResponse,
     RepricingRunTriggerResponse,
 )
-from app.services.repricing import run_reprcing_for_company, validate_rule
+from app.services.repricing import apply_repricing_run_to_kaspi, run_reprcing_for_company, validate_rule
 
 router = APIRouter()
 
@@ -203,6 +203,27 @@ async def get_run(
     if not run:
         raise NotFoundError("Run not found", "RUN_NOT_FOUND")
 
+    items = sorted(run.items or [], key=lambda item: item.id or 0)
+    payload_items = [RepricingRunItemResponse.model_validate(item) for item in items]
+    response = RepricingRunResponse.model_validate(run)
+    return response.model_copy(update={"items": payload_items})
+
+
+@store_router.post("/runs/{run_id}/apply", response_model=RepricingRunResponse)
+async def apply_run(
+    run_id: int = Path(..., ge=1),
+    dry_run: bool = Query(False),
+    current_user: User = Depends(get_current_verified_user),
+    db: AsyncSession = Depends(get_async_db),
+):
+    company_id = resolve_tenant_company_id(current_user, not_found_detail="Company not set")
+    run = await apply_repricing_run_to_kaspi(db, run_id=run_id, company_id=company_id, dry_run=dry_run)
+    result = await db.execute(
+        select(RepricingRun)
+        .where(RepricingRun.id == run_id, RepricingRun.company_id == company_id)
+        .options(selectinload(RepricingRun.items))
+    )
+    run = result.scalar_one()
     items = sorted(run.items or [], key=lambda item: item.id or 0)
     payload_items = [RepricingRunItemResponse.model_validate(item) for item in items]
     response = RepricingRunResponse.model_validate(run)

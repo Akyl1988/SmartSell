@@ -8,8 +8,10 @@ from typing import Any
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
-from app.core.exceptions import SmartSellValidationError
+from app.core.exceptions import NotFoundError, SmartSellValidationError
+from app.models.company import Company
 from app.models.product import Product
 from app.models.repricing import RepricingRule, RepricingRun, RepricingRunItem
 
@@ -207,7 +209,6 @@ async def run_reprcing_for_company(
     failed = 0
     last_error = None
     processed_products: set[int] = set()
-    updates: list[dict[str, Any]] = []
 
     for rule in rules:
         validate_rule(rule)
@@ -244,7 +245,6 @@ async def run_reprcing_for_company(
 
                 if not dry_run:
                     product.set_price_guarded(new_price, update_timestamps=True, respect_bounds=True)
-                    updates.append({"product_id": product.id, "new_price": new_price})
 
                 reason = "dry_run" if dry_run else "repriced"
                 status = "changed"
@@ -272,14 +272,194 @@ async def run_reprcing_for_company(
                 )
                 db.add(item)
 
-    if updates and not dry_run:
-        try:
-            from app.integrations.marketplaces.kaspi.pricing import apply_price_updates
+    run.processed = processed
+    run.changed = changed
+    run.failed = failed
+    run.last_error = last_error
+    run.finished_at = datetime.utcnow()
+    run.status = "failed" if failed else "done"
 
-            apply_price_updates(company_id, updates)
-        except Exception as exc:
+    return run
+
+
+def _candidate_items_from_run(run: RepricingRun) -> list[dict[str, Any]]:
+    candidates: list[dict[str, Any]] = []
+    if run.items:
+        for item in run.items:
+            if item.new_price is None:
+                continue
+            candidates.append(
+                {
+                    "product_id": item.product_id,
+                    "old_price": item.old_price,
+                    "new_price": item.new_price,
+                    "reason": item.reason or "repricing",
+                }
+            )
+        return candidates
+    for diff in run.diffs:
+        if diff.new_price is None:
+            continue
+        candidates.append(
+            {
+                "product_id": diff.product_id,
+                "old_price": diff.old_price,
+                "new_price": diff.new_price,
+                "reason": diff.reason or "repricing",
+            }
+        )
+    return candidates
+
+
+async def apply_repricing_run_to_kaspi(
+    db: AsyncSession,
+    *,
+    run_id: int,
+    company_id: int,
+    dry_run: bool = False,
+) -> RepricingRun:
+    result = await db.execute(
+        select(RepricingRun)
+        .where(RepricingRun.id == run_id, RepricingRun.company_id == company_id)
+        .options(selectinload(RepricingRun.items), selectinload(RepricingRun.diffs))
+    )
+    run = result.scalar_one_or_none()
+    if not run:
+        raise NotFoundError("Run not found", "RUN_NOT_FOUND")
+
+    candidates = _candidate_items_from_run(run)
+    product_ids = {c.get("product_id") for c in candidates if c.get("product_id")}
+    products = {}
+    if product_ids:
+        product_rows = (
+            (await db.execute(select(Product).where(Product.company_id == company_id, Product.id.in_(product_ids))))
+            .scalars()
+            .all()
+        )
+        products = {p.id: p for p in product_rows}
+
+    processed = 0
+    changed = 0
+    failed = 0
+    last_error = None
+
+    updates: list[dict[str, Any]] = []
+    prepared: list[dict[str, Any]] = []
+
+    for item in candidates:
+        processed += 1
+        product_id = item.get("product_id")
+        product = products.get(product_id)
+        mapping = None
+        if product is not None:
+            mapping = product.kaspi_product_id or product.sku
+
+        if not mapping:
+            run_item = RepricingRunItem(
+                run_id=run.id,
+                product_id=product_id,
+                old_price=item.get("old_price"),
+                new_price=item.get("new_price"),
+                reason="missing_mapping",
+                status="failed",
+                error="missing_mapping",
+            )
+            db.add(run_item)
             failed += 1
-            last_error = str(exc)
+            last_error = last_error or "missing_mapping"
+            continue
+
+        prepared.append(
+            {
+                "product_id": product_id,
+                "mapping": mapping,
+                "old_price": item.get("old_price"),
+                "new_price": item.get("new_price"),
+                "reason": item.get("reason"),
+            }
+        )
+
+    if dry_run:
+        for item in prepared:
+            db.add(
+                RepricingRunItem(
+                    run_id=run.id,
+                    product_id=item.get("product_id"),
+                    old_price=item.get("old_price"),
+                    new_price=item.get("new_price"),
+                    reason=item.get("reason") or "dry_run",
+                    status="dry_run",
+                )
+            )
+            changed += 1
+    else:
+        for item in prepared:
+            updates.append(
+                {
+                    "product_id": item.get("product_id"),
+                    "mapping": item.get("mapping"),
+                    "new_price": item.get("new_price"),
+                }
+            )
+
+        if updates:
+            try:
+                company = await db.get(Company, company_id)
+                token = None
+                if company is not None:
+                    token = company.kaspi_api_key
+                from app.core.config import settings
+                from app.integrations.marketplaces.kaspi.pricing import apply_price_updates
+
+                token = token or settings.KASPI_API_TOKEN
+                base_url = settings.KASPI_API_URL
+                results = await apply_price_updates(
+                    company_id=company_id,
+                    updates=updates,
+                    api_key=token,
+                    base_url=base_url,
+                )
+            except Exception as exc:
+                results = []
+                last_error = str(exc)
+                failed += len(updates)
+                for item in updates:
+                    db.add(
+                        RepricingRunItem(
+                            run_id=run.id,
+                            product_id=item.get("product_id"),
+                            old_price=None,
+                            new_price=item.get("new_price"),
+                            reason="apply_failed",
+                            status="failed",
+                            error=str(exc),
+                        )
+                    )
+            else:
+                by_product = {r.get("product_id"): r for r in results if r.get("product_id")}
+                for item in updates:
+                    product_id = item.get("product_id")
+                    result = by_product.get(product_id, {})
+                    ok = bool(result.get("ok", False))
+                    error = result.get("error") if not ok else None
+                    status = "ok" if ok else "failed"
+                    reason = "apply" if ok else "apply_failed"
+                    if ok:
+                        changed += 1
+                    else:
+                        failed += 1
+                        last_error = last_error or error or "apply_failed"
+                    db.add(
+                        RepricingRunItem(
+                            run_id=run.id,
+                            product_id=product_id,
+                            old_price=None,
+                            new_price=item.get("new_price"),
+                            reason=reason,
+                            status=status,
+                            error=error,
+                        )
+                    )
 
     run.processed = processed
     run.changed = changed
@@ -288,4 +468,6 @@ async def run_reprcing_for_company(
     run.finished_at = datetime.utcnow()
     run.status = "failed" if failed else "done"
 
+    await db.commit()
+    await db.refresh(run)
     return run
