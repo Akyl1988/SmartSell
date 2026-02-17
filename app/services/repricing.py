@@ -311,12 +311,27 @@ def _candidate_items_from_run(run: RepricingRun) -> list[dict[str, Any]]:
     return candidates
 
 
+def _has_apply_results(run: RepricingRun) -> bool:
+    apply_reasons = {"apply", "apply_failed", "dry_run", "missing_mapping"}
+    for item in run.items or []:
+        if item.status in {"ok", "dry_run"}:
+            return True
+        if item.status == "failed" and item.reason in {"apply_failed", "missing_mapping"}:
+            return True
+        if item.reason in apply_reasons:
+            return True
+    return False
+
+
 async def apply_repricing_run_to_kaspi(
     db: AsyncSession,
     *,
     run_id: int,
     company_id: int,
     dry_run: bool = False,
+    api_key: str | None = None,
+    base_url: str | None = None,
+    resolve_credentials: bool = True,
 ) -> RepricingRun:
     result = await db.execute(
         select(RepricingRun)
@@ -326,6 +341,29 @@ async def apply_repricing_run_to_kaspi(
     run = result.scalar_one_or_none()
     if not run:
         raise NotFoundError("Run not found", "RUN_NOT_FOUND")
+
+    if _has_apply_results(run):
+        return run
+
+    if not dry_run:
+        token = api_key
+        url = base_url
+        if resolve_credentials:
+            company = await db.get(Company, company_id)
+            if company is not None and token is None:
+                token = company.kaspi_api_key
+            from app.core.config import settings
+
+            if token is None:
+                token = settings.KASPI_API_TOKEN
+            if url is None:
+                url = settings.KASPI_API_URL
+        if not token or not url:
+            raise SmartSellValidationError(
+                "Kaspi API is not configured",
+                "KASPI_NOT_CONFIGURED",
+                http_status=422,
+            )
 
     candidates = _candidate_items_from_run(run)
     product_ids = {c.get("product_id") for c in candidates if c.get("product_id")}
@@ -404,20 +442,13 @@ async def apply_repricing_run_to_kaspi(
 
         if updates:
             try:
-                company = await db.get(Company, company_id)
-                token = None
-                if company is not None:
-                    token = company.kaspi_api_key
-                from app.core.config import settings
                 from app.integrations.marketplaces.kaspi.pricing import apply_price_updates
 
-                token = token or settings.KASPI_API_TOKEN
-                base_url = settings.KASPI_API_URL
                 results = await apply_price_updates(
                     company_id=company_id,
                     updates=updates,
                     api_key=token,
-                    base_url=base_url,
+                    base_url=url,
                 )
             except Exception as exc:
                 results = []

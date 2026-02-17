@@ -35,7 +35,7 @@ from email.mime.text import MIMEText
 from typing import Any
 from uuid import uuid4
 
-from sqlalchemy import text, update
+from sqlalchemy import func, select, text, update
 
 try:
     from apscheduler.events import EVENT_JOB_ERROR, EVENT_JOB_MAX_INSTANCES, EVENT_JOB_MISSED
@@ -111,8 +111,11 @@ if SessionLocal is None:
     raise RuntimeError("SessionLocal не найден. Проверьте, что есть app.core.db.SessionLocal")
 
 from app.models.campaign import Campaign, CampaignProcessingStatus, Message, MessageStatus
+from app.models.company import Company
+from app.models.repricing import RepricingRule, RepricingRun
 from app.services.campaign_cleanup import campaign_cleanup_run
 from app.services.campaign_runner import enqueue_due_campaigns_sync
+from app.services.repricing import run_reprcing_for_company
 from app.worker import campaign_processing
 
 logger = logging.getLogger(__name__)
@@ -121,6 +124,7 @@ logger.setLevel(logging.INFO)
 _ERROR_MESSAGE_LIMIT = 500
 _SCHEDULER_LOCK_KEY = 0x53434844  # "SCHD"
 _CLEANUP_LOCK_KEY = 0x43434C55  # "CCLU"
+_REPRICING_LOCK_KEY = 0x52505243  # "RPRC"
 
 
 # -------- Kaspi autosync mutual exclusion helper -------- #
@@ -239,6 +243,20 @@ def _try_cleanup_advisory_lock() -> tuple[bool, Any | None]:
     return True, db
 
 
+def _try_repricing_advisory_lock() -> tuple[bool, Any | None]:
+    db = SessionLocal()
+    try:
+        acquired = bool(db.execute(text("SELECT pg_try_advisory_lock(:k)"), {"k": _REPRICING_LOCK_KEY}).scalar())
+    except Exception:
+        db.close()
+        raise
+
+    if not acquired:
+        db.close()
+        return False, None
+    return True, db
+
+
 def _release_scheduler_advisory_lock(db) -> None:
     try:
         db.execute(text("SELECT pg_advisory_unlock(:k)"), {"k": _SCHEDULER_LOCK_KEY})
@@ -249,6 +267,13 @@ def _release_scheduler_advisory_lock(db) -> None:
 def _release_cleanup_advisory_lock(db) -> None:
     try:
         db.execute(text("SELECT pg_advisory_unlock(:k)"), {"k": _CLEANUP_LOCK_KEY})
+    finally:
+        db.close()
+
+
+def _release_repricing_advisory_lock(db) -> None:
+    try:
+        db.execute(text("SELECT pg_advisory_unlock(:k)"), {"k": _REPRICING_LOCK_KEY})
     finally:
         db.close()
 
@@ -331,6 +356,7 @@ scheduler = BackgroundScheduler(
 _JOB_ID_PROCESS_CAMPAIGNS = "process_campaigns"
 _JOB_ID_KASPI_AUTOSYNC = "kaspi_autosync"
 _JOB_ID_CAMPAIGN_CLEANUP = "campaign_cleanup"
+_JOB_ID_REPRICING_AUTORUN = "repricing_autorun"
 
 
 # События планировщика для детального лога
@@ -536,6 +562,100 @@ def run_campaign_cleanup_job() -> None:
     asyncio.run(run_campaign_cleanup_job_async())
 
 
+def _repricing_autorun_enabled() -> bool:
+    import os
+
+    return _env_truthy(os.getenv("REPRICING_AUTORUN_ENABLED", "0"))
+
+
+async def run_repricing_autorun_job_async(*, now: datetime | None = None) -> dict | None:
+    if not _scheduler_enabled():
+        logger.info("Repricing autorun skipped: ENABLE_SCHEDULER=False")
+        return None
+    if not _repricing_autorun_enabled():
+        logger.info("Repricing autorun skipped: REPRICING_AUTORUN_ENABLED=False")
+        return None
+
+    acquired, lock_db = _try_repricing_advisory_lock()
+    if not acquired:
+        logger.info("repricing_autorun_lock_busy: scheduler lock busy")
+        return None
+
+    request_id = f"repricing-{uuid4()}"
+    run_now = now or _utcnow_naive()
+    summary = {
+        "request_id": request_id,
+        "eligible": 0,
+        "processed": 0,
+        "skipped": 0,
+        "failed": 0,
+        "errors": [],
+    }
+
+    try:
+        from app.core.db import async_session_maker
+
+        async with async_session_maker() as db:
+            rule_rows = await db.execute(
+                select(
+                    RepricingRule.company_id,
+                    func.max(func.coalesce(RepricingRule.cooldown_seconds, 0)).label("cooldown_seconds"),
+                )
+                .select_from(RepricingRule)
+                .join(Company, Company.id == RepricingRule.company_id)
+                .where(
+                    RepricingRule.enabled.is_(True),
+                    RepricingRule.is_active.is_(True),
+                    Company.is_active.is_(True),
+                    Company.deleted_at.is_(None),
+                )
+                .group_by(RepricingRule.company_id)
+            )
+            cooldowns = {row[0]: int(row[1] or 0) for row in rule_rows.all()}
+            summary["eligible"] = len(cooldowns)
+
+            if not cooldowns:
+                return summary
+
+            last_run_rows = await db.execute(
+                select(RepricingRun.company_id, func.max(RepricingRun.finished_at))
+                .where(RepricingRun.company_id.in_(list(cooldowns.keys())))
+                .group_by(RepricingRun.company_id)
+            )
+            last_runs = {row[0]: row[1] for row in last_run_rows.all()}
+
+            for company_id, cooldown in cooldowns.items():
+                last_finished = last_runs.get(company_id)
+                if cooldown and last_finished:
+                    age_seconds = (run_now - last_finished).total_seconds()
+                    if age_seconds < cooldown:
+                        summary["skipped"] += 1
+                        continue
+                try:
+                    await run_reprcing_for_company(
+                        db,
+                        company_id,
+                        triggered_by_user_id=None,
+                        dry_run=False,
+                        request_id=f"{request_id}:{company_id}",
+                    )
+                    await db.commit()
+                    summary["processed"] += 1
+                except Exception as exc:
+                    await db.rollback()
+                    summary["failed"] += 1
+                    summary["errors"].append(f"company_id={company_id}: {exc}")
+
+        return summary
+    finally:
+        if lock_db is not None:
+            _release_repricing_advisory_lock(lock_db)
+
+
+def run_repricing_autorun_job() -> None:
+    asyncio.run(run_repricing_autorun_job_async())
+
+
 # -------- Публичные сервисные функции воркера -------- #
 
 
@@ -628,6 +748,23 @@ def start() -> None:
         elif not getattr(settings, "KASPI_AUTOSYNC_ENABLED", False):
             logger.debug("Kaspi autosync APScheduler job skipped: KASPI_AUTOSYNC_ENABLED=False")
 
+    if _repricing_autorun_enabled():
+        import os
+
+        interval_minutes = int(os.getenv("REPRICING_AUTORUN_INTERVAL_MINUTES", "60") or 60)
+        scheduler.add_job(
+            run_repricing_autorun_job,
+            trigger=IntervalTrigger(minutes=interval_minutes),
+            id=_JOB_ID_REPRICING_AUTORUN,
+            replace_existing=True,
+            max_instances=1,
+            coalesce=True,
+            misfire_grace_time=300,
+        )
+        logger.info("Repricing autorun job added (interval=%d min)", interval_minutes)
+    else:
+        logger.info("Repricing autorun job skipped: REPRICING_AUTORUN_ENABLED=False")
+
     scheduler.start()
     logger.info("APScheduler запущен (timezone=%s)", getattr(settings, "SCHEDULER_TIMEZONE", "UTC"))
 
@@ -689,6 +826,28 @@ def reload_jobs() -> None:
         runner_enabled = _env_truthy(os.getenv("ENABLE_KASPI_SYNC_RUNNER", "0"))
         if runner_enabled:
             logger.info("Kaspi autosync APScheduler job reload skipped: runner enabled")
+
+    try:
+        scheduler.remove_job(_JOB_ID_REPRICING_AUTORUN)
+    except Exception:
+        pass
+
+    if _repricing_autorun_enabled():
+        import os
+
+        interval_minutes = int(os.getenv("REPRICING_AUTORUN_INTERVAL_MINUTES", "60") or 60)
+        scheduler.add_job(
+            run_repricing_autorun_job,
+            trigger=IntervalTrigger(minutes=interval_minutes),
+            id=_JOB_ID_REPRICING_AUTORUN,
+            replace_existing=True,
+            max_instances=1,
+            coalesce=True,
+            misfire_grace_time=300,
+        )
+        logger.info("Repricing autorun job reloaded (interval=%d min)", interval_minutes)
+    else:
+        logger.info("Repricing autorun job reload skipped: REPRICING_AUTORUN_ENABLED=False")
 
     logger.info("Базовые задачи планировщика пересозданы")
 

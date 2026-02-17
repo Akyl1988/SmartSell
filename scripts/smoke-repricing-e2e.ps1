@@ -40,6 +40,7 @@ $rulePayload = @{
   is_active = $true
   scope_type = "all"
   step = "5.00"
+  min_price = "1.00"
   rounding_mode = "nearest"
 }
 $ruleResp = Invoke-SmokeRequest -Method "POST" -Url "$BaseUrl/api/v1/repricing/rules" -Body $rulePayload
@@ -48,7 +49,7 @@ $ruleId = $ruleResp.Body.id
 if (-not $ruleId) { throw "repricing rule id missing" }
 
 Write-Host "[INFO] Repricing: run"
-$runResp = Invoke-SmokeRequest -Method "POST" -Url "$BaseUrl/api/v1/repricing/run"
+$runResp = Invoke-SmokeRequest -Method "POST" -Url "$BaseUrl/api/v1/repricing/run?dry_run=true"
 Assert-Status -Resp $runResp -Label "repricing run"
 $runId = $runResp.Body.run_id
 if (-not $runId) { throw "repricing run id missing" }
@@ -79,8 +80,31 @@ $applyItems = @($applyResp.Body.items)
 if ($applyItems.Count -eq 0) { throw "repricing apply returned no items" }
 $hasDryRun = $false
 foreach ($item in $applyItems) {
-  if ($item.status -eq "dry_run") { $hasDryRun = $true; break }
+  if ($item.status -eq "dry_run" -or $item.reason -eq "dry_run") { $hasDryRun = $true; break }
 }
 if (-not $hasDryRun) { throw "repricing apply did not return dry_run items" }
+
+$applyFlag = $env:SMARTSELL_SMOKE_KASPI_APPLY
+$doRealApply = $false
+if ($applyFlag) {
+  $flagValue = $applyFlag.ToString().Trim().ToLower()
+  if ($flagValue -in @("1", "true", "yes", "on", "enable", "enabled")) { $doRealApply = $true }
+}
+
+if ($doRealApply) {
+  Write-Host "[INFO] Repricing: apply to Kaspi (real)"
+  $realResp = Invoke-SmokeRequest -Method "POST" -Url "$BaseUrl/api/v1/repricing/runs/$runId/apply?dry_run=false"
+  Assert-Status -Resp $realResp -Label "repricing apply real"
+  $realItems = @($realResp.Body.items)
+  if ($realItems.Count -eq 0) { throw "repricing apply real returned no items" }
+  $hasOk = $false
+  foreach ($item in $realItems) {
+    if ($item.status -eq "ok") { $hasOk = $true; break }
+  }
+  if (-not $hasOk) { throw "repricing apply real did not return ok items" }
+  foreach ($item in $realItems) {
+    if ($item.status -eq "failed") { throw "repricing apply real returned failed items" }
+  }
+}
 
 Write-Host "[OK] Repricing E2E"
