@@ -1,10 +1,15 @@
 import pytest
 
+from app.core.security import get_password_hash
 from app.models.user import User
 
 
 def _get_user_by_phone(db_session, phone: str) -> User:
     return db_session.query(User).filter(User.phone == phone).one()
+
+
+def _get_platform_admin(db_session) -> User:
+    return db_session.query(User).filter(User.phone.in_(["77000000001", "+77000000001"])).one()
 
 
 @pytest.mark.asyncio
@@ -56,7 +61,7 @@ async def test_payments_hidden_across_companies(
         json={
             "user_id": user_a.id,
             "wallet_account_id": account_id,
-            "amount": "10.00",
+            "amount": "10",
             "currency": "KZT",
             "reference": "isolation",
         },
@@ -73,6 +78,62 @@ async def test_payments_hidden_across_companies(
     body = listed.json()
     items = body.get("items") or body.get("data") or []
     assert all(it.get("id") != payment_id for it in items)
+
+
+@pytest.mark.asyncio
+async def test_platform_admin_can_access_own_wallet_accounts(client, db_session, auth_headers):
+    user = _get_platform_admin(db_session)
+
+    created = await client.post(
+        "/api/v1/wallet/accounts",
+        json={"user_id": user.id, "currency": "KZT"},
+        headers=auth_headers,
+    )
+    assert created.status_code == 201, created.text
+    account_id = created.json()["id"]
+
+    by_user = await client.get(
+        f"/api/v1/wallet/accounts/by-user?user_id={user.id}&currency=KZT",
+        headers=auth_headers,
+    )
+    assert by_user.status_code == 200, by_user.text
+    assert by_user.json().get("id") == account_id
+
+    listed = await client.get(
+        f"/api/v1/wallet/accounts?user_id={user.id}&currency=KZT",
+        headers=auth_headers,
+    )
+    assert listed.status_code == 200, listed.text
+    items = listed.json().get("items") or []
+    assert any(it.get("id") == account_id for it in items)
+
+
+@pytest.mark.asyncio
+async def test_platform_admin_forbidden_for_other_user_wallet(client, db_session, auth_headers):
+    platform_user = _get_platform_admin(db_session)
+    other_user = User(
+        phone="+77000009999",
+        company_id=platform_user.company_id,
+        hashed_password=get_password_hash("Secret123!"),
+        role="employee",
+        is_active=True,
+        is_verified=True,
+    )
+    db_session.add(other_user)
+    db_session.commit()
+    db_session.refresh(other_user)
+
+    listed = await client.get(
+        f"/api/v1/wallet/accounts?user_id={other_user.id}&currency=KZT",
+        headers=auth_headers,
+    )
+    assert listed.status_code == 403, listed.text
+
+    by_user = await client.get(
+        f"/api/v1/wallet/accounts/by-user?user_id={other_user.id}&currency=KZT",
+        headers=auth_headers,
+    )
+    assert by_user.status_code == 403, by_user.text
 
 
 @pytest.mark.asyncio
@@ -123,7 +184,7 @@ async def test_deposit_cross_tenant_forbidden(client, db_session, company_a_admi
 
     resp = await client.post(
         f"/api/v1/wallet/accounts/{account_id}/deposit",
-        json={"amount": "5.00", "reference": "x"},
+        json={"amount": "5", "reference": "x"},
         headers=company_b_admin_headers,
     )
     assert resp.status_code == 404
@@ -143,14 +204,14 @@ async def test_withdraw_cross_tenant_forbidden(client, db_session, company_a_adm
     # топ-up, чтобы не зависеть от баланса при проверке изоляции
     topup = await client.post(
         f"/api/v1/wallet/accounts/{account_id}/deposit",
-        json={"amount": "10.00", "reference": "seed"},
+        json={"amount": "10", "reference": "seed"},
         headers=company_a_admin_headers,
     )
     assert topup.status_code == 200, topup.text
 
     resp = await client.post(
         f"/api/v1/wallet/accounts/{account_id}/withdraw",
-        json={"amount": "1.00", "reference": "steal"},
+        json={"amount": "1", "reference": "steal"},
         headers=company_b_admin_headers,
     )
     assert resp.status_code == 404
@@ -185,7 +246,7 @@ async def test_transfer_cross_tenant_destination_forbidden(
     # пополняем источник, чтобы не упереться в баланс
     seed = await client.post(
         f"/api/v1/wallet/accounts/{account_a_id}/deposit",
-        json={"amount": "10.00", "reference": "seed"},
+        json={"amount": "10", "reference": "seed"},
         headers=company_a_admin_headers,
     )
     assert seed.status_code == 200, seed.text
@@ -195,7 +256,7 @@ async def test_transfer_cross_tenant_destination_forbidden(
         json={
             "source_account_id": account_a_id,
             "destination_account_id": account_b_id,
-            "amount": "1.00",
+            "amount": "1",
             "reference": "cross",
         },
         headers=company_a_admin_headers,
@@ -226,7 +287,7 @@ async def test_payment_create_cross_tenant_forbidden(
         json={
             "user_id": user_b.id,
             "wallet_account_id": account_id,
-            "amount": "5.00",
+            "amount": "5",
             "currency": "KZT",
             "reference": "cross",
         },
@@ -254,7 +315,7 @@ async def test_payments_list_scoped_by_token(
         json={
             "user_id": user_a.id,
             "wallet_account_id": account_id,
-            "amount": "5.00",
+            "amount": "5",
             "currency": "KZT",
             "reference": "scoped",
         },

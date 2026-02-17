@@ -77,6 +77,6 @@ Approx readiness: MVP ~45%, Production ~20%. Top blockers: secure secrets/DSN ha
 
 Suggested file-level changes (minimal patches)
 - `app/core/config.py`: add validation that `SECRET_KEY` not default and `DATABASE_URL` must be set when `ENVIRONMENT` in [staging, production].
-- `app/api/v1/debug_db.py`: wrap router with env flag + auth (`Depends(get_current_user)` or admin role) and return 404 when disabled.
+- `app/api/v1/debug_db.py`: wrap router with env flag + auth (`Depends(get_current_user)` or platform_admin role) and return 404 when disabled.
 - `migrations/env.py`: replace `ALEMBIC_DEFAULT_URL` with placeholder sans password; fail fast if URL missing; keep ALLOW_DROPS off by default.
 - Add lockfile (`poetry lock` or `pip-compile`) and enforce install from lock in CI.

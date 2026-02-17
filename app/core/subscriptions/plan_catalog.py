@@ -14,6 +14,7 @@ class PlanCatalogEntry:
 
 
 PLAN_CATALOG: dict[str, PlanCatalogEntry] = {
+    "basic": PlanCatalogEntry(plan_id="basic", display_name="Basic", price=Decimal("0.00")),
     "start": PlanCatalogEntry(plan_id="start", display_name="Start", price=Decimal("0.00")),
     "business": PlanCatalogEntry(plan_id="business", display_name="Business", price=Decimal("0.00")),
     "pro": PlanCatalogEntry(plan_id="pro", display_name="Pro", price=Decimal("0.00")),
@@ -22,12 +23,19 @@ PLAN_CATALOG: dict[str, PlanCatalogEntry] = {
 PLAN_ALIASES: dict[str, str] = {
     "start": "start",
     "trial": "start",
-    "basic": "business",
+    "basic": "basic",
     "business": "business",
     "pro": "pro",
 }
 
 FEATURE_MATRIX: dict[str, set[str]] = {
+    "basic": {
+        "kaspi.orders_list",
+        "kaspi.sync_now",
+        "kaspi.goods_imports",
+        "kaspi.feed_uploads",
+        "kaspi.autosync",
+    },
     "start": {
         "kaspi.orders_list",
     },

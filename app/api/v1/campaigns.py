@@ -12,6 +12,8 @@ from typing import Any, Literal
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Path, Query, Request, status
 from pydantic import BaseModel, Field, ValidationError, field_validator
+from sqlalchemy import func, select
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.db import get_async_db
@@ -21,6 +23,7 @@ from app.core.rbac import is_platform_admin, is_store_admin, is_store_manager
 from app.core.security import get_current_user
 from app.models.campaign import Campaign as DbCampaign
 from app.models.campaign import CampaignProcessingStatus as DbCampaignProcessingStatus
+from app.models.campaign import Message as DbMessage
 from app.models.user import User
 from app.services.campaign_runner import queue_campaign_run, should_force_requeue
 
@@ -249,24 +252,83 @@ class InMemoryStorage:
 
 
 # ------------------------------------------------------------------------------
-# Выбор активного STORAGE
-# По умолчанию — только in-memory. SQL включается ТОЛЬКО если SMARTSELL_USE_SQL=1.
-# Это избавляет от неожиданных сидов/данных в тестовой среде.
+# Выбор активного STORAGE (lazy, без сайд-эффектов на import)
 # ------------------------------------------------------------------------------
-_STORAGE_BACKEND = "memory"
-storage: Any
+_STORAGE_BACKEND: str | None = None
+_STORAGE_INSTANCE: Any | None = None
 
-if os.getenv("SMARTSELL_USE_SQL") == "1":
-    try:
-        from app.storage.campaigns_sql import CampaignsStorageSQL  # type: ignore
 
-        storage = CampaignsStorageSQL()
-        _STORAGE_BACKEND = "sql"
-    except Exception as _e:  # noqa: N816
-        logger.info("SQL storage not available, using in-memory: %s", _e)
-        storage = InMemoryStorage()
-else:
-    storage = InMemoryStorage()
+def _truthy_env(name: str) -> bool:
+    return os.getenv(name, "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _resolve_campaigns_storage_backend() -> str:
+    if _truthy_env("FORCE_INMEMORY_BACKENDS"):
+        return "memory"
+
+    raw = (os.getenv("SMARTSELL_CAMPAIGNS_STORAGE") or "").strip().lower()
+    if raw in {"orm", "memory", "legacy_sql"}:
+        return raw
+    if raw == "sql":
+        return "legacy_sql"
+
+    # Backward compatibility
+    if _truthy_env("SMARTSELL_USE_SQL"):
+        return "legacy_sql"
+
+    # Default: ORM (never legacy_sql by default)
+    return "orm"
+
+
+def _normalize_campaigns_db_url() -> str | None:
+    raw = os.getenv("DATABASE_URL") or os.getenv("DB_URL") or ""
+    url = raw.strip()
+    if not url:
+        return None
+    if url.startswith("postgresql+asyncpg://"):
+        return url.replace("postgresql+asyncpg://", "postgresql+psycopg2://", 1)
+    if url.startswith("postgresql+psycopg://"):
+        return url.replace("postgresql+psycopg://", "postgresql+psycopg2://", 1)
+    return url
+
+
+def _init_campaigns_storage() -> Any:
+    global _STORAGE_BACKEND, _STORAGE_INSTANCE
+    if _STORAGE_INSTANCE is not None:
+        return _STORAGE_INSTANCE
+
+    backend = _resolve_campaigns_storage_backend()
+    if backend == "legacy_sql":
+        try:
+            from app.storage.campaigns_sql import CampaignsStorageSQL  # type: ignore
+
+            _STORAGE_INSTANCE = CampaignsStorageSQL(db_url=_normalize_campaigns_db_url())
+            _STORAGE_BACKEND = "legacy_sql"
+            return _STORAGE_INSTANCE
+        except Exception as exc:
+            logger.warning("Campaigns SQL storage unavailable; falling back to memory: %s", exc)
+
+    _STORAGE_INSTANCE = InMemoryStorage()
+    _STORAGE_BACKEND = backend if backend in {"orm", "memory"} else "memory"
+    return _STORAGE_INSTANCE
+
+
+def _get_campaigns_storage() -> Any:
+    return _init_campaigns_storage()
+
+
+def _get_campaigns_storage_backend() -> str:
+    if _STORAGE_BACKEND is not None:
+        return _STORAGE_BACKEND
+    return _resolve_campaigns_storage_backend()
+
+
+class _StorageProxy:
+    def __getattr__(self, name: str) -> Any:
+        return getattr(_get_campaigns_storage(), name)
+
+
+storage: Any = _StorageProxy()
 
 
 # ------------------------------------------------------------------------------
@@ -925,12 +987,63 @@ async def queue_campaign_run_store(
 
 # ---- Diagnostics / Search / Export / Import / Drafts (статические пути) ------
 @read_router.get("/health")
-async def campaign_health_check():
+async def campaign_health_check(db: AsyncSession = Depends(get_async_db)):
+    storage = _get_campaigns_storage()
+    backend = _get_campaigns_storage_backend()
+    health_mode = os.getenv("SMARTSELL_CAMPAIGNS_HEALTH_MODE", "full").strip().lower()
+
+    try:
+        if backend == "orm":
+            campaigns_count = await db.scalar(select(func.count()).select_from(DbCampaign))
+            messages_count = await db.scalar(select(func.count()).select_from(DbMessage))
+            status_value = "ok"
+        elif backend == "legacy_sql" and health_mode == "light":
+            campaigns_count = 0
+            messages_count = 0
+            status_value = "ok"
+        elif backend == "legacy_sql":
+            return {
+                "status": "degraded",
+                "storage": backend,
+                "campaigns": None,
+                "messages": None,
+                "audit_records": len(_AUDIT),
+                "time": _now_iso(),
+                "error": "Sync legacy_sql storage is not allowed in health checks",
+                "error_type": "SyncBackendNotAllowed",
+            }
+        else:
+            campaigns_count = len(storage.list_campaigns())
+            messages_count = len(storage.list_messages())
+            status_value = "ok"
+    except SQLAlchemyError as exc:
+        return {
+            "status": "degraded",
+            "storage": backend,
+            "campaigns": None,
+            "messages": None,
+            "audit_records": len(_AUDIT),
+            "time": _now_iso(),
+            "error": str(exc),
+            "error_type": exc.__class__.__name__,
+        }
+    except Exception as exc:
+        return {
+            "status": "degraded",
+            "storage": backend,
+            "campaigns": None,
+            "messages": None,
+            "audit_records": len(_AUDIT),
+            "time": _now_iso(),
+            "error": str(exc),
+            "error_type": exc.__class__.__name__,
+        }
+
     return {
-        "status": "ok",
-        "storage": _STORAGE_BACKEND,
-        "campaigns": len(storage.list_campaigns()),
-        "messages": len(storage.list_messages()),
+        "status": status_value,
+        "storage": backend,
+        "campaigns": int(campaigns_count or 0),
+        "messages": int(messages_count or 0),
         "audit_records": len(_AUDIT),
         "time": _now_iso(),
     }
@@ -942,7 +1055,7 @@ async def debug_backends():
     _maybe_init_celery()
     _maybe_init_rq()
     return {
-        "storage": _STORAGE_BACKEND,
+        "storage": _get_campaigns_storage_backend(),
         "celery": bool(_CELERY_APP),
         "rq": bool(_RQ_QUEUE),
         "time": _now_iso(),

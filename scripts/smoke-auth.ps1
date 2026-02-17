@@ -1,7 +1,7 @@
 param(
   [string]$BaseUrl = $env:SMARTSELL_BASE_URL,
-  [string]$Identifier = $env:ADMIN_IDENTIFIER,
-  [string]$Password = $env:ADMIN_PASSWORD,
+  [string]$Identifier = $env:STORE_IDENTIFIER,
+  [string]$Password = $env:STORE_PASSWORD,
   [string]$Phone = "",
   [string]$CompanyName = "Demo Company",
   [switch]$RegisterIfMissing
@@ -25,16 +25,44 @@ $ScriptDir = Get-ScriptDir
 $identifierProvided = $PSBoundParameters.ContainsKey("Identifier")
 $passwordProvided = $PSBoundParameters.ContainsKey("Password")
 
+if (-not $Identifier) { $Identifier = $env:ADMIN_IDENTIFIER }
+if (-not $Password) { $Password = $env:ADMIN_PASSWORD }
+if (-not $Identifier) { $Identifier = $env:SMARTSELL_IDENTIFIER }
+if (-not $Password) { $Password = $env:SMARTSELL_PASSWORD }
 if (-not $Identifier) { $Identifier = $env:PLATFORM_IDENTIFIER }
 if (-not $Password) { $Password = $env:PLATFORM_PASSWORD }
 
-$idSource = if ($identifierProvided) { "param:Identifier" } elseif ($env:ADMIN_IDENTIFIER) { "ADMIN_IDENTIFIER" } else { "PLATFORM_IDENTIFIER" }
-$pwSource = if ($passwordProvided) { "param:Password" } elseif ($env:ADMIN_PASSWORD) { "ADMIN_PASSWORD" } else { "PLATFORM_PASSWORD" }
+$idSource = if ($identifierProvided) {
+  "param:Identifier"
+} elseif ($env:STORE_IDENTIFIER) {
+  "STORE_IDENTIFIER"
+} elseif ($env:ADMIN_IDENTIFIER) {
+  "ADMIN_IDENTIFIER"
+} elseif ($env:SMARTSELL_IDENTIFIER) {
+  "SMARTSELL_IDENTIFIER"
+} elseif ($env:PLATFORM_IDENTIFIER) {
+  "PLATFORM_IDENTIFIER"
+} else {
+  "<none>"
+}
+$pwSource = if ($passwordProvided) {
+  "param:Password"
+} elseif ($env:STORE_PASSWORD) {
+  "STORE_PASSWORD"
+} elseif ($env:ADMIN_PASSWORD) {
+  "ADMIN_PASSWORD"
+} elseif ($env:SMARTSELL_PASSWORD) {
+  "SMARTSELL_PASSWORD"
+} elseif ($env:PLATFORM_PASSWORD) {
+  "PLATFORM_PASSWORD"
+} else {
+  "<none>"
+}
 
 if ([string]::IsNullOrWhiteSpace($Identifier) -or [string]::IsNullOrWhiteSpace($Password)) {
   Write-Host "Missing credentials. Example:"
   Write-Host "  pwsh -NoProfile -File .\scripts\smoke-auth.ps1 -BaseUrl http://127.0.0.1:8000 -Identifier admin@local -Password 'admin'"
-  throw "Pass -Identifier and -Password"
+  throw "Pass -Identifier and -Password (store_admin by default; use PLATFORM_IDENTIFIER/PLATFORM_PASSWORD for platform_admin)."
 }
 
 $loginUrl = "$BaseUrl/api/v1/auth/login"

@@ -2,17 +2,17 @@
 Smoke: campaigns E2E (enqueue -> process -> queue visibility)
 
 Usage:
-  pwsh -NoProfile -File .\scripts\smoke-campaigns-e2e.ps1 -BaseUrl http://127.0.0.1:8000 -Identifier admin@local -Password admin -CompanyId 1
-  pwsh -NoProfile -File .\scripts\smoke-campaigns-e2e.ps1 -Identifier admin@local -Password admin -CompanyId 1 -Limit 20 -AllowFailure
+  pwsh -NoProfile -File .\scripts\smoke-campaigns-e2e.ps1 -BaseUrl http://127.0.0.1:8000 -Identifier platform@local -Password admin -CompanyId 1
+  pwsh -NoProfile -File .\scripts\smoke-campaigns-e2e.ps1 -Identifier platform@local -Password admin -CompanyId 1 -Limit 20 -AllowFailure
 
 Env:
-  BASE_URL, ADMIN_IDENTIFIER, ADMIN_PASSWORD, SMARTSELL_IDENTIFIER, SMARTSELL_PASSWORD, COMPANY_ID, LIMIT
+  BASE_URL, PLATFORM_IDENTIFIER, PLATFORM_PASSWORD, SMARTSELL_PLATFORM_*, COMPANY_ID, LIMIT
 #>
 
 param(
   [string]$BaseUrl = $env:BASE_URL,
-  [Alias("AdminIdentifier")][string]$Identifier = $env:ADMIN_IDENTIFIER,
-  [Alias("AdminPassword")][string]$Password = $env:ADMIN_PASSWORD,
+  [Alias("AdminIdentifier","PlatformIdentifier")][string]$Identifier = $env:PLATFORM_IDENTIFIER,
+  [Alias("AdminPassword","PlatformPassword")][string]$Password = $env:PLATFORM_PASSWORD,
   [int]$CompanyId = $(if ($env:COMPANY_ID) { [int]$env:COMPANY_ID } else { 0 }),
   [int]$Limit = $(if ($env:LIMIT) { [int]$env:LIMIT } else { 50 }),
   [switch]$AllowFailure
@@ -62,41 +62,23 @@ $scriptDir = Get-ScriptDir
 $identifierProvided = $PSBoundParameters.ContainsKey("Identifier") -or $PSBoundParameters.ContainsKey("AdminIdentifier")
 $passwordProvided = $PSBoundParameters.ContainsKey("Password") -or $PSBoundParameters.ContainsKey("AdminPassword")
 
-if (-not $identifierProvided -and -not $Identifier) { $Identifier = $env:ADMIN_IDENTIFIER }
-if (-not $passwordProvided -and -not $Password) { $Password = $env:ADMIN_PASSWORD }
-if (-not $Identifier) { $Identifier = $env:SMARTSELL_IDENTIFIER }
-if (-not $Password) { $Password = $env:SMARTSELL_PASSWORD }
+if (-not $identifierProvided -and -not $Identifier) { $Identifier = $env:PLATFORM_IDENTIFIER }
+if (-not $passwordProvided -and -not $Password) { $Password = $env:PLATFORM_PASSWORD }
+if (-not $Identifier) { $Identifier = $env:SMARTSELL_PLATFORM_IDENTIFIER }
+if (-not $Password) { $Password = $env:SMARTSELL_PLATFORM_PASSWORD }
+if (-not $Identifier) { $Identifier = $env:SMARTSELL_PLATFORM_ADMIN_IDENTIFIER }
+if (-not $Password) { $Password = $env:SMARTSELL_PLATFORM_ADMIN_PASSWORD }
 
 $access = $null
 $refresh = $null
-if ([string]::IsNullOrWhiteSpace($Identifier) -or [string]::IsNullOrWhiteSpace($Password)) {
-  $cached = Load-SmartsellTokensFromCache -BaseUrl $BaseUrl
-  if ($cached) {
-    $cachedAccess = Normalize-JwtToken -Value $cached.access
-    $cachedRefresh = Normalize-JwtToken -Value $cached.refresh
-    if ($cachedAccess) { $access = $cachedAccess }
-    if ($cachedRefresh) { $refresh = $cachedRefresh }
-  }
-}
-
-if (-not $access -and ([string]::IsNullOrWhiteSpace($Identifier) -or [string]::IsNullOrWhiteSpace($Password))) {
-  Fail "Set ADMIN_IDENTIFIER/ADMIN_PASSWORD or run scripts/smoke-auth.ps1 to populate .smoke-cache.json"
-}
 if ($CompanyId -le 0) {
   Fail "CompanyId is required. Provide -CompanyId or set COMPANY_ID."
 }
 
-if ($access) {
-  Set-SmartsellTokens -AccessToken $access -RefreshToken $refresh -BaseUrl $BaseUrl
-  Ok ("Token loaded: " + (Token-Prefix $access))
-} else {
-  Info "Login"
-  $tokens = Get-SmartsellTokens -BaseUrl $BaseUrl -Identifier $Identifier -Password $Password
-  $access = $tokens.access
-  $refresh = $tokens.refresh
-  Set-SmartsellTokens -AccessToken $access -RefreshToken $refresh -BaseUrl $BaseUrl
-  Ok ("Token loaded: " + (Token-Prefix $access))
-}
+$authHeaders = Ensure-SmartsellAuth -BaseUrl $BaseUrl -Identifier $Identifier -Password $Password -AccessToken $access -RefreshToken $refresh
+$access = (($authHeaders.Authorization ?? "") -replace "^Bearer\s+", "").Trim()
+$refresh = $script:SmartsellRefreshToken
+if ($access) { Ok ("Token loaded: " + (Token-Prefix $access)) }
 
 $campaignId = $null
 $seedUrl = "$BaseUrl/api/v1/admin/dev/seed/campaign_due?company_id=$CompanyId"
@@ -120,7 +102,7 @@ if (-not $campaignId) {
     tags = @("smoke")
     active = $true
   }
-  Info "Create campaign via /api/v1/campaigns/ (store admin only)"
+  Info "Create campaign via /api/v1/campaigns/ (store_admin only)"
   $createResp = Invoke-SmartsellApi -Method "POST" -Url $createUrl -Body $payload -TimeoutSec 20 -AccessToken $access -RefreshToken $refresh -Identifier $Identifier -Password $Password
   if ($createResp.StatusCode -ge 200 -and $createResp.StatusCode -lt 300) {
     $campaignId = $createResp.Body.id

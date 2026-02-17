@@ -12,7 +12,7 @@ All endpoints accept:
 - limit (default 500, max 5000)
 - date_from (optional ISO 8601 datetime)
 - date_to (optional ISO 8601 datetime)
-- companyId (platform admins only)
+- companyId (platform_admins only)
 
 ## PowerShell examples
 

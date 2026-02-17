@@ -1,17 +1,17 @@
 <#
-Smoke: admin campaign cleanup
+Smoke: platform_admin campaign cleanup
 
 Usage:
   pwsh -NoProfile -File .\scripts\smoke-admin-campaign-cleanup.ps1 -BaseUrl http://127.0.0.1:8000 -CompanyId 1
 
 Env:
-  SMARTSELL_BASE_URL, ADMIN_IDENTIFIER, ADMIN_PASSWORD, SMARTSELL_IDENTIFIER, SMARTSELL_PASSWORD, COMPANY_ID
+  SMARTSELL_BASE_URL, PLATFORM_IDENTIFIER, PLATFORM_PASSWORD, SMARTSELL_PLATFORM_*, COMPANY_ID
 #>
 
 param(
   [string]$BaseUrl = $env:SMARTSELL_BASE_URL,
-  [Alias("AdminIdentifier")][string]$Identifier = $env:ADMIN_IDENTIFIER,
-  [Alias("AdminPassword")][string]$Password = $env:ADMIN_PASSWORD,
+  [Alias("AdminIdentifier","PlatformIdentifier")][string]$Identifier = $env:PLATFORM_IDENTIFIER,
+  [Alias("AdminPassword","PlatformPassword")][string]$Password = $env:PLATFORM_PASSWORD,
   [int]$CompanyId = $(if ($env:COMPANY_ID) { [int]$env:COMPANY_ID } else { 0 }),
   [int]$DoneDays = 14,
   [int]$FailedDays = 30,
@@ -53,7 +53,15 @@ if ($Limit -le 0) {
   Fail "Limit must be >= 1"
 }
 
-$headers = Get-SmokeAuthHeader -BaseUrl $BaseUrl
+if (-not $Identifier) { $Identifier = $env:SMARTSELL_PLATFORM_IDENTIFIER }
+if (-not $Password) { $Password = $env:SMARTSELL_PLATFORM_PASSWORD }
+if (-not $Identifier) { $Identifier = $env:SMARTSELL_PLATFORM_ADMIN_IDENTIFIER }
+if (-not $Password) { $Password = $env:SMARTSELL_PLATFORM_ADMIN_PASSWORD }
+if ([string]::IsNullOrWhiteSpace($Identifier) -or [string]::IsNullOrWhiteSpace($Password)) {
+  Fail "platform_admin creds required. Set PLATFORM_IDENTIFIER/PLATFORM_PASSWORD (or SMARTSELL_PLATFORM_*)."
+}
+
+$headers = Get-PlatformAuthHeader -BaseUrl $BaseUrl -Identifier $Identifier -Password $Password
 Ok "Auth header ready"
 
 $queueLimit = [Math]::Min($Limit, 200)

@@ -12,12 +12,15 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.admin.integrations import router as integrations_router
+from app.api.v1.admin_plans import router as plans_router
 from app.core.config import settings
 from app.core.db import get_async_db
 from app.core.dependencies import require_platform_admin
 from app.core.exceptions import AuthorizationError, ConflictError, NotFoundError, _ensure_request_id
 from app.core.logging import audit_logger
-from app.core.subscriptions.plan_catalog import get_plan, normalize_plan_id
+from app.core.subscriptions.catalog import get_plan_by_code
+from app.core.subscriptions.plan_catalog import get_plan as get_plan_legacy
+from app.core.subscriptions.plan_catalog import normalize_plan_id
 from app.models.billing import Subscription, WalletBalance, WalletTransaction
 from app.models.campaign import (
     Campaign,
@@ -43,6 +46,7 @@ from app.services.campaign_runner import (
 from app.services.campaign_runner import (
     queue_campaign_run as queue_campaign_run_service,
 )
+from app.services.repricing import run_reprcing_for_company
 from app.services.subscriptions import activate_plan, renew_if_due
 from app.worker.campaign_processing import process_campaign_queue_once
 
@@ -52,6 +56,7 @@ router = APIRouter(
     dependencies=[Depends(require_platform_admin)],
 )
 router.include_router(integrations_router)
+router.include_router(plans_router)
 
 
 class SubscriptionOverrideIn(BaseModel):
@@ -251,6 +256,37 @@ async def run_campaigns_cleanup(
         },
     )
     return {**counters, "request_id": request_id}
+
+
+@router.post(
+    "/tasks/repricing/run",
+    summary="Run repricing task for a company (platform admin)",
+)
+async def run_repricing_task(
+    request: Request,
+    dry_run: bool = Query(False),
+    admin: User = Depends(require_platform_admin),
+    db: AsyncSession = Depends(get_async_db),
+) -> dict:
+    _ = admin
+    request_id = _ensure_request_id(request)
+    company_id = request.query_params.get("company_id") or request.query_params.get("companyId")
+    if not company_id:
+        raise NotFoundError("company_id_required", code="company_id_required", http_status=400)
+    try:
+        resolved_company_id = int(company_id)
+    except ValueError as exc:
+        raise NotFoundError("company_id_required", code="company_id_required", http_status=400) from exc
+    run = await run_reprcing_for_company(
+        db,
+        resolved_company_id,
+        triggered_by_user_id=getattr(admin, "id", None),
+        dry_run=dry_run,
+        request_id=request_id,
+    )
+    await db.commit()
+    await db.refresh(run)
+    return {"run_id": run.id, "status": run.status, "request_id": request_id}
 
 
 @router.post(
@@ -637,10 +673,20 @@ async def _grant_trial_subscription(
     trial_days: int,
     now: datetime | None = None,
 ) -> Subscription:
-    plan_id = normalize_plan_id(plan_code, default=None)
-    plan = get_plan(plan_id, default=None)
-    if not plan_id or plan is None:
-        raise AuthorizationError("plan_not_found", code="plan_not_found", http_status=400)
+    plan_id = normalize_plan_id(plan_code, default=plan_code) or plan_code
+    plan = await get_plan_by_code(db, plan_id)
+    plan_price = None
+    plan_currency = None
+    if plan is None:
+        legacy = get_plan_legacy(normalize_plan_id(plan_id, default=None), default=None)
+        if legacy is None:
+            raise AuthorizationError("plan_not_found", code="plan_not_found", http_status=400)
+        plan_id = legacy.plan_id
+        plan_price = legacy.price
+        plan_currency = legacy.currency
+    else:
+        plan_price = plan.price
+        plan_currency = plan.currency
 
     now = now or _utc_now()
     period_end = now + timedelta(days=trial_days)
@@ -655,8 +701,8 @@ async def _grant_trial_subscription(
     sub.plan = plan_id
     sub.status = "trialing"
     sub.billing_cycle = "monthly"
-    sub.price = Decimal(plan.price)
-    sub.currency = plan.currency
+    sub.price = Decimal(str(plan_price or 0))
+    sub.currency = plan_currency or "KZT"
     sub.started_at = now
     sub.period_start = now
     sub.period_end = period_end

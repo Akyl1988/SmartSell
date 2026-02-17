@@ -1,15 +1,15 @@
 <#
-Kaspi sync-now smoke (platform admin token)
+Kaspi sync-now smoke (platform_admin token)
 Env:
-  ADMIN_IDENTIFIER / ADMIN_PASSWORD (fallback: PLATFORM_IDENTIFIER / PLATFORM_PASSWORD)
+  PLATFORM_IDENTIFIER / PLATFORM_PASSWORD (or SMARTSELL_PLATFORM_*/SMARTSELL_ADMIN_* legacy)
   KASPI_MERCHANT_UID
 #>
 
 param(
   [string]$BaseUrl = $env:SMARTSELL_BASE_URL,
   [string]$Token = $env:SMARTSELL_TOKEN,
-  [string]$Identifier = $env:ADMIN_IDENTIFIER,
-  [string]$Password = $env:ADMIN_PASSWORD,
+  [string]$Identifier = $env:PLATFORM_IDENTIFIER,
+  [string]$Password = $env:PLATFORM_PASSWORD,
   [string]$MerchantUid = $env:KASPI_MERCHANT_UID,
   [int]$TimeoutSec = 30,
   [int]$ProbeTimeoutSec = 2,
@@ -26,14 +26,18 @@ if (-not $Token) { $Token = "" }
 $identifierProvided = $PSBoundParameters.ContainsKey("Identifier")
 $passwordProvided = $PSBoundParameters.ContainsKey("Password")
 
-if (-not $identifierProvided) { $Identifier = $env:ADMIN_IDENTIFIER }
-if (-not $passwordProvided) { $Password = $env:ADMIN_PASSWORD }
+if (-not $identifierProvided) { $Identifier = $env:PLATFORM_IDENTIFIER }
+if (-not $passwordProvided) { $Password = $env:PLATFORM_PASSWORD }
 
-$idSource = if ($identifierProvided) { "param:Identifier" } else { "ADMIN_IDENTIFIER" }
-$pwSource = if ($passwordProvided) { "param:Password" } else { "ADMIN_PASSWORD" }
+$idSource = if ($identifierProvided) { "param:Identifier" } else { "PLATFORM_IDENTIFIER" }
+$pwSource = if ($passwordProvided) { "param:Password" } else { "PLATFORM_PASSWORD" }
 
-if (-not $Identifier) { $Identifier = $env:PLATFORM_IDENTIFIER; $idSource = "PLATFORM_IDENTIFIER" }
-if (-not $Password) { $Password = $env:PLATFORM_PASSWORD; $pwSource = "PLATFORM_PASSWORD" }
+if (-not $Identifier) { $Identifier = $env:SMARTSELL_PLATFORM_IDENTIFIER; $idSource = "SMARTSELL_PLATFORM_IDENTIFIER" }
+if (-not $Password) { $Password = $env:SMARTSELL_PLATFORM_PASSWORD; $pwSource = "SMARTSELL_PLATFORM_PASSWORD" }
+if (-not $Identifier) { $Identifier = $env:SMARTSELL_PLATFORM_ADMIN_IDENTIFIER; $idSource = "SMARTSELL_PLATFORM_ADMIN_IDENTIFIER" }
+if (-not $Password) { $Password = $env:SMARTSELL_PLATFORM_ADMIN_PASSWORD; $pwSource = "SMARTSELL_PLATFORM_ADMIN_PASSWORD" }
+if (-not $Identifier) { $Identifier = $env:SMARTSELL_ADMIN_IDENTIFIER; $idSource = "SMARTSELL_ADMIN_IDENTIFIER" }
+if (-not $Password) { $Password = $env:SMARTSELL_ADMIN_PASSWORD; $pwSource = "SMARTSELL_ADMIN_PASSWORD" }
 if (-not $Identifier) { $Identifier = "" }
 if (-not $Password) { $Password = "" }
 if (-not $MerchantUid) { $MerchantUid = "" }
@@ -228,7 +232,7 @@ if (-not $AccessToken) {
 }
 
 if (-not $AccessToken -and (-not $Identifier -or -not $Password)) {
-  Write-Host "[FAIL] missing ADMIN_IDENTIFIER/ADMIN_PASSWORD or PLATFORM_IDENTIFIER/PLATFORM_PASSWORD (or pass -Token/SMARTSELL_ACCESS_TOKEN)"
+  Write-Host "[FAIL] platform_admin creds required. Set PLATFORM_IDENTIFIER/PLATFORM_PASSWORD (or SMARTSELL_PLATFORM_*). ADMIN_/SMARTSELL_IDENTIFIER are treated as store_admin."
   exit 1
 }
 

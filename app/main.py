@@ -1033,6 +1033,12 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:  # type: ignore[overrid
                     raise RuntimeError("email_provider_not_configured")
     _import_models_once()
     try:
+        from app.dev.seed import ensure_dev_seed
+
+        await ensure_dev_seed()
+    except Exception as e:
+        logger.warning("dev seed skipped: %s", e)
+    try:
         from app.api.routes import get_mount_diagnostics as _get_mount_diagnostics
 
         diag = _get_mount_diagnostics()

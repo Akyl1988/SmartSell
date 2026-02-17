@@ -4,23 +4,14 @@ from calendar import monthrange
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
-from sqlalchemy import desc, nullslast, select
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.subscriptions.plan_catalog import get_plan, normalize_plan_id
+from app.core.subscriptions.catalog import get_plan_by_code
+from app.core.subscriptions.plan_catalog import get_plan as get_plan_legacy
+from app.core.subscriptions.plan_catalog import normalize_plan_id
+from app.core.subscriptions.state import get_company_subscription, is_subscription_active
 from app.models.billing import Subscription, WalletBalance, WalletTransaction
-
-_SUB_ACTIVE = {"active", "trialing"}
-_STATUS_ALIASES = {
-    "trial": "trialing",
-    "overdue": "past_due",
-    "paused": "frozen",
-}
-
-
-def _normalize_status(status: str | None) -> str:
-    val = (status or "").strip().lower()
-    return _STATUS_ALIASES.get(val, val)
 
 
 def _anchor_day_from_subscription(subscription: Subscription, *, fallback: datetime) -> int:
@@ -54,49 +45,6 @@ def _ceil_to_midnight_utc(dt: datetime) -> datetime:
     return midnight
 
 
-def is_subscription_active(subscription: Subscription | None, now: datetime | None = None) -> bool:
-    if not subscription:
-        return False
-    if getattr(subscription, "deleted_at", None):
-        return False
-
-    now = now or datetime.now(UTC)
-    status = _normalize_status(getattr(subscription, "status", None))
-
-    if getattr(subscription, "canceled_at", None):
-        return False
-
-    frozen_at = getattr(subscription, "frozen_at", None)
-    resumed_at = getattr(subscription, "resumed_at", None)
-    if frozen_at and (resumed_at is None or resumed_at < frozen_at):
-        return False
-
-    period_end = getattr(subscription, "period_end", None)
-    grace_until = getattr(subscription, "grace_until", None)
-
-    if status in _SUB_ACTIVE:
-        return period_end is None or now <= period_end
-
-    if status == "past_due":
-        return grace_until is not None and now < grace_until
-
-    return False
-
-
-async def get_company_subscription(db: AsyncSession, company_id: int) -> Subscription | None:
-    stmt = (
-        select(Subscription)
-        .where(Subscription.company_id == company_id)
-        .where(Subscription.deleted_at.is_(None))
-        .order_by(nullslast(desc(Subscription.period_end)))
-        .order_by(desc(Subscription.started_at))
-        .order_by(desc(Subscription.created_at))
-        .limit(1)
-    )
-    res = await db.execute(stmt)
-    return res.scalar_one_or_none()
-
-
 async def activate_plan(
     db: AsyncSession,
     *,
@@ -105,21 +53,34 @@ async def activate_plan(
     now: datetime | None = None,
 ) -> Subscription:
     now = now or datetime.now(UTC)
-    plan = get_plan(normalize_plan_id(plan_code))
+    normalized = normalize_plan_id(plan_code, default=plan_code) or plan_code
+    plan = await get_plan_by_code(db, normalized)
+    plan_code = normalized
+    plan_price = None
+    plan_currency = None
     if plan is None:
-        raise ValueError("Unknown plan")
+        legacy = get_plan_legacy(normalize_plan_id(plan_code, default=None), default=None)
+        if legacy is None:
+            raise ValueError("Unknown plan")
+        plan_code = legacy.plan_id
+        plan_price = legacy.price
+        plan_currency = legacy.currency
+    else:
+        plan_code = plan.code
+        plan_price = plan.price
+        plan_currency = plan.currency
 
     wallet = await WalletBalance.get_for_company_async(
         db,
         company_id,
         create_if_missing=True,
-        currency=plan.currency,
+        currency=plan_currency or "KZT",
     )
 
-    if (wallet.currency or "").upper() != (plan.currency or "").upper():
+    if (wallet.currency or "").upper() != (plan_currency or "").upper():
         raise ValueError("Wallet currency mismatch")
 
-    amount = Decimal(plan.price)
+    amount = Decimal(str(plan_price or 0))
     if amount > 0:
         await wallet.debit_safe_async(
             db,
@@ -134,11 +95,11 @@ async def activate_plan(
 
     sub = Subscription(
         company_id=company_id,
-        plan=plan.plan_id,
+        plan=plan_code,
         status="active",
         billing_cycle="monthly",
         price=amount,
-        currency=plan.currency,
+        currency=plan_currency or "KZT",
         started_at=now,
         period_start=now,
         period_end=period_end,
@@ -174,8 +135,8 @@ async def renew_if_due(
             sub.billing_anchor_day = anchor_day
 
         base_period_end = sub.period_end or now
-        plan = get_plan(normalize_plan_id(sub.plan))
-        price = Decimal(plan.price) if plan else Decimal(sub.price or 0)
+        plan = await get_plan_by_code(db, normalize_plan_id(sub.plan, default=sub.plan) or sub.plan)
+        price = Decimal(str(plan.price)) if plan else Decimal(sub.price or 0)
         currency = plan.currency if plan else (sub.currency or "KZT")
 
         wallet = (

@@ -218,7 +218,7 @@ Goal: Real deploy/upgrade/restore steps that a future operator can follow.
 
 ### C3. Documentation: “Kaspi feed from zero to publish”
 **Deliverables**
-- A clear guide for a non-technical merchant admin.
+- A clear guide for a non-technical merchant store_admin.
 
 **Tasks**
 - Add to `docs/DEPLOYMENT.md` or `docs/KASPI_FEED.md`:

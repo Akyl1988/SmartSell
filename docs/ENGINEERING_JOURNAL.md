@@ -116,7 +116,7 @@ For new entries, please update `PROJECT_JOURNAL.md` directly (append-only).
   - Generic errors → counted as "failed", don't stop other companies
   - Per-company error logging with safe formatting (no credentials)
 
-- **Operational Endpoints**: Admin API in `app/api/v1/kaspi.py`
+- **Operational Endpoints**: platform_admin API in `app/api/v1/kaspi.py`
   - `GET /api/v1/kaspi/autosync/status` - Last run summary (eligible/success/locked/failed counts)
   - `POST /api/v1/kaspi/autosync/trigger` - Manual trigger for immediate sync
 
@@ -151,7 +151,7 @@ For new entries, please update `PROJECT_JOURNAL.md` directly (append-only).
 - **Why APScheduler?**: Already in use, battle-tested, supports multiple triggers
 - **Why batch processing?**: Avoids thundering herd, controlled resource usage
 - **Why global state?**: Simple operational visibility without DB overhead
-- **Why admin endpoints?**: Operational debugging and manual intervention capability
+- **Why platform_admin endpoints?**: Operational debugging and manual intervention capability
 
 ### Verified
 - All existing tests pass (236 passed, 5 skipped)

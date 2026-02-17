@@ -29,6 +29,7 @@ from app.core.subscriptions.plan_catalog import (
 )
 from app.models.billing import BillingPayment, Subscription
 from app.models.company import Company
+from app.models.subscription_catalog import Plan
 from app.models.user import User
 
 # ----------------------------------------------------------------
@@ -61,7 +62,7 @@ FINAL_STATES = {"canceled", "expired", "ended"}
 class SubscriptionCreate(BaseModel):
     plan: PlanName
     billing_cycle: Cycle = "monthly"
-    price: condecimal(max_digits=14, decimal_places=2) = Decimal("0.00")
+    price: condecimal(max_digits=14, decimal_places=0) = Decimal("0")
     currency: CurrencyCode = "KZT"
     trial_days: int = Field(0, ge=0, le=60)
 
@@ -69,7 +70,7 @@ class SubscriptionCreate(BaseModel):
 class SubscriptionUpdate(BaseModel):
     plan: PlanName | None = None
     billing_cycle: Cycle | None = None
-    price: condecimal(max_digits=14, decimal_places=2) | None = None
+    price: condecimal(max_digits=14, decimal_places=0) | None = None
     currency: CurrencyCode | None = None
 
 
@@ -251,9 +252,26 @@ async def _auth_user(
 @router.get("/plans", response_model=list[PlanCatalogOut])
 async def list_plan_catalog(
     user: User = Depends(_auth_user),
+    db: AsyncSession = Depends(get_async_db),
 ):
     _ = user
-    return list_plans()
+    rows = (await db.execute(select(Plan).order_by(Plan.id.asc()))).scalars().all()
+    if not rows:
+        return [PlanCatalogOut(**item) for item in list_plans()]
+    items: list[PlanCatalogOut] = []
+    for plan in rows:
+        monthly_price = Decimal(str(plan.price or 0))
+        yearly_price = monthly_price * Decimal("12")
+        items.append(
+            PlanCatalogOut(
+                plan_id=plan.code,
+                plan=plan.name,
+                currency=plan.currency,
+                monthly_price=monthly_price,
+                yearly_price=yearly_price,
+            )
+        )
+    return items
 
 
 # ====== Эндпоинты ======

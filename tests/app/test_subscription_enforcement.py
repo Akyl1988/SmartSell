@@ -29,7 +29,7 @@ async def test_subscription_allows_access(
         json={
             "plan": "Start",
             "billing_cycle": "monthly",
-            "price": "0.00",
+            "price": "0",
             "currency": "KZT",
             "trial_days": 0,
         },
@@ -53,7 +53,7 @@ async def test_cross_tenant_subscription_does_not_grant_access(
         json={
             "plan": "Start",
             "billing_cycle": "monthly",
-            "price": "0.00",
+            "price": "0",
             "currency": "KZT",
             "trial_days": 0,
         },

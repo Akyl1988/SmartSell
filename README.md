@@ -158,6 +158,27 @@ KASPI_MERCHANT_ID=your-merchant-id
 KASPI_API_KEY=your-api-key
 ```
 
+## Roles (DEV smoke)
+
+Canonical roles used in docs/scripts:
+- platform_admin: users.role="platform_admin"; allowed to call `/api/v1/admin/*`.
+- store_admin: users.role="admin" (legacy DB name); allowed to call tenant APIs (wallet/kaspi/etc) within their company.
+
+Notes:
+- The DB role string remains `admin` for store_admin. Docs/scripts use store_admin for clarity.
+- Legacy env vars ADMIN_IDENTIFIER/ADMIN_PASSWORD and SMARTSELL_IDENTIFIER/SMARTSELL_PASSWORD are treated as store_admin.
+
+Example env vars for smoke:
+```bash
+# store_admin (users.role="admin")
+STORE_IDENTIFIER=77078342842
+STORE_PASSWORD=admin123
+
+# platform_admin (users.role="platform_admin")
+PLATFORM_IDENTIFIER=77052384799
+PLATFORM_PASSWORD=admin123
+```
+
 ## Campaign Processing Pipeline
 
 Campaigns are processed in a safe, lock-protected pipeline:
@@ -176,9 +197,15 @@ Tuning parameters:
 - `CAMPAIGN_MAX_ATTEMPTS` (default 3): max processing retries; `0` disables the guard.
 
 If a campaign reaches the limit, it is marked FAILED with `last_error=max_attempts_exceeded`.
-Operators can manually re-run the campaign (admin/store run endpoints), which resets attempts and clears failure fields.
+Operators can manually re-run the campaign (platform_admin/store_admin run endpoints), which resets attempts and clears failure fields.
 
 ## 🧪 Testing
+
+### How tests pick the database
+
+Pytest resolves the test database using TEST_ASYNC_DATABASE_URL (preferred) or TEST_DATABASE_URL.
+The test harness sets DATABASE_URL to the sync test URL, so dev DB settings do not leak into tests.
+Use a separate database for tests (for example smartsell_test) and keep it isolated from dev data.
 
 ### Run all tests
 ```bash
@@ -217,6 +244,28 @@ pwsh -NoProfile -File .\scripts\prod-gate.ps1 -SkipFormatCheck
 
 ## 🔧 Development
 
+### Windows one-button dev (PowerShell)
+
+1) Create scripts/env.local.ps1 (do not commit secrets) with DATABASE_URL and optional REDIS_URL.
+2) Run the one-button entrypoint:
+
+```powershell
+.\scripts\dev.ps1 up
+.\scripts\dev.ps1 api
+```
+
+Common commands:
+
+```powershell
+.\scripts\dev.ps1 up     # start db+redis (docker compose if present) + run migrations
+.\scripts\dev.ps1 api    # start uvicorn and stream logs to logs/api.log
+.\scripts\dev.ps1 down   # stop services if docker compose is used
+.\scripts\dev.ps1 reset  # DEV ONLY: drop schema, re-run migrations (optional -Seed)
+```
+
+Campaigns storage is explicit via SMARTSELL_CAMPAIGNS_STORAGE=sql|memory (default: sql).
+Tests force in-memory backends via FORCE_INMEMORY_BACKENDS=1 to keep isolation.
+
 ### Code Quality
 
 The project uses several tools for code quality:
@@ -248,6 +297,12 @@ curl -sS http://127.0.0.1:8000/openapi.json -o openapi.json
 ```
 ```powershell
 Invoke-WebRequest "http://127.0.0.1:8000/openapi.json" -OutFile .\openapi.json
+```
+
+### Dev-only schema check
+
+```powershell
+python .\scripts\print_campaigns_columns.py
 ```
 
 ## Branching & Releases
@@ -290,7 +345,7 @@ Cookie-mode refresh/logout: if you use the refresh token via HttpOnly cookies, t
 app/core/security.py). Requests without a valid CSRF token are rejected with 403.
 
 Manual wallet top-up is platform-only: `POST /api/v1/admin/wallet/topup` is available only to
-platform admins (or superuser break-glass) and does not depend on payments providers.
+platform_admins (or superuser break-glass) and does not depend on payments providers.
 
 ## 🚀 Deployment
 

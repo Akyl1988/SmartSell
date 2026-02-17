@@ -2,17 +2,17 @@
 Smoke: wallet transactions CSV report
 
 Usage:
-  pwsh -NoProfile -File .\scripts\smoke-reports-wallet-transactions.ps1 -BaseUrl http://127.0.0.1:8000 -Identifier admin@local -Password admin
+  pwsh -NoProfile -File .\scripts\smoke-reports-wallet-transactions.ps1 -BaseUrl http://127.0.0.1:8000 -Identifier store@local -Password admin
   pwsh -NoProfile -File .\scripts\smoke-reports-wallet-transactions.ps1 -CompanyId 1001 -Limit 50
 
 Env:
-  SMARTSELL_BASE_URL, ADMIN_IDENTIFIER, ADMIN_PASSWORD, PLATFORM_IDENTIFIER, PLATFORM_PASSWORD, COMPANY_ID, LIMIT
+  SMARTSELL_BASE_URL, STORE_IDENTIFIER, STORE_PASSWORD, PLATFORM_IDENTIFIER, PLATFORM_PASSWORD, SMARTSELL_PLATFORM_*, COMPANY_ID, LIMIT
 #>
 
 param(
   [string]$BaseUrl = $env:SMARTSELL_BASE_URL,
-  [string]$Identifier = $env:ADMIN_IDENTIFIER,
-  [string]$Password = $env:ADMIN_PASSWORD,
+  [string]$Identifier = $env:STORE_IDENTIFIER,
+  [string]$Password = $env:STORE_PASSWORD,
   [int]$CompanyId = $(if ($env:COMPANY_ID) { [int]$env:COMPANY_ID } else { 0 }),
   [int]$Limit = $(if ($env:LIMIT) { [int]$env:LIMIT } else { 500 }),
   [string]$DateFrom = $env:DATE_FROM,

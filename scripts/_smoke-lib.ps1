@@ -33,6 +33,23 @@ function Read-SmokeCache {
   }
 }
 
+function Clear-SmokeAuthCache {
+  param([string]$BaseUrl)
+  $path = Get-SmokeCachePath
+  if (-not (Test-Path $path)) { return $false }
+  if (-not $BaseUrl) {
+    Remove-Item -LiteralPath $path -ErrorAction SilentlyContinue
+    return $true
+  }
+
+  $cache = Read-SmokeCache
+  if ($cache.ContainsKey($BaseUrl)) {
+    $cache.Remove($BaseUrl) | Out-Null
+    return (Write-SmokeCache -Data $cache)
+  }
+  return $false
+}
+
 function Write-SmokeCache {
   param([hashtable]$Data)
   $path = Get-SmokeCachePath
@@ -55,6 +72,21 @@ function Normalize-JwtToken {
   return $null
 }
 
+function Resolve-TokenField {
+  param(
+    [object]$Entry,
+    [string[]]$Names
+  )
+  if (-not $Entry) { return $null }
+  foreach ($name in $Names) {
+    $prop = $Entry.PSObject.Properties[$name]
+    if ($prop -and -not [string]::IsNullOrWhiteSpace([string]$prop.Value)) {
+      return @{ name = $name; value = $prop.Value }
+    }
+  }
+  return $null
+}
+
 function Load-SmartsellTokensFromCache {
   param([string]$BaseUrl)
   if (-not $BaseUrl) { return $null }
@@ -62,8 +94,12 @@ function Load-SmartsellTokensFromCache {
   if (-not $cache.ContainsKey($BaseUrl)) { return $null }
   $entry = $cache[$BaseUrl]
   if (-not $entry) { return $null }
-  $access = Normalize-JwtToken -Value $entry.access
-  $refresh = Normalize-JwtToken -Value $entry.refresh
+  $accessField = Resolve-TokenField -Entry $entry -Names @("access", "access_token", "token")
+  $refreshField = Resolve-TokenField -Entry $entry -Names @("refresh", "refresh_token")
+  $access = $null
+  $refresh = $null
+  if ($accessField -and $accessField.value) { $access = Normalize-JwtToken -Value $accessField.value }
+  if ($refreshField -and $refreshField.value) { $refresh = Normalize-JwtToken -Value $refreshField.value }
   if (-not $access -and -not $refresh) { return $null }
   return @{
     access = $access
@@ -106,6 +142,40 @@ function Save-SmokeCacheEntry {
   return (Write-SmokeCache -Data $cache)
 }
 
+function Test-SmokeApiUp {
+  param(
+    [string]$BaseUrl,
+    [int]$TimeoutSec = 3
+  )
+  if (-not $BaseUrl) { throw "BaseUrl is required" }
+
+  $targets = @(
+    "$BaseUrl/api/v1/wallet/health",
+    "$BaseUrl/api/v1/health"
+  )
+
+  foreach ($url in $targets) {
+    try {
+      Invoke-WebRequestSafe -Params @{
+        Method = "GET"
+        Uri = $url
+        TimeoutSec = $TimeoutSec
+      } | Out-Null
+      return $true
+    } catch {
+      $ex = $_.Exception
+      $msg = ""
+      try { $msg = $ex.Message } catch { }
+      $isConnRefused = ($ex -is [System.Net.WebException]) -or ($msg -match "refused|No connection could be made|actively refused")
+      if ($isConnRefused) {
+        throw "API is not running at $BaseUrl. Start it via scripts/run-api-dev.ps1 (or dev.ps1 api)."
+      }
+    }
+  }
+
+  return $true
+}
+
 function Invoke-SmokeRefresh {
   param(
     [string]$BaseUrl,
@@ -114,6 +184,16 @@ function Invoke-SmokeRefresh {
   )
   if (-not $BaseUrl) { throw "BaseUrl is required" }
   if (-not $RefreshToken) { throw "No refresh token cached; run smoke-auth or login first" }
+
+  Test-SmokeApiUp -BaseUrl $BaseUrl -TimeoutSec 3 | Out-Null
+
+  $envToken = $null
+  if ($env:SMARTSELL_ACCESS_TOKEN) { $envToken = Normalize-JwtToken -Value $env:SMARTSELL_ACCESS_TOKEN }
+  if (-not $envToken -and $env:ACCESS_TOKEN) { $envToken = Normalize-JwtToken -Value $env:ACCESS_TOKEN }
+  if ($envToken) {
+    Set-SmartsellTokens -AccessToken $envToken -RefreshToken $null -BaseUrl $BaseUrl
+    return @{ Authorization = "Bearer $envToken" }
+  }
 
   $refreshUrl = "$BaseUrl/api/v1/auth/refresh"
   $body = @{ refresh_token = $RefreshToken } | ConvertTo-Json
@@ -159,11 +239,36 @@ function Get-SmokeAuthHeader {
     [string]$BaseUrl,
     [switch]$ForceRefresh
   )
-  if (-not $BaseUrl) { throw "BaseUrl is required" }
+  if (-not $BaseUrl) {
+    $BaseUrl = $env:BASE_URL
+    if (-not $BaseUrl) { $BaseUrl = $env:SMARTSELL_BASE_URL }
+    if (-not $BaseUrl) {
+      if (Is-DevEnvironment) {
+        throw "BaseUrl is required (set BASE_URL or SMARTSELL_BASE_URL)"
+      }
+      throw "BaseUrl is required"
+    }
+  }
 
+  Test-SmokeApiUp -BaseUrl $BaseUrl -TimeoutSec 3 | Out-Null
+
+  # Returns headers for Invoke-WebRequest -Headers (not curl -H).
   $entry = Get-SmokeCacheEntry -BaseUrl $BaseUrl
-  $access = Normalize-JwtToken -Value $entry.access
-  $refresh = Normalize-JwtToken -Value $entry.refresh
+  $accessField = Resolve-TokenField -Entry $entry -Names @("access", "access_token", "token")
+  $refreshField = Resolve-TokenField -Entry $entry -Names @("refresh", "refresh_token")
+  if ($accessField) {
+    Write-Host ("[INFO] smoke-cache access field: {0}" -f $accessField.name)
+  } elseif ($entry) {
+    $keys = @($entry.PSObject.Properties.Name) -join ","
+    Write-Host ("[WARN] smoke-cache entry missing access token field (keys={0})" -f $keys)
+  }
+  $access = $null
+  $refresh = $null
+  if ($accessField -and $accessField.value) { $access = Normalize-JwtToken -Value $accessField.value }
+  if ($refreshField -and $refreshField.value) {
+    Write-Host ("[INFO] smoke-cache refresh field: {0}" -f $refreshField.name)
+    $refresh = Normalize-JwtToken -Value $refreshField.value
+  }
 
   function Invoke-AuthMe([string]$Token) {
     if (-not $Token) {
@@ -183,9 +288,76 @@ function Get-SmokeAuthHeader {
     return [PSCustomObject]@{ StatusCode = $status; Body = $body }
   }
 
+  function Get-ErrorCode([object]$Body) {
+    if (-not $Body -or $Body -is [string]) { return $null }
+    $code = $Body.PSObject.Properties["code"]
+    if ($code) { return $code.Value }
+    $detail = $Body.PSObject.Properties["detail"]
+    if ($detail) { return $detail.Value }
+    $errs = $Body.PSObject.Properties["errors"]
+    if ($errs -and $errs.Value -and $errs.Value.Count -gt 0) {
+      $err0 = $errs.Value[0]
+      $eCode = $err0.PSObject.Properties["code"]
+      if ($eCode) { return $eCode.Value }
+      $eDetail = $err0.PSObject.Properties["detail"]
+      if ($eDetail) { return $eDetail.Value }
+    }
+    return $null
+  }
+
+  function Try-RefreshTokens([string]$RefreshToken) {
+    if (-not $RefreshToken) { return $null }
+    $refreshUrl = "$BaseUrl/api/v1/auth/refresh"
+    $body = @{ refresh_token = $RefreshToken } | ConvertTo-Json
+    $resp = Invoke-WebRequestSafe -Params @{
+      Method = "POST"
+      Uri = $refreshUrl
+      TimeoutSec = 20
+      ContentType = "application/json"
+      Body = $body
+    }
+    if ($resp.StatusCode -lt 200 -or $resp.StatusCode -ge 300) {
+      return @{
+        ok = $false
+        status = $resp.StatusCode
+        body = $resp.Content
+      }
+    }
+    $payload = $null
+    try { $payload = $resp.Content | ConvertFrom-Json } catch { $payload = $null }
+    if (-not $payload) { return @{ ok = $false; status = 0; body = "invalid_json" } }
+    $access = Normalize-JwtToken -Value ($payload.access_token ?? $payload.accessToken)
+    $refreshNew = Normalize-JwtToken -Value ($payload.refresh_token ?? $payload.refreshToken)
+    if (-not $access -or -not $refreshNew) { return @{ ok = $false; status = 0; body = "missing_tokens" } }
+    return @{ ok = $true; access = $access; refresh = $refreshNew }
+  }
+
+  function Login-WithEnv {
+    $identifier = $env:SMARTSELL_IDENTIFIER
+    $password = $env:SMARTSELL_PASSWORD
+    if (-not $identifier -or -not $password) {
+      throw "SMARTSELL_IDENTIFIER/SMARTSELL_PASSWORD are required for login fallback"
+    }
+    $tokens = Get-SmartsellTokens -BaseUrl $BaseUrl -Identifier $identifier -Password $password -TimeoutSec 20
+    return $tokens
+  }
+
   if ($ForceRefresh -or -not $access) {
-    if (-not $refresh) { throw "No refresh token cached; run smoke-auth or login first" }
-    $tokens = Invoke-SmokeRefresh -BaseUrl $BaseUrl -RefreshToken $refresh
+    $refreshResult = Try-RefreshTokens -RefreshToken $refresh
+    if ($refreshResult -and $refreshResult.ok) {
+      $access = $refreshResult.access
+      $refresh = $refreshResult.refresh
+      $entry = @{ access = $access; refresh = $refresh; updated_at = (Get-Date).ToString("o") }
+      Save-SmokeCacheEntry -BaseUrl $BaseUrl -Entry $entry | Out-Null
+      $me = Invoke-AuthMe -Token $access
+      if ($me.StatusCode -eq 200) { return @{ Authorization = "Bearer $access" } }
+    } else {
+      if ($refreshResult -and $refreshResult.status -eq 401) {
+        Clear-SmokeAuthCache -BaseUrl $BaseUrl | Out-Null
+      }
+    }
+
+    $tokens = Login-WithEnv
     $access = $tokens.access
     $refresh = $tokens.refresh
     $entry = @{ access = $access; refresh = $refresh; updated_at = (Get-Date).ToString("o") }
@@ -193,7 +365,7 @@ function Get-SmokeAuthHeader {
     $me = Invoke-AuthMe -Token $access
     if ($me.StatusCode -ne 200) {
       $text = $me.Body | ConvertTo-Json -Depth 10
-      throw "auth/me failed after refresh: status=$($me.StatusCode) body=$text"
+      throw "auth/me failed after login: status=$($me.StatusCode) body=$text"
     }
     return @{ Authorization = "Bearer $access" }
   }
@@ -203,9 +375,21 @@ function Get-SmokeAuthHeader {
     return @{ Authorization = "Bearer $access" }
   }
 
-  if (Test-AuthExpired -StatusCode $me.StatusCode -Body $me.Body) {
-    if (-not $refresh) { throw "No refresh token cached; run smoke-auth or login first" }
-    $tokens = Invoke-SmokeRefresh -BaseUrl $BaseUrl -RefreshToken $refresh
+  $errCode = Get-ErrorCode -Body $me.Body
+  if (Test-AuthExpired -StatusCode $me.StatusCode -Body $me.Body -or $errCode -match "USER_NOT_FOUND|INVALID_TOKEN") {
+    $refreshResult = Try-RefreshTokens -RefreshToken $refresh
+    if ($refreshResult -and $refreshResult.ok) {
+      $access = $refreshResult.access
+      $refresh = $refreshResult.refresh
+      $entry = @{ access = $access; refresh = $refresh; updated_at = (Get-Date).ToString("o") }
+      Save-SmokeCacheEntry -BaseUrl $BaseUrl -Entry $entry | Out-Null
+      $me2 = Invoke-AuthMe -Token $access
+      if ($me2.StatusCode -eq 200) { return @{ Authorization = "Bearer $access" } }
+    } elseif ($refreshResult -and $refreshResult.status -eq 401) {
+      Clear-SmokeAuthCache -BaseUrl $BaseUrl | Out-Null
+    }
+
+    $tokens = Login-WithEnv
     $access = $tokens.access
     $refresh = $tokens.refresh
     $entry = @{ access = $access; refresh = $refresh; updated_at = (Get-Date).ToString("o") }
@@ -213,13 +397,198 @@ function Get-SmokeAuthHeader {
     $me2 = Invoke-AuthMe -Token $access
     if ($me2.StatusCode -ne 200) {
       $text = $me2.Body | ConvertTo-Json -Depth 10
-      throw "auth/me failed after refresh: status=$($me2.StatusCode) body=$text"
+      throw "auth/me failed after login: status=$($me2.StatusCode) body=$text"
     }
     return @{ Authorization = "Bearer $access" }
   }
 
   $fallback = $me.Body | ConvertTo-Json -Depth 10
   throw "auth/me failed: status=$($me.StatusCode) body=$fallback"
+}
+
+function Get-SmokeErrorCode {
+  param([object]$Body)
+  if (-not $Body -or $Body -is [string]) { return $null }
+  $code = $Body.PSObject.Properties["code"]
+  if ($code) { return $code.Value }
+  $detail = $Body.PSObject.Properties["detail"]
+  if ($detail) { return $detail.Value }
+  $errs = $Body.PSObject.Properties["errors"]
+  if ($errs -and $errs.Value -and $errs.Value.Count -gt 0) {
+    $err0 = $errs.Value[0]
+    $eCode = $err0.PSObject.Properties["code"]
+    if ($eCode) { return $eCode.Value }
+    $eDetail = $err0.PSObject.Properties["detail"]
+    if ($eDetail) { return $eDetail.Value }
+  }
+  return $null
+}
+
+function Ensure-SmartsellAuth {
+  param(
+    [string]$BaseUrl,
+    [string]$Identifier = $null,
+    [string]$Password = $null,
+    [string]$AccessToken = $null,
+    [string]$RefreshToken = $null,
+    [switch]$DisableEnvTokens
+  )
+  if (-not $BaseUrl) {
+    $BaseUrl = $env:BASE_URL
+    if (-not $BaseUrl) { $BaseUrl = $env:SMARTSELL_BASE_URL }
+    if (-not $BaseUrl) { throw "BaseUrl is required" }
+  }
+
+  Test-SmokeApiUp -BaseUrl $BaseUrl -TimeoutSec 3 | Out-Null
+
+  $envAccess = $null
+  if (-not $DisableEnvTokens) {
+    if ($env:SMARTSELL_ACCESS_TOKEN) { $envAccess = Normalize-JwtToken -Value $env:SMARTSELL_ACCESS_TOKEN }
+    if (-not $envAccess -and $env:ACCESS_TOKEN) { $envAccess = Normalize-JwtToken -Value $env:ACCESS_TOKEN }
+    if ($envAccess) { $AccessToken = $envAccess }
+  }
+
+  $envRefresh = $null
+  if (-not $DisableEnvTokens) {
+    if ($env:SMARTSELL_REFRESH_TOKEN) { $envRefresh = Normalize-JwtToken -Value $env:SMARTSELL_REFRESH_TOKEN }
+    if ($envRefresh) { $RefreshToken = $envRefresh }
+  }
+
+  if (-not $AccessToken -or -not $RefreshToken) {
+    $cached = Load-SmartsellTokensFromCache -BaseUrl $BaseUrl
+    if ($cached) {
+      if (-not $AccessToken -and $cached.access) { $AccessToken = $cached.access }
+      if (-not $RefreshToken -and $cached.refresh) { $RefreshToken = $cached.refresh }
+    }
+  }
+
+  function Invoke-AuthMe([string]$Token) {
+    if (-not $Token) {
+      return [PSCustomObject]@{ StatusCode = 401; Body = @{ code = "AUTH_REQUIRED" } }
+    }
+    $resp = Invoke-WebRequestSafe -Params @{
+      Method = "GET"
+      Uri = "$BaseUrl/api/v1/auth/me"
+      Headers = @{ Authorization = "Bearer $Token" }
+      TimeoutSec = 20
+    }
+    $body = $null
+    if ($resp.Content) {
+      try { $body = $resp.Content | ConvertFrom-Json } catch { $body = $resp.Content }
+    }
+    return [PSCustomObject]@{ StatusCode = $resp.StatusCode; Body = $body }
+  }
+
+  function Try-Refresh([string]$Token) {
+    if (-not $Token) { return $null }
+    Write-Host "[INFO] Refreshing access token"
+    $refreshUrl = "$BaseUrl/api/v1/auth/refresh"
+    $body = @{ refresh_token = $Token } | ConvertTo-Json
+    $resp = Invoke-WebRequestSafe -Params @{
+      Method = "POST"
+      Uri = $refreshUrl
+      TimeoutSec = 20
+      ContentType = "application/json"
+      Body = $body
+    }
+    if ($resp.StatusCode -lt 200 -or $resp.StatusCode -ge 300) {
+      $payload = $null
+      if ($resp.Content) {
+        try { $payload = $resp.Content | ConvertFrom-Json } catch { $payload = $resp.Content }
+      }
+      return @{ ok = $false; status = $resp.StatusCode; body = $payload }
+    }
+    $payload = $null
+    try { $payload = $resp.Content | ConvertFrom-Json } catch { $payload = $null }
+    if (-not $payload) { return @{ ok = $false; status = 0; body = "invalid_json" } }
+    $accessNew = Normalize-JwtToken -Value ($payload.access_token ?? $payload.accessToken)
+    $refreshNew = Normalize-JwtToken -Value ($payload.refresh_token ?? $payload.refreshToken)
+    if (-not $accessNew -or -not $refreshNew) { return @{ ok = $false; status = 0; body = "missing_tokens" } }
+    Set-SmartsellTokens -AccessToken $accessNew -RefreshToken $refreshNew -BaseUrl $BaseUrl
+    Write-Host "[OK] Token refreshed"
+    return @{ ok = $true; access = $accessNew; refresh = $refreshNew }
+  }
+
+  if (-not $Identifier) { $Identifier = $env:SMARTSELL_IDENTIFIER }
+  if (-not $Password) { $Password = $env:SMARTSELL_PASSWORD }
+
+  $tokenProvided = $false
+  if ($AccessToken -or $RefreshToken -or $envAccess -or $envRefresh) { $tokenProvided = $true }
+
+  if ($AccessToken) {
+    $me = Invoke-AuthMe -Token $AccessToken
+    $errCode = Get-SmokeErrorCode -Body $me.Body
+    if (-not (Test-AuthExpired -StatusCode $me.StatusCode -Body $me.Body) -and -not ($errCode -match "INVALID_TOKEN|TOKEN_EXPIRED")) {
+      Set-SmartsellTokens -AccessToken $AccessToken -RefreshToken $RefreshToken -BaseUrl $BaseUrl
+      return @{ Authorization = "Bearer $AccessToken" }
+    }
+  }
+
+  $refreshResult = Try-Refresh -Token $RefreshToken
+  if ($refreshResult -and $refreshResult.ok) {
+    return @{ Authorization = "Bearer $($refreshResult.access)" }
+  }
+
+  if ($refreshResult -and -not $refreshResult.ok) {
+    $errCode = Get-SmokeErrorCode -Body $refreshResult.body
+    if ($errCode -match "INVALID_TOKEN|TOKEN_EXPIRED" -or $refreshResult.status -eq 401) {
+      throw "Refresh token expired. Run .\scripts\smoke-auth.ps1 with valid credentials to refresh cache."
+    }
+    if ($tokenProvided) {
+      throw "Refresh failed. Provide a valid refresh token or run .\scripts\smoke-auth.ps1 to refresh the cache."
+    }
+  }
+
+  if ($tokenProvided) {
+    throw "Access token expired and no valid refresh token available."
+  }
+
+  if ($Identifier -and $Password) {
+    $tokens = Get-SmartsellTokens -BaseUrl $BaseUrl -Identifier $Identifier -Password $Password -TimeoutSec 20
+    return @{ Authorization = "Bearer $($tokens.access)" }
+  }
+
+  throw "No valid auth token; set STORE_ACCESS_TOKEN/STORE_REFRESH_TOKEN or STORE_IDENTIFIER/STORE_PASSWORD (store_admin)."
+}
+
+function Get-StoreAuthHeader {
+  param(
+    [string]$BaseUrl,
+    [string]$Identifier = $null,
+    [string]$Password = $null,
+    [string]$AccessToken = $null,
+    [string]$RefreshToken = $null
+  )
+  if (-not $Identifier) { $Identifier = $env:STORE_IDENTIFIER }
+  if (-not $Password) { $Password = $env:STORE_PASSWORD }
+  if (-not $Identifier) { $Identifier = $env:ADMIN_IDENTIFIER }
+  if (-not $Password) { $Password = $env:ADMIN_PASSWORD }
+  if (-not $AccessToken -and $env:STORE_ACCESS_TOKEN) { $AccessToken = Normalize-JwtToken -Value $env:STORE_ACCESS_TOKEN }
+  if (-not $RefreshToken -and $env:STORE_REFRESH_TOKEN) { $RefreshToken = Normalize-JwtToken -Value $env:STORE_REFRESH_TOKEN }
+  if (-not $Identifier) { $Identifier = $env:SMARTSELL_IDENTIFIER }
+  if (-not $Password) { $Password = $env:SMARTSELL_PASSWORD }
+  if (-not $AccessToken -and $env:SMARTSELL_ACCESS_TOKEN) { $AccessToken = Normalize-JwtToken -Value $env:SMARTSELL_ACCESS_TOKEN }
+  if (-not $RefreshToken -and $env:SMARTSELL_REFRESH_TOKEN) { $RefreshToken = Normalize-JwtToken -Value $env:SMARTSELL_REFRESH_TOKEN }
+  return Ensure-SmartsellAuth -BaseUrl $BaseUrl -Identifier $Identifier -Password $Password -AccessToken $AccessToken -RefreshToken $RefreshToken
+}
+
+function Get-PlatformAuthHeader {
+  param(
+    [string]$BaseUrl,
+    [string]$Identifier = $null,
+    [string]$Password = $null,
+    [string]$AccessToken = $null,
+    [string]$RefreshToken = $null
+  )
+  if (-not $Identifier) { $Identifier = $env:PLATFORM_IDENTIFIER }
+  if (-not $Password) { $Password = $env:PLATFORM_PASSWORD }
+  if (-not $Identifier) { $Identifier = $env:SMARTSELL_PLATFORM_IDENTIFIER }
+  if (-not $Password) { $Password = $env:SMARTSELL_PLATFORM_PASSWORD }
+  if (-not $Identifier) { $Identifier = $env:SMARTSELL_PLATFORM_ADMIN_IDENTIFIER }
+  if (-not $Password) { $Password = $env:SMARTSELL_PLATFORM_ADMIN_PASSWORD }
+  if (-not $AccessToken -and $env:PLATFORM_ACCESS_TOKEN) { $AccessToken = Normalize-JwtToken -Value $env:PLATFORM_ACCESS_TOKEN }
+  if (-not $RefreshToken -and $env:PLATFORM_REFRESH_TOKEN) { $RefreshToken = Normalize-JwtToken -Value $env:PLATFORM_REFRESH_TOKEN }
+  return Ensure-SmartsellAuth -BaseUrl $BaseUrl -Identifier $Identifier -Password $Password -AccessToken $AccessToken -RefreshToken $RefreshToken -DisableEnvTokens
 }
 
 function Invoke-WebRequestSafe {
@@ -298,6 +667,7 @@ function Get-SmartsellTokens {
     [string]$Password,
     [int]$TimeoutSec = 20
   )
+  Test-SmokeApiUp -BaseUrl $BaseUrl -TimeoutSec 3 | Out-Null
   $loginUrl = "$BaseUrl/api/v1/auth/login"
   $login = Invoke-RestMethod -Method POST -Uri $loginUrl -TimeoutSec $TimeoutSec -ContentType "application/json" -Body (@{ identifier = $Identifier; password = $Password } | ConvertTo-Json)
 
@@ -342,6 +712,7 @@ function Refresh-SmartsellAccessToken {
     [int]$TimeoutSec = 20
   )
   if (-not $RefreshToken) { return $null }
+  Test-SmokeApiUp -BaseUrl $BaseUrl -TimeoutSec 3 | Out-Null
   $refreshUrl = "$BaseUrl/api/v1/auth/refresh"
   $body = @{ refresh_token = $RefreshToken } | ConvertTo-Json
   $data = Invoke-RestMethod -Method POST -Uri $refreshUrl -TimeoutSec $TimeoutSec -ContentType "application/json" -Body $body
@@ -435,13 +806,7 @@ function Invoke-SmartsellMultipart {
     } catch {
       $errMsg = "request failed"
       try { $errMsg = $_.Exception.Message } catch { }
-      return [PSCustomObject]@{
-        StatusCode = 0
-        Headers = $null
-        Body = $null
-        RequestId = ""
-        Error = $errMsg
-      }
+      throw "request failed: status=(no response) body=$errMsg"
     }
 
     $status = $resp.StatusCode
@@ -571,6 +936,9 @@ function Invoke-SmartsellApi {
   if (-not $script:SmartsellAccessToken -and $env:SMARTSELL_ACCESS_TOKEN) {
     $script:SmartsellAccessToken = Normalize-JwtToken -Value $env:SMARTSELL_ACCESS_TOKEN
   }
+  if (-not $script:SmartsellAccessToken -and $env:ACCESS_TOKEN) {
+    $script:SmartsellAccessToken = Normalize-JwtToken -Value $env:ACCESS_TOKEN
+  }
   if (-not $script:SmartsellRefreshToken -and $env:SMARTSELL_REFRESH_TOKEN) {
     $script:SmartsellRefreshToken = Normalize-JwtToken -Value $env:SMARTSELL_REFRESH_TOKEN
   }
@@ -595,8 +963,12 @@ function Invoke-SmartsellApi {
     }
   }
 
+  if (-not $Identifier) { $Identifier = $env:STORE_IDENTIFIER }
+  if (-not $Password) { $Password = $env:STORE_PASSWORD }
   if (-not $Identifier) { $Identifier = $env:ADMIN_IDENTIFIER }
   if (-not $Password) { $Password = $env:ADMIN_PASSWORD }
+  if (-not $Identifier) { $Identifier = $env:SMARTSELL_IDENTIFIER }
+  if (-not $Password) { $Password = $env:SMARTSELL_PASSWORD }
   if (-not $Identifier) { $Identifier = $env:PLATFORM_IDENTIFIER }
   if (-not $Password) { $Password = $env:PLATFORM_PASSWORD }
 
@@ -629,13 +1001,7 @@ function Invoke-SmartsellApi {
     } catch {
       $errMsg = "request failed"
       try { $errMsg = $_.Exception.Message } catch { }
-      return [PSCustomObject]@{
-        StatusCode = 0
-        Headers = $null
-        Body = $null
-        RequestId = ""
-        Error = $errMsg
-      }
+      throw "request failed: status=(no response) body=$errMsg"
     }
 
     $status = $resp.StatusCode
@@ -693,4 +1059,13 @@ function Invoke-SmartsellApi {
   }
 
   return $resp
+}
+
+function Get-SmokeAccessToken([string]$BaseUrl="http://127.0.0.1:8000") {
+  $cache = Join-Path $PSScriptRoot ".smoke-cache.json"
+  if (!(Test-Path $cache)) { throw "Нет $cache. Сначала запусти .\scripts\smoke-auth.ps1" }
+  $data = Get-Content $cache -Raw | ConvertFrom-Json
+  $tok = $data.$BaseUrl.access
+  if ([string]::IsNullOrWhiteSpace($tok)) { throw "В кеше нет access для $BaseUrl. Перелогинься: .\scripts\smoke-auth.ps1" }
+  return $tok
 }

@@ -80,6 +80,12 @@ def _try_import(path: str) -> Any | None:
 auth_mod = _try_import("app.api.v1.auth")
 users_mod = _try_import("app.api.v1.users")
 products_mod = _try_import("app.api.v1.products")
+pricing_mod = _try_import("app.api.v1.pricing")
+repricing_mod = _try_import("app.api.v1.repricing")
+preorders_mod = _try_import("app.api.v1.preorders")
+warehouses_mod = _try_import("app.api.v1.warehouses")
+inventory_mod = _try_import("app.api.v1.inventory")
+orders_mod = _try_import("app.api.v1.orders")
 campaigns_mod = _try_import("app.api.v1.campaigns")
 analytics_mod = _try_import("app.api.v1.analytics")
 exports_mod = _try_import("app.api.v1.exports")
@@ -98,6 +104,12 @@ admin_mod = _try_import("app.api.v1.admin")
 auth = auth_mod
 users = users_mod
 products = products_mod
+pricing = pricing_mod
+repricing = repricing_mod
+preorders = preorders_mod
+warehouses = warehouses_mod
+inventory = inventory_mod
+orders = orders_mod
 campaigns = campaigns_mod
 billing = campaigns_mod  # исторический алиас
 kaspi = kaspi_mod  # ⬅ добавлено
@@ -107,6 +119,12 @@ __all__ = [
     "auth",
     "users",
     "products",
+    "pricing",
+    "repricing",
+    "preorders",
+    "warehouses",
+    "inventory",
+    "orders",
     "campaigns",
     "billing",
     "wallet",
@@ -146,6 +164,18 @@ if users_mod and _router_or_none(users_mod):
     V1_ROUTERS.append(("users", users_mod.router, False))
 if products_mod and _router_or_none(products_mod):
     V1_ROUTERS.append(("products", products_mod.router, False))
+if pricing_mod and _router_or_none(pricing_mod):
+    V1_ROUTERS.append(("pricing", pricing_mod.router, False))
+if repricing_mod and _router_or_none(repricing_mod):
+    V1_ROUTERS.append(("repricing", repricing_mod.router, False))
+if preorders_mod and _router_or_none(preorders_mod):
+    V1_ROUTERS.append(("preorders", preorders_mod.router, False))
+if warehouses_mod and _router_or_none(warehouses_mod):
+    V1_ROUTERS.append(("warehouses", warehouses_mod.router, False))
+if inventory_mod and _router_or_none(inventory_mod):
+    V1_ROUTERS.append(("inventory", inventory_mod.router, False))
+if orders_mod and _router_or_none(orders_mod):
+    V1_ROUTERS.append(("orders", orders_mod.router, False))
 if campaigns_mod and _router_or_none(campaigns_mod):
     # в этом модуле prefix уже абсолютный '/api/v1/campaigns'
     V1_ROUTERS.append(("campaigns", campaigns_mod.router, True))

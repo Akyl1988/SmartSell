@@ -11,7 +11,7 @@ def test_openapi_report_sections_and_entries() -> None:
     report = openapi_report.build_report(spec)
     normalized = report.replace("`", "")
 
-    assert "## Admin endpoints" in normalized
+    assert "## platform_admin endpoints" in normalized
     assert "GET /api/v1/admin/campaigns/{id}" in normalized
     assert "operationId: adminGetCampaign" in normalized
 

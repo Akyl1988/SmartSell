@@ -10,13 +10,14 @@ from app.core.db import get_async_db
 from app.core.logging import get_logger
 from app.core.rbac import is_platform_admin
 from app.core.security import get_current_user, resolve_tenant_company_id
+from app.core.subscriptions.catalog import get_plan_feature_by_codes
 from app.core.subscriptions.errors import (
     build_subscription_required_payload,
     build_subscription_required_payload_for_company,
 )
 from app.core.subscriptions.plan_catalog import get_plan_features as _catalog_plan_features
 from app.core.subscriptions.plan_catalog import normalize_plan_id
-from app.services.subscriptions import get_company_subscription, is_subscription_active
+from app.core.subscriptions.state import get_company_subscription, is_subscription_active
 
 logger = get_logger(__name__)
 
@@ -25,14 +26,6 @@ FEATURE_KASPI_SYNC_NOW = "kaspi.sync_now"
 FEATURE_KASPI_GOODS_IMPORTS = "kaspi.goods_imports"
 FEATURE_KASPI_FEED_UPLOADS = "kaspi.feed_uploads"
 FEATURE_KASPI_AUTOSYNC = "kaspi.autosync"
-
-
-async def _resolve_plan(db: AsyncSession, company_id: int) -> str:
-    subscription = await get_company_subscription(db, company_id)
-    if subscription and is_subscription_active(subscription):
-        return normalize_plan_id(getattr(subscription, "plan", None)) or "start"
-    payload = await build_subscription_required_payload_for_company(db, company_id)
-    raise HTTPException(status_code=402, detail=payload)
 
 
 def _has_feature(plan: str, feature: str) -> bool:
@@ -72,9 +65,26 @@ def require_feature(feature: str) -> Any:
         if is_platform_admin(current_user):
             return current_user
         company_id = resolve_tenant_company_id(current_user, not_found_detail="Company not set")
-        plan = await _resolve_plan(db, company_id)
-        if not _has_feature(plan, feature):
-            logger.info("Feature blocked", extra={"feature": feature, "plan": plan, "company_id": company_id})
+        subscription = await get_company_subscription(db, company_id)
+        if not is_subscription_active(subscription):
+            payload = await build_subscription_required_payload_for_company(db, company_id)
+            raise HTTPException(status_code=402, detail=payload)
+
+        plan_code = normalize_plan_id(getattr(subscription, "plan", None)) or getattr(subscription, "plan", None)
+        plan, feat, plan_feature = await get_plan_feature_by_codes(
+            db,
+            plan_code=plan_code,
+            feature_code=feature,
+        )
+        if plan and feat and plan_feature is not None:
+            if not plan.is_active or not feat.is_active or not plan_feature.enabled:
+                logger.info("Feature blocked", extra={"feature": feature, "plan": plan.code, "company_id": company_id})
+                payload = await build_subscription_required_payload(db, current_user)
+                raise HTTPException(status_code=402, detail=payload)
+            return current_user
+
+        if not _has_feature(plan_code or "start", feature):
+            logger.info("Feature blocked", extra={"feature": feature, "plan": plan_code, "company_id": company_id})
             payload = await build_subscription_required_payload(db, current_user)
             raise HTTPException(status_code=402, detail=payload)
         return current_user
