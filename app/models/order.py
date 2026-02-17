@@ -110,6 +110,7 @@ class OrderSource(str, enum.Enum):
     WEBSITE = "website"
     MANUAL = "manual"
     API = "api"
+    PREORDER = "preorder"
 
 
 ALLOWED_TRANSITIONS: dict[OrderStatus, set[OrderStatus]] = {
@@ -139,7 +140,16 @@ class Order(Base):
 
     order_number = Column(String(64), nullable=False, unique=True, index=True)
     external_id = Column(String(128), nullable=True, index=True)
-    source = Column(SQLEnum(OrderSource), default=OrderSource.MANUAL, nullable=False, index=True)
+    source = Column(
+        SQLEnum(
+            OrderSource,
+            name="ordersource",
+            values_callable=lambda obj: [e.value for e in obj],
+        ),
+        default=OrderSource.MANUAL,
+        nullable=False,
+        index=True,
+    )
     status = Column(SQLEnum(OrderStatus), default=OrderStatus.PENDING, nullable=False, index=True)
 
     customer_phone = Column(String(32), nullable=True, index=True)

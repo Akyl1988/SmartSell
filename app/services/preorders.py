@@ -4,12 +4,14 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 from decimal import Decimal
+from uuid import uuid4
 
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.core.exceptions import NotFoundError, SmartSellValidationError
+from app.models.order import Order, OrderItem, OrderSource, OrderStatus
 from app.models.preorder import Preorder, PreorderItem, PreorderStatus
 from app.schemas.preorders import PreorderCreateIn, PreorderListFilters, PreorderUpdateIn
 
@@ -182,7 +184,75 @@ async def cancel_preorder(db: AsyncSession, *, company_id: int, preorder_id: int
 
 
 async def fulfill_preorder(db: AsyncSession, *, company_id: int, preorder_id: int) -> Preorder:
-    preorder = await get_preorder(db, company_id=company_id, preorder_id=preorder_id)
-    _transition(preorder, PreorderStatus.FULFILLED)
-    await db.commit()
+    nested = db.in_transaction()
+    tx = db.begin_nested() if nested else db.begin()
+    async with tx:
+        result = await db.execute(
+            select(Preorder)
+            .where(Preorder.id == preorder_id, Preorder.company_id == company_id)
+            .options(selectinload(Preorder.items))
+            .with_for_update()
+        )
+        preorder = result.scalar_one_or_none()
+        if not preorder:
+            raise NotFoundError("Preorder not found", "PREORDER_NOT_FOUND")
+
+        if preorder.status == PreorderStatus.FULFILLED and preorder.fulfilled_order_id:
+            return preorder
+
+        if preorder.status != PreorderStatus.CONFIRMED:
+            raise SmartSellValidationError(
+                "Preorder must be confirmed before fulfillment",
+                "INVALID_PREORDER_STATUS",
+                http_status=422,
+            )
+
+        if not preorder.items:
+            raise SmartSellValidationError("Preorder has no items", "PREORDER_ITEMS_REQUIRED", http_status=422)
+
+        for item in preorder.items:
+            if item.price is None:
+                raise SmartSellValidationError(
+                    "Preorder item price is required",
+                    "PREORDER_ITEM_PRICE_REQUIRED",
+                    http_status=422,
+                )
+
+        order = Order(
+            company_id=company_id,
+            order_number=f"PRE-{uuid4().hex[:10]}",
+            source=OrderSource.PREORDER,
+            status=OrderStatus.CONFIRMED,
+            currency=preorder.currency,
+            customer_name=preorder.customer_name,
+            customer_phone=preorder.customer_phone,
+            notes=preorder.notes,
+        )
+        items = []
+        for item in preorder.items:
+            unit_price = Decimal(str(item.price))
+            quantity = int(item.qty)
+            total_price = (unit_price * Decimal(quantity)).quantize(Decimal("0.01"))
+            items.append(
+                OrderItem(
+                    product_id=item.product_id,
+                    sku=item.sku or "",
+                    name=item.name or "",
+                    unit_price=unit_price,
+                    quantity=quantity,
+                    total_price=total_price,
+                    cost_price=Decimal("0"),
+                )
+            )
+
+        order.items = items
+        order.calculate_totals()
+        db.add(order)
+        await db.flush()
+        preorder.fulfilled_order_id = order.id
+        preorder.fulfilled_at = datetime.utcnow()
+        _transition(preorder, PreorderStatus.FULFILLED)
+
+    if nested:
+        await db.commit()
     return await get_preorder(db, company_id=company_id, preorder_id=preorder.id)

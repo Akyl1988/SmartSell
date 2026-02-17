@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import pytest
+from sqlalchemy import func, select
+
+from app.models.order import Order
 
 pytestmark = pytest.mark.asyncio
 
@@ -47,6 +50,7 @@ async def test_preorders_store_admin_flow_and_tenant_isolation(
     async_client,
     company_a_admin_headers,
     company_b_admin_headers,
+    async_db_session,
 ):
     created = await async_client.post(
         "/api/v1/preorders",
@@ -84,12 +88,25 @@ async def test_preorders_store_admin_flow_and_tenant_isolation(
     assert confirmed.status_code == 200, confirmed.text
     assert confirmed.json().get("status") == "confirmed"
 
+    before_count = int((await async_db_session.execute(select(func.count()).select_from(Order))).scalar_one())
     fulfilled = await async_client.post(
         f"/api/v1/preorders/{preorder_id}/fulfill",
         headers=company_a_admin_headers,
     )
     assert fulfilled.status_code == 200, fulfilled.text
-    assert fulfilled.json().get("status") == "fulfilled"
+    fulfilled_payload = fulfilled.json()
+    assert fulfilled_payload.get("status") == "fulfilled"
+    first_order_id = fulfilled_payload.get("fulfilled_order_id")
+    assert first_order_id
+
+    fulfilled_again = await async_client.post(
+        f"/api/v1/preorders/{preorder_id}/fulfill",
+        headers=company_a_admin_headers,
+    )
+    assert fulfilled_again.status_code == 200, fulfilled_again.text
+    assert fulfilled_again.json().get("fulfilled_order_id") == first_order_id
+    after_count = int((await async_db_session.execute(select(func.count()).select_from(Order))).scalar_one())
+    assert after_count == before_count + 1
 
 
 async def test_preorders_transitions_invalid(
@@ -109,7 +126,7 @@ async def test_preorders_transitions_invalid(
         f"/api/v1/preorders/{preorder_id}/fulfill",
         headers=company_a_admin_headers,
     )
-    assert fulfilled.status_code == 409, fulfilled.text
+    assert fulfilled.status_code == 422, fulfilled.text
 
     confirmed = await async_client.post(
         f"/api/v1/preorders/{preorder_id}/confirm",
@@ -137,3 +154,35 @@ async def test_preorders_transitions_invalid(
     )
     assert cancelled_again.status_code == 200, cancelled_again.text
     assert cancelled_again.json().get("status") == "cancelled"
+
+
+async def test_preorders_fulfill_requires_item_price(
+    async_client,
+    company_a_admin_headers,
+):
+    created = await async_client.post(
+        "/api/v1/preorders",
+        json={
+            "currency": "KZT",
+            "customer_name": "Alice",
+            "items": [
+                {"sku": "SKU-NULL", "name": "No Price", "qty": 1, "price": None},
+            ],
+        },
+        headers=company_a_admin_headers,
+    )
+    assert created.status_code == 201, created.text
+    preorder_id = created.json().get("id")
+    assert preorder_id
+
+    confirmed = await async_client.post(
+        f"/api/v1/preorders/{preorder_id}/confirm",
+        headers=company_a_admin_headers,
+    )
+    assert confirmed.status_code == 200, confirmed.text
+
+    fulfilled = await async_client.post(
+        f"/api/v1/preorders/{preorder_id}/fulfill",
+        headers=company_a_admin_headers,
+    )
+    assert fulfilled.status_code == 422, fulfilled.text

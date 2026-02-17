@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import datetime
 from decimal import Decimal
 
 from pydantic import Field, field_validator, model_validator
@@ -52,6 +53,8 @@ class PreorderOut(TimestampedSchema):
     customer_phone: str | None
     notes: str | None
     created_by_user_id: int | None
+    fulfilled_order_id: int | None
+    fulfilled_at: datetime | None
     items: list[PreorderItemOut] | None = None
 
     @model_validator(mode="after")
