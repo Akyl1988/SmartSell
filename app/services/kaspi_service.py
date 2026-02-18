@@ -1042,13 +1042,14 @@ class KaspiService:
                                         company_id=company_id,
                                         payload=payload,
                                     )
-                                    await self._apply_kaspi_preorder_transition(
-                                        db,
-                                        company_id=company_id,
-                                        preorder=preorder,
-                                        mapped_status=mapped_status,
-                                        order_id=order_pk,
-                                    )
+                                    if preorder is not None:
+                                        await self._apply_kaspi_preorder_transition(
+                                            db,
+                                            company_id=company_id,
+                                            preorder=preorder,
+                                            mapped_status=mapped_status,
+                                            order_id=order_pk,
+                                        )
 
                                 # page handling happens inside _iter_orders_pages
 
@@ -1477,8 +1478,16 @@ class KaspiService:
         *,
         company_id: int,
         payload: dict[str, Any],
-    ) -> Preorder:
-        external_id = _as_str(payload.get("id")).strip()
+    ) -> Preorder | None:
+        raw_external_id = payload.get("id")
+        if not isinstance(raw_external_id, str) or not raw_external_id.strip():
+            logger.warning(
+                "Kaspi preorder skipped: missing order id (company_id=%s, keys=%s)",
+                company_id,
+                sorted(payload.keys()),
+            )
+            return None
+        external_id = raw_external_id.strip()
         currency = _as_str(payload.get("currency")) or "KZT"
         customer = payload.get("customer") or {}
         notes = _as_str(payload.get("notes") or "").strip() or None
