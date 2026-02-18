@@ -15,6 +15,9 @@ import sqlalchemy as sa
 
 from app.models import Order
 from app.models.kaspi_order_sync_state import KaspiOrderSyncState
+from app.models.preorder import Preorder, PreorderStatus
+from app.models.product import Product
+from app.models.warehouse import ProductStock, StockMovement, Warehouse
 from app.services.kaspi_service import KaspiService
 
 
@@ -43,6 +46,34 @@ def _orders_payload_with_timestamp(order_id: str, status: str, price: int, ts: d
             ],
         }
     ]
+
+
+async def _seed_kaspi_inventory(
+    async_db_session,
+    *,
+    company_id: int,
+    kaspi_product_id: str,
+    quantity: int = 5,
+) -> Product:
+    product = Product(
+        company_id=company_id,
+        name=f"Kaspi Product {kaspi_product_id}",
+        slug=f"kaspi-product-{kaspi_product_id}",
+        sku=f"KASPI-{kaspi_product_id}",
+        price=100,
+        stock_quantity=quantity,
+        kaspi_product_id=kaspi_product_id,
+    )
+    warehouse = Warehouse(company_id=company_id, name="Main", is_main=True)
+    async_db_session.add_all([product, warehouse])
+    await async_db_session.commit()
+    await async_db_session.refresh(product)
+    await async_db_session.refresh(warehouse)
+
+    stock = ProductStock(product_id=product.id, warehouse_id=warehouse.id, quantity=quantity, reserved_quantity=0)
+    async_db_session.add(stock)
+    await async_db_session.commit()
+    return product
 
 
 @pytest_asyncio.fixture(autouse=True)
@@ -481,3 +512,376 @@ async def test_error_handling_persists_failure_state(
     assert state.last_error_at is not None, "Error timestamp should be recorded"
     assert state.last_synced_at == initial_ts, "Watermark should not change on error"
     assert state.last_external_order_id == "prev-order-001", "Last external ID should not change on error"
+
+
+@pytest.mark.asyncio
+async def test_kaspi_sync_preorder_reserve_cancel_idempotent(
+    monkeypatch,
+    async_client,
+    async_db_session,
+    company_a_admin_headers,
+):
+    product = await _seed_kaspi_inventory(async_db_session, company_id=1001, kaspi_product_id="kp-res-1", quantity=4)
+    product_id = product.id
+    product_kaspi_id = product.kaspi_product_id
+    product_sku = product.sku
+    product_name = product.name
+
+    status_state = {
+        "value": "CONFIRMED",
+        "updated_at": _utcnow() - timedelta(hours=2),
+    }
+
+    async def fake_get_orders(self, *, date_from=None, date_to=None, status=None, page=1, page_size=100):  # noqa: ARG001
+        if page != 1:
+            return {"items": [], "page": page, "total_pages": 1, "has_next": False}
+        return {
+            "items": [
+                {
+                    "id": "kaspi-res-001",
+                    "status": status_state["value"],
+                    "updatedAt": status_state["updated_at"].isoformat().replace("+00:00", "Z"),
+                    "totalPrice": 200,
+                    "customer": {"phone": "+77001230000", "name": "Kaspi Reserve"},
+                    "items": [
+                        {
+                            "productId": product_kaspi_id,
+                            "productSku": product_sku,
+                            "productName": product_name,
+                            "quantity": 2,
+                            "basePrice": 100,
+                            "totalPrice": 200,
+                        }
+                    ],
+                }
+            ],
+            "page": 1,
+            "total_pages": 1,
+            "has_next": False,
+        }
+
+    monkeypatch.setattr(KaspiService, "get_orders", fake_get_orders)
+
+    resp = await async_client.post("/api/v1/kaspi/orders/sync", headers=company_a_admin_headers)
+    assert resp.status_code == 200, resp.text
+
+    preorder = (
+        (
+            await async_db_session.execute(
+                sa.select(Preorder).where(
+                    Preorder.company_id == 1001,
+                    Preorder.source == "kaspi",
+                    Preorder.external_id == "kaspi-res-001",
+                )
+            )
+        )
+        .scalars()
+        .one()
+    )
+    assert preorder.status == PreorderStatus.CONFIRMED
+
+    stock = (
+        (await async_db_session.execute(sa.select(ProductStock).where(ProductStock.product_id == product_id)))
+        .scalars()
+        .one()
+    )
+    assert stock.reserved_quantity == 2
+
+    moves = (
+        (
+            await async_db_session.execute(
+                sa.select(StockMovement).where(
+                    StockMovement.reference_type == "preorder",
+                    StockMovement.reference_id == preorder.id,
+                    StockMovement.movement_type == "reserve",
+                    StockMovement.product_id == product_id,
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+    assert len(moves) == 1
+
+    resp = await async_client.post("/api/v1/kaspi/orders/sync", headers=company_a_admin_headers)
+    assert resp.status_code == 200, resp.text
+
+    moves = (
+        (
+            await async_db_session.execute(
+                sa.select(StockMovement).where(
+                    StockMovement.reference_type == "preorder",
+                    StockMovement.reference_id == preorder.id,
+                    StockMovement.movement_type == "reserve",
+                    StockMovement.product_id == product_id,
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+    assert len(moves) == 1
+
+    status_state["value"] = "CANCELLED"
+    status_state["updated_at"] = _utcnow() - timedelta(hours=1)
+
+    resp = await async_client.post("/api/v1/kaspi/orders/sync", headers=company_a_admin_headers)
+    assert resp.status_code == 200, resp.text
+
+    await async_db_session.rollback()
+
+    preorder = (
+        (
+            await async_db_session.execute(
+                sa.select(Preorder).where(
+                    Preorder.company_id == 1001,
+                    Preorder.source == "kaspi",
+                    Preorder.external_id == "kaspi-res-001",
+                )
+            )
+        )
+        .scalars()
+        .one()
+    )
+    assert preorder.status == PreorderStatus.CANCELLED
+
+    stock = (
+        (await async_db_session.execute(sa.select(ProductStock).where(ProductStock.product_id == product_id)))
+        .scalars()
+        .one()
+    )
+    assert stock.reserved_quantity == 0
+
+    release_moves = (
+        (
+            await async_db_session.execute(
+                sa.select(StockMovement).where(
+                    StockMovement.reference_type == "preorder",
+                    StockMovement.reference_id == preorder.id,
+                    StockMovement.movement_type == "release",
+                    StockMovement.product_id == product_id,
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+    assert len(release_moves) == 1
+
+    resp = await async_client.post("/api/v1/kaspi/orders/sync", headers=company_a_admin_headers)
+    assert resp.status_code == 200, resp.text
+
+    release_moves = (
+        (
+            await async_db_session.execute(
+                sa.select(StockMovement).where(
+                    StockMovement.reference_type == "preorder",
+                    StockMovement.reference_id == preorder.id,
+                    StockMovement.movement_type == "release",
+                    StockMovement.product_id == product_id,
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+    assert len(release_moves) == 1
+
+
+@pytest.mark.asyncio
+async def test_kaspi_sync_preorder_fulfill_idempotent(
+    monkeypatch,
+    async_client,
+    async_db_session,
+    company_a_admin_headers,
+):
+    product = await _seed_kaspi_inventory(async_db_session, company_id=1001, kaspi_product_id="kp-ful-1", quantity=5)
+
+    status_state = {
+        "value": "DELIVERED",
+        "updated_at": _utcnow() - timedelta(hours=1),
+    }
+
+    async def fake_get_orders(self, *, date_from=None, date_to=None, status=None, page=1, page_size=100):  # noqa: ARG001
+        if page != 1:
+            return {"items": [], "page": page, "total_pages": 1, "has_next": False}
+        return {
+            "items": [
+                {
+                    "id": "kaspi-ful-001",
+                    "status": status_state["value"],
+                    "updatedAt": status_state["updated_at"].isoformat().replace("+00:00", "Z"),
+                    "totalPrice": 300,
+                    "customer": {"phone": "+77004560000", "name": "Kaspi Fulfill"},
+                    "items": [
+                        {
+                            "productId": product.kaspi_product_id,
+                            "productSku": product.sku,
+                            "productName": product.name,
+                            "quantity": 2,
+                            "basePrice": 150,
+                            "totalPrice": 300,
+                        }
+                    ],
+                }
+            ],
+            "page": 1,
+            "total_pages": 1,
+            "has_next": False,
+        }
+
+    monkeypatch.setattr(KaspiService, "get_orders", fake_get_orders)
+
+    resp = await async_client.post("/api/v1/kaspi/orders/sync", headers=company_a_admin_headers)
+    assert resp.status_code == 200, resp.text
+
+    preorder = (
+        (
+            await async_db_session.execute(
+                sa.select(Preorder).where(
+                    Preorder.company_id == 1001,
+                    Preorder.source == "kaspi",
+                    Preorder.external_id == "kaspi-ful-001",
+                )
+            )
+        )
+        .scalars()
+        .one()
+    )
+    assert preorder.status == PreorderStatus.FULFILLED
+
+    stock = (
+        (await async_db_session.execute(sa.select(ProductStock).where(ProductStock.product_id == product.id)))
+        .scalars()
+        .one()
+    )
+    assert stock.reserved_quantity == 0
+    assert stock.quantity == 3
+
+    reserve_moves = (
+        (
+            await async_db_session.execute(
+                sa.select(StockMovement).where(
+                    StockMovement.reference_type == "preorder",
+                    StockMovement.reference_id == preorder.id,
+                    StockMovement.movement_type == "reserve",
+                    StockMovement.product_id == product.id,
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+    assert len(reserve_moves) == 1
+
+    fulfill_moves = (
+        (
+            await async_db_session.execute(
+                sa.select(StockMovement).where(
+                    StockMovement.reference_type == "preorder",
+                    StockMovement.reference_id == preorder.id,
+                    StockMovement.movement_type == "fulfill",
+                    StockMovement.product_id == product.id,
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+    assert len(fulfill_moves) == 1
+
+    resp = await async_client.post("/api/v1/kaspi/orders/sync", headers=company_a_admin_headers)
+    assert resp.status_code == 200, resp.text
+
+    fulfill_moves = (
+        (
+            await async_db_session.execute(
+                sa.select(StockMovement).where(
+                    StockMovement.reference_type == "preorder",
+                    StockMovement.reference_id == preorder.id,
+                    StockMovement.movement_type == "fulfill",
+                    StockMovement.product_id == product.id,
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+    assert len(fulfill_moves) == 1
+
+
+@pytest.mark.asyncio
+async def test_kaspi_sync_tenant_isolation(
+    monkeypatch,
+    async_client,
+    async_db_session,
+    company_a_admin_headers,
+    company_b_admin_headers,
+):
+    from app.models.company import Company
+
+    company_b = await async_db_session.get(Company, 2001)
+    if company_b is None:
+        company_b = Company(id=2001, name="Company 2001", kaspi_store_id="store-b")
+        async_db_session.add(company_b)
+    elif not company_b.kaspi_store_id:
+        company_b.kaspi_store_id = "store-b"
+    await async_db_session.commit()
+
+    status_state = {
+        "value": "NEW",
+        "updated_at": _utcnow() - timedelta(hours=1),
+    }
+
+    async def fake_get_orders(self, *, date_from=None, date_to=None, status=None, page=1, page_size=100):  # noqa: ARG001
+        if page != 1:
+            return {"items": [], "page": page, "total_pages": 1, "has_next": False}
+        return {
+            "items": [
+                {
+                    "id": "kaspi-tenant-001",
+                    "status": status_state["value"],
+                    "updatedAt": status_state["updated_at"].isoformat().replace("+00:00", "Z"),
+                    "totalPrice": 100,
+                    "customer": {"phone": "+77009990000", "name": "Tenant Test"},
+                    "items": [],
+                }
+            ],
+            "page": 1,
+            "total_pages": 1,
+            "has_next": False,
+        }
+
+    monkeypatch.setattr(KaspiService, "get_orders", fake_get_orders)
+
+    resp = await async_client.post("/api/v1/kaspi/orders/sync", headers=company_a_admin_headers)
+    assert resp.status_code == 200, resp.text
+
+    resp = await async_client.post("/api/v1/kaspi/orders/sync", headers=company_b_admin_headers)
+    assert resp.status_code == 200, resp.text
+
+    orders = (
+        (
+            await async_db_session.execute(
+                sa.select(Order).where(Order.external_id == "kaspi-tenant-001").order_by(Order.company_id)
+            )
+        )
+        .scalars()
+        .all()
+    )
+    assert len(orders) == 2
+    assert {order.company_id for order in orders} == {1001, 2001}
+
+    preorders = (
+        (
+            await async_db_session.execute(
+                sa.select(Preorder).where(
+                    Preorder.external_id == "kaspi-tenant-001",
+                    Preorder.source == "kaspi",
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+    assert len(preorders) == 2

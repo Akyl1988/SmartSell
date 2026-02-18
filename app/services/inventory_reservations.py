@@ -8,6 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.exceptions import NotFoundError, SmartSellValidationError
 from app.models.product import Product
 from app.models.warehouse import MovementType, ProductStock, StockMovement, Warehouse
+from app.services.preorder_policy import evaluate_preorder_state
 
 
 def _validate_qty(qty: int) -> int:
@@ -137,6 +138,8 @@ async def reserve_and_log(
     db.add(movement)
     await db.flush()
 
+    await evaluate_preorder_state(db, company_id=tenant_id, product_id=product.id)
+
     return _build_result(stock)
 
 
@@ -176,6 +179,8 @@ async def release_and_log(
     )
     db.add(movement)
     await db.flush()
+
+    await evaluate_preorder_state(db, company_id=tenant_id, product_id=product.id)
 
     return _build_result(stock)
 
@@ -218,5 +223,7 @@ async def fulfill_reservation(
     )
     db.add(movement)
     await db.flush()
+
+    await evaluate_preorder_state(db, company_id=tenant_id, product_id=product.id)
 
     return _build_result(stock)

@@ -1782,7 +1782,7 @@ async def kaspi_availability_sync_one(
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Product not found")
 
         svc = KaspiService()
-        ok = await svc.sync_product_availability(product)
+        ok = await svc.sync_product_availability(product, db=session)
         return {"ok": bool(ok)}
     except HTTPException:
         raise
