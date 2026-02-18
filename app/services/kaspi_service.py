@@ -15,6 +15,7 @@ Kaspi.kz integration: product feed generation, orders sync, and availability syn
 
 import asyncio
 import hashlib
+import json
 import os
 import random
 from collections.abc import AsyncIterator, Mapping
@@ -26,7 +27,7 @@ from typing import Any, Optional
 
 import anyio
 import httpx
-from sqlalchemy import and_, literal_column, select, text
+from sqlalchemy import and_, literal_column, select, text, update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from sqlalchemy.orm import selectinload
@@ -71,6 +72,70 @@ def _utcnow() -> datetime:
 
 def _as_str(v: Any) -> str:
     return "" if v is None else str(v)
+
+
+def _normalize_address(value: Any) -> str | None:
+    if value is None:
+        return None
+    if isinstance(value, str):
+        return value
+    if isinstance(value, dict | list):
+        try:
+            return json.dumps(value, separators=(",", ":"), sort_keys=True)
+        except (TypeError, ValueError):
+            return str(value)
+    return str(value)
+
+
+def _extract_kaspi_order_attrs(payload: dict[str, Any]) -> dict[str, Any]:
+    keys = (
+        "plannedDeliveryDate",
+        "reservationDate",
+        "preOrder",
+        "deliveryMode",
+        "deliveryAddress",
+        "deliveryCost",
+        "deliveryCostForSeller",
+        "isKaspiDelivery",
+    )
+    return {key: payload[key] for key in keys if key in payload}
+
+
+def _epoch_ms_to_utc_iso(value: Any) -> str | None:
+    if isinstance(value, bool) or not isinstance(value, int | float):
+        return None
+    try:
+        ms = int(value)
+    except (TypeError, ValueError):
+        return None
+    if ms <= 0:
+        return None
+    dt = datetime.utcfromtimestamp(ms / 1000)
+    return f"{dt.isoformat(timespec='seconds')}Z"
+
+
+def _merge_kaspi_internal_notes(existing: Any, kaspi_attrs: dict[str, Any]) -> dict[str, Any]:
+    base: dict[str, Any]
+    if existing is None:
+        base = {}
+    elif isinstance(existing, dict):
+        base = dict(existing)
+    elif isinstance(existing, str):
+        try:
+            parsed = json.loads(existing) if existing.strip() else {}
+        except json.JSONDecodeError:
+            parsed = {"text": existing}
+        base = parsed if isinstance(parsed, dict) else {"text": existing}
+    else:
+        base = {}
+
+    kaspi = base.get("kaspi")
+    if not isinstance(kaspi, dict):
+        kaspi = {}
+    for key, value in kaspi_attrs.items():
+        kaspi[key] = value
+    base["kaspi"] = kaspi
+    return base
 
 
 def _first_present(data: Mapping[str, Any], *keys: str) -> Any | None:
@@ -958,9 +1023,39 @@ class KaspiService:
                                         or payload.get("total")
                                         or 0
                                     )
+                                    delivery_address = _normalize_address(
+                                        payload.get("deliveryAddress") or payload.get("delivery_address")
+                                    )
+                                    kaspi_attrs = _extract_kaspi_order_attrs(payload)
+                                    planned_date = (
+                                        payload.get("plannedDeliveryDate") if "plannedDeliveryDate" in payload else None
+                                    )
+                                    reservation_date = (
+                                        payload.get("reservationDate") if "reservationDate" in payload else None
+                                    )
+                                    delivery_date = _epoch_ms_to_utc_iso(planned_date)
+                                    if delivery_date is None:
+                                        delivery_date = _epoch_ms_to_utc_iso(reservation_date)
                                     status_changed_at = self._extract_order_timestamp(payload)
                                     updated_ts = status_changed_at or effective_to
                                     effective_updated = updated_ts or attempt_at
+
+                                    update_values = {
+                                        "status": mapped_status,
+                                        "source": OrderSource.KASPI,
+                                        "order_number": order_number,
+                                        "customer_phone": customer.get("phone") or None,
+                                        "customer_name": customer.get("name") or None,
+                                        "customer_address": delivery_address,
+                                        "delivery_method": payload.get("deliveryMode")
+                                        or payload.get("delivery_mode")
+                                        or None,
+                                        "total_amount": total_amount,
+                                        "currency": currency,
+                                        "updated_at": effective_updated,
+                                    }
+                                    if delivery_date is not None:
+                                        update_values["delivery_date"] = delivery_date
 
                                     stmt = (
                                         insert(Order)
@@ -972,34 +1067,18 @@ class KaspiService:
                                             status=mapped_status,
                                             customer_phone=customer.get("phone") or None,
                                             customer_name=customer.get("name") or None,
-                                            customer_address=payload.get("deliveryAddress")
-                                            or payload.get("delivery_address")
-                                            or None,
+                                            customer_address=delivery_address,
                                             delivery_method=payload.get("deliveryMode")
                                             or payload.get("delivery_mode")
                                             or None,
+                                            delivery_date=delivery_date,
                                             total_amount=total_amount,
                                             currency=currency,
                                             updated_at=effective_updated,
                                         )
                                         .on_conflict_do_update(
                                             index_elements=[Order.company_id, Order.external_id],
-                                            set_={
-                                                "status": mapped_status,
-                                                "source": OrderSource.KASPI,
-                                                "order_number": order_number,
-                                                "customer_phone": customer.get("phone") or None,
-                                                "customer_name": customer.get("name") or None,
-                                                "customer_address": payload.get("deliveryAddress")
-                                                or payload.get("delivery_address")
-                                                or None,
-                                                "delivery_method": payload.get("deliveryMode")
-                                                or payload.get("delivery_mode")
-                                                or None,
-                                                "total_amount": total_amount,
-                                                "currency": currency,
-                                                "updated_at": effective_updated,
-                                            },
+                                            set_=update_values,
                                         )
                                         .returning(Order.id, literal_column("xmax = 0").label("inserted"))
                                     )
@@ -1015,6 +1094,26 @@ class KaspiService:
                                         updated += 1
 
                                     order_pk = row.id
+
+                                    if kaspi_attrs:
+                                        notes_row = await db.execute(
+                                            select(Order.internal_notes).where(Order.id == order_pk)
+                                        )
+                                        merged_notes = _merge_kaspi_internal_notes(
+                                            notes_row.scalar_one_or_none(),
+                                            kaspi_attrs,
+                                        )
+                                        await db.execute(
+                                            update(Order)
+                                            .where(Order.id == order_pk)
+                                            .values(
+                                                internal_notes=json.dumps(
+                                                    merged_notes,
+                                                    separators=(",", ":"),
+                                                    sort_keys=True,
+                                                )
+                                            )
+                                        )
 
                                     if updated_ts > watermark or (
                                         updated_ts == watermark and ext_id and ext_id > (last_ext or "")
@@ -1938,7 +2037,7 @@ class KaspiService:
                 status=self._map_kaspi_status(_as_str(kaspi_order.get("status"))),
                 customer_phone=(kaspi_order.get("customer") or {}).get("phone"),
                 customer_name=(kaspi_order.get("customer") or {}).get("name"),
-                customer_address=kaspi_order.get("deliveryAddress"),
+                customer_address=_normalize_address(kaspi_order.get("deliveryAddress")),
                 delivery_method=kaspi_order.get("deliveryMode"),
                 total_amount=kaspi_order.get("totalPrice", 0),
                 currency="KZT",

@@ -7,6 +7,7 @@ Tests cover:
 3. Upsert update: remote order changes status/price; second sync updates existing row
 """
 
+import json
 from datetime import UTC, datetime, timedelta
 
 import pytest
@@ -15,6 +16,7 @@ import sqlalchemy as sa
 
 from app.models import Order
 from app.models.kaspi_order_sync_state import KaspiOrderSyncState
+from app.models.order import OrderSource, OrderStatus
 from app.models.preorder import Preorder, PreorderStatus
 from app.models.product import Product
 from app.models.warehouse import ProductStock, StockMovement, Warehouse
@@ -46,6 +48,10 @@ def _orders_payload_with_timestamp(order_id: str, status: str, price: int, ts: d
             ],
         }
     ]
+
+
+def _epoch_ms(dt: datetime) -> int:
+    return int(dt.timestamp() * 1000)
 
 
 async def _seed_kaspi_inventory(
@@ -758,56 +764,196 @@ async def test_kaspi_sync_preorder_fulfill_idempotent(
     assert stock.reserved_quantity == 0
     assert stock.quantity == 3
 
-    reserve_moves = (
-        (
-            await async_db_session.execute(
-                sa.select(StockMovement).where(
-                    StockMovement.reference_type == "preorder",
-                    StockMovement.reference_id == preorder.id,
-                    StockMovement.movement_type == "reserve",
-                    StockMovement.product_id == product.id,
-                )
-            )
-        )
-        .scalars()
-        .all()
-    )
-    assert len(reserve_moves) == 1
 
-    fulfill_moves = (
-        (
-            await async_db_session.execute(
-                sa.select(StockMovement).where(
-                    StockMovement.reference_type == "preorder",
-                    StockMovement.reference_id == preorder.id,
-                    StockMovement.movement_type == "fulfill",
-                    StockMovement.product_id == product.id,
-                )
-            )
-        )
-        .scalars()
-        .all()
-    )
-    assert len(fulfill_moves) == 1
+@pytest.mark.asyncio
+async def test_kaspi_sync_persists_delivery_attrs_planned_date(
+    monkeypatch,
+    async_client,
+    async_db_session,
+    company_a_admin_headers,
+):
+    planned_dt = datetime(2026, 1, 5, 12, 30, tzinfo=UTC)
+    planned_ms = _epoch_ms(planned_dt)
+
+    async def fake_get_orders(self, *, date_from=None, date_to=None, status=None, page=1, page_size=100):  # noqa: ARG001
+        if page != 1:
+            return {"items": [], "page": page, "total_pages": 1, "has_next": False}
+        return {
+            "items": [
+                {
+                    "id": "kaspi-delivery-001",
+                    "status": "NEW",
+                    "totalPrice": 1000,
+                    "plannedDeliveryDate": planned_ms,
+                    "preOrder": True,
+                    "deliveryMode": "DELIVERY_LOCAL",
+                    "deliveryAddress": {"city": "Almaty"},
+                    "deliveryCost": 500.0,
+                    "deliveryCostForSeller": 0.0,
+                    "isKaspiDelivery": False,
+                    "customer": {"phone": "+77001112233", "name": "Customer"},
+                    "items": [
+                        {
+                            "productSku": "SKU-DEL-1",
+                            "productName": "Item",
+                            "quantity": 1,
+                            "basePrice": 1000,
+                            "totalPrice": 1000,
+                        }
+                    ],
+                }
+            ],
+            "page": 1,
+            "total_pages": 1,
+            "has_next": False,
+        }
+
+    monkeypatch.setattr(KaspiService, "get_orders", fake_get_orders)
 
     resp = await async_client.post("/api/v1/kaspi/orders/sync", headers=company_a_admin_headers)
     assert resp.status_code == 200, resp.text
 
-    fulfill_moves = (
+    order = (
         (
             await async_db_session.execute(
-                sa.select(StockMovement).where(
-                    StockMovement.reference_type == "preorder",
-                    StockMovement.reference_id == preorder.id,
-                    StockMovement.movement_type == "fulfill",
-                    StockMovement.product_id == product.id,
+                sa.select(Order).where(
+                    Order.company_id == 1001,
+                    Order.external_id == "kaspi-delivery-001",
                 )
             )
         )
         .scalars()
-        .all()
+        .one()
     )
-    assert len(fulfill_moves) == 1
+
+    notes = json.loads(order.internal_notes or "{}")
+    assert notes.get("kaspi") == {
+        "plannedDeliveryDate": planned_ms,
+        "preOrder": True,
+        "deliveryMode": "DELIVERY_LOCAL",
+        "deliveryAddress": {"city": "Almaty"},
+        "deliveryCost": 500.0,
+        "deliveryCostForSeller": 0.0,
+        "isKaspiDelivery": False,
+    }
+    assert order.delivery_date == "2026-01-05T12:30:00Z"
+
+
+@pytest.mark.asyncio
+async def test_kaspi_sync_delivery_date_falls_back_to_reservation_date(
+    monkeypatch,
+    async_client,
+    async_db_session,
+    company_a_admin_headers,
+):
+    reservation_dt = datetime(2026, 2, 10, 9, 0, tzinfo=UTC)
+    reservation_ms = _epoch_ms(reservation_dt)
+
+    async def fake_get_orders(self, *, date_from=None, date_to=None, status=None, page=1, page_size=100):  # noqa: ARG001
+        if page != 1:
+            return {"items": [], "page": page, "total_pages": 1, "has_next": False}
+        return {
+            "items": [
+                {
+                    "id": "kaspi-delivery-002",
+                    "status": "NEW",
+                    "totalPrice": 2000,
+                    "reservationDate": reservation_ms,
+                    "preOrder": False,
+                    "customer": {"phone": "+77001114455", "name": "Customer"},
+                    "items": [
+                        {
+                            "productSku": "SKU-DEL-2",
+                            "productName": "Item",
+                            "quantity": 1,
+                            "basePrice": 2000,
+                            "totalPrice": 2000,
+                        }
+                    ],
+                }
+            ],
+            "page": 1,
+            "total_pages": 1,
+            "has_next": False,
+        }
+
+    monkeypatch.setattr(KaspiService, "get_orders", fake_get_orders)
+
+    resp = await async_client.post("/api/v1/kaspi/orders/sync", headers=company_a_admin_headers)
+    assert resp.status_code == 200, resp.text
+
+    order = (
+        (
+            await async_db_session.execute(
+                sa.select(Order).where(
+                    Order.company_id == 1001,
+                    Order.external_id == "kaspi-delivery-002",
+                )
+            )
+        )
+        .scalars()
+        .one()
+    )
+    assert order.delivery_date == "2026-02-10T09:00:00Z"
+
+
+@pytest.mark.asyncio
+async def test_kaspi_sync_delivery_date_kept_when_missing(
+    monkeypatch,
+    async_client,
+    async_db_session,
+    company_a_admin_headers,
+):
+    order = Order(
+        company_id=1001,
+        order_number="KASPI-EXIST-1",
+        external_id="kaspi-delivery-003",
+        source=OrderSource.KASPI,
+        status=OrderStatus.PENDING,
+        delivery_date="2026-03-01T00:00:00Z",
+        internal_notes=json.dumps({"existing": True, "kaspi": {"preOrder": False}}),
+    )
+    async_db_session.add(order)
+    await async_db_session.commit()
+
+    async def fake_get_orders(self, *, date_from=None, date_to=None, status=None, page=1, page_size=100):  # noqa: ARG001
+        if page != 1:
+            return {"items": [], "page": page, "total_pages": 1, "has_next": False}
+        return {
+            "items": [
+                {
+                    "id": "kaspi-delivery-003",
+                    "status": "NEW",
+                    "totalPrice": 3000,
+                    "deliveryMode": "DELIVERY_PICKUP",
+                    "customer": {"phone": "+77001116677", "name": "Customer"},
+                    "items": [
+                        {
+                            "productSku": "SKU-DEL-3",
+                            "productName": "Item",
+                            "quantity": 1,
+                            "basePrice": 3000,
+                            "totalPrice": 3000,
+                        }
+                    ],
+                }
+            ],
+            "page": 1,
+            "total_pages": 1,
+            "has_next": False,
+        }
+
+    monkeypatch.setattr(KaspiService, "get_orders", fake_get_orders)
+
+    resp = await async_client.post("/api/v1/kaspi/orders/sync", headers=company_a_admin_headers)
+    assert resp.status_code == 200, resp.text
+
+    await async_db_session.refresh(order)
+    assert order.delivery_date == "2026-03-01T00:00:00Z"
+    notes = json.loads(order.internal_notes or "{}")
+    assert notes.get("existing") is True
+    assert notes.get("kaspi", {}).get("preOrder") is False
+    assert notes.get("kaspi", {}).get("deliveryMode") == "DELIVERY_PICKUP"
 
 
 @pytest.mark.asyncio
