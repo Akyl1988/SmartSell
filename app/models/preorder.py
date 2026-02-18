@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import enum
 
-from sqlalchemy import Column, DateTime, ForeignKey, Index, Integer, Numeric, String, Text
+from sqlalchemy import Column, DateTime, ForeignKey, Index, Integer, Numeric, String, Text, UniqueConstraint
 from sqlalchemy import Enum as SQLEnum
 from sqlalchemy.orm import relationship
 
@@ -43,6 +43,8 @@ class Preorder(BaseModel):
     customer_name = Column(String(255), nullable=True)
     customer_phone = Column(String(32), nullable=True)
     notes = Column(Text, nullable=True)
+    source = Column(String(32), nullable=True, index=True)
+    external_id = Column(String(128), nullable=True, index=True)
     created_by_user_id = Column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True)
     fulfilled_order_id = Column(ForeignKey("orders.id", ondelete="SET NULL"), nullable=True, index=True)
     fulfilled_at = Column(DateTime, nullable=True)
@@ -56,6 +58,7 @@ class Preorder(BaseModel):
         Index("ix_preorders_company_created", "company_id", "created_at"),
         Index("ix_preorders_company_status", "company_id", "status"),
         Index("ix_preorders_fulfilled_order", "fulfilled_order_id"),
+        UniqueConstraint("company_id", "source", "external_id", name="uq_preorders_company_source_external_id"),
     )
 
     def change_status(self, new_status: PreorderStatus) -> None:

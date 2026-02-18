@@ -39,6 +39,9 @@ from app.integrations.kaspi_adapter import KaspiAdapterError
 from app.models import Order, OrderItem, Product
 from app.models.kaspi_order_sync_state import KaspiOrderSyncState
 from app.models.order import OrderSource, OrderStatus, OrderStatusHistory
+from app.models.preorder import Preorder, PreorderItem, PreorderStatus
+from app.services.preorder_policy import evaluate_preorder_state
+from app.services.preorders import cancel_preorder, confirm_preorder, fulfill_preorder
 
 logger = get_logger(__name__)
 
@@ -1034,6 +1037,19 @@ class KaspiService:
                                         changed_at=status_changed_at,
                                     )
 
+                                    preorder = await self._get_or_create_kaspi_preorder(
+                                        db,
+                                        company_id=company_id,
+                                        payload=payload,
+                                    )
+                                    await self._apply_kaspi_preorder_transition(
+                                        db,
+                                        company_id=company_id,
+                                        preorder=preorder,
+                                        mapped_status=mapped_status,
+                                        order_id=order_pk,
+                                    )
+
                                 # page handling happens inside _iter_orders_pages
 
                             if made_progress or is_new_state:
@@ -1396,6 +1412,156 @@ class KaspiService:
             processed = True
 
         return processed
+
+    async def _build_kaspi_preorder_items(
+        self,
+        db: AsyncSession,
+        *,
+        company_id: int,
+        payload: dict[str, Any],
+    ) -> tuple[list[PreorderItem], Decimal | None]:
+        items_payload = payload.get("items") or payload.get("orderItems") or []
+        if not items_payload:
+            return [], None
+
+        total = Decimal("0.00")
+        items: list[PreorderItem] = []
+
+        for item in items_payload:
+            sku = _as_str(item.get("productSku") or item.get("sku")).strip()
+            name = _as_str(item.get("productName") or item.get("title") or item.get("name") or sku).strip() or sku
+
+            qty_raw = item.get("quantity") or item.get("qty") or 1
+            try:
+                qty = max(1, int(qty_raw))
+            except Exception:
+                qty = 1
+
+            unit_price = self._decimal_or_zero(
+                item.get("basePrice") or item.get("unitPrice") or item.get("unit_price") or item.get("price") or 0
+            )
+            if not unit_price:
+                total_price_raw = item.get("totalPrice") or item.get("total_price")
+                if total_price_raw is not None and qty > 0:
+                    unit_price = self._decimal_or_zero(total_price_raw) / Decimal(qty)
+
+            product_id = None
+            product_ext_id = _as_str(item.get("productId") or item.get("product_id") or "").strip()
+            if product_ext_id:
+                try:
+                    res = await db.execute(
+                        select(Product.id).where(
+                            and_(Product.company_id == company_id, Product.kaspi_product_id == product_ext_id)
+                        )
+                    )
+                    product_id = res.scalar_one_or_none()
+                except Exception:
+                    product_id = None
+
+            items.append(
+                PreorderItem(
+                    product_id=product_id,
+                    sku=sku or None,
+                    name=name or None,
+                    qty=qty,
+                    price=unit_price,
+                )
+            )
+            total += (unit_price or Decimal("0")) * Decimal(qty)
+
+        return items, total.quantize(Decimal("0.01"))
+
+    async def _get_or_create_kaspi_preorder(
+        self,
+        db: AsyncSession,
+        *,
+        company_id: int,
+        payload: dict[str, Any],
+    ) -> Preorder:
+        external_id = _as_str(payload.get("id")).strip()
+        currency = _as_str(payload.get("currency")) or "KZT"
+        customer = payload.get("customer") or {}
+        notes = _as_str(payload.get("notes") or "").strip() or None
+
+        result = await db.execute(
+            select(Preorder)
+            .where(
+                Preorder.company_id == company_id,
+                Preorder.source == OrderSource.KASPI.value,
+                Preorder.external_id == external_id,
+            )
+            .options(selectinload(Preorder.items))
+        )
+        preorder = result.scalar_one_or_none()
+
+        items, total = await self._build_kaspi_preorder_items(db, company_id=company_id, payload=payload)
+
+        if preorder is None:
+            preorder = Preorder(
+                company_id=company_id,
+                status=PreorderStatus.NEW,
+                currency=currency,
+                total=total,
+                customer_name=customer.get("name") or None,
+                customer_phone=customer.get("phone") or None,
+                notes=notes,
+                source=OrderSource.KASPI.value,
+                external_id=external_id,
+            )
+            preorder.items = items
+            db.add(preorder)
+            await db.flush()
+            return preorder
+
+        if preorder.status == PreorderStatus.NEW:
+            preorder.currency = currency or preorder.currency
+            preorder.customer_name = customer.get("name") or preorder.customer_name
+            preorder.customer_phone = customer.get("phone") or preorder.customer_phone
+            preorder.notes = notes or preorder.notes
+            preorder.total = total
+            preorder.items.clear()
+            preorder.items.extend(items)
+
+        return preorder
+
+    async def _apply_kaspi_preorder_transition(
+        self,
+        db: AsyncSession,
+        *,
+        company_id: int,
+        preorder: Preorder,
+        mapped_status: str,
+        order_id: int,
+    ) -> Preorder:
+        status_value = (mapped_status or "").lower()
+        confirm_statuses = {
+            OrderStatus.CONFIRMED.value,
+            OrderStatus.PROCESSING.value,
+            OrderStatus.SHIPPED.value,
+        }
+        fulfill_statuses = {OrderStatus.DELIVERED.value, OrderStatus.COMPLETED.value}
+        cancel_statuses = {OrderStatus.CANCELLED.value}
+
+        if preorder.status in {PreorderStatus.CANCELLED, PreorderStatus.FULFILLED}:
+            return preorder
+
+        if status_value in cancel_statuses:
+            return await cancel_preorder(db, company_id=company_id, preorder_id=preorder.id)
+
+        if status_value in fulfill_statuses:
+            if preorder.status == PreorderStatus.NEW:
+                preorder = await confirm_preorder(db, company_id=company_id, preorder_id=preorder.id)
+            return await fulfill_preorder(
+                db,
+                company_id=company_id,
+                preorder_id=preorder.id,
+                existing_order_id=order_id,
+            )
+
+        if status_value in confirm_statuses and preorder.status == PreorderStatus.NEW:
+            return await confirm_preorder(db, company_id=company_id, preorder_id=preorder.id)
+
+        return preorder
 
     async def _recalculate_order_totals(self, db: AsyncSession, *, order_id: int) -> None:
         res = await db.execute(select(Order).options(selectinload(Order.items)).where(Order.id == order_id))
@@ -2232,7 +2398,7 @@ class KaspiService:
 
     # ---------------------- Availability sync ---------------------- #
 
-    async def sync_product_availability(self, product: Product) -> bool:
+    async def sync_product_availability(self, product: Product, db: AsyncSession | None = None) -> bool:
         """
         Апдейт доступности конкретного товара на стороне Kaspi.
         Если kaspi_product_id отсутствует — пропускаем (True), чтобы не ронять пайплайн.
@@ -2244,6 +2410,9 @@ class KaspiService:
                 getattr(product, "id", "?"),
             )
             return True
+
+        if db is not None and getattr(product, "company_id", None) is not None:
+            await evaluate_preorder_state(db, company_id=product.company_id, product_id=product.id)
 
         free_stock = getattr(product, "free_stock", 0) or 0
         is_preorder = False
@@ -2275,7 +2444,7 @@ class KaspiService:
 
         for p in products:
             try:
-                if await self.sync_product_availability(p):
+                if await self.sync_product_availability(p, db=db):
                     ok += 1
                 else:
                     fail += 1

@@ -6,13 +6,14 @@ from datetime import UTC, datetime
 from decimal import Decimal
 from uuid import uuid4
 
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.core.exceptions import NotFoundError, SmartSellValidationError
 from app.models.order import Order, OrderItem, OrderSource, OrderStatus
 from app.models.preorder import Preorder, PreorderItem, PreorderStatus
+from app.models.product import Product
 from app.models.warehouse import MovementType, ProductStock, StockMovement, Warehouse
 from app.schemas.preorders import PreorderCreateIn, PreorderListFilters, PreorderUpdateIn
 from app.services.inventory_reservations import fulfill_reservation, release_and_log, reserve_and_log
@@ -182,18 +183,43 @@ async def _movement_exists(
 ) -> bool:
     result = await db.execute(
         select(StockMovement.id)
-        .join(ProductStock, ProductStock.id == StockMovement.stock_id)
-        .join(Warehouse, Warehouse.id == ProductStock.warehouse_id)
+        .outerjoin(ProductStock, ProductStock.id == StockMovement.stock_id)
+        .outerjoin(Warehouse, Warehouse.id == ProductStock.warehouse_id)
+        .outerjoin(Product, Product.id == StockMovement.product_id)
         .where(
             StockMovement.movement_type == movement_type,
             StockMovement.reference_type == reference_type,
             StockMovement.reference_id == reference_id,
             StockMovement.product_id == product_id,
-            Warehouse.company_id == company_id,
+            or_(Warehouse.company_id == company_id, Product.company_id == company_id),
         )
         .limit(1)
     )
     return result.scalar_one_or_none() is not None
+
+
+async def _resolve_reservation_warehouse_id(
+    db: AsyncSession,
+    *,
+    company_id: int,
+    preorder_id: int,
+    product_id: int,
+) -> int | None:
+    result = await db.execute(
+        select(ProductStock.warehouse_id)
+        .join(StockMovement, StockMovement.stock_id == ProductStock.id)
+        .join(Warehouse, Warehouse.id == ProductStock.warehouse_id)
+        .where(
+            StockMovement.reference_type == "preorder",
+            StockMovement.reference_id == preorder_id,
+            StockMovement.product_id == product_id,
+            StockMovement.movement_type == MovementType.RESERVE.value,
+            Warehouse.company_id == company_id,
+        )
+        .order_by(StockMovement.id.desc())
+        .limit(1)
+    )
+    return result.scalar_one_or_none()
 
 
 async def confirm_preorder(db: AsyncSession, *, company_id: int, preorder_id: int) -> Preorder:
@@ -271,14 +297,6 @@ async def cancel_preorder(db: AsyncSession, *, company_id: int, preorder_id: int
             for item in preorder.items or []:
                 if not item.product_id:
                     continue
-                reserve_exists = await _movement_exists(
-                    db,
-                    company_id=company_id,
-                    movement_type=MovementType.RESERVE.value,
-                    reference_type="preorder",
-                    reference_id=preorder.id,
-                    product_id=item.product_id,
-                )
                 release_exists = await _movement_exists(
                     db,
                     company_id=company_id,
@@ -287,7 +305,15 @@ async def cancel_preorder(db: AsyncSession, *, company_id: int, preorder_id: int
                     reference_id=preorder.id,
                     product_id=item.product_id,
                 )
-                if reserve_exists and not release_exists:
+                if release_exists:
+                    continue
+                warehouse_id = await _resolve_reservation_warehouse_id(
+                    db,
+                    company_id=company_id,
+                    preorder_id=preorder.id,
+                    product_id=item.product_id,
+                )
+                try:
                     await release_and_log(
                         db,
                         tenant_id=company_id,
@@ -295,8 +321,11 @@ async def cancel_preorder(db: AsyncSession, *, company_id: int, preorder_id: int
                         qty=int(item.qty),
                         reference_type="preorder",
                         reference_id=preorder.id,
-                        warehouse_id=None,
+                        warehouse_id=warehouse_id,
                     )
+                except SmartSellValidationError as exc:
+                    if exc.code != "INVALID_RELEASE":
+                        raise
 
         _transition(preorder, PreorderStatus.CANCELLED)
 
@@ -305,7 +334,13 @@ async def cancel_preorder(db: AsyncSession, *, company_id: int, preorder_id: int
     return await get_preorder(db, company_id=company_id, preorder_id=preorder.id)
 
 
-async def fulfill_preorder(db: AsyncSession, *, company_id: int, preorder_id: int) -> Preorder:
+async def fulfill_preorder(
+    db: AsyncSession,
+    *,
+    company_id: int,
+    preorder_id: int,
+    existing_order_id: int | None = None,
+) -> Preorder:
     nested = db.in_transaction()
     tx = db.begin_nested() if nested else db.begin()
     async with tx:
@@ -319,7 +354,11 @@ async def fulfill_preorder(db: AsyncSession, *, company_id: int, preorder_id: in
         if not preorder:
             raise NotFoundError("Preorder not found", "PREORDER_NOT_FOUND")
 
-        if preorder.status == PreorderStatus.FULFILLED and preorder.fulfilled_order_id:
+        if preorder.status == PreorderStatus.FULFILLED:
+            if preorder.fulfilled_order_id is None and existing_order_id is not None:
+                preorder.fulfilled_order_id = existing_order_id
+                if preorder.fulfilled_at is None:
+                    preorder.fulfilled_at = datetime.utcnow()
             return preorder
 
         if preorder.status != PreorderStatus.CONFIRMED:
@@ -343,6 +382,12 @@ async def fulfill_preorder(db: AsyncSession, *, company_id: int, preorder_id: in
         for item in preorder.items:
             if not item.product_id:
                 continue
+            warehouse_id = await _resolve_reservation_warehouse_id(
+                db,
+                company_id=company_id,
+                preorder_id=preorder.id,
+                product_id=item.product_id,
+            )
             fulfill_exists = await _movement_exists(
                 db,
                 company_id=company_id,
@@ -360,43 +405,48 @@ async def fulfill_preorder(db: AsyncSession, *, company_id: int, preorder_id: in
                 qty=int(item.qty),
                 reference_type="preorder",
                 reference_id=preorder.id,
-                warehouse_id=None,
+                warehouse_id=warehouse_id,
             )
 
-        order = Order(
-            company_id=company_id,
-            order_number=f"PRE-{uuid4().hex[:10]}",
-            source=OrderSource.PREORDER,
-            status=OrderStatus.CONFIRMED,
-            currency=preorder.currency,
-            customer_name=preorder.customer_name,
-            customer_phone=preorder.customer_phone,
-            notes=preorder.notes,
-        )
-        items = []
-        for item in preorder.items:
-            unit_price = Decimal(str(item.price))
-            quantity = int(item.qty)
-            total_price = (unit_price * Decimal(quantity)).quantize(Decimal("0.01"))
-            items.append(
-                OrderItem(
-                    product_id=item.product_id,
-                    sku=item.sku or "",
-                    name=item.name or "",
-                    unit_price=unit_price,
-                    quantity=quantity,
-                    total_price=total_price,
-                    cost_price=Decimal("0"),
+        if existing_order_id is not None:
+            preorder.fulfilled_order_id = existing_order_id
+            preorder.fulfilled_at = datetime.utcnow()
+            _transition(preorder, PreorderStatus.FULFILLED)
+        else:
+            order = Order(
+                company_id=company_id,
+                order_number=f"PRE-{uuid4().hex[:10]}",
+                source=OrderSource.PREORDER,
+                status=OrderStatus.CONFIRMED,
+                currency=preorder.currency,
+                customer_name=preorder.customer_name,
+                customer_phone=preorder.customer_phone,
+                notes=preorder.notes,
+            )
+            items = []
+            for item in preorder.items:
+                unit_price = Decimal(str(item.price))
+                quantity = int(item.qty)
+                total_price = (unit_price * Decimal(quantity)).quantize(Decimal("0.01"))
+                items.append(
+                    OrderItem(
+                        product_id=item.product_id,
+                        sku=item.sku or "",
+                        name=item.name or "",
+                        unit_price=unit_price,
+                        quantity=quantity,
+                        total_price=total_price,
+                        cost_price=Decimal("0"),
+                    )
                 )
-            )
 
-        order.items = items
-        order.calculate_totals()
-        db.add(order)
-        await db.flush()
-        preorder.fulfilled_order_id = order.id
-        preorder.fulfilled_at = datetime.utcnow()
-        _transition(preorder, PreorderStatus.FULFILLED)
+            order.items = items
+            order.calculate_totals()
+            db.add(order)
+            await db.flush()
+            preorder.fulfilled_order_id = order.id
+            preorder.fulfilled_at = datetime.utcnow()
+            _transition(preorder, PreorderStatus.FULFILLED)
 
     if nested:
         await db.commit()
