@@ -503,7 +503,7 @@ class Settings(BaseSettings):
     KASPI_STUB: bool = Field(
         default=False,
         description="Enable Kaspi stub mode (must be disabled in production)",
-        validation_alias="KASPI_STUB",
+        validation_alias="SMARTSELL_KASPI_STUB",
     )
     API_V1_STR: str = Field(default="/api/v1", description="API v1 prefix")
     HOST: str = Field(default="127.0.0.1", description="Server host", validation_alias="HOST")

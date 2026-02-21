@@ -180,11 +180,7 @@ async def test_sync_missing_merchant_uid_returns_422(async_client, async_db_sess
 async def test_sync_stub_mode_returns_501(monkeypatch, async_client, company_a_admin_headers):
     from app.api.v1 import kaspi as kaspi_module
 
-    monkeypatch.setattr(
-        kaspi_module.KaspiAdapter,
-        "health",
-        lambda *args, **kwargs: {"note": "Kaspi.ps1 stub: ks:health implemented"},
-    )
+    monkeypatch.setenv("SMARTSELL_KASPI_STUB", "1")
 
     async def fake_sync_orders(*args, **kwargs):  # noqa: ANN001, ARG001
         raise AssertionError("sync_orders should not be called in stub mode")
@@ -198,6 +194,30 @@ async def test_sync_stub_mode_returns_501(monkeypatch, async_client, company_a_a
     assert resp.status_code == 501
     payload = resp.json()
     assert payload.get("code") == "KASPI_STUB_NOT_IMPLEMENTED"
+
+
+@pytest.mark.asyncio
+async def test_sync_stub_note_ignored_without_env(monkeypatch, async_client, company_a_admin_headers):
+    from app.api.v1 import kaspi as kaspi_module
+
+    monkeypatch.delenv("SMARTSELL_KASPI_STUB", raising=False)
+    monkeypatch.setattr(
+        kaspi_module.KaspiAdapter,
+        "health",
+        lambda *args, **kwargs: {"note": "Kaspi.ps1 stub: ks:health implemented"},
+    )
+
+    async def fake_sync_orders(self, **kwargs):  # noqa: ANN001, ARG001
+        return {"ok": True, "status": "success", "fetched": 0, "inserted": 0, "updated": 0}
+
+    monkeypatch.setattr(KaspiService, "sync_orders", fake_sync_orders)
+
+    resp = await async_client.post(
+        "/api/v1/kaspi/orders/sync?merchantUid=17319385",
+        headers=company_a_admin_headers,
+    )
+    assert resp.status_code == 200
+    assert resp.json().get("code") != "KASPI_STUB_NOT_IMPLEMENTED"
 
 
 @pytest.mark.asyncio

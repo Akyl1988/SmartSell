@@ -16,7 +16,7 @@ def _set_prod_secrets(monkeypatch) -> None:
 
 def test_kaspi_stub_enabled_in_prod_raises(monkeypatch):
     monkeypatch.setenv("ENVIRONMENT", "production")
-    monkeypatch.setenv("KASPI_STUB", "1")
+    monkeypatch.setenv("SMARTSELL_KASPI_STUB", "1")
     _set_prod_secrets(monkeypatch)
     settings = config_mod.Settings()
     with pytest.raises(RuntimeError, match="KASPI_STUB must be disabled in production"):
@@ -25,7 +25,7 @@ def test_kaspi_stub_enabled_in_prod_raises(monkeypatch):
 
 def test_kaspi_stub_disabled_in_prod_allows(monkeypatch):
     monkeypatch.setenv("ENVIRONMENT", "production")
-    monkeypatch.setenv("KASPI_STUB", "0")
+    monkeypatch.setenv("SMARTSELL_KASPI_STUB", "0")
     _set_prod_secrets(monkeypatch)
     settings = config_mod.Settings()
     config_mod.validate_prod_secrets(settings)
@@ -34,7 +34,7 @@ def test_kaspi_stub_disabled_in_prod_allows(monkeypatch):
 @pytest.mark.asyncio
 async def test_startup_fails_with_stub_in_production(monkeypatch):
     monkeypatch.setenv("ENVIRONMENT", "production")
-    monkeypatch.setenv("KASPI_STUB", "1")
+    monkeypatch.setenv("SMARTSELL_KASPI_STUB", "1")
     monkeypatch.setenv("DISABLE_APP_STARTUP_HOOKS", "1")
     _set_prod_secrets(monkeypatch)
     monkeypatch.setattr(main_mod, "settings", config_mod.Settings())

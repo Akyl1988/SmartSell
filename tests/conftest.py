@@ -85,7 +85,7 @@ os.environ["TESTING"] = "1"
 os.environ.setdefault("FORCE_INMEMORY_BACKENDS", "1")
 os.environ.setdefault("TEST_REDIS_DISABLED", "1")
 os.environ.setdefault("CSRF_SECRET", "test-csrf-secret-32-chars-minimum")
-os.environ["KASPI_STUB"] = "0"
+os.environ["SMARTSELL_KASPI_STUB"] = "0"
 os.environ.setdefault("SMARTSELL_BACKGROUND_TASKS", "0")
 
 
