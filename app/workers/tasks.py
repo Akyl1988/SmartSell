@@ -93,8 +93,19 @@ class TaskManager:
 
                     for company in companies:
                         try:
+                            merchant_uid = (company.kaspi_store_id or "").strip()
+                            if not merchant_uid:
+                                logger.warning(
+                                    "Kaspi sync skipped: missing merchant_uid for company %s",
+                                    company.id,
+                                )
+                                continue
                             kaspi = KaspiService(company.kaspi_api_key)
-                            result = await kaspi.sync_orders(company.id, db)
+                            result = await kaspi.sync_orders(
+                                db=db,
+                                company_id=company.id,
+                                merchant_uid=merchant_uid,
+                            )
 
                             if result["created"] > 0 or result["updated"] > 0:
                                 logger.info(
@@ -435,8 +446,16 @@ async def sync_company_orders(company_id: int) -> dict[str, Any]:
         if not company or not company.kaspi_api_key:
             raise Exception("Company not found or Kaspi not configured")
 
+        merchant_uid = (company.kaspi_store_id or "").strip()
+        if not merchant_uid:
+            raise Exception("missing_merchant_uid")
+
         kaspi = KaspiService(company.kaspi_api_key)
-        return await kaspi.sync_orders(company.id, db)
+        return await kaspi.sync_orders(
+            db=db,
+            company_id=company.id,
+            merchant_uid=merchant_uid,
+        )
 
 
 async def send_test_notification(user_id: int, message: str) -> bool:
