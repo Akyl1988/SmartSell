@@ -75,6 +75,55 @@ async def test_kaspi_stock_truth_offer_path(async_db_session):
     assert truth.preorder_candidate is True
 
 
+async def test_kaspi_stock_truth_offer_isolated_by_merchant(async_db_session):
+    product = await _seed_product(async_db_session, company_id=1001, sku="SKU-ISO", stock=5)
+
+    async_db_session.add_all(
+        [
+            KaspiOffer(
+                company_id=1001,
+                merchant_uid="m1",
+                sku="SKU-ISO",
+                stock_count=0,
+                stock_specified=True,
+                pre_order=False,
+                raw={},
+            ),
+            KaspiOffer(
+                company_id=1001,
+                merchant_uid="m2",
+                sku="SKU-ISO",
+                stock_count=7,
+                stock_specified=True,
+                pre_order=False,
+                raw={},
+            ),
+        ]
+    )
+    await async_db_session.commit()
+
+    truth_m1 = await compute_kaspi_stock_truth(
+        async_db_session,
+        company_id=1001,
+        product_id=product.id,
+        merchant_uid="m1",
+    )
+    truth_m2 = await compute_kaspi_stock_truth(
+        async_db_session,
+        company_id=1001,
+        product_id=product.id,
+        merchant_uid="m2",
+    )
+
+    assert truth_m1.source == "offer"
+    assert truth_m1.kaspi_offer_stock_count == 0
+    assert truth_m1.preorder_candidate is True
+
+    assert truth_m2.source == "offer"
+    assert truth_m2.kaspi_offer_stock_count == 7
+    assert truth_m2.preorder_candidate is False
+
+
 async def test_kaspi_stock_truth_catalog_path(async_db_session):
     product = await _seed_product(async_db_session, company_id=1001, sku="SKU-2", stock=5)
 
