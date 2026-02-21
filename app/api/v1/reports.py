@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import csv
+import json
 import os
 import re
 from datetime import UTC, date, datetime, time
@@ -108,6 +109,32 @@ def _safe_reference(reference_type: str | None, reference_id: int | None) -> str
     if reference_id is None:
         return ref
     return f"{ref}:{reference_id}"
+
+
+def _extract_kaspi_attrs(internal_notes: Any) -> dict[str, Any]:
+    if internal_notes is None:
+        return {}
+    if isinstance(internal_notes, dict):
+        data = internal_notes
+    elif isinstance(internal_notes, str):
+        try:
+            data = json.loads(internal_notes) if internal_notes.strip() else {}
+        except json.JSONDecodeError:
+            return {}
+    else:
+        return {}
+    if not isinstance(data, dict):
+        return {}
+    kaspi = data.get("kaspi")
+    return kaspi if isinstance(kaspi, dict) else {}
+
+
+def _to_optional_str(value: Any) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        return value
+    return str(value)
 
 
 def _resolve_company_id_param(request: Request, company_id: int | None) -> int | None:
@@ -278,6 +305,8 @@ async def _fetch_orders_csv_rows(
             Order.currency,
             Order.external_id,
             items_count,
+            Order.delivery_date,
+            Order.internal_notes,
         )
         .outerjoin(items_count_sq, items_count_sq.c.oid == Order.id)
         .where(Order.company_id == company_id)
@@ -290,7 +319,9 @@ async def _fetch_orders_csv_rows(
 
     rows = (await db.execute(stmt)).all()
     items: list[dict[str, str]] = []
-    for order_id, created_at, status, total_amount, currency, external_id, count in rows:
+    for order_id, created_at, status, total_amount, currency, external_id, count, delivery_date, internal_notes in rows:
+        kaspi_attrs = _extract_kaspi_attrs(internal_notes)
+        kaspi_preorder = kaspi_attrs.get("preOrder")
         items.append(
             {
                 "order_id": str(order_id),
@@ -300,6 +331,10 @@ async def _fetch_orders_csv_rows(
                 "currency": str(currency or ""),
                 "external_id": str(external_id or ""),
                 "items_count": str(int(count or 0)),
+                "delivery_date": _to_optional_str(delivery_date),
+                "kaspi_preorder": "" if kaspi_preorder is None else str(kaspi_preorder),
+                "kaspi_planned_delivery_date": _to_optional_str(kaspi_attrs.get("plannedDeliveryDate")),
+                "kaspi_reservation_date": _to_optional_str(kaspi_attrs.get("reservationDate")),
             }
         )
     return items
@@ -505,6 +540,10 @@ async def report_orders_csv(
         "currency",
         "external_id",
         "items_count",
+        "delivery_date",
+        "kaspi_preorder",
+        "kaspi_planned_delivery_date",
+        "kaspi_reservation_date",
     ]
 
     return StreamingResponse(

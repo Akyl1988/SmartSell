@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
@@ -17,7 +18,15 @@ async def _create_offer(session, *, company_id: int, merchant_uid: str, sku: str
     await session.commit()
 
 
-def _make_order(*, company_id: int, ext_id: str, created_at: datetime, status: OrderStatus) -> Order:
+def _make_order(
+    *,
+    company_id: int,
+    ext_id: str,
+    created_at: datetime,
+    status: OrderStatus,
+    delivery_date: str | None = None,
+    internal_notes: str | None = None,
+) -> Order:
     return Order(
         company_id=company_id,
         order_number=f"KASPI-{company_id}-{ext_id}",
@@ -30,6 +39,8 @@ def _make_order(*, company_id: int, ext_id: str, created_at: datetime, status: O
         currency="KZT",
         created_at=created_at.replace(tzinfo=None),
         updated_at=created_at.replace(tzinfo=None),
+        delivery_date=delivery_date,
+        internal_notes=internal_notes,
     )
 
 
@@ -73,10 +84,26 @@ async def test_kaspi_orders_list_tenant_isolation(async_client, async_db_session
 async def test_kaspi_orders_list_pagination(async_client, async_db_session, company_a_admin_headers):
     await _create_offer(async_db_session, company_id=1001, merchant_uid="123", sku="SKU-PAGE")
     now = datetime.utcnow()
+    notes = json.dumps(
+        {
+            "kaspi": {
+                "preOrder": True,
+                "plannedDeliveryDate": "2026-02-12T00:00:00Z",
+                "reservationDate": "2026-02-11T00:00:00Z",
+            }
+        }
+    )
     orders = [
         _make_order(company_id=1001, ext_id="o1", created_at=now - timedelta(days=1), status=OrderStatus.PENDING),
         _make_order(company_id=1001, ext_id="o2", created_at=now - timedelta(hours=12), status=OrderStatus.PENDING),
-        _make_order(company_id=1001, ext_id="o3", created_at=now - timedelta(hours=1), status=OrderStatus.PENDING),
+        _make_order(
+            company_id=1001,
+            ext_id="o3",
+            created_at=now - timedelta(hours=1),
+            status=OrderStatus.PENDING,
+            delivery_date="2026-02-10T09:00:00Z",
+            internal_notes=notes,
+        ),
     ]
     async_db_session.add_all(
         [
@@ -129,6 +156,11 @@ async def test_kaspi_orders_list_pagination(async_client, async_db_session, comp
     assert data["page"] == 1
     assert data["limit"] == 2
     assert len(data["items"]) == 2
+    item = next(entry for entry in data["items"] if entry["external_id"] == "o3")
+    assert item["delivery_date"] == "2026-02-10T09:00:00Z"
+    assert item["kaspi_preorder"] is True
+    assert item["kaspi_planned_delivery_date"] == "2026-02-12T00:00:00Z"
+    assert item["kaspi_reservation_date"] == "2026-02-11T00:00:00Z"
 
 
 async def test_kaspi_orders_list_filters(async_client, async_db_session, company_a_admin_headers):
@@ -282,7 +314,23 @@ async def test_kaspi_orders_list_tenant_isolation_list(async_client, async_db_se
 
 async def test_kaspi_orders_detail_includes_items(async_client, async_db_session, company_a_admin_headers):
     await _create_offer(async_db_session, company_id=1001, merchant_uid="123", sku="SKU-DETAIL")
-    order = _make_order(company_id=1001, ext_id="d1", created_at=datetime.utcnow(), status=OrderStatus.PAID)
+    notes = json.dumps(
+        {
+            "kaspi": {
+                "preOrder": False,
+                "plannedDeliveryDate": "2026-03-01T00:00:00Z",
+                "reservationDate": "2026-02-28T00:00:00Z",
+            }
+        }
+    )
+    order = _make_order(
+        company_id=1001,
+        ext_id="d1",
+        created_at=datetime.utcnow(),
+        status=OrderStatus.PAID,
+        delivery_date="2026-02-27T12:00:00Z",
+        internal_notes=notes,
+    )
     async_db_session.add(order)
     await async_db_session.flush()
     item = OrderItem(
@@ -302,6 +350,10 @@ async def test_kaspi_orders_detail_includes_items(async_client, async_db_session
     data = resp.json()
     assert data["id"] == order.id
     assert data["items"][0]["sku"] == "SKU-1"
+    assert data["delivery_date"] == "2026-02-27T12:00:00Z"
+    assert data["kaspi_preorder"] is False
+    assert data["kaspi_planned_delivery_date"] == "2026-03-01T00:00:00Z"
+    assert data["kaspi_reservation_date"] == "2026-02-28T00:00:00Z"
 
 
 async def test_kaspi_orders_detail_tenant_isolation(async_client, async_db_session, company_a_admin_headers):

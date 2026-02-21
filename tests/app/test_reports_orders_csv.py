@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import csv
+import json
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from io import StringIO
@@ -24,6 +25,8 @@ def _seed_order(
     currency: str = "KZT",
     external_id: str | None = None,
     items_count: int = 1,
+    delivery_date: str | None = None,
+    internal_notes: str | None = None,
 ) -> int:
     if base_conftest.sync_engine is None:
         raise RuntimeError("sync_engine is not initialized; ensure test_db fixture runs first")
@@ -48,6 +51,8 @@ def _seed_order(
             tax_amount=Decimal("0"),
             shipping_amount=Decimal("0"),
             discount_amount=Decimal("0"),
+            delivery_date=delivery_date,
+            internal_notes=internal_notes,
         )
         s.add(order)
         s.flush()
@@ -79,6 +84,15 @@ def _parse_csv(text: str) -> list[list[str]]:
 async def test_orders_csv_store_admin(async_client, company_a_admin_headers, test_db):
     _ = test_db
     now = datetime.now(UTC)
+    notes = json.dumps(
+        {
+            "kaspi": {
+                "preOrder": True,
+                "plannedDeliveryDate": "2026-02-12T00:00:00Z",
+                "reservationDate": "2026-02-11T00:00:00Z",
+            }
+        }
+    )
     _seed_order(
         company_id=1001,
         order_number="ORD-1001-A",
@@ -86,6 +100,8 @@ async def test_orders_csv_store_admin(async_client, company_a_admin_headers, tes
         total_amount=Decimal("25.00"),
         external_id="EXT-1",
         items_count=2,
+        delivery_date="2026-02-10T09:00:00Z",
+        internal_notes=notes,
     )
 
     resp = await async_client.get(
@@ -105,8 +121,19 @@ async def test_orders_csv_store_admin(async_client, company_a_admin_headers, tes
         "currency",
         "external_id",
         "items_count",
+        "delivery_date",
+        "kaspi_preorder",
+        "kaspi_planned_delivery_date",
+        "kaspi_reservation_date",
     ]
-    assert len(rows) <= 2
+    assert len(rows) == 2
+    header = rows[0]
+    row = rows[1]
+    values = dict(zip(header, row, strict=True))
+    assert values["delivery_date"] == "2026-02-10T09:00:00Z"
+    assert values["kaspi_preorder"] == "True"
+    assert values["kaspi_planned_delivery_date"] == "2026-02-12T00:00:00Z"
+    assert values["kaspi_reservation_date"] == "2026-02-11T00:00:00Z"
 
 
 async def test_orders_csv_tenant_isolation(async_client, company_a_admin_headers, test_db):

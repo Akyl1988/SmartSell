@@ -1192,6 +1192,10 @@ class KaspiOrderListItemOut(BaseModel):
     currency: str
     customer_name: str | None = None
     customer_phone: str | None = None
+    delivery_date: str | None = None
+    kaspi_preorder: bool | None = None
+    kaspi_planned_delivery_date: str | None = None
+    kaspi_reservation_date: str | None = None
 
 
 class KaspiOrderDetailOut(KaspiOrderListItemOut):
@@ -1295,7 +1299,38 @@ def _normalize_db_dt(value: datetime) -> datetime:
     return value.astimezone(tz=UTC).replace(tzinfo=None)
 
 
+def _extract_kaspi_notes(order: Order) -> dict[str, Any]:
+    raw = order.internal_notes
+    if raw is None:
+        return {}
+    if isinstance(raw, dict):
+        data = raw
+    elif isinstance(raw, str):
+        try:
+            data = json.loads(raw) if raw.strip() else {}
+        except json.JSONDecodeError:
+            return {}
+    else:
+        return {}
+    if not isinstance(data, dict):
+        return {}
+    kaspi = data.get("kaspi")
+    return kaspi if isinstance(kaspi, dict) else {}
+
+
+def _optional_str(value: Any) -> str | None:
+    if value is None:
+        return None
+    if isinstance(value, str):
+        return value
+    return str(value)
+
+
 def _order_to_list_item(order: Order) -> KaspiOrderListItemOut:
+    kaspi_notes = _extract_kaspi_notes(order)
+    kaspi_preorder = kaspi_notes.get("preOrder")
+    if not isinstance(kaspi_preorder, bool):
+        kaspi_preorder = None
     return KaspiOrderListItemOut(
         id=order.id,
         external_id=order.external_id,
@@ -1307,6 +1342,10 @@ def _order_to_list_item(order: Order) -> KaspiOrderListItemOut:
         currency=order.currency,
         customer_name=order.customer_name,
         customer_phone=order.customer_phone,
+        delivery_date=order.delivery_date,
+        kaspi_preorder=kaspi_preorder,
+        kaspi_planned_delivery_date=_optional_str(kaspi_notes.get("plannedDeliveryDate")),
+        kaspi_reservation_date=_optional_str(kaspi_notes.get("reservationDate")),
     )
 
 
