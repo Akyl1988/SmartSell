@@ -5,14 +5,14 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from sqlalchemy import func, select
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.subscriptions.plan_catalog import normalize_plan_id
 from app.core.subscriptions.state import get_company_subscription, is_subscription_active
 from app.models.company import Company
 from app.models.product import Product
-from app.models.warehouse import ProductStock, Warehouse
+from app.services.kaspi_stock_truth import compute_kaspi_stock_truth
 
 _POLICY_ENABLED_KEY = "preorders.auto_on_oos"
 _POLICY_MIN_LEAD_DAYS_KEY = "preorders.auto_on_oos_min_lead_days"
@@ -80,24 +80,6 @@ def _set_preorder_mode(product: Product, mode: str | None) -> None:
     product.set_extra(data)
 
 
-async def _effective_stock(db: AsyncSession, *, company_id: int, product: Product) -> int:
-    stmt = (
-        select(
-            func.count(ProductStock.id),
-            func.coalesce(func.sum(ProductStock.quantity - ProductStock.reserved_quantity), 0),
-        )
-        .join(Warehouse, Warehouse.id == ProductStock.warehouse_id)
-        .where(ProductStock.product_id == product.id)
-        .where(Warehouse.company_id == company_id)
-        .where(Warehouse.is_archived.is_(False))
-        .where(Warehouse.is_active.is_(True))
-    )
-    count, total = (await db.execute(stmt)).one()
-    if count and int(count) > 0:
-        return int(total or 0)
-    return max(0, int(product.stock_quantity or 0) - int(product.reserved_quantity or 0))
-
-
 async def evaluate_preorder_state(
     db: AsyncSession,
     *,
@@ -120,7 +102,10 @@ async def evaluate_preorder_state(
     if not product:
         return {"changed": False, "effective_stock": None}
 
-    effective_stock = await _effective_stock(db, company_id=company_id, product=product)
+    truth = await compute_kaspi_stock_truth(db, company_id=company_id, product_id=product_id)
+    effective_stock = truth.local_effective_stock
+    if effective_stock is None:
+        return {"changed": False, "effective_stock": None}
     min_lead_days = _policy_min_lead_days(settings)
     mode = _get_preorder_mode(product)
     changed = False
