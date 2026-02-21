@@ -423,3 +423,5 @@ openapi.json
 
 
 orders-*.csv
+
+scripts/*.local.ps1
