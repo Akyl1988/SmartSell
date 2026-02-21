@@ -47,10 +47,12 @@ async def compute_kaspi_preorder_candidate(
     product_id: int | None = None,
 ) -> dict[str, Any]:
     offer = None
-    if sku:
-        offer_stmt = select(KaspiOffer).where(KaspiOffer.company_id == company_id, KaspiOffer.sku == sku)
-        if merchant_uid:
-            offer_stmt = offer_stmt.where(KaspiOffer.merchant_uid == merchant_uid)
+    if sku and merchant_uid:
+        offer_stmt = select(KaspiOffer).where(
+            KaspiOffer.company_id == company_id,
+            KaspiOffer.sku == sku,
+            KaspiOffer.merchant_uid == merchant_uid,
+        )
         offer = (await db.execute(offer_stmt)).scalars().first()
 
     if offer is not None:

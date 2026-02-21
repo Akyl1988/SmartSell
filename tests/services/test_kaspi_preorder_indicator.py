@@ -3,6 +3,7 @@ from __future__ import annotations
 import pytest
 
 from app.models.company import Company
+from app.models.kaspi_catalog_product import KaspiCatalogProduct
 from app.models.kaspi_offer import KaspiOffer
 from app.models.product import Product
 from app.models.warehouse import ProductStock, Warehouse
@@ -150,3 +151,94 @@ async def test_preorder_candidate_tenant_isolation(async_db_session):
     )
     assert result_a["preorder_candidate"] is True
     assert result_b["preorder_candidate"] is False
+
+
+async def test_preorder_candidate_skips_offer_without_merchant_uid(async_db_session):
+    company = Company(id=1001, name="Company 1001")
+    async_db_session.add(company)
+    await async_db_session.commit()
+
+    offers = [
+        KaspiOffer(
+            company_id=1001,
+            merchant_uid="m1",
+            sku="SKU-10",
+            stock_count=0,
+            stock_specified=True,
+            pre_order=False,
+            raw={},
+        ),
+        KaspiOffer(
+            company_id=1001,
+            merchant_uid="m2",
+            sku="SKU-10",
+            stock_count=5,
+            stock_specified=True,
+            pre_order=False,
+            raw={},
+        ),
+    ]
+    async_db_session.add_all(offers)
+    async_db_session.add(
+        KaspiCatalogProduct(
+            company_id=1001,
+            offer_id="offer-10",
+            sku="SKU-10",
+            qty=7,
+            raw={},
+        )
+    )
+    await async_db_session.commit()
+
+    result = await compute_kaspi_preorder_candidate(async_db_session, company_id=1001, sku="SKU-10")
+
+    assert result["preorder_candidate"] is False
+    assert result["source"] == "kaspi_catalog.qty"
+
+
+async def test_preorder_candidate_uses_offer_with_merchant_uid(async_db_session):
+    company = Company(id=1001, name="Company 1001")
+    async_db_session.add(company)
+    await async_db_session.commit()
+
+    offers = [
+        KaspiOffer(
+            company_id=1001,
+            merchant_uid="m1",
+            sku="SKU-11",
+            stock_count=0,
+            stock_specified=True,
+            pre_order=False,
+            raw={},
+        ),
+        KaspiOffer(
+            company_id=1001,
+            merchant_uid="m2",
+            sku="SKU-11",
+            stock_count=4,
+            stock_specified=True,
+            pre_order=False,
+            raw={},
+        ),
+    ]
+    async_db_session.add_all(offers)
+    async_db_session.add(
+        KaspiCatalogProduct(
+            company_id=1001,
+            offer_id="offer-11",
+            sku="SKU-11",
+            qty=9,
+            raw={},
+        )
+    )
+    await async_db_session.commit()
+
+    result = await compute_kaspi_preorder_candidate(
+        async_db_session,
+        company_id=1001,
+        sku="SKU-11",
+        merchant_uid="m1",
+    )
+
+    assert result["preorder_candidate"] is True
+    assert result["source"] == "kaspi_offer.stock_count"
