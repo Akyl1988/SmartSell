@@ -185,6 +185,10 @@ data/
 local/
 local2/
 
+# Kaspi docs extracted artifacts
+docs/kaspi/*.pdf
+docs/kaspi/*.extracted.txt
+
 # Local smoke scripts (do not commit)
 scripts/*.local.ps1
 scripts/smoke-*.local.ps1
