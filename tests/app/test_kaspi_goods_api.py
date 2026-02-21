@@ -15,6 +15,7 @@ class _FakeResponse:
 class _FakeAsyncClient:
     def __init__(self, *args, **kwargs):
         self._responses = kwargs.pop("responses", None) or []
+        self.kwargs = kwargs
 
     async def __aenter__(self):
         return self
@@ -85,11 +86,21 @@ async def test_kaspi_token_health_401(async_client, async_db_session, monkeypatc
     from app.api.v1 import kaspi as kaspi_router
 
     fake_client = _FakeAsyncClient(responses=[_FakeResponse(401), _FakeResponse(401)])
-    monkeypatch.setattr(kaspi_router.httpx, "AsyncClient", lambda *args, **kwargs: fake_client)
+    client_kwargs: dict[str, object] = {}
+
+    def _client_factory(*args, **kwargs):
+        client_kwargs.update(kwargs)
+        return fake_client
+
+    monkeypatch.setattr(kaspi_router.httpx, "AsyncClient", _client_factory)
 
     resp = await async_client.get("/api/v1/kaspi/token/health", headers=company_a_admin_headers)
     assert resp.status_code == 401
     assert resp.json().get("detail") == "NOT_AUTHENTICATED"
+    assert client_kwargs.get("http2") is False
+    headers = client_kwargs.get("headers") or {}
+    assert headers.get("Connection") == "close"
+    assert headers.get("User-Agent")
 
 
 @pytest.mark.asyncio

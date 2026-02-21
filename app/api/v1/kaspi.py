@@ -195,6 +195,44 @@ def _mask_secret(value: str | None, *, head: int = 6, tail: int = 4) -> str | No
     return f"{value[:head]}...{value[-tail:]}"
 
 
+def _kaspi_user_agent() -> str:
+    return (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) " "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120 Safari/537.36"
+    )
+
+
+def _build_kaspi_httpx_client() -> httpx.AsyncClient:
+    total_timeout = max(60.0, float(getattr(settings, "KASPI_HTTP_TIMEOUT_SEC", 60) or 60))
+    connect_timeout = max(20.0, float(getattr(settings, "KASPI_ORDERS_CONNECT_TIMEOUT_SEC", 20) or 20))
+    timeout = httpx.Timeout(total_timeout, connect=connect_timeout)
+    limits = httpx.Limits(max_connections=1, max_keepalive_connections=0)
+    headers = {
+        "Connection": "close",
+        "User-Agent": _kaspi_user_agent(),
+    }
+    return httpx.AsyncClient(timeout=timeout, limits=limits, headers=headers, http2=False)
+
+
+def _build_kaspi_orders_params(
+    *,
+    ge_ms: int,
+    le_ms: int,
+    state: str | None = None,
+    page_number: int = 0,
+    page_size: int = 1,
+) -> dict[str, int | str]:
+    params: dict[str, int | str] = {
+        "page[number]": int(page_number),
+        "page[size]": int(page_size),
+        "filter[orders][creationDate][$ge]": int(ge_ms),
+        "filter[orders][creationDate][$le]": int(le_ms),
+    }
+    effective_state = (state or "NEW").strip()
+    if effective_state:
+        params["filter[orders][state]"] = effective_state
+    return params
+
+
 def _kaspi_stub_enabled() -> bool:
     raw = os.environ.get("SMARTSELL_KASPI_STUB", "")
     if not raw:
@@ -2054,6 +2092,7 @@ class KaspiProbeOut(BaseModel):
 async def kaspi_debug_probe(
     request: Request,
     store_name: str = Query(..., min_length=1, alias="store_name"),
+    state: str | None = Query(None),
     current_user: User = Depends(_auth_user),
     session: AsyncSession = Depends(get_async_db),
 ):
@@ -2067,12 +2106,13 @@ async def kaspi_debug_probe(
     le_ms = int(now.timestamp() * 1000)
 
     url = "https://kaspi.kz/shop/api/v2/orders"
-    params = {
-        "page[number]": 0,
-        "page[size]": 1,
-        "filter[orders][creationDate][$ge]": ge_ms,
-        "filter[orders][creationDate][$le]": le_ms,
-    }
+    params = _build_kaspi_orders_params(
+        ge_ms=ge_ms,
+        le_ms=le_ms,
+        state=state or "NEW",
+        page_number=0,
+        page_size=1,
+    )
     headers = {
         "X-Auth-Token": token,
         "Accept": "application/vnd.api+json",
@@ -2081,9 +2121,26 @@ async def kaspi_debug_probe(
     request_id = getattr(getattr(request, "state", None), "request_id", None)
     started = time.perf_counter()
     try:
-        async with httpx.AsyncClient(timeout=FAST_PROBE_TIMEOUT) as client:
+        async with _build_kaspi_httpx_client() as client:
             resp = await client.get(url, headers=headers, params=params)
-    except (httpx.TimeoutException, httpx.RequestError) as exc:
+    except httpx.TimeoutException as exc:
+        _log_kaspi_probe_error(
+            request_id=request_id,
+            company_id=None,
+            store_name=store_name,
+            method="GET",
+            url=url,
+            exc=exc,
+        )
+        elapsed_ms = int((time.perf_counter() - started) * 1000)
+        return KaspiProbeOut(
+            ok=False,
+            status_code=None,
+            error_class=type(exc).__name__,
+            message=str(exc),
+            elapsed_ms=elapsed_ms,
+        )
+    except httpx.RequestError as exc:
         _log_kaspi_probe_error(
             request_id=request_id,
             company_id=None,
@@ -2116,7 +2173,7 @@ async def kaspi_debug_probe(
     return KaspiProbeOut(
         ok=ok,
         status_code=resp.status_code,
-        error_class=None if ok else "HTTPError",
+        error_class=None if ok else "HTTPStatusError",
         message=None if ok else "upstream_response",
         elapsed_ms=elapsed_ms,
     )
@@ -3775,12 +3832,7 @@ async def kaspi_token_health(
     le_ms = int(now.timestamp() * 1000)
 
     orders_url = "https://kaspi.kz/shop/api/v2/orders"
-    orders_params = {
-        "page[number]": 0,
-        "page[size]": 1,
-        "filter[orders][creationDate][$ge]": ge_ms,
-        "filter[orders][creationDate][$le]": le_ms,
-    }
+    orders_params = _build_kaspi_orders_params(ge_ms=ge_ms, le_ms=le_ms, state="NEW", page_number=0, page_size=1)
 
     orders_headers = {
         "X-Auth-Token": token,
@@ -3793,7 +3845,7 @@ async def kaspi_token_health(
     }
 
     try:
-        async with httpx.AsyncClient(timeout=FAST_PROBE_TIMEOUT) as client:
+        async with _build_kaspi_httpx_client() as client:
             started = time.perf_counter()
             orders_resp = await client.get(orders_url, headers=orders_headers, params=orders_params)
             _log_kaspi_probe_response(
@@ -3821,6 +3873,8 @@ async def kaspi_token_health(
                 elapsed_ms=int((time.perf_counter() - started) * 1000),
             )
     except httpx.TimeoutException as exc:
+        root_type, root_message = _extract_httpx_root_cause(exc)
+        error_kind = _classify_httpx_error(exc, root_type, root_message)
         _log_kaspi_probe_error(
             request_id=request_id,
             company_id=company_id,
@@ -3833,11 +3887,13 @@ async def kaspi_token_health(
             session,
             store_name,
             status="upstream_unavailable",
-            error_code="timeout",
+            error_code=error_kind,
             error_message="upstream_unavailable",
         )
         raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail="upstream_unavailable")
     except httpx.RequestError as exc:
+        root_type, root_message = _extract_httpx_root_cause(exc)
+        error_kind = _classify_httpx_error(exc, root_type, root_message)
         _log_kaspi_probe_error(
             request_id=request_id,
             company_id=company_id,
@@ -3850,7 +3906,7 @@ async def kaspi_token_health(
             session,
             store_name,
             status="upstream_unavailable",
-            error_code="request_error",
+            error_code=error_kind,
             error_message="upstream_unavailable",
         )
         raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail="upstream_unavailable")
@@ -3864,6 +3920,16 @@ async def kaspi_token_health(
             error_message="NOT_AUTHENTICATED",
         )
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="NOT_AUTHENTICATED")
+
+    if not (200 <= orders_resp.status_code < 300) or not (200 <= goods_resp.status_code < 300):
+        await KaspiStoreToken.update_selftest(
+            session,
+            store_name,
+            status="upstream_unavailable",
+            error_code="http_status",
+            error_message="upstream_unavailable",
+        )
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail="upstream_unavailable")
 
     await KaspiStoreToken.update_selftest(
         session,
@@ -3899,12 +3965,7 @@ async def kaspi_token_selftest(
     le_ms = int(now.timestamp() * 1000)
 
     orders_url = "https://kaspi.kz/shop/api/v2/orders"
-    orders_params = {
-        "page[size]": 1,
-        "filter[orders][state]": "NEW",
-        "filter[orders][creationDate][$ge]": ge_ms,
-        "filter[orders][creationDate][$le]": le_ms,
-    }
+    orders_params = _build_kaspi_orders_params(ge_ms=ge_ms, le_ms=le_ms, state="NEW", page_number=0, page_size=1)
     orders_headers = {
         "X-Auth-Token": token,
         "Accept": "application/vnd.api+json",
@@ -3919,7 +3980,7 @@ async def kaspi_token_selftest(
     request_id = getattr(getattr(request, "state", None), "request_id", None)
 
     try:
-        async with httpx.AsyncClient(timeout=FAST_PROBE_TIMEOUT) as client:
+        async with _build_kaspi_httpx_client() as client:
             started = time.perf_counter()
             orders_resp = await client.get(orders_url, headers=orders_headers, params=orders_params)
             _log_kaspi_probe_response(
@@ -3961,6 +4022,8 @@ async def kaspi_token_selftest(
                 elapsed_ms=int((time.perf_counter() - started) * 1000),
             )
     except httpx.TimeoutException as exc:
+        root_type, root_message = _extract_httpx_root_cause(exc)
+        error_kind = _classify_httpx_error(exc, root_type, root_message)
         _log_kaspi_probe_error(
             request_id=request_id,
             company_id=company_id,
@@ -3973,7 +4036,7 @@ async def kaspi_token_selftest(
             session,
             store_name,
             status="upstream_unavailable",
-            error_code="timeout",
+            error_code=error_kind,
             error_message="upstream_unavailable",
         )
         await _record_kaspi_event(
@@ -3982,12 +4045,14 @@ async def kaspi_token_selftest(
             kind="kaspi_selftest",
             status="failed",
             request_id=request_id,
-            error_code="timeout",
+            error_code=error_kind,
             error_message="upstream_unavailable",
             meta_json={"orders_http": 0, "goods_schema_http": 0, "goods_categories_http": 0},
         )
         raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail="upstream_unavailable")
     except httpx.RequestError as exc:
+        root_type, root_message = _extract_httpx_root_cause(exc)
+        error_kind = _classify_httpx_error(exc, root_type, root_message)
         _log_kaspi_probe_error(
             request_id=request_id,
             company_id=company_id,
@@ -4000,7 +4065,7 @@ async def kaspi_token_selftest(
             session,
             store_name,
             status="upstream_unavailable",
-            error_code="request_error",
+            error_code=error_kind,
             error_message="upstream_unavailable",
         )
         await _record_kaspi_event(
@@ -4009,7 +4074,7 @@ async def kaspi_token_selftest(
             kind="kaspi_selftest",
             status="failed",
             request_id=request_id,
-            error_code="request_error",
+            error_code=error_kind,
             error_message="upstream_unavailable",
             meta_json={"orders_http": 0, "goods_schema_http": 0, "goods_categories_http": 0},
         )
@@ -4050,6 +4115,30 @@ async def kaspi_token_selftest(
         goods_schema_resp.status_code in {401, 403} or goods_categories_resp.status_code in {401, 403}
     ):
         goods_access = "missing_or_not_enabled"
+
+    if not (200 <= orders_resp.status_code < 300):
+        await KaspiStoreToken.update_selftest(
+            session,
+            store_name,
+            status="upstream_unavailable",
+            error_code="http_status",
+            error_message="upstream_unavailable",
+        )
+        await _record_kaspi_event(
+            session,
+            company_id=company_id,
+            kind="kaspi_selftest",
+            status="failed",
+            request_id=request_id,
+            error_code="http_status",
+            error_message="upstream_unavailable",
+            meta_json={
+                "orders_http": orders_resp.status_code,
+                "goods_schema_http": goods_schema_resp.status_code,
+                "goods_categories_http": goods_categories_resp.status_code,
+            },
+        )
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail="upstream_unavailable")
 
     await KaspiStoreToken.update_selftest(
         session,
