@@ -52,7 +52,11 @@ async def run_kaspi_orders_sync_once(
 
     async with session_maker() as db:
         # Query all active companies
-        stmt = select(Company.id, Company.name).where(Company.is_active.is_(True)).order_by(Company.id)
+        stmt = (
+            select(Company.id, Company.name, Company.kaspi_store_id)
+            .where(Company.is_active.is_(True))
+            .order_by(Company.id)
+        )
         result = await db.execute(stmt)
         companies = result.all()
 
@@ -66,7 +70,7 @@ async def run_kaspi_orders_sync_once(
     # Process companies with concurrency limit
     semaphore = asyncio.Semaphore(max_concurrent)
 
-    async def _sync_company(company_id: int, company_name: str) -> None:
+    async def _sync_company(company_id: int, company_name: str, merchant_uid: str | None) -> None:
         nonlocal success_count, failed_count, locked_count
 
         async with semaphore:
@@ -78,11 +82,26 @@ async def run_kaspi_orders_sync_once(
             async with session_maker() as session:
                 svc = KaspiService()
                 try:
-                    result = await svc.sync_orders(db=session, company_id=company_id)
+                    merchant_uid_value = (merchant_uid or "").strip()
+                    if not merchant_uid_value:
+                        logger.warning(
+                            "kaspi_sync_runner: missing merchant_uid",
+                            company_id=company_id,
+                            company_name=company_name,
+                        )
+                        failed_count += 1
+                        return
+                    result = await svc.sync_orders(
+                        db=session,
+                        company_id=company_id,
+                        merchant_uid=merchant_uid_value,
+                        request_id=f"kaspi-sync-runner-{company_id}",
+                    )
                     logger.info(
                         "kaspi_sync_runner: sync success",
                         company_id=company_id,
                         company_name=company_name,
+                        merchant_uid=merchant_uid_value,
                         fetched=result.get("fetched", 0),
                         inserted=result.get("inserted", 0),
                         updated=result.get("updated", 0),
@@ -113,7 +132,9 @@ async def run_kaspi_orders_sync_once(
                     failed_count += 1
 
     # Launch all company syncs concurrently (semaphore limits actual concurrency)
-    tasks = [_sync_company(company_id, company_name) for company_id, company_name in companies]
+    tasks = [
+        _sync_company(company_id, company_name, merchant_uid) for company_id, company_name, merchant_uid in companies
+    ]
     await asyncio.gather(*tasks, return_exceptions=True)
 
     summary = {

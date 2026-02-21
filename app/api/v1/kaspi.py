@@ -283,6 +283,22 @@ async def _resolve_kaspi_token(session: AsyncSession, company_id: int) -> tuple[
     return store_name, token
 
 
+def _resolve_merchant_uid(
+    *,
+    company: Company | None,
+    raw_merchant_uid: str | None,
+    missing_status: int,
+    missing_detail: str,
+) -> tuple[str, str]:
+    query_value = (raw_merchant_uid or "").strip()
+    if query_value:
+        return query_value, "query"
+    fallback = (company.kaspi_store_id or "").strip() if company else ""
+    if fallback:
+        return fallback, "company"
+    raise HTTPException(status_code=missing_status, detail=missing_detail)
+
+
 def _extract_import_code(payload: dict) -> str | None:
     return payload.get("importCode") or payload.get("import_code") or payload.get("code") or payload.get("id")
 
@@ -1535,18 +1551,12 @@ async def kaspi_orders_sync(
     try:
         resolved_company_id = _resolve_company_id(current_user)
         company = await session.get(Company, resolved_company_id)
-        query_merchant = (merchant_uid or "").strip()
-        merchant_source = "query" if query_merchant else "company"
-        resolved_merchant_uid = query_merchant or (company.kaspi_store_id if company else None)
-        if not resolved_merchant_uid:
-            logger.warning(
-                "kaspi_orders_sync missing merchant_uid",
-                extra={
-                    "company_id": resolved_company_id,
-                    "request_id": getattr(getattr(request, "state", None), "request_id", None),
-                },
-            )
-            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail="missing_merchant_uid")
+        resolved_merchant_uid, merchant_source = _resolve_merchant_uid(
+            company=company,
+            raw_merchant_uid=merchant_uid,
+            missing_status=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            missing_detail="missing_merchant_uid",
+        )
 
         logger.info(
             "kaspi_orders_sync merchant_uid resolved",
@@ -2900,10 +2910,12 @@ async def kaspi_sync_now(
     query_merchant_uid = ((body.merchant_uid if body else merchant_uid) or "").strip()
     resolved_company_id = resolve_tenant_company_id(current_user, not_found_detail="Company not set")
     company = await session.get(Company, resolved_company_id)
-    merchant_uid = query_merchant_uid or ((company.kaspi_store_id if company else None) or "")
-    merchant_uid = merchant_uid.strip()
-    if not merchant_uid:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="missing_merchant_uid")
+    merchant_uid, merchant_source = _resolve_merchant_uid(
+        company=company,
+        raw_merchant_uid=query_merchant_uid,
+        missing_status=status.HTTP_400_BAD_REQUEST,
+        missing_detail="missing_merchant_uid",
+    )
 
     company_id = _resolve_company_id(current_user)
     request_id = getattr(getattr(request, "state", None), "request_id", None)
@@ -2937,6 +2949,7 @@ async def kaspi_sync_now(
         request_id=rid,
         company_id=company_id,
         merchant_uid=merchant_uid,
+        merchant_uid_source=merchant_source,
         hard=hard,
         timeout_sec=timeout_sec,
         phase=phase,

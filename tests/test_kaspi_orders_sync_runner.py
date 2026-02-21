@@ -35,8 +35,8 @@ async def test_runner_iterates_multiple_companies_with_isolation(monkeypatch, as
     from app.models.company import Company
 
     # Create two test companies
-    company1 = Company(id=9001, name="Test Company 1", is_active=True)
-    company2 = Company(id=9002, name="Test Company 2", is_active=True)
+    company1 = Company(id=9001, name="Test Company 1", is_active=True, kaspi_store_id="store-9001")
+    company2 = Company(id=9002, name="Test Company 2", is_active=True, kaspi_store_id="store-9002")
     async_db_session.add(company1)
     async_db_session.add(company2)
     await async_db_session.commit()
@@ -75,8 +75,8 @@ async def test_runner_handles_locked_sync(monkeypatch, async_db_session):
     from app.models.company import Company
 
     # Create two test companies
-    company1 = Company(id=9003, name="Locked Company", is_active=True)
-    company2 = Company(id=9004, name="Available Company", is_active=True)
+    company1 = Company(id=9003, name="Locked Company", is_active=True, kaspi_store_id="store-9003")
+    company2 = Company(id=9004, name="Available Company", is_active=True, kaspi_store_id="store-9004")
     async_db_session.add(company1)
     async_db_session.add(company2)
     await async_db_session.commit()
@@ -107,7 +107,7 @@ async def test_runner_handles_timeout(monkeypatch, async_db_session):
     """Runner should handle asyncio.TimeoutError gracefully."""
     from app.models.company import Company
 
-    company = Company(id=9005, name="Timeout Company", is_active=True)
+    company = Company(id=9005, name="Timeout Company", is_active=True, kaspi_store_id="store-9005")
     async_db_session.add(company)
     await async_db_session.commit()
 
@@ -154,7 +154,7 @@ async def test_runner_respects_max_concurrent(monkeypatch, async_db_session):
 
     # Create 5 companies
     for i in range(5):
-        company = Company(id=9100 + i, name=f"Company {i}", is_active=True)
+        company = Company(id=9100 + i, name=f"Company {i}", is_active=True, kaspi_store_id=f"store-{i}")
         async_db_session.add(company)
     await async_db_session.commit()
 

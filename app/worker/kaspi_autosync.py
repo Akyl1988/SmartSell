@@ -45,7 +45,7 @@ def _utcnow() -> datetime:
     return datetime.utcnow()
 
 
-async def _get_eligible_companies(db: AsyncSession) -> list[int]:
+async def _get_eligible_companies(db: AsyncSession) -> list[tuple[int, str]]:
     """
     Get list of company IDs that have Kaspi integration enabled.
 
@@ -54,20 +54,21 @@ async def _get_eligible_companies(db: AsyncSession) -> list[int]:
     - deleted_at IS NULL
     - kaspi_store_id IS NOT NULL (has Kaspi configured)
     """
-    stmt = select(Company.id).where(
+    stmt = select(Company.id, Company.kaspi_store_id).where(
         and_(
             Company.is_active.is_(True),
             Company.deleted_at.is_(None),
             Company.kaspi_store_id.isnot(None),
+            Company.kaspi_store_id != "",
         )
     )
     result = await db.execute(stmt)
-    company_ids = [row[0] for row in result.all()]
-    logger.info("Kaspi auto-sync: found %d eligible companies", len(company_ids))
-    return company_ids
+    company_rows = [(row[0], (row[1] or "").strip()) for row in result.all()]
+    logger.info("Kaspi auto-sync: found %d eligible companies", len(company_rows))
+    return company_rows
 
 
-async def _sync_company(company_id: int, db: AsyncSession) -> dict[str, Any]:
+async def _sync_company(company_id: int, merchant_uid: str, db: AsyncSession) -> dict[str, Any]:
     """
     Sync orders for a single company.
 
@@ -75,15 +76,20 @@ async def _sync_company(company_id: int, db: AsyncSession) -> dict[str, Any]:
         dict with status: 'success', 'locked', or 'failed'
     """
     try:
+        if not merchant_uid:
+            logger.warning("Kaspi auto-sync: company_id=%d missing merchant_uid", company_id)
+            return {"company_id": company_id, "status": "failed", "error": "missing_merchant_uid"}
         svc = KaspiService()
         result = await svc.sync_orders(
             db=db,
             company_id=company_id,
+            merchant_uid=merchant_uid,
             request_id=f"autosync-{company_id}",
         )
         logger.info(
-            "Kaspi auto-sync: company_id=%d success fetched=%d inserted=%d updated=%d",
+            "Kaspi auto-sync: company_id=%d merchant_uid=%s success fetched=%d inserted=%d updated=%d",
             company_id,
+            merchant_uid,
             result.get("fetched", 0),
             result.get("inserted", 0),
             result.get("updated", 0),
@@ -97,7 +103,7 @@ async def _sync_company(company_id: int, db: AsyncSession) -> dict[str, Any]:
         return {"company_id": company_id, "status": "failed", "error": str(exc)}
 
 
-async def _sync_companies_batch(company_ids: list[int]) -> list[dict[str, Any]]:
+async def _sync_companies_batch(company_rows: list[tuple[int, str]]) -> list[dict[str, Any]]:
     """
     Sync orders for a batch of companies concurrently.
 
@@ -119,25 +125,25 @@ async def _sync_companies_batch(company_ids: list[int]) -> list[dict[str, Any]]:
 
     try:
         # Process in chunks to respect concurrency limit
-        for i in range(0, len(company_ids), max_concurrency):
-            batch = company_ids[i : i + max_concurrency]
+        for i in range(0, len(company_rows), max_concurrency):
+            batch = company_rows[i : i + max_concurrency]
             logger.info(
                 "Kaspi auto-sync: processing batch %d-%d of %d companies (concurrency=%d)",
                 i + 1,
-                min(i + max_concurrency, len(company_ids)),
-                len(company_ids),
+                min(i + max_concurrency, len(company_rows)),
+                len(company_rows),
                 len(batch),
             )
 
             # Create tasks for this batch
             tasks = []
-            for company_id in batch:
+            for company_id, merchant_uid in batch:
 
-                async def sync_with_session(cid: int):
+                async def sync_with_session(cid: int, mu: str):
                     async with AsyncSessionLocal() as session:
-                        return await _sync_company(cid, session)
+                        return await _sync_company(cid, mu, session)
 
-                tasks.append(sync_with_session(company_id))
+                tasks.append(sync_with_session(company_id, merchant_uid))
 
             # Run batch concurrently
             batch_results = await asyncio.gather(*tasks, return_exceptions=True)
@@ -145,7 +151,7 @@ async def _sync_companies_batch(company_ids: list[int]) -> list[dict[str, Any]]:
             # Handle exceptions from gather
             for idx, result in enumerate(batch_results):
                 if isinstance(result, Exception):
-                    company_id = batch[idx]
+                    company_id = batch[idx][0]
                     logger.error(
                         "Kaspi auto-sync: company_id=%d unexpected error: %s",
                         company_id,
@@ -194,18 +200,18 @@ async def run_kaspi_autosync_async() -> dict[str, Any]:
     try:
         # Get eligible companies
         async with AsyncSessionLocal() as session:
-            company_ids = await _get_eligible_companies(session)
+            company_rows = await _get_eligible_companies(session)
 
-        _last_run_summary["eligible_companies"] = len(company_ids)
+        _last_run_summary["eligible_companies"] = len(company_rows)
 
-        if not company_ids:
+        if not company_rows:
             logger.info("Kaspi auto-sync: no eligible companies found")
             finished_at = _utcnow()
             _last_run_summary["finished_at"] = finished_at.isoformat()
             return _last_run_summary
 
         # Sync companies
-        results = await _sync_companies_batch(company_ids)
+        results = await _sync_companies_batch(company_rows)
 
         # Count results
         for result in results:
