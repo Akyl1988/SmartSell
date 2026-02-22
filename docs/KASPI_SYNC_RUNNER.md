@@ -28,6 +28,9 @@ The legacy `POST /api/v1/kaspi/products/sync` is retained for compatibility and 
 
 Minimal production-safe flow for offers dataset + goods import:
 
+> Warning: The products import endpoint uses the Kaspi attributes schema and does NOT update prices or stock levels.
+> Use feed uploads or a future dedicated price/stock import when available.
+
 1) Build offers dataset:
     - `POST /api/v1/kaspi/offers/rebuild`
     - Or manual upload: `POST /api/v1/kaspi/offers/import` (CSV/JSON file)

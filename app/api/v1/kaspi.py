@@ -664,6 +664,8 @@ def _validate_payload_against_schema(
 ) -> list[dict[str, Any]]:
     required = _extract_schema_required_fields(schema)
     types = _extract_schema_types(schema)
+    additional_allowed = schema.get("additionalProperties") is not False
+    allowed_fields = set(types.keys()) | set(required)
     errors: list[dict[str, Any]] = []
 
     def _sku(item: dict[str, Any]) -> str:
@@ -672,6 +674,19 @@ def _validate_payload_against_schema(
     for item in payload:
         if len(errors) >= max_errors:
             break
+        if not additional_allowed:
+            for key in item.keys():
+                if key not in allowed_fields:
+                    errors.append(
+                        {
+                            "code": "schema_additional_property",
+                            "detail": "additional_property_not_allowed",
+                            "field": key,
+                            "sku": _sku(item),
+                        }
+                    )
+                    if len(errors) >= max_errors:
+                        break
         for field in required:
             value = item.get(field)
             if value is None or (isinstance(value, str) and not value.strip()):
@@ -2356,6 +2371,22 @@ class KaspiProbeOut(BaseModel):
     elapsed_ms: int
 
 
+class KaspiSchemaProbeItem(BaseModel):
+    path: str
+    url: str
+    ok: bool
+    status_code: int | None = None
+    error_class: str | None = None
+    message: str | None = None
+    response_snippet: str | None = None
+    elapsed_ms: int
+
+
+class KaspiSchemaProbeOut(BaseModel):
+    ok: bool
+    items: list[KaspiSchemaProbeItem]
+
+
 @router.get("/_debug/probe", summary="Kaspi debug probe", response_model=KaspiProbeOut)
 async def kaspi_debug_probe(
     request: Request,
@@ -2445,6 +2476,87 @@ async def kaspi_debug_probe(
         message=None if ok else "upstream_response",
         elapsed_ms=elapsed_ms,
     )
+
+
+@router.get("/_debug/schema-probe", summary="Kaspi schema probe", response_model=KaspiSchemaProbeOut)
+async def kaspi_schema_probe(
+    request: Request,
+    store_name: str = Query(..., min_length=1, alias="store_name"),
+    paths: list[str] | None = Query(None),
+    current_user: User = Depends(_auth_user),
+    session: AsyncSession = Depends(get_async_db),
+):
+    if not _is_dev_environment():
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="not_found")
+
+    require_platform_admin(current_user)
+    token = await KaspiStoreToken.get_token(session, store_name)
+    if not token:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="kaspi_token_not_found")
+
+    default_paths = [
+        "/shop/api/products/import/schema",
+        "/shop/api/products/prices/import/schema",
+        "/shop/api/products/price/import/schema",
+        "/shop/api/products/import/prices/schema",
+        "/shop/api/prices/import/schema",
+        "/shop/api/products/availability/import/schema",
+        "/shop/api/products/stocks/import/schema",
+        "/shop/api/products/stock/import/schema",
+        "/shop/api/products/import/stocks/schema",
+        "/shop/api/stocks/import/schema",
+    ]
+    candidate_paths = paths or default_paths
+    headers = {
+        "X-Auth-Token": token,
+        "Accept": "application/json",
+        "User-Agent": _kaspi_user_agent(),
+    }
+
+    items: list[KaspiSchemaProbeItem] = []
+    async with httpx.AsyncClient(timeout=FAST_PROBE_TIMEOUT, follow_redirects=True) as client:
+        for path in candidate_paths:
+            normalized = path if path.startswith("/") else f"/{path}"
+            url = f"https://kaspi.kz{normalized}"
+            started = time.perf_counter()
+            try:
+                resp = await client.get(url, headers=headers)
+                elapsed_ms = int((time.perf_counter() - started) * 1000)
+                items.append(
+                    KaspiSchemaProbeItem(
+                        path=normalized,
+                        url=url,
+                        ok=200 <= resp.status_code < 300,
+                        status_code=resp.status_code,
+                        response_snippet=_probe_response_snippet(resp.text, 200),
+                        elapsed_ms=elapsed_ms,
+                    )
+                )
+            except (httpx.TimeoutException, httpx.RequestError) as exc:
+                elapsed_ms = int((time.perf_counter() - started) * 1000)
+                items.append(
+                    KaspiSchemaProbeItem(
+                        path=normalized,
+                        url=url,
+                        ok=False,
+                        status_code=None,
+                        error_class=type(exc).__name__,
+                        message=str(exc),
+                        response_snippet=None,
+                        elapsed_ms=elapsed_ms,
+                    )
+                )
+
+    ok = bool(items) and all(item.ok for item in items)
+    request_id = getattr(getattr(request, "state", None), "request_id", None)
+    _safe_log_info(
+        "kaspi_schema_probe",
+        request_id=request_id,
+        store_name=store_name,
+        ok=ok,
+        total=len(items),
+    )
+    return KaspiSchemaProbeOut(ok=ok, items=items)
 
 
 # ============================= AUTO-SYNC ADMIN ===============================
@@ -2749,6 +2861,13 @@ class KaspiGoodsImportRecordOut(BaseModel):
     updated_at: datetime
     last_checked_at: datetime | None = None
     revoked_at: datetime | None = None
+
+
+class KaspiImportValidationOut(BaseModel):
+    ok: bool
+    errors: list[dict[str, Any]] = Field(default_factory=list)
+    total: int = 0
+    payload_hash: str | None = None
 
 
 class KaspiSyncNowIn(BaseModel):
@@ -4469,6 +4588,8 @@ async def kaspi_sync_now(
                     )
                     return JSONResponse(status_code=status.HTTP_200_OK, content=payload, headers={"X-Request-ID": rid})
 
+                import_client = KaspiGoodsImportClient(token=token or "", base_url="https://kaspi.kz")
+
                 payload_json = build_payload_json(payload)
                 payload_hash = compute_payload_hash(payload_json)
 
@@ -4479,7 +4600,6 @@ async def kaspi_sync_now(
                     payload_hash=payload_hash,
                 )
 
-                import_client = KaspiGoodsImportClient(token=token or "", base_url="https://kaspi.kz")
                 if existing_run:
                     import_run = existing_run
                 else:

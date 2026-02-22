@@ -328,11 +328,11 @@ async def test_sync_now_uses_offers_payload(async_client, async_db_session, monk
     async def _sync_orders(*args, **kwargs):  # noqa: ANN001, ARG001
         return {"ok": True, "status": "success"}
 
-    async def _submit_import(self, payload_json: str):  # noqa: ANN001
+    async def _submit_import(self, payload_json: str, *args, **kwargs):  # noqa: ANN001
         assert "SKU-20" in payload_json
         return {"importCode": "IC-20", "status": "UPLOADED"}
 
-    async def _get_status(self, import_code: str):  # noqa: ANN001
+    async def _get_status(self, import_code: str, *args, **kwargs):  # noqa: ANN001
         assert import_code == "IC-20"
         return {"status": "UPLOADED"}
 
