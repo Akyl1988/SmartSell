@@ -103,7 +103,9 @@ from app.services.kaspi_feed_upload_service import (
     find_recent_successful_upload_by_hash,
     get_feed_upload_by_request_id,
     get_or_create_feed_export,
+    is_unsupported_content_type_error,
     normalize_kaspi_payload,
+    should_block_feed_upload_url,
     update_feed_upload_job,
 )
 from app.services.kaspi_goods_client import KaspiGoodsClient, KaspiNotAuthenticated
@@ -2394,6 +2396,23 @@ class KaspiSchemaProbeOut(BaseModel):
     items: list[KaspiSchemaProbeItem]
 
 
+class KaspiFeedUploadProbeItem(BaseModel):
+    path: str
+    url: str
+    ok: bool
+    status_code: int | None = None
+    error_class: str | None = None
+    message: str | None = None
+    response_snippet: str | None = None
+    location: str | None = None
+    elapsed_ms: int
+
+
+class KaspiFeedUploadProbeOut(BaseModel):
+    ok: bool
+    items: list[KaspiFeedUploadProbeItem]
+
+
 @router.get("/_debug/probe", summary="Kaspi debug probe", response_model=KaspiProbeOut)
 async def kaspi_debug_probe(
     request: Request,
@@ -2564,6 +2583,136 @@ async def kaspi_schema_probe(
         total=len(items),
     )
     return KaspiSchemaProbeOut(ok=ok, items=items)
+
+
+@router.post(
+    "/_debug/feed-upload-probe",
+    summary="Kaspi feed upload probe",
+    response_model=KaspiFeedUploadProbeOut,
+)
+async def kaspi_feed_upload_probe(
+    request: Request,
+    store_name: str = Query(..., min_length=1, alias="store_name"),
+    paths: list[str] | None = Query(None),
+    current_user: User = Depends(_auth_user),
+    session: AsyncSession = Depends(get_async_db),
+):
+    if not _is_dev_environment():
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="not_found")
+
+    require_platform_admin(current_user)
+    token = await KaspiStoreToken.get_token(session, store_name)
+    if not token:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="kaspi_token_not_found")
+
+    base_url = os.getenv("KASPI_FEED_BASE_URL", "https://kaspi.kz")
+    default_paths = [
+        "/shop/api/feeds/import",
+        "/shop/api/feeds/import/offers",
+        "/shop/api/feeds/upload",
+    ]
+    candidate_paths = paths or default_paths
+    now = datetime.utcnow()
+    probe_xml = (
+        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>"
+        f"<kaspi_catalog xmlns=\"{_KASPI_NS}\" date=\"{now.strftime('%Y-%m-%dT%H:%M:%S')}\">"
+        "<company>Probe</company>"
+        f"<merchantid>{store_name}</merchantid>"
+        "<offers></offers>"
+        "</kaspi_catalog>"
+    )
+    headers = {
+        "X-Auth-Token": token,
+        "Content-Type": "application/xml",
+        "Accept": "application/json",
+        "User-Agent": _kaspi_user_agent(),
+    }
+    request_id = getattr(getattr(request, "state", None), "request_id", None)
+
+    items: list[KaspiFeedUploadProbeItem] = []
+    async with httpx.AsyncClient(timeout=FAST_PROBE_TIMEOUT, follow_redirects=True) as client:
+        for path in candidate_paths:
+            normalized = path if path.startswith("/") else f"/{path}"
+            url = f"{base_url.rstrip('/')}{normalized}"
+            started = time.perf_counter()
+            try:
+                resp = await client.post(url, headers=headers, content=probe_xml.encode("utf-8"))
+            except httpx.TimeoutException as exc:
+                _log_kaspi_probe_error(
+                    request_id=request_id,
+                    company_id=None,
+                    store_name=store_name,
+                    method="POST",
+                    url=url,
+                    exc=exc,
+                )
+                elapsed_ms = int((time.perf_counter() - started) * 1000)
+                items.append(
+                    KaspiFeedUploadProbeItem(
+                        path=normalized,
+                        url=url,
+                        ok=False,
+                        status_code=None,
+                        error_class=type(exc).__name__,
+                        message=str(exc),
+                        response_snippet=None,
+                        location=None,
+                        elapsed_ms=elapsed_ms,
+                    )
+                )
+                continue
+            except httpx.RequestError as exc:
+                _log_kaspi_probe_error(
+                    request_id=request_id,
+                    company_id=None,
+                    store_name=store_name,
+                    method="POST",
+                    url=url,
+                    exc=exc,
+                )
+                elapsed_ms = int((time.perf_counter() - started) * 1000)
+                items.append(
+                    KaspiFeedUploadProbeItem(
+                        path=normalized,
+                        url=url,
+                        ok=False,
+                        status_code=None,
+                        error_class=type(exc).__name__,
+                        message=str(exc),
+                        response_snippet=None,
+                        location=None,
+                        elapsed_ms=elapsed_ms,
+                    )
+                )
+                continue
+
+            elapsed_ms = int((time.perf_counter() - started) * 1000)
+            _log_kaspi_probe_response(
+                request_id=request_id,
+                company_id=None,
+                store_name=store_name,
+                method="POST",
+                url=url,
+                status_code=resp.status_code,
+                response_text=resp.text,
+                elapsed_ms=elapsed_ms,
+            )
+            ok = 200 <= resp.status_code < 300
+            items.append(
+                KaspiFeedUploadProbeItem(
+                    path=normalized,
+                    url=url,
+                    ok=ok,
+                    status_code=resp.status_code,
+                    error_class=None if ok else "HTTPStatusError",
+                    message=None if ok else "upstream_response",
+                    response_snippet=_probe_response_snippet(resp.text),
+                    location=resp.headers.get("location"),
+                    elapsed_ms=elapsed_ms,
+                )
+            )
+
+    return KaspiFeedUploadProbeOut(ok=bool(items) and all(item.ok for item in items), items=items)
 
 
 # ============================= AUTO-SYNC ADMIN ===============================
@@ -6671,6 +6820,18 @@ async def _create_offers_feed_upload(
     await session.refresh(job)
 
     extra_env = _build_feed_upload_env(token)
+    upload_url = extra_env.get("KASPI_FEED_UPLOAD_URL")
+    if should_block_feed_upload_url(upload_url):
+        await update_feed_upload_job(
+            session,
+            job=job,
+            status="failed",
+            error_code="feed_upload_endpoint_invalid",
+            error_message="feed_upload_endpoint_invalid",
+            last_attempt_at=now_attempt,
+            next_attempt_at=None,
+        )
+        return job, False
     tmp_dir = settings.tmp_dir()
     tmp_dir.mkdir(parents=True, exist_ok=True)
     tmp_path = tmp_dir / f"kaspi_feed_{company.id}_{uuid4().hex}.xml"
@@ -6688,8 +6849,10 @@ async def _create_offers_feed_upload(
             extra_env=extra_env,
         )
     except KaspiAdapterError as exc:
+        error_message = str(exc)[:500]
+        unsupported = is_unsupported_content_type_error(error_message=error_message)
+        status_value = "failed" if unsupported or job.attempts >= max_attempts else "pending"
         next_attempt = None
-        status_value = "failed" if job.attempts >= max_attempts else "pending"
         if status_value == "pending":
             next_attempt = compute_next_attempt_at(
                 now=now_attempt,
@@ -6701,15 +6864,17 @@ async def _create_offers_feed_upload(
             session,
             job=job,
             status=status_value,
-            error_code="upstream_unavailable",
-            error_message=str(exc)[:500],
+            error_code="unsupported_content_type" if unsupported else "upstream_unavailable",
+            error_message=error_message,
             last_attempt_at=now_attempt,
             next_attempt_at=next_attempt,
         )
         return job, False
     except Exception as exc:
+        error_message = str(exc)[:500]
+        unsupported = is_unsupported_content_type_error(error_message=error_message)
+        status_value = "failed" if unsupported or job.attempts >= max_attempts else "pending"
         next_attempt = None
-        status_value = "failed" if job.attempts >= max_attempts else "pending"
         if status_value == "pending":
             next_attempt = compute_next_attempt_at(
                 now=now_attempt,
@@ -6721,8 +6886,8 @@ async def _create_offers_feed_upload(
             session,
             job=job,
             status=status_value,
-            error_code="upstream_unavailable",
-            error_message=str(exc)[:500],
+            error_code="unsupported_content_type" if unsupported else "upstream_unavailable",
+            error_message=error_message,
             last_attempt_at=now_attempt,
             next_attempt_at=next_attempt,
         )
@@ -6750,6 +6915,9 @@ async def _create_offers_feed_upload(
     status_value = str(normalized.get("status") or "uploaded")
     status_class = _classify_feed_upload_status(status_value)
     error_code, error_message = _extract_error_info(normalized)
+    if is_unsupported_content_type_error(error_message=error_message, response_payload=normalized):
+        error_code = "unsupported_content_type"
+        status_value = "failed"
     await update_feed_upload_job(
         session,
         job=job,
@@ -6759,7 +6927,7 @@ async def _create_offers_feed_upload(
         error_message=error_message,
         response_json=normalized,
         next_attempt_at=None
-        if status_class == "success"
+        if status_class == "success" or error_code == "unsupported_content_type"
         else compute_next_attempt_at(
             now=now_attempt,
             attempts=job.attempts,
@@ -6839,8 +7007,6 @@ async def kaspi_feed_upload_create(
     if existing:
         return _feed_upload_to_out(existing)
 
-    extra_env = _build_feed_upload_env(token)
-
     xml_body: str
     if source == "export_id":
         export = await session.get(KaspiFeedExport, body.export_id)
@@ -6893,6 +7059,32 @@ async def kaspi_feed_upload_create(
     await session.commit()
     await session.refresh(job)
 
+    extra_env = _build_feed_upload_env(token)
+    upload_url = extra_env.get("KASPI_FEED_UPLOAD_URL")
+    if should_block_feed_upload_url(upload_url):
+        await update_feed_upload_job(
+            session,
+            job=job,
+            status="failed",
+            error_code="feed_upload_endpoint_invalid",
+            error_message="feed_upload_endpoint_invalid",
+            last_attempt_at=now_attempt,
+            next_attempt_at=None,
+        )
+        await _record_kaspi_event(
+            session,
+            company_id=company_id,
+            merchant_uid=merchant_uid,
+            kind="kaspi_feed",
+            status="error",
+            request_id=request_id,
+            error_code="feed_upload_endpoint_invalid",
+            error_message="feed_upload_endpoint_invalid",
+            meta_json={"upload_id": str(job.id), "import_code": None},
+        )
+        payload = jsonable_encoder(_feed_upload_to_out(job))
+        return JSONResponse(status_code=status.HTTP_201_CREATED, content=payload)
+
     tmp_dir = settings.tmp_dir()
     tmp_dir.mkdir(parents=True, exist_ok=True)
     tmp_path = tmp_dir / f"kaspi_feed_{company_id}_{uuid4().hex}.xml"
@@ -6906,19 +7098,26 @@ async def kaspi_feed_upload_create(
             extra_env=extra_env,
         )
     except KaspiAdapterError as exc:
-        await update_feed_upload_job(
-            session,
-            job=job,
-            status="pending",
-            error_code="upstream_unavailable",
-            error_message=str(exc)[:500],
-            last_attempt_at=now_attempt,
-            next_attempt_at=compute_next_attempt_at(
+        error_message = str(exc)[:500]
+        unsupported = is_unsupported_content_type_error(error_message=error_message)
+        status_value = "failed" if unsupported else "pending"
+        next_attempt = None
+        if status_value == "pending":
+            next_attempt = compute_next_attempt_at(
                 now=now_attempt,
                 attempts=job.attempts,
                 base_delay_seconds=int(getattr(settings, "KASPI_FEED_UPLOAD_BACKOFF_BASE_SECONDS", 30) or 30),
                 max_delay_seconds=int(getattr(settings, "KASPI_FEED_UPLOAD_BACKOFF_MAX_SECONDS", 900) or 900),
-            ),
+            )
+        error_code = "unsupported_content_type" if unsupported else "upstream_unavailable"
+        await update_feed_upload_job(
+            session,
+            job=job,
+            status=status_value,
+            error_code=error_code,
+            error_message=error_message,
+            last_attempt_at=now_attempt,
+            next_attempt_at=next_attempt,
         )
         await _record_kaspi_event(
             session,
@@ -6927,27 +7126,34 @@ async def kaspi_feed_upload_create(
             kind="kaspi_feed",
             status="error",
             request_id=request_id,
-            error_code="upstream_unavailable",
-            error_message=str(exc)[:500],
+            error_code=error_code,
+            error_message=error_message,
             meta_json={"upload_id": str(job.id), "import_code": None},
         )
         payload = jsonable_encoder(_feed_upload_to_out(job))
         return JSONResponse(status_code=status.HTTP_201_CREATED, content=payload)
     except Exception as exc:
         logger.error("Kaspi feed upload failed: company_id=%s error=%s", company_id, exc)
-        await update_feed_upload_job(
-            session,
-            job=job,
-            status="pending",
-            error_code="upstream_unavailable",
-            error_message=str(exc)[:500],
-            last_attempt_at=now_attempt,
-            next_attempt_at=compute_next_attempt_at(
+        error_message = str(exc)[:500]
+        unsupported = is_unsupported_content_type_error(error_message=error_message)
+        status_value = "failed" if unsupported else "pending"
+        next_attempt = None
+        if status_value == "pending":
+            next_attempt = compute_next_attempt_at(
                 now=now_attempt,
                 attempts=job.attempts,
                 base_delay_seconds=int(getattr(settings, "KASPI_FEED_UPLOAD_BACKOFF_BASE_SECONDS", 30) or 30),
                 max_delay_seconds=int(getattr(settings, "KASPI_FEED_UPLOAD_BACKOFF_MAX_SECONDS", 900) or 900),
-            ),
+            )
+        error_code = "unsupported_content_type" if unsupported else "upstream_unavailable"
+        await update_feed_upload_job(
+            session,
+            job=job,
+            status=status_value,
+            error_code=error_code,
+            error_message=error_message,
+            last_attempt_at=now_attempt,
+            next_attempt_at=next_attempt,
         )
         await _record_kaspi_event(
             session,
@@ -6956,8 +7162,8 @@ async def kaspi_feed_upload_create(
             kind="kaspi_feed",
             status="error",
             request_id=request_id,
-            error_code="upstream_unavailable",
-            error_message=str(exc)[:500],
+            error_code=error_code,
+            error_message=error_message,
             meta_json={"upload_id": str(job.id), "import_code": None},
         )
         payload = jsonable_encoder(_feed_upload_to_out(job))
@@ -6995,6 +7201,9 @@ async def kaspi_feed_upload_create(
 
     status_value = normalized.get("status") or "uploaded"
     error_code, error_message = _extract_error_info(normalized)
+    if is_unsupported_content_type_error(error_message=error_message, response_payload=normalized):
+        error_code = "unsupported_content_type"
+        status_value = "failed"
     status_class = _classify_feed_upload_status(status_value)
     await update_feed_upload_job(
         session,
@@ -7005,7 +7214,7 @@ async def kaspi_feed_upload_create(
         error_message=error_message,
         response_json=normalized,
         next_attempt_at=None
-        if status_class == "success"
+        if status_class == "success" or error_code == "unsupported_content_type"
         else compute_next_attempt_at(
             now=now_attempt,
             attempts=job.attempts,

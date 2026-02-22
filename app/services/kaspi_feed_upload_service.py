@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from datetime import datetime, timedelta
 from hashlib import sha256
 from typing import Any
@@ -110,6 +111,55 @@ def normalize_kaspi_payload(payload: Any) -> dict[str, Any]:
     if isinstance(payload, list):
         return {"data": payload}
     return {"raw": payload}
+
+
+def _extract_error_text(payload: dict[str, Any] | None) -> str | None:
+    if not payload:
+        return None
+    for key in ("detail", "errorMessage", "error_message", "message", "error"):
+        value = payload.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return None
+
+
+def _looks_like_unsupported_content_type(message: str | None) -> bool:
+    if not message:
+        return False
+    text = message.strip().lower()
+    if "content type" in text and "not supported" in text:
+        return True
+    return "unsupported media type" in text
+
+
+def is_unsupported_content_type_error(
+    *,
+    error_message: str | None,
+    response_payload: dict[str, Any] | None = None,
+) -> bool:
+    return _looks_like_unsupported_content_type(error_message) or _looks_like_unsupported_content_type(
+        _extract_error_text(response_payload)
+    )
+
+
+def is_feed_upload_url_misconfigured(upload_url: str | None) -> bool:
+    if not upload_url:
+        return False
+    return "/shop/api/products/import" in upload_url.lower()
+
+
+def should_block_feed_upload_url(upload_url: str | None) -> bool:
+    if not is_feed_upload_url_misconfigured(upload_url):
+        return False
+    env_name = (os.environ.get("ENVIRONMENT", "") or "").lower()
+    debug_flag = os.environ.get("DEBUG", "").lower() in {"1", "true", "yes", "on"}
+    if debug_flag:
+        return False
+    if os.environ.get("PYTEST_CURRENT_TEST"):
+        return False
+    if env_name in {"local", "development", "dev", "test", "testing"}:
+        return False
+    return True
 
 
 def compute_feed_payload_hash(xml_body: str) -> str:

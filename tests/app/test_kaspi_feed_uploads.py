@@ -9,6 +9,7 @@ import pytest_asyncio
 from sqlalchemy import select
 
 from app.core.subscriptions.plan_catalog import normalize_plan_id
+from app.integrations.kaspi_adapter import KaspiAdapterError
 from app.models.billing import Subscription
 from app.models.company import Company
 from app.models.integration_event import IntegrationEvent
@@ -58,6 +59,11 @@ class _FakeKaspiAdapter:
 class _FailingKaspiAdapter:
     def feed_upload(self, *args, **kwargs):
         raise RuntimeError("upstream_unavailable")
+
+
+class _UnsupportedContentTypeAdapter:
+    def feed_upload(self, *args, **kwargs):
+        raise KaspiAdapterError("Content type 'application/xml' not supported")
 
 
 class _SuccessKaspiAdapter:
@@ -338,6 +344,53 @@ async def test_kaspi_offers_feed_upload_idempotent_by_hash(
         .all()
     )
     assert len(uploads) == 1
+
+
+@pytest.mark.asyncio
+async def test_kaspi_offers_feed_upload_unsupported_content_type_marks_failed(
+    async_client,
+    async_db_session,
+    company_a_admin_headers,
+    monkeypatch,
+):
+    await _ensure_company(async_db_session, 1001, "store-a")
+
+    async def _get_token(session, store_name: str):
+        return "token-a"
+
+    monkeypatch.setattr(KaspiStoreToken, "get_token", _get_token)
+
+    async_db_session.add(
+        KaspiOffer(
+            company_id=1001,
+            merchant_uid="store-a",
+            sku="SKU-CT",
+            title="Item CT",
+            price=1000,
+        )
+    )
+    await async_db_session.commit()
+
+    from app.api.v1 import kaspi as kaspi_module
+
+    monkeypatch.setattr(kaspi_module, "KaspiAdapter", lambda: _UnsupportedContentTypeAdapter())
+
+    resp = await async_client.post(
+        "/api/v1/kaspi/offers/feed/upload",
+        headers=company_a_admin_headers,
+        json={"merchant_uid": "store-a", "refresh": False},
+    )
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["status"] == "failed"
+    assert data["last_error_code"] == "unsupported_content_type"
+    assert data["next_attempt_at"] is None
+
+    record = await async_db_session.get(KaspiFeedUpload, data["id"])
+    assert record is not None
+    assert record.status == "failed"
+    assert record.last_error_code == "unsupported_content_type"
+    assert record.next_attempt_at is None
 
 
 @pytest.mark.asyncio

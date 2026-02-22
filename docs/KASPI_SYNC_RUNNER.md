@@ -24,6 +24,36 @@ Kaspi Shop API does not provide a full catalog pull via X-Auth-Token. Use the pr
 The legacy `POST /api/v1/kaspi/products/sync` is retained for compatibility and returns
 `catalog_pull_not_supported`.
 
+## Two Independent Pipelines
+
+### A) Goods Import (JSON)
+
+- Purpose: Import catalog attributes (Kaspi schema JSON). Does NOT update prices or stock.
+- Kaspi endpoints:
+    - `POST /shop/api/products/import` (JSON)
+    - `GET /shop/api/products/import/status` (JSON)
+    - `GET /shop/api/products/import/result` (JSON)
+- SmartSell endpoints:
+    - `POST /api/v1/kaspi/products/import/start`
+    - `POST /api/v1/kaspi/products/import/upload?i=<import_code>`
+    - `GET /api/v1/kaspi/products/import?i=<kaspi_import_code>`
+    - `GET /api/v1/kaspi/products/import/result?i=<kaspi_import_code>`
+
+### B) Offers Feed Upload (XML)
+
+- Purpose: Update prices and stock via XML feed.
+- Kaspi endpoints:
+    - `POST /shop/api/feeds/import` (XML)
+    - `GET /shop/api/feeds/import/status` (JSON)
+    - `GET /shop/api/feeds/import/result` (JSON)
+- SmartSell endpoints:
+    - `POST /api/v1/kaspi/offers/feed/upload`
+    - `POST /api/v1/kaspi/feed/uploads`
+
+> Warning: If you see `Content type 'application/xml' not supported`, the feed upload URL is misconfigured
+> (often pointed at the goods import endpoint). Use the dev-only probe to validate candidates:
+> `POST /api/v1/kaspi/_debug/feed-upload-probe?store_name=<store>`.
+
 ## Local Import Cycle
 
 Minimal production-safe flow for offers dataset + goods import:

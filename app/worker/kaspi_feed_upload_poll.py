@@ -18,7 +18,9 @@ from app.models.kaspi_feed_upload import KaspiFeedUpload
 from app.models.marketplace import KaspiStoreToken
 from app.services.kaspi_feed_upload_service import (
     compute_next_attempt_at,
+    is_unsupported_content_type_error,
     normalize_kaspi_payload,
+    should_block_feed_upload_url,
     update_feed_upload_job,
 )
 
@@ -121,6 +123,17 @@ async def _handle_upload(upload_id: UUID | str, session_factory: sessionmaker) -
         max_delay = int(getattr(settings, "KASPI_FEED_UPLOAD_BACKOFF_MAX_SECONDS", 900) or 900)
         now = _utcnow()
         extra_env = _build_feed_upload_env(token)
+        upload_url = extra_env.get("KASPI_FEED_UPLOAD_URL")
+        if should_block_feed_upload_url(upload_url):
+            await update_feed_upload_job(
+                session,
+                job=upload,
+                status="failed",
+                error_code="feed_upload_endpoint_invalid",
+                error_message="feed_upload_endpoint_invalid",
+                next_attempt_at=None,
+            )
+            return {"status": "failed", "error": "feed_upload_endpoint_invalid"}
 
         try:
             if not upload.import_code:
@@ -215,7 +228,9 @@ async def _handle_upload(upload_id: UUID | str, session_factory: sessionmaker) -
         except KaspiAdapterError as exc:
             upload.attempts = int(upload.attempts or 0) + 1
             upload.last_attempt_at = now
-            status_value = "failed" if upload.attempts >= max_attempts else "pending"
+            error_message = str(exc)[:500]
+            unsupported = is_unsupported_content_type_error(error_message=error_message)
+            status_value = "failed" if unsupported or upload.attempts >= max_attempts else "pending"
             next_attempt_at = None
             if status_value == "pending":
                 next_attempt_at = compute_next_attempt_at(
@@ -228,15 +243,17 @@ async def _handle_upload(upload_id: UUID | str, session_factory: sessionmaker) -
                 session,
                 job=upload,
                 status=status_value,
-                error_code="upstream_unavailable",
-                error_message=str(exc)[:500],
+                error_code="unsupported_content_type" if unsupported else "upstream_unavailable",
+                error_message=error_message,
                 next_attempt_at=next_attempt_at,
             )
-            return {"status": "failed", "error": "upstream_unavailable"}
+            return {"status": "failed", "error": "unsupported_content_type" if unsupported else "upstream_unavailable"}
         except Exception as exc:  # pragma: no cover
             upload.attempts = int(upload.attempts or 0) + 1
             upload.last_attempt_at = now
-            status_value = "failed" if upload.attempts >= max_attempts else "pending"
+            error_message = str(exc)[:500]
+            unsupported = is_unsupported_content_type_error(error_message=error_message)
+            status_value = "failed" if unsupported or upload.attempts >= max_attempts else "pending"
             next_attempt_at = None
             if status_value == "pending":
                 next_attempt_at = compute_next_attempt_at(
@@ -249,11 +266,11 @@ async def _handle_upload(upload_id: UUID | str, session_factory: sessionmaker) -
                 session,
                 job=upload,
                 status=status_value,
-                error_code="feed_upload_failed",
-                error_message=str(exc)[:500],
+                error_code="unsupported_content_type" if unsupported else "feed_upload_failed",
+                error_message=error_message,
                 next_attempt_at=next_attempt_at,
             )
-            return {"status": "failed", "error": "feed_upload_failed"}
+            return {"status": "failed", "error": "unsupported_content_type" if unsupported else "feed_upload_failed"}
 
 
 async def run_kaspi_feed_upload_poll_async() -> dict[str, Any]:
