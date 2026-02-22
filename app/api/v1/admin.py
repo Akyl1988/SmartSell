@@ -31,9 +31,8 @@ from app.models.campaign import (
     MessageStatus,
 )
 from app.models.company import Company
-from app.models.kaspi_mc_session import KaspiMcSession
-from app.models.kaspi_offer import KaspiOffer
 from app.models.kaspi_trial_grant import KaspiTrialGrant
+from app.models.marketplace import KaspiStoreToken
 from app.models.subscription_override import SubscriptionOverride
 from app.models.user import User
 from app.schemas.campaign import AdminCampaignResponse
@@ -938,24 +937,16 @@ async def grant_kaspi_trial_subscription(
     if not merchant_uid:
         raise AuthorizationError("merchant_uid_required", code="merchant_uid_required", http_status=400)
 
-    linked_offer = (
+    token_exists = (
         await db.execute(
-            select(KaspiOffer.id)
-            .where(KaspiOffer.company_id == payload.companyId)
-            .where(KaspiOffer.merchant_uid == merchant_uid)
-            .limit(1)
-        )
-    ).scalar_one_or_none()
-    linked_mc = (
-        await db.execute(
-            select(KaspiMcSession.id)
-            .where(KaspiMcSession.company_id == payload.companyId)
-            .where(KaspiMcSession.merchant_uid == merchant_uid)
-            .limit(1)
+            select(sa.literal(True))
+            .select_from(KaspiStoreToken)
+            .where(sa.func.lower(KaspiStoreToken.store_name) == sa.func.lower(sa.literal(merchant_uid)))
         )
     ).scalar_one_or_none()
 
-    if not linked_offer and not linked_mc:
+    linked_company = (company.kaspi_store_id or "").strip() == merchant_uid
+    if not linked_company and not token_exists:
         raise AuthorizationError(
             "merchant_uid_not_linked",
             code="merchant_uid_not_linked",

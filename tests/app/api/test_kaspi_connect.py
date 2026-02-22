@@ -416,6 +416,30 @@ class TestKaspiConnect:
             assert data.get("detail") == "kaspi_upstream_error"
 
     @pytest.mark.asyncio
+    async def test_connect_store_id_conflict_returns_409(
+        self, async_client: AsyncClient, async_db_session: AsyncSession
+    ):
+        user, company = await self._create_user_and_company(async_db_session, "77001234578")
+        company.kaspi_store_id = "store-existing"
+        await async_db_session.commit()
+        headers = self._get_auth_header(user)
+
+        with patch("app.api.v1.kaspi.KaspiStoreToken.upsert_token"):
+            response = await async_client.post(
+                "/api/v1/kaspi/connect",
+                json={
+                    "company_name": "Conflict Store",
+                    "store_name": "store-new",
+                    "token": "test_token",
+                    "verify": False,
+                },
+                headers=headers,
+            )
+
+            assert response.status_code == 409
+            assert response.json().get("detail") == "kaspi_store_id_conflict"
+
+    @pytest.mark.asyncio
     async def test_connect_tenant_isolation(self, async_client: AsyncClient, async_db_session: AsyncSession):
         """Test: company_id comes only from current_user, not from request."""
         # Create two companies and users

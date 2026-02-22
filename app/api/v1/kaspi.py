@@ -83,7 +83,7 @@ from app.models.kaspi_mc_session import KaspiMcSession
 from app.models.kaspi_offer import KaspiOffer
 from app.models.kaspi_order_sync_state import KaspiOrderSyncState
 from app.models.marketplace import KaspiStoreToken
-from app.models.order import Order, OrderItem, OrderSource, OrderStatus
+from app.models.order import Order, OrderSource, OrderStatus
 from app.models.user import User
 from app.schemas.kaspi import (
     ImportRequest,
@@ -430,6 +430,24 @@ def _resolve_merchant_uid(
     if fallback:
         return fallback, "company"
     raise HTTPException(status_code=missing_status, detail=missing_detail)
+
+
+def _resolve_company_store_uid(
+    *,
+    company: Company | None,
+    raw_merchant_uid: str | None,
+) -> tuple[str | None, str | None, str | None]:
+    provided = (raw_merchant_uid or "").strip()
+    store_uid = (company.kaspi_store_id or "").strip() if company else ""
+    if provided:
+        if not store_uid:
+            return None, None, "missing_merchant_uid"
+        if provided != store_uid:
+            return None, None, "merchant_not_found"
+        return provided, "query", None
+    if store_uid:
+        return store_uid, "company", None
+    return None, None, "missing_merchant_uid"
 
 
 def _extract_import_code(payload: dict) -> str | None:
@@ -1521,22 +1539,25 @@ async def kaspi_orders_list(
     company_id = _resolve_company_id(current_user)
     request_id = getattr(getattr(request, "state", None), "request_id", None)
     rid = request_id or request.headers.get("X-Request-ID") or str(uuid4())
-    if merchant_uid:
-        has_merchant = (
-            await session.execute(
-                sa.select(sa.literal(True)).where(
-                    KaspiOffer.company_id == company_id,
-                    KaspiOffer.merchant_uid == merchant_uid,
-                )
-            )
-        ).scalar_one_or_none()
-        if not has_merchant:
-            payload = {"detail": "merchant_not_found", "code": "merchant_not_found", "request_id": rid}
-            return JSONResponse(
-                status_code=status.HTTP_404_NOT_FOUND,
-                content=payload,
-                headers={"X-Request-ID": rid},
-            )
+    company = await session.get(Company, company_id)
+    resolved_merchant_uid, merchant_source, merchant_error = _resolve_company_store_uid(
+        company=company,
+        raw_merchant_uid=merchant_uid,
+    )
+    if merchant_error == "missing_merchant_uid":
+        payload = {"detail": "missing_merchant_uid", "code": "missing_merchant_uid", "request_id": rid}
+        return JSONResponse(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            content=payload,
+            headers={"X-Request-ID": rid},
+        )
+    if merchant_error == "merchant_not_found":
+        payload = {"detail": "merchant_not_found", "code": "merchant_not_found", "request_id": rid}
+        return JSONResponse(
+            status_code=status.HTTP_404_NOT_FOUND,
+            content=payload,
+            headers={"X-Request-ID": rid},
+        )
 
     dt_from = None
     dt_to = None
@@ -1592,21 +1613,8 @@ async def kaspi_orders_list(
         stmt = stmt.where(Order.created_at >= dt_from)
     if dt_to:
         stmt = stmt.where(Order.created_at <= dt_to)
-    if merchant_uid:
-        items_match = (
-            sa.select(sa.literal(True))
-            .select_from(OrderItem)
-            .join(
-                KaspiOffer,
-                sa.and_(
-                    KaspiOffer.company_id == company_id,
-                    KaspiOffer.merchant_uid == merchant_uid,
-                    KaspiOffer.sku == OrderItem.sku,
-                ),
-            )
-            .where(OrderItem.order_id == Order.id)
-        )
-        stmt = stmt.where(sa.exists(items_match))
+    _ = resolved_merchant_uid
+    _ = merchant_source
 
     total = (await session.scalar(select(sa.func.count()).select_from(stmt.subquery()))) or 0
 

@@ -54,12 +54,23 @@ async def test_admin_tasks_platform_only(
 
 async def test_kaspi_orders_store_admin_only(
     async_client,
+    async_db_session,
     company_a_admin_headers,
     company_a_manager_headers,
     company_a_employee_headers,
     auth_headers,
     monkeypatch,
 ):
+    from app.models.company import Company
+
+    company = await async_db_session.get(Company, 1001)
+    if company is None:
+        company = Company(id=1001, name="Company 1001", kaspi_store_id="123")
+        async_db_session.add(company)
+    else:
+        company.kaspi_store_id = "123"
+    await async_db_session.commit()
+
     monkeypatch.setattr(kaspi_module, "require_feature", _allow_feature)
 
     resp_store_admin = await async_client.get(

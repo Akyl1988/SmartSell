@@ -6,6 +6,7 @@ from decimal import Decimal
 
 import pytest
 
+from app.models.company import Company
 from app.models.kaspi_offer import KaspiOffer
 from app.models.order import Order, OrderItem, OrderSource, OrderStatus
 
@@ -15,6 +16,16 @@ pytestmark = pytest.mark.asyncio
 async def _create_offer(session, *, company_id: int, merchant_uid: str, sku: str) -> None:
     offer = KaspiOffer(company_id=company_id, merchant_uid=merchant_uid, sku=sku, title="Item", price=1000)
     session.add(offer)
+    await session.commit()
+
+
+async def _ensure_company_store(session, *, company_id: int, merchant_uid: str) -> None:
+    company = await session.get(Company, company_id)
+    if company is None:
+        company = Company(id=company_id, name=f"Company {company_id}", kaspi_store_id=merchant_uid)
+        session.add(company)
+    else:
+        company.kaspi_store_id = merchant_uid
     await session.commit()
 
 
@@ -55,7 +66,8 @@ async def test_kaspi_orders_list_non_admin_forbidden(async_client, company_a_man
 
 
 async def test_kaspi_orders_list_tenant_isolation(async_client, async_db_session, company_a_admin_headers):
-    await _create_offer(async_db_session, company_id=2001, merchant_uid="999", sku="SKU-ISO")
+    await _ensure_company_store(async_db_session, company_id=1001, merchant_uid="123")
+    await _ensure_company_store(async_db_session, company_id=2001, merchant_uid="999")
     order = _make_order(company_id=2001, ext_id="o1", created_at=datetime.now(UTC), status=OrderStatus.PENDING)
     async_db_session.add(order)
     await async_db_session.flush()
@@ -82,7 +94,7 @@ async def test_kaspi_orders_list_tenant_isolation(async_client, async_db_session
 
 
 async def test_kaspi_orders_list_pagination(async_client, async_db_session, company_a_admin_headers):
-    await _create_offer(async_db_session, company_id=1001, merchant_uid="123", sku="SKU-PAGE")
+    await _ensure_company_store(async_db_session, company_id=1001, merchant_uid="123")
     now = datetime.utcnow()
     notes = json.dumps(
         {
@@ -163,8 +175,23 @@ async def test_kaspi_orders_list_pagination(async_client, async_db_session, comp
     assert item["kaspi_reservation_date"] == "2026-02-11T00:00:00Z"
 
 
+async def test_kaspi_orders_list_uses_company_store(async_client, async_db_session, company_a_admin_headers):
+    await _ensure_company_store(async_db_session, company_id=1001, merchant_uid="123")
+    order = _make_order(company_id=1001, ext_id="o10", created_at=datetime.utcnow(), status=OrderStatus.PAID)
+    async_db_session.add(order)
+    await async_db_session.commit()
+
+    resp = await async_client.get(
+        "/api/v1/kaspi/orders",
+        headers=company_a_admin_headers,
+    )
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["total"] >= 1
+
+
 async def test_kaspi_orders_list_filters(async_client, async_db_session, company_a_admin_headers):
-    await _create_offer(async_db_session, company_id=1001, merchant_uid="123", sku="SKU-FILTER")
+    await _ensure_company_store(async_db_session, company_id=1001, merchant_uid="123")
     base = datetime(2026, 2, 1)
     orders = [
         _make_order(company_id=1001, ext_id="a1", created_at=base, status=OrderStatus.PENDING),
@@ -207,7 +234,7 @@ async def test_kaspi_orders_list_filters(async_client, async_db_session, company
 
 
 async def test_kaspi_orders_list_status_filter_enum(async_client, async_db_session, company_a_admin_headers):
-    await _create_offer(async_db_session, company_id=1001, merchant_uid="123", sku="SKU-STATUS")
+    await _ensure_company_store(async_db_session, company_id=1001, merchant_uid="123")
     now = datetime.utcnow()
     orders = [
         _make_order(company_id=1001, ext_id="s1", created_at=now, status=OrderStatus.PAID),
@@ -249,7 +276,8 @@ async def test_kaspi_orders_list_status_filter_enum(async_client, async_db_sessi
     assert data["items"][0]["external_id"] == "s1"
 
 
-async def test_kaspi_orders_list_invalid_status(async_client, company_a_admin_headers):
+async def test_kaspi_orders_list_invalid_status(async_client, async_db_session, company_a_admin_headers):
+    await _ensure_company_store(async_db_session, company_id=1001, merchant_uid="123")
     resp = await async_client.get(
         "/api/v1/kaspi/orders?status=bad_status",
         headers={**company_a_admin_headers, "X-Request-ID": "req-invalid-status"},
@@ -260,7 +288,8 @@ async def test_kaspi_orders_list_invalid_status(async_client, company_a_admin_he
     assert resp.headers.get("X-Request-ID") == "req-invalid-status"
 
 
-async def test_kaspi_orders_list_invalid_datetime(async_client, company_a_admin_headers):
+async def test_kaspi_orders_list_invalid_datetime(async_client, async_db_session, company_a_admin_headers):
+    await _ensure_company_store(async_db_session, company_id=1001, merchant_uid="123")
     resp = await async_client.get(
         "/api/v1/kaspi/orders?created_from=not-a-date",
         headers={**company_a_admin_headers, "X-Request-ID": "req-invalid-datetime"},
@@ -272,8 +301,8 @@ async def test_kaspi_orders_list_invalid_datetime(async_client, company_a_admin_
 
 
 async def test_kaspi_orders_list_tenant_isolation_list(async_client, async_db_session, company_a_admin_headers):
-    await _create_offer(async_db_session, company_id=1001, merchant_uid="123", sku="SKU-ISO-A")
-    await _create_offer(async_db_session, company_id=2001, merchant_uid="123", sku="SKU-ISO-B")
+    await _ensure_company_store(async_db_session, company_id=1001, merchant_uid="123")
+    await _ensure_company_store(async_db_session, company_id=2001, merchant_uid="999")
     order_a = _make_order(company_id=1001, ext_id="ia", created_at=datetime.utcnow(), status=OrderStatus.PAID)
     order_b = _make_order(company_id=2001, ext_id="ib", created_at=datetime.utcnow(), status=OrderStatus.PAID)
     async_db_session.add_all([order_a, order_b])
