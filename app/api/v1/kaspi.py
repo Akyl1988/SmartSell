@@ -97,8 +97,12 @@ from app.schemas.kaspi import (
 )
 from app.services.integration_events import record_integration_event
 from app.services.kaspi_feed_upload_service import (
+    compute_feed_payload_hash,
+    compute_next_attempt_at,
     create_feed_upload_job,
+    find_recent_successful_upload_by_hash,
     get_feed_upload_by_request_id,
+    get_or_create_feed_export,
     normalize_kaspi_payload,
     update_feed_upload_job,
 )
@@ -1156,6 +1160,9 @@ def _feed_upload_to_out(record: KaspiFeedUpload) -> KaspiFeedUploadRecordOut:
         last_error_code=record.last_error_code,
         last_error_message=record.last_error_message,
         request_id=record.request_id,
+        payload_hash=record.payload_hash,
+        response_json=record.response_json,
+        next_attempt_at=record.next_attempt_at,
         created_at=record.created_at,
         updated_at=record.updated_at,
     )
@@ -2890,6 +2897,7 @@ class KaspiSyncNowOut(BaseModel):
     goods_import_result: dict[str, Any] | None = None
     feed_last_generated_at: datetime | None = None
     offers_feed_result: dict[str, Any] | None = None
+    offers_feed_upload_result: dict[str, Any] | None = None
 
 
 class KaspiFeedUploadIn(BaseModel):
@@ -2911,6 +2919,12 @@ class KaspiFeedUploadIn(BaseModel):
         raise ValueError("export_id must be an integer")
 
 
+class KaspiOffersFeedUploadIn(BaseModel):
+    merchant_uid: str = Field(..., min_length=3, max_length=128)
+    refresh: bool = False
+    comment: str | None = Field(None, max_length=500)
+
+
 class KaspiFeedUploadRecordOut(BaseModel):
     id: str
     merchant_uid: str
@@ -2922,6 +2936,9 @@ class KaspiFeedUploadRecordOut(BaseModel):
     last_error_code: str | None = None
     last_error_message: str | None = None
     request_id: str | None = None
+    payload_hash: str | None = None
+    response_json: dict[str, Any] | None = None
+    next_attempt_at: datetime | None = None
     created_at: datetime
     updated_at: datetime
 
@@ -4966,6 +4983,67 @@ async def kaspi_sync_now(
                     "status": "success",
                     "generated_at": generated_at.isoformat(),
                 }
+                offers_feed_upload_result: dict[str, Any] | None = None
+                feed_upload_enabled = bool(getattr(settings, "KASPI_FEED_UPLOAD_ENABLED", False))
+                if feed_upload_enabled:
+                    upload_job, upload_noop = await _create_offers_feed_upload(
+                        session=session,
+                        company=company,
+                        merchant_uid=merchant_uid,
+                        store_name=(company.kaspi_store_id or merchant_uid),
+                        token=token or "",
+                        request_id=rid,
+                        comment="sync_now",
+                        refresh=False,
+                    )
+                    upload_status_class = _classify_feed_upload_status(upload_job.status)
+                    offers_feed_upload_result = {
+                        "id": str(upload_job.id),
+                        "status": "noop"
+                        if upload_noop
+                        else "success"
+                        if upload_status_class == "success"
+                        else "failed"
+                        if upload_status_class == "failed"
+                        else "pending",
+                        "import_code": upload_job.import_code,
+                        "payload_hash": upload_job.payload_hash,
+                        "next_attempt_at": upload_job.next_attempt_at.isoformat()
+                        if upload_job.next_attempt_at
+                        else None,
+                    }
+                    if upload_noop:
+                        offers_feed_upload_result.update(
+                            {
+                                "code": "feed_upload_noop",
+                                "detail": "feed_upload_noop",
+                            }
+                        )
+                    elif upload_status_class == "failed":
+                        offers_feed_upload_result.update(
+                            {
+                                "code": "feed_upload_failed",
+                                "detail": "feed_upload_failed",
+                            }
+                        )
+                    elif upload_status_class != "success":
+                        offers_feed_upload_result.update(
+                            {
+                                "code": "feed_upload_pending",
+                                "detail": "feed_upload_pending",
+                            }
+                        )
+                status_value = "ok" if goods_class == "success_applied" and not orders_timed_out else "partial"
+                if feed_upload_enabled and offers_feed_upload_result is not None:
+                    if offers_feed_upload_result.get("status") != "success":
+                        status_value = "partial"
+                        errors.append(
+                            _err(
+                                code=str(offers_feed_upload_result.get("code") or "feed_upload_pending"),
+                                detail=str(offers_feed_upload_result.get("detail") or "feed_upload_pending"),
+                                phase_for_error="offers_feed",
+                            )
+                        )
 
                 return KaspiSyncNowOut(
                     ok=True,
@@ -4981,6 +5059,7 @@ async def kaspi_sync_now(
                     goods_import_result=goods_import_result,
                     feed_last_generated_at=generated_at,
                     offers_feed_result=offers_feed_result,
+                    offers_feed_upload_result=offers_feed_upload_result,
                 )
 
             return await _run_sync_now()
@@ -6073,6 +6152,33 @@ class KaspiOfferSeedOut(BaseModel):
     offer_id: int | None = None
 
 
+_FEED_UPLOAD_SUCCESS = {"done", "success", "completed", "published"}
+_FEED_UPLOAD_FAILED = {"failed", "error"}
+
+
+def _classify_feed_upload_status(status: str | None) -> str:
+    value = (status or "").strip().lower()
+    if value in _FEED_UPLOAD_SUCCESS:
+        return "success"
+    if value in _FEED_UPLOAD_FAILED:
+        return "failed"
+    return "pending"
+
+
+def _build_feed_upload_env(token: str) -> dict[str, str]:
+    base_url = os.getenv("KASPI_FEED_BASE_URL", "https://kaspi.kz")
+    upload_url = os.getenv("KASPI_FEED_UPLOAD_URL", f"{base_url.rstrip('/')}/shop/api/feeds/import")
+    status_url = os.getenv("KASPI_FEED_STATUS_URL", f"{base_url.rstrip('/')}/shop/api/feeds/import/status")
+    result_url = os.getenv("KASPI_FEED_RESULT_URL", f"{base_url.rstrip('/')}/shop/api/feeds/import/result")
+    return {
+        "KASPI_FEED_UPLOAD_URL": upload_url,
+        "KASPI_FEED_STATUS_URL": status_url,
+        "KASPI_FEED_RESULT_URL": result_url,
+        "KASPI_FEED_TOKEN": token,
+        "KASPI_TOKEN": token,
+    }
+
+
 @router.post(
     "/offers/seed",
     summary="Dev-only: seed minimal Kaspi offer",
@@ -6487,6 +6593,219 @@ async def kaspi_feed_exports_list(
     return [_feed_export_to_out(export) for export in exports]
 
 
+async def _create_offers_feed_upload(
+    *,
+    session: AsyncSession,
+    company: Company,
+    merchant_uid: str,
+    store_name: str,
+    token: str,
+    request_id: str | None,
+    comment: str | None,
+    refresh: bool,
+) -> tuple[KaspiFeedUpload, bool]:
+    if refresh:
+        rebuild_offers = await _build_offers_from_products(
+            session,
+            company_id=company.id,
+            merchant_uid=merchant_uid,
+            include_inactive=False,
+        )
+        if rebuild_offers:
+            await _upsert_kaspi_offers(session, offers=rebuild_offers)
+            await session.commit()
+
+    offers = (
+        (
+            await session.execute(
+                sa.select(KaspiOffer)
+                .where(
+                    KaspiOffer.company_id == company.id,
+                    KaspiOffer.merchant_uid == merchant_uid,
+                )
+                .order_by(KaspiOffer.updated_at.desc())
+            )
+        )
+        .scalars()
+        .all()
+    )
+    if not offers:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="offers_not_found")
+
+    company_name = (company.name or "").strip() or f"Company {company.id}"
+    xml_body = _build_kaspi_offers_xml(offers, company=company_name, merchant_id=merchant_uid)
+    payload_hash = compute_feed_payload_hash(xml_body)
+
+    existing = await find_recent_successful_upload_by_hash(
+        session,
+        company_id=company.id,
+        merchant_uid=merchant_uid,
+        payload_hash=payload_hash,
+    )
+    if existing:
+        return existing, True
+
+    export = await get_or_create_feed_export(
+        session,
+        company_id=company.id,
+        kind="offers",
+        xml_body=xml_body,
+    )
+
+    job = await create_feed_upload_job(
+        session,
+        company_id=company.id,
+        merchant_uid=merchant_uid,
+        export_id=export.id,
+        source="offers",
+        request_id=request_id,
+        comment=comment,
+        payload_hash=payload_hash,
+    )
+
+    now_attempt = datetime.utcnow()
+    job.attempts = int(job.attempts or 0) + 1
+    job.last_attempt_at = now_attempt
+    job.updated_at = now_attempt
+    await session.commit()
+    await session.refresh(job)
+
+    extra_env = _build_feed_upload_env(token)
+    tmp_dir = settings.tmp_dir()
+    tmp_dir.mkdir(parents=True, exist_ok=True)
+    tmp_path = tmp_dir / f"kaspi_feed_{company.id}_{uuid4().hex}.xml"
+
+    max_attempts = int(getattr(settings, "KASPI_FEED_UPLOAD_MAX_ATTEMPTS", 5) or 5)
+    base_delay = int(getattr(settings, "KASPI_FEED_UPLOAD_BACKOFF_BASE_SECONDS", 30) or 30)
+    max_delay = int(getattr(settings, "KASPI_FEED_UPLOAD_BACKOFF_MAX_SECONDS", 900) or 900)
+
+    try:
+        tmp_path.write_text(xml_body, encoding="utf-8")
+        response = KaspiAdapter().feed_upload(
+            store_name,
+            str(tmp_path),
+            comment=comment,
+            extra_env=extra_env,
+        )
+    except KaspiAdapterError as exc:
+        next_attempt = None
+        status_value = "failed" if job.attempts >= max_attempts else "pending"
+        if status_value == "pending":
+            next_attempt = compute_next_attempt_at(
+                now=now_attempt,
+                attempts=job.attempts,
+                base_delay_seconds=base_delay,
+                max_delay_seconds=max_delay,
+            )
+        await update_feed_upload_job(
+            session,
+            job=job,
+            status=status_value,
+            error_code="upstream_unavailable",
+            error_message=str(exc)[:500],
+            last_attempt_at=now_attempt,
+            next_attempt_at=next_attempt,
+        )
+        return job, False
+    except Exception as exc:
+        next_attempt = None
+        status_value = "failed" if job.attempts >= max_attempts else "pending"
+        if status_value == "pending":
+            next_attempt = compute_next_attempt_at(
+                now=now_attempt,
+                attempts=job.attempts,
+                base_delay_seconds=base_delay,
+                max_delay_seconds=max_delay,
+            )
+        await update_feed_upload_job(
+            session,
+            job=job,
+            status=status_value,
+            error_code="upstream_unavailable",
+            error_message=str(exc)[:500],
+            last_attempt_at=now_attempt,
+            next_attempt_at=next_attempt,
+        )
+        return job, False
+    finally:
+        try:
+            if tmp_path.exists():
+                tmp_path.unlink()
+        except Exception:
+            logger.warning("Kaspi feed upload temp cleanup failed: path=%s", tmp_path)
+
+    normalized = normalize_kaspi_payload(_normalize_kaspi_response(response))
+    import_code = _extract_import_code(normalized)
+    if not import_code:
+        await update_feed_upload_job(
+            session,
+            job=job,
+            status="failed",
+            error_code="kaspi_import_code_missing",
+            error_message="kaspi_import_code_missing",
+            response_json=normalized,
+        )
+        return job, False
+
+    status_value = str(normalized.get("status") or "uploaded")
+    status_class = _classify_feed_upload_status(status_value)
+    error_code, error_message = _extract_error_info(normalized)
+    await update_feed_upload_job(
+        session,
+        job=job,
+        status=status_value,
+        import_code=str(import_code),
+        error_code=error_code,
+        error_message=error_message,
+        response_json=normalized,
+        next_attempt_at=None
+        if status_class == "success"
+        else compute_next_attempt_at(
+            now=now_attempt,
+            attempts=job.attempts,
+            base_delay_seconds=base_delay,
+            max_delay_seconds=max_delay,
+        ),
+    )
+    return job, False
+
+
+@router.post(
+    "/offers/feed/upload",
+    summary="Upload Kaspi offers feed (XML)",
+    response_model=KaspiFeedUploadRecordOut,
+)
+async def kaspi_offers_feed_upload(
+    request: Request,
+    body: KaspiOffersFeedUploadIn,
+    current_user: User = Depends(require_store_admin_then_feature(FEATURE_KASPI_FEED_UPLOADS)),
+    session: AsyncSession = Depends(get_async_db),
+):
+    company_id = _resolve_company_id(current_user)
+    company = await session.get(Company, company_id)
+    merchant_uid = _resolve_kaspi_offers_merchant_uid(
+        company=company,
+        raw_merchant_uid=body.merchant_uid,
+    )
+    store_name, token = await _resolve_kaspi_token(session, company_id)
+    request_id = getattr(getattr(request, "state", None), "request_id", None) or request.headers.get("X-Request-ID")
+
+    job, is_noop = await _create_offers_feed_upload(
+        session=session,
+        company=company,
+        merchant_uid=merchant_uid,
+        store_name=store_name,
+        token=token,
+        request_id=request_id,
+        comment=body.comment,
+        refresh=bool(body.refresh),
+    )
+    response = _feed_upload_to_out(job)
+    if is_noop:
+        response.status = "noop"
+    return response
+
+
 @router.post(
     "/feed/uploads",
     summary="Upload Kaspi offers feed",
@@ -6520,17 +6839,7 @@ async def kaspi_feed_upload_create(
     if existing:
         return _feed_upload_to_out(existing)
 
-    base_url = os.getenv("KASPI_FEED_BASE_URL", "https://kaspi.kz")
-    upload_url = os.getenv("KASPI_FEED_UPLOAD_URL", f"{base_url.rstrip('/')}/shop/api/feeds/import")
-    status_url = os.getenv("KASPI_FEED_STATUS_URL", f"{base_url.rstrip('/')}/shop/api/feeds/import/status")
-    result_url = os.getenv("KASPI_FEED_RESULT_URL", f"{base_url.rstrip('/')}/shop/api/feeds/import/result")
-    extra_env = {
-        "KASPI_FEED_UPLOAD_URL": upload_url,
-        "KASPI_FEED_STATUS_URL": status_url,
-        "KASPI_FEED_RESULT_URL": result_url,
-        "KASPI_FEED_TOKEN": token,
-        "KASPI_TOKEN": token,
-    }
+    extra_env = _build_feed_upload_env(token)
 
     xml_body: str
     if source == "export_id":
@@ -6566,6 +6875,7 @@ async def kaspi_feed_upload_create(
         company_name = (company.name if company else None) or f"Company {company_id}"
         xml_body = _build_kaspi_offers_xml(offers, company=company_name, merchant_id=merchant_uid)
 
+    payload_hash = compute_feed_payload_hash(xml_body)
     job = await create_feed_upload_job(
         session,
         company_id=company_id,
@@ -6574,6 +6884,7 @@ async def kaspi_feed_upload_create(
         source=source,
         request_id=request_id,
         comment=body.comment,
+        payload_hash=payload_hash,
     )
     now_attempt = datetime.utcnow()
     job.attempts = int(job.attempts or 0) + 1
@@ -6598,10 +6909,16 @@ async def kaspi_feed_upload_create(
         await update_feed_upload_job(
             session,
             job=job,
-            status="failed",
+            status="pending",
             error_code="upstream_unavailable",
             error_message=str(exc)[:500],
             last_attempt_at=now_attempt,
+            next_attempt_at=compute_next_attempt_at(
+                now=now_attempt,
+                attempts=job.attempts,
+                base_delay_seconds=int(getattr(settings, "KASPI_FEED_UPLOAD_BACKOFF_BASE_SECONDS", 30) or 30),
+                max_delay_seconds=int(getattr(settings, "KASPI_FEED_UPLOAD_BACKOFF_MAX_SECONDS", 900) or 900),
+            ),
         )
         await _record_kaspi_event(
             session,
@@ -6621,10 +6938,16 @@ async def kaspi_feed_upload_create(
         await update_feed_upload_job(
             session,
             job=job,
-            status="failed",
+            status="pending",
             error_code="upstream_unavailable",
             error_message=str(exc)[:500],
             last_attempt_at=now_attempt,
+            next_attempt_at=compute_next_attempt_at(
+                now=now_attempt,
+                attempts=job.attempts,
+                base_delay_seconds=int(getattr(settings, "KASPI_FEED_UPLOAD_BACKOFF_BASE_SECONDS", 30) or 30),
+                max_delay_seconds=int(getattr(settings, "KASPI_FEED_UPLOAD_BACKOFF_MAX_SECONDS", 900) or 900),
+            ),
         )
         await _record_kaspi_event(
             session,
@@ -6655,6 +6978,7 @@ async def kaspi_feed_upload_create(
             status="failed",
             error_code="kaspi_import_code_missing",
             error_message="kaspi_import_code_missing",
+            response_json=normalized,
         )
         await _record_kaspi_event(
             session,
@@ -6671,6 +6995,7 @@ async def kaspi_feed_upload_create(
 
     status_value = normalized.get("status") or "uploaded"
     error_code, error_message = _extract_error_info(normalized)
+    status_class = _classify_feed_upload_status(status_value)
     await update_feed_upload_job(
         session,
         job=job,
@@ -6678,6 +7003,15 @@ async def kaspi_feed_upload_create(
         import_code=str(import_code),
         error_code=error_code,
         error_message=error_message,
+        response_json=normalized,
+        next_attempt_at=None
+        if status_class == "success"
+        else compute_next_attempt_at(
+            now=now_attempt,
+            attempts=job.attempts,
+            base_delay_seconds=int(getattr(settings, "KASPI_FEED_UPLOAD_BACKOFF_BASE_SECONDS", 30) or 30),
+            max_delay_seconds=int(getattr(settings, "KASPI_FEED_UPLOAD_BACKOFF_MAX_SECONDS", 900) or 900),
+        ),
     )
     await _record_kaspi_event(
         session,
@@ -6853,6 +7187,7 @@ async def kaspi_feed_upload_refresh(
         status=str(status_value),
         error_code=error_code,
         error_message=error_message,
+        response_json=normalized,
     )
     await _record_kaspi_event(
         session,
@@ -6991,6 +7326,7 @@ async def kaspi_feed_upload_publish(
             status=status_value,
             error_code=error_code,
             error_message=error_message,
+            response_json=normalized,
         )
         await _record_kaspi_event(
             session,

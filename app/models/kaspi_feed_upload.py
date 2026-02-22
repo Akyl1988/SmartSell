@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime
 
 from sqlalchemy import Column, DateTime, ForeignKey, Integer, String, Text, text
-from sqlalchemy.dialects.postgresql import UUID
+from sqlalchemy.dialects.postgresql import JSONB, UUID
 
 from app.models.base import Base
 
@@ -19,10 +19,13 @@ class KaspiFeedUpload(Base):
     comment = Column(Text, nullable=True)
     status = Column(String(64), nullable=False, server_default=text("'created'"))
     import_code = Column(String(128), nullable=True, index=True)
+    payload_hash = Column(String(64), nullable=True, index=True)
+    response_json = Column(JSONB, nullable=True)
     attempts = Column(Integer, nullable=False, server_default=text("0"))
     last_error_code = Column(String(64), nullable=True)
     last_error_message = Column(Text, nullable=True)
     last_attempt_at = Column(DateTime, nullable=True)
+    next_attempt_at = Column(DateTime, nullable=True)
     request_id = Column(String(128), nullable=True, index=True)
 
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)

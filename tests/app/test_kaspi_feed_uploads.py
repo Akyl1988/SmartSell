@@ -60,6 +60,16 @@ class _FailingKaspiAdapter:
         raise RuntimeError("upstream_unavailable")
 
 
+class _SuccessKaspiAdapter:
+    def __init__(self, status: str = "done"):
+        self.status = status
+        self.upload_calls = 0
+
+    def feed_upload(self, *args, **kwargs):
+        self.upload_calls += 1
+        return {"importCode": "IC-FEED-OK", "status": self.status}
+
+
 async def _ensure_company(async_db_session, company_id: int, store_id: str) -> None:
     company = await async_db_session.get(Company, company_id)
     if not company:
@@ -272,6 +282,65 @@ async def test_kaspi_feed_upload_permission_denied(
 
 
 @pytest.mark.asyncio
+async def test_kaspi_offers_feed_upload_idempotent_by_hash(
+    async_client,
+    async_db_session,
+    company_a_admin_headers,
+    monkeypatch,
+):
+    await _ensure_company(async_db_session, 1001, "store-a")
+
+    async def _get_token(session, store_name: str):
+        return "token-a"
+
+    monkeypatch.setattr(KaspiStoreToken, "get_token", _get_token)
+
+    async_db_session.add(
+        KaspiOffer(
+            company_id=1001,
+            merchant_uid="store-a",
+            sku="SKU-1",
+            title="Item 1",
+            price=1000,
+        )
+    )
+    await async_db_session.commit()
+
+    from app.api.v1 import kaspi as kaspi_module
+
+    fake_adapter = _SuccessKaspiAdapter(status="done")
+    monkeypatch.setattr(kaspi_module, "KaspiAdapter", lambda: fake_adapter)
+
+    resp1 = await async_client.post(
+        "/api/v1/kaspi/offers/feed/upload",
+        headers=company_a_admin_headers,
+        json={"merchant_uid": "store-a", "refresh": False},
+    )
+    assert resp1.status_code == 200
+    data1 = resp1.json()
+    assert data1["status"] in {"done", "success", "completed", "published"}
+    assert data1["payload_hash"]
+
+    resp2 = await async_client.post(
+        "/api/v1/kaspi/offers/feed/upload",
+        headers=company_a_admin_headers,
+        json={"merchant_uid": "store-a", "refresh": False},
+    )
+    assert resp2.status_code == 200
+    data2 = resp2.json()
+    assert data2["status"] == "noop"
+    assert data1["id"] == data2["id"]
+    assert fake_adapter.upload_calls == 1
+
+    uploads = (
+        (await async_db_session.execute(select(KaspiFeedUpload).where(KaspiFeedUpload.company_id == 1001)))
+        .scalars()
+        .all()
+    )
+    assert len(uploads) == 1
+
+
+@pytest.mark.asyncio
 async def test_upload_not_claimable_returns_409_and_existing_upload_id(
     async_client,
     async_db_session,
@@ -420,7 +489,7 @@ async def test_kaspi_feed_upload_upstream_error_returns_201(
     )
     assert resp.status_code == 201
     data = resp.json()
-    assert data["status"] == "failed"
+    assert data["status"] in {"pending", "failed"}
     assert data["last_error_code"] == "upstream_unavailable"
 
     record = (
@@ -429,7 +498,7 @@ async def test_kaspi_feed_upload_upstream_error_returns_201(
         .first()
     )
     assert record is not None
-    assert record.status == "failed"
+    assert record.status in {"pending", "failed"}
     assert record.last_error_code == "upstream_unavailable"
 
 

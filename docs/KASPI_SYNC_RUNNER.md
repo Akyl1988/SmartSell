@@ -44,6 +44,9 @@ Minimal production-safe flow for offers dataset + goods import:
 5) Sync now uses offers if present:
     - `POST /api/v1/kaspi/sync/now`
 
+> Note: Price/stock updates happen via the offers feed upload pipeline.
+> The products import schema does NOT update prices or stock levels.
+
 ## Operator Runbook (Goods Import)
 
 1) Build offers dataset:
@@ -59,6 +62,7 @@ Minimal production-safe flow for offers dataset + goods import:
 5) Sync now status expectations:
     - Returns `ok` only when goods import is `success_applied`
     - Returns `partial` with `import_pending`, `import_failed`, or `import_noop` otherwise
+    - If feed upload is enabled, `ok` requires a successful feed upload
 
 ## Configuration
 
