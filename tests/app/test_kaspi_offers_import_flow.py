@@ -132,10 +132,14 @@ async def test_products_import_upload_sends_payload(
 
     from app.services.kaspi_goods_import_client import KaspiGoodsImportClient
 
+    async def _get_schema(self):  # noqa: ANN001
+        return {"required": ["sku"]}
+
     async def _submit_import(self, payload_json: str):  # noqa: ANN001
         assert "SKU-10" in payload_json
         return {"importCode": "IC-10", "status": "UPLOADED"}
 
+    monkeypatch.setattr(KaspiGoodsImportClient, "get_schema", _get_schema)
     monkeypatch.setattr(KaspiGoodsImportClient, "submit_import", _submit_import)
 
     start = await async_client.post("/api/v1/kaspi/products/import/start", headers=company_a_admin_headers)
@@ -148,6 +152,122 @@ async def test_products_import_upload_sends_payload(
     data = resp.json()
     assert data["ok"] is True
     assert data["kaspi_import_code"] == "IC-10"
+
+
+@pytest.mark.asyncio
+async def test_products_import_upload_idempotent(async_client, async_db_session, monkeypatch, company_a_admin_headers):
+    await _ensure_company_store(async_db_session, 1001, "store-a")
+
+    async def _get_token(session: AsyncSession, store_name: str):  # noqa: ARG001
+        return "token-a"
+
+    monkeypatch.setattr(KaspiStoreToken, "get_token", _get_token)
+
+    async_db_session.add(
+        KaspiOffer(
+            company_id=1001,
+            merchant_uid="store-a",
+            sku="SKU-11",
+            title="Item 11",
+            price=2000,
+            stock_count=2,
+        )
+    )
+    await async_db_session.commit()
+
+    from app.services.kaspi_goods_import_client import KaspiGoodsImportClient
+
+    submit_calls = {"count": 0}
+
+    async def _get_schema(self):  # noqa: ANN001
+        return {"required": ["sku"]}
+
+    async def _submit_import(self, payload_json: str):  # noqa: ANN001
+        submit_calls["count"] += 1
+        assert "SKU-11" in payload_json
+        return {"importCode": "IC-11", "status": "UPLOADED"}
+
+    monkeypatch.setattr(KaspiGoodsImportClient, "get_schema", _get_schema)
+    monkeypatch.setattr(KaspiGoodsImportClient, "submit_import", _submit_import)
+
+    start_a = await async_client.post("/api/v1/kaspi/products/import/start", headers=company_a_admin_headers)
+    import_code_a = start_a.json()["import_code"]
+    upload_a = await async_client.post(
+        f"/api/v1/kaspi/products/import/upload?i={import_code_a}", headers=company_a_admin_headers
+    )
+    assert upload_a.status_code == 200
+    data_a = upload_a.json()
+
+    upload_b = await async_client.post(
+        f"/api/v1/kaspi/products/import/upload?i={import_code_a}", headers=company_a_admin_headers
+    )
+    assert upload_b.status_code == 200
+    data_b = upload_b.json()
+
+    assert submit_calls["count"] == 1
+    assert data_b["import_code"] == data_a["import_code"]
+
+    res = await async_db_session.execute(
+        select(KaspiImportRun).where(
+            KaspiImportRun.company_id == 1001,
+            KaspiImportRun.import_code == import_code_a,
+        )
+    )
+    run_b = res.scalars().first()
+    assert run_b is not None
+    assert run_b.kaspi_import_code == "IC-11"
+
+
+@pytest.mark.asyncio
+async def test_products_import_upload_force_reuploads(
+    async_client, async_db_session, monkeypatch, company_a_admin_headers
+):
+    await _ensure_company_store(async_db_session, 1001, "store-a")
+
+    async def _get_token(session: AsyncSession, store_name: str):  # noqa: ARG001
+        return "token-a"
+
+    monkeypatch.setattr(KaspiStoreToken, "get_token", _get_token)
+
+    async_db_session.add(
+        KaspiOffer(
+            company_id=1001,
+            merchant_uid="store-a",
+            sku="SKU-12",
+            title="Item 12",
+            price=2000,
+            stock_count=2,
+        )
+    )
+    await async_db_session.commit()
+
+    from app.services.kaspi_goods_import_client import KaspiGoodsImportClient
+
+    submit_calls = {"count": 0}
+
+    async def _get_schema(self):  # noqa: ANN001
+        return {"required": ["sku"]}
+
+    async def _submit_import(self, payload_json: str):  # noqa: ANN001
+        submit_calls["count"] += 1
+        return {"importCode": f"IC-12-{submit_calls['count']}", "status": "UPLOADED"}
+
+    monkeypatch.setattr(KaspiGoodsImportClient, "get_schema", _get_schema)
+    monkeypatch.setattr(KaspiGoodsImportClient, "submit_import", _submit_import)
+
+    start = await async_client.post("/api/v1/kaspi/products/import/start", headers=company_a_admin_headers)
+    import_code = start.json()["import_code"]
+
+    resp_a = await async_client.post(
+        f"/api/v1/kaspi/products/import/upload?i={import_code}", headers=company_a_admin_headers
+    )
+    assert resp_a.status_code == 200
+
+    resp_b = await async_client.post(
+        f"/api/v1/kaspi/products/import/upload?i={import_code}&force=1", headers=company_a_admin_headers
+    )
+    assert resp_b.status_code == 200
+    assert submit_calls["count"] == 2
 
 
 @pytest.mark.asyncio

@@ -638,6 +638,38 @@ class Settings(BaseSettings):
         validation_alias="KASPI_AUTOSYNC_MAX_CONCURRENCY",
     )
 
+    # Kaspi import poll runner settings
+    KASPI_IMPORT_POLL_ENABLED: bool = Field(
+        default=False,
+        description="Enable APScheduler job for Kaspi goods import polling",
+        validation_alias="KASPI_IMPORT_POLL_ENABLED",
+    )
+    KASPI_IMPORT_POLL_INTERVAL_SECONDS: int = Field(
+        default=60,
+        description="Kaspi import poll interval in seconds",
+        validation_alias="KASPI_IMPORT_POLL_INTERVAL_SECONDS",
+    )
+    KASPI_IMPORT_POLL_MAX_CONCURRENCY: int = Field(
+        default=5,
+        description="Maximum concurrent Kaspi import polls",
+        validation_alias="KASPI_IMPORT_POLL_MAX_CONCURRENCY",
+    )
+    KASPI_IMPORT_POLL_BATCH_SIZE: int = Field(
+        default=100,
+        description="Max import runs polled per tick",
+        validation_alias="KASPI_IMPORT_POLL_BATCH_SIZE",
+    )
+    KASPI_IMPORT_POLL_BACKOFF_BASE_SECONDS: int = Field(
+        default=30,
+        description="Base backoff (seconds) for Kaspi import polling",
+        validation_alias="KASPI_IMPORT_POLL_BACKOFF_BASE_SECONDS",
+    )
+    KASPI_IMPORT_POLL_BACKOFF_MAX_SECONDS: int = Field(
+        default=900,
+        description="Max backoff (seconds) for Kaspi import polling",
+        validation_alias="KASPI_IMPORT_POLL_BACKOFF_MAX_SECONDS",
+    )
+
     # ---- rate limits
     RATE_LIMIT_PER_MINUTE: int = Field(
         default=100, description="Rate limit per minute", validation_alias="RATE_LIMIT_PER_MINUTE"

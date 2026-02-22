@@ -41,12 +41,41 @@ Minimal production-safe flow for offers dataset + goods import:
 5) Sync now uses offers if present:
     - `POST /api/v1/kaspi/sync/now`
 
+## Operator Runbook (Goods Import)
+
+1) Build offers dataset:
+    - `POST /api/v1/kaspi/offers/rebuild`
+    - Or upload: `POST /api/v1/kaspi/offers/import` (CSV/JSON file)
+2) Start a goods import run:
+    - `POST /api/v1/kaspi/products/import/start`
+3) Upload offers payload to Kaspi (idempotent within 24h by payload hash):
+    - `POST /api/v1/kaspi/products/import/upload?i=<import_code>`
+4) Polling runner finalizes the run:
+    - Enable `KASPI_IMPORT_POLL_ENABLED=1`
+    - Runner polls status/result with backoff until terminal status
+5) Sync now status expectations:
+    - Returns `ok` only when goods import is `success_applied`
+    - Returns `partial` with `import_pending`, `import_failed`, or `import_noop` otherwise
+
 ## Configuration
 
 Environment variables:
 
 - `ENABLE_KASPI_SYNC_RUNNER`: Set to `1` to enable (default: `0`)
 - `KASPI_SYNC_INTERVAL_SECONDS`: Interval between sync runs (default: `300` = 5 minutes)
+
+### Kaspi Goods Import Poller (APScheduler)
+
+Background polling for `/api/v1/kaspi/products/import/*` runs with backoff and advisory lock.
+
+Environment variables:
+
+- `KASPI_IMPORT_POLL_ENABLED`: Set to `1` to enable (default: `0`)
+- `KASPI_IMPORT_POLL_INTERVAL_SECONDS`: Polling interval (default: `60`)
+- `KASPI_IMPORT_POLL_MAX_CONCURRENCY`: Parallel polls per tick (default: `5`)
+- `KASPI_IMPORT_POLL_BATCH_SIZE`: Max runs per tick (default: `100`)
+- `KASPI_IMPORT_POLL_BACKOFF_BASE_SECONDS`: Base backoff (default: `30`)
+- `KASPI_IMPORT_POLL_BACKOFF_MAX_SECONDS`: Max backoff (default: `900`)
 
 ## Implementation
 

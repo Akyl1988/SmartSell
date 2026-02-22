@@ -581,6 +581,29 @@ async def _get_import_run(
     return result.scalars().first()
 
 
+async def _find_recent_import_run_by_hash(
+    session: AsyncSession,
+    *,
+    company_id: int,
+    merchant_uid: str,
+    payload_hash: str,
+    window_hours: int = 24,
+) -> KaspiImportRun | None:
+    cutoff = datetime.utcnow() - timedelta(hours=window_hours)
+    result = await session.execute(
+        sa.select(KaspiImportRun)
+        .where(
+            KaspiImportRun.company_id == company_id,
+            KaspiImportRun.merchant_uid == merchant_uid,
+            KaspiImportRun.payload_hash == payload_hash,
+            KaspiImportRun.created_at >= cutoff,
+        )
+        .order_by(KaspiImportRun.created_at.desc())
+        .limit(1)
+    )
+    return result.scalars().first()
+
+
 def _normalize_goods_payload(payload: list[dict[str, Any]] | dict[str, Any]) -> list[dict[str, Any]]:
     if isinstance(payload, list):
         return payload
@@ -590,6 +613,116 @@ def _normalize_goods_payload(payload: list[dict[str, Any]] | dict[str, Any]) -> 
             return data
         return [payload]
     raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="payload_required")
+
+
+def _extract_schema_required_fields(schema: dict[str, Any]) -> list[str]:
+    required = schema.get("required")
+    if isinstance(required, list):
+        return [str(item) for item in required if item]
+    fields = schema.get("fields")
+    if isinstance(fields, list):
+        required_fields: list[str] = []
+        for entry in fields:
+            if not isinstance(entry, dict):
+                continue
+            if entry.get("required") is True and entry.get("name"):
+                required_fields.append(str(entry["name"]))
+        return required_fields
+    return []
+
+
+def _extract_schema_types(schema: dict[str, Any]) -> dict[str, str]:
+    properties = schema.get("properties")
+    if isinstance(properties, dict):
+        types: dict[str, str] = {}
+        for key, value in properties.items():
+            if not isinstance(value, dict):
+                continue
+            field_type = value.get("type")
+            if field_type:
+                types[str(key)] = str(field_type)
+        return types
+    fields = schema.get("fields")
+    if isinstance(fields, list):
+        types = {}
+        for entry in fields:
+            if not isinstance(entry, dict):
+                continue
+            name = entry.get("name")
+            field_type = entry.get("type")
+            if name and field_type:
+                types[str(name)] = str(field_type)
+        return types
+    return {}
+
+
+def _validate_payload_against_schema(
+    payload: list[dict[str, Any]],
+    schema: dict[str, Any],
+    *,
+    max_errors: int = 10,
+) -> list[dict[str, Any]]:
+    required = _extract_schema_required_fields(schema)
+    types = _extract_schema_types(schema)
+    errors: list[dict[str, Any]] = []
+
+    def _sku(item: dict[str, Any]) -> str:
+        return str(item.get("sku") or item.get("offerId") or item.get("offer_id") or "unknown")
+
+    for item in payload:
+        if len(errors) >= max_errors:
+            break
+        for field in required:
+            value = item.get(field)
+            if value is None or (isinstance(value, str) and not value.strip()):
+                errors.append(
+                    {
+                        "code": "schema_missing_required",
+                        "detail": "missing_required_field",
+                        "field": field,
+                        "sku": _sku(item),
+                    }
+                )
+                if len(errors) >= max_errors:
+                    break
+        if len(errors) >= max_errors:
+            break
+        for field, expected in types.items():
+            if len(errors) >= max_errors:
+                break
+            if field not in item:
+                continue
+            value = item.get(field)
+            if value is None:
+                continue
+            if expected == "string" and not isinstance(value, str):
+                errors.append(
+                    {
+                        "code": "schema_type_mismatch",
+                        "detail": "expected_string",
+                        "field": field,
+                        "sku": _sku(item),
+                    }
+                )
+            elif expected in {"number", "integer"} and not isinstance(value, int | float | Decimal):
+                errors.append(
+                    {
+                        "code": "schema_type_mismatch",
+                        "detail": "expected_number",
+                        "field": field,
+                        "sku": _sku(item),
+                    }
+                )
+            elif expected == "boolean" and not isinstance(value, bool):
+                errors.append(
+                    {
+                        "code": "schema_type_mismatch",
+                        "detail": "expected_boolean",
+                        "field": field,
+                        "sku": _sku(item),
+                    }
+                )
+    return errors
 
 
 def _product_to_goods_payload(product: Product) -> dict[str, Any]:
@@ -2592,6 +2725,12 @@ class KaspiGoodsResultOut(BaseModel):
     payload: dict[str, Any] | None = None
 
 
+class KaspiOffersPreviewOut(BaseModel):
+    items: list[dict[str, Any]]
+    total: int
+    payload_hash: str
+
+
 class KaspiGoodsImportRecordOut(BaseModel):
     id: str
     merchant_uid: str | None = None
@@ -2866,6 +3005,34 @@ async def kaspi_offers_import(
     )
 
 
+@router.get(
+    "/offers/preview",
+    summary="Preview Kaspi offers payload",
+    response_model=KaspiOffersPreviewOut,
+)
+async def kaspi_offers_preview(
+    merchant_uid: str | None = Query(None, alias="merchantUid"),
+    limit: int = Query(5, ge=1, le=100),
+    current_user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_async_db),
+):
+    await _require_store_admin_company_scoped(current_user)
+    company_id = _resolve_company_id(current_user)
+    company = await session.get(Company, company_id)
+    resolved_uid = _resolve_kaspi_offers_merchant_uid(company=company, raw_merchant_uid=merchant_uid)
+    flags = _get_goods_import_flags(company, resolved_uid)
+    payload = await load_offers_payload(
+        session,
+        company_id=company_id,
+        merchant_uid=resolved_uid,
+        include_price=flags["include_price"],
+        include_stock=flags["include_stock"],
+    )
+    payload_json = build_payload_json(payload)
+    payload_hash = compute_payload_hash(payload_json)
+    return KaspiOffersPreviewOut(items=payload[:limit], total=len(payload), payload_hash=payload_hash)
+
+
 @router.post(
     "/products/sync",
     summary="Синхронизировать каталог Kaspi в локальную БД",
@@ -2939,6 +3106,7 @@ async def kaspi_products_import_upload(
     request: Request,
     import_code: str = Query(..., alias="i"),
     merchant_uid: str | None = Query(None, alias="merchantUid"),
+    force: bool = Query(False, description="Force re-upload even if already uploaded"),
     current_user: User = Depends(_auth_user),
     session: AsyncSession = Depends(get_async_db),
 ):
@@ -2948,6 +3116,15 @@ async def kaspi_products_import_upload(
     run = await _get_import_run(session, company_id=company_id, import_code=import_code)
     if not run:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="import_not_found")
+
+    if run.kaspi_import_code and not force:
+        return KaspiImportRunOut(
+            ok=True,
+            import_code=run.import_code,
+            status=run.status,
+            kaspi_import_code=run.kaspi_import_code,
+            request_id=request_id,
+        )
 
     if merchant_uid:
         resolved_uid = _resolve_kaspi_offers_merchant_uid(
@@ -2978,11 +3155,91 @@ async def kaspi_products_import_upload(
         }
         return JSONResponse(status_code=status.HTTP_409_CONFLICT, content=payload_error)
 
+    _, token = await _resolve_kaspi_token(session, company_id)
+    client = KaspiGoodsImportClient(token=token, base_url="https://kaspi.kz")
+    try:
+        schema = await client.get_schema()
+    except KaspiImportNotAuthenticated:
+        run.error_code = "NOT_AUTHENTICATED"
+        run.error_message = "NOT_AUTHENTICATED"
+        await session.commit()
+        payload_error = {
+            "detail": "NOT_AUTHENTICATED",
+            "code": "NOT_AUTHENTICATED",
+            "request_id": request_id,
+            "errors": [{"code": "NOT_AUTHENTICATED", "detail": "NOT_AUTHENTICATED", "request_id": request_id}],
+        }
+        return JSONResponse(status_code=status.HTTP_401_UNAUTHORIZED, content=payload_error)
+    except KaspiImportUpstreamUnavailable:
+        run.error_code = "upstream_unavailable"
+        run.error_message = "kaspi_upstream_unavailable"
+        await session.commit()
+        payload_error = {
+            "detail": "kaspi_upstream_unavailable",
+            "code": "upstream_unavailable",
+            "request_id": request_id,
+            "errors": [
+                {"code": "upstream_unavailable", "detail": "kaspi_upstream_unavailable", "request_id": request_id}
+            ],
+        }
+        return JSONResponse(status_code=status.HTTP_502_BAD_GATEWAY, content=payload_error)
+    except KaspiImportUpstreamError:
+        run.error_code = "upstream_error"
+        run.error_message = "kaspi_upstream_error"
+        await session.commit()
+        payload_error = {
+            "detail": "kaspi_upstream_error",
+            "code": "upstream_error",
+            "request_id": request_id,
+            "errors": [{"code": "upstream_error", "detail": "kaspi_upstream_error", "request_id": request_id}],
+        }
+        return JSONResponse(status_code=status.HTTP_502_BAD_GATEWAY, content=payload_error)
+
+    schema_errors = _validate_payload_against_schema(payload, schema)
+    if schema_errors:
+        for err in schema_errors:
+            err["request_id"] = request_id
+        run.error_code = "schema_validation_failed"
+        run.error_message = "schema_validation_failed"
+        await session.commit()
+        payload_error = {
+            "detail": "schema_validation_failed",
+            "code": "schema_validation_failed",
+            "request_id": request_id,
+            "errors": schema_errors,
+        }
+        return JSONResponse(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, content=payload_error)
+
     payload_json = build_payload_json(payload)
     payload_hash = compute_payload_hash(payload_json)
 
-    _, token = await _resolve_kaspi_token(session, company_id)
-    client = KaspiGoodsImportClient(token=token, base_url="https://kaspi.kz")
+    existing = None
+    if not force:
+        existing = await _find_recent_import_run_by_hash(
+            session,
+            company_id=company_id,
+            merchant_uid=run.merchant_uid,
+            payload_hash=payload_hash,
+        )
+    if existing and existing.id != run.id:
+        run.status = "DUPLICATE"
+        run.kaspi_import_code = existing.kaspi_import_code
+        run.payload_hash = payload_hash
+        run.request_payload = payload
+        run.status_json = existing.status_json
+        run.result_json = existing.result_json
+        run.last_checked_at = existing.last_checked_at
+        run.next_poll_at = existing.next_poll_at
+        run.error_code = "duplicate_payload"
+        run.error_message = "duplicate_payload"
+        await session.commit()
+        return KaspiImportRunOut(
+            ok=True,
+            import_code=existing.import_code,
+            status=existing.status,
+            kaspi_import_code=existing.kaspi_import_code,
+            request_id=request_id,
+        )
     try:
         response = await client.submit_import(payload_json)
     except KaspiImportNotAuthenticated:
@@ -3044,6 +3301,19 @@ async def kaspi_products_import_upload(
     run.error_code = None
     run.error_message = None
     run.attempts = int(getattr(run, "attempts", 0) or 0) + 1
+    from app.core.config import settings
+    from app.services.kaspi_import_run_utils import compute_next_poll_at
+
+    now = datetime.utcnow()
+    run.last_checked_at = now
+    run.next_poll_at = compute_next_poll_at(
+        now=now,
+        status=run.status,
+        attempts=run.attempts,
+        base_delay_seconds=settings.KASPI_IMPORT_POLL_BACKOFF_BASE_SECONDS,
+        max_delay_seconds=settings.KASPI_IMPORT_POLL_BACKOFF_MAX_SECONDS,
+        result_payload=run.result_json,
+    )
     await session.commit()
     await session.refresh(run)
 
@@ -3128,8 +3398,27 @@ async def kaspi_products_import_poll(
     run.status_json = status_response
     run.result_json = result_response
     run.last_checked_at = datetime.utcnow()
-    run.error_code = None
-    run.error_message = None
+    from app.services.kaspi_import_run_utils import classify_import_result
+
+    result_class, _summary = classify_import_result(run.status, run.result_json)
+    if result_class == "failed":
+        run.error_code = "import_failed"
+        run.error_message = "kaspi_import_failed"
+    else:
+        run.error_code = None
+        run.error_message = None
+    run.attempts = int(getattr(run, "attempts", 0) or 0) + 1
+    from app.core.config import settings
+    from app.services.kaspi_import_run_utils import compute_next_poll_at
+
+    run.next_poll_at = compute_next_poll_at(
+        now=run.last_checked_at,
+        status=run.status,
+        attempts=run.attempts,
+        base_delay_seconds=settings.KASPI_IMPORT_POLL_BACKOFF_BASE_SECONDS,
+        max_delay_seconds=settings.KASPI_IMPORT_POLL_BACKOFF_MAX_SECONDS,
+        result_payload=run.result_json,
+    )
     await session.commit()
     await session.refresh(run)
 
@@ -3201,6 +3490,27 @@ async def kaspi_products_import_status(
 
     status_value = response.get("status") or "unknown"
     return KaspiGoodsStatusOut(import_code=import_code, status=str(status_value), payload=response)
+
+
+@router.get(
+    "/products/import/schema",
+    summary="Kaspi products import schema",
+)
+async def kaspi_products_import_schema(
+    current_user: User = Depends(_auth_user),
+    session: AsyncSession = Depends(get_async_db),
+):
+    company_id = _resolve_company_id(current_user)
+    _, token = await _resolve_kaspi_token(session, company_id)
+    client = KaspiGoodsImportClient(token=token, base_url="https://kaspi.kz")
+    try:
+        return await client.get_schema()
+    except KaspiImportNotAuthenticated as exc:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="NOT_AUTHENTICATED") from exc
+    except KaspiImportUpstreamUnavailable:
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail="kaspi_upstream_unavailable")
+    except KaspiImportUpstreamError:
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail="kaspi_upstream_error")
 
 
 @router.get(
@@ -4162,15 +4472,27 @@ async def kaspi_sync_now(
                 payload_json = build_payload_json(payload)
                 payload_hash = compute_payload_hash(payload_json)
 
-                import_client = KaspiGoodsImportClient(token=token or "", base_url="https://kaspi.kz")
-                import_run = await _create_import_run(
+                existing_run = await _find_recent_import_run_by_hash(
                     session,
                     company_id=company_id,
                     merchant_uid=merchant_uid,
-                    request_id=rid,
+                    payload_hash=payload_hash,
                 )
+
+                import_client = KaspiGoodsImportClient(token=token or "", base_url="https://kaspi.kz")
+                if existing_run:
+                    import_run = existing_run
+                else:
+                    import_run = await _create_import_run(
+                        session,
+                        company_id=company_id,
+                        merchant_uid=merchant_uid,
+                        request_id=rid,
+                    )
                 try:
-                    if remaining is not None:
+                    if existing_run:
+                        response = existing_run.status_json or {}
+                    elif remaining is not None:
                         response = await asyncio.wait_for(import_client.submit_import(payload_json), timeout=remaining)
                     else:
                         response = await import_client.submit_import(payload_json)
@@ -4214,24 +4536,36 @@ async def kaspi_sync_now(
                 except KaspiImportUpstreamError:
                     raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail="kaspi_upstream_error")
 
-                import_code = _extract_import_code(response)
+                import_code = _extract_import_code(response) or (import_run.kaspi_import_code if existing_run else None)
                 if not import_code:
                     raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail="kaspi_import_code_missing")
 
                 status_value = response.get("status") or "UPLOADED"
                 now = datetime.utcnow()
 
-                import_run.kaspi_import_code = str(import_code)
-                import_run.status = str(status_value)
-                import_run.payload_hash = payload_hash
-                import_run.request_payload = payload
-                import_run.status_json = response
-                import_run.last_checked_at = now
-                import_run.error_code = None
-                import_run.error_message = None
-                import_run.attempts = int(getattr(import_run, "attempts", 0) or 0) + 1
-                await session.commit()
-                await session.refresh(import_run)
+                if not existing_run:
+                    import_run.kaspi_import_code = str(import_code)
+                    import_run.status = str(status_value)
+                    import_run.payload_hash = payload_hash
+                    import_run.request_payload = payload
+                    import_run.status_json = response
+                    import_run.last_checked_at = now
+                    import_run.error_code = None
+                    import_run.error_message = None
+                    import_run.attempts = int(getattr(import_run, "attempts", 0) or 0) + 1
+                    from app.core.config import settings
+                    from app.services.kaspi_import_run_utils import compute_next_poll_at
+
+                    import_run.next_poll_at = compute_next_poll_at(
+                        now=now,
+                        status=import_run.status,
+                        attempts=import_run.attempts,
+                        base_delay_seconds=settings.KASPI_IMPORT_POLL_BACKOFF_BASE_SECONDS,
+                        max_delay_seconds=settings.KASPI_IMPORT_POLL_BACKOFF_MAX_SECONDS,
+                        result_payload=import_run.result_json,
+                    )
+                    await session.commit()
+                    await session.refresh(import_run)
 
                 if refresh_once:
                     try:
@@ -4245,6 +4579,22 @@ async def kaspi_sync_now(
                         import_run.status = str(status_response.get("status") or import_run.status)
                         import_run.status_json = status_response
                         import_run.last_checked_at = datetime.utcnow()
+                        from app.services.kaspi_import_run_utils import is_terminal_import_status
+
+                        if is_terminal_import_status(import_run.status):
+                            import_run.result_json = await import_client.get_result(import_code=str(import_code))
+                        from app.core.config import settings
+                        from app.services.kaspi_import_run_utils import compute_next_poll_at
+
+                        import_run.attempts = int(getattr(import_run, "attempts", 0) or 0) + 1
+                        import_run.next_poll_at = compute_next_poll_at(
+                            now=import_run.last_checked_at,
+                            status=import_run.status,
+                            attempts=import_run.attempts,
+                            base_delay_seconds=settings.KASPI_IMPORT_POLL_BACKOFF_BASE_SECONDS,
+                            max_delay_seconds=settings.KASPI_IMPORT_POLL_BACKOFF_MAX_SECONDS,
+                            result_payload=import_run.result_json,
+                        )
                         await session.commit()
                         await session.refresh(import_run)
                     except asyncio.TimeoutError:
@@ -4270,6 +4620,13 @@ async def kaspi_sync_now(
                                     "detail": "kaspi_import_pending",
                                     "import_code": str(import_run.import_code),
                                     "kaspi_import_code": str(import_run.kaspi_import_code or ""),
+                                    "import_status": str(import_run.status or ""),
+                                    "result_summary": {
+                                        "errors": 0,
+                                        "warnings": 0,
+                                        "skipped": 0,
+                                        "total": 0,
+                                    },
                                     "request_id": rid,
                                 },
                                 "offers_feed_result": {
@@ -4319,6 +4676,25 @@ async def kaspi_sync_now(
                     .all()
                 )
                 if not offers:
+                    from app.services.kaspi_import_run_utils import (
+                        classify_import_result,
+                        normalize_import_status,
+                    )
+
+                    goods_status_norm = normalize_import_status(import_run.status)
+                    goods_class, result_summary = classify_import_result(import_run.status, import_run.result_json)
+                    if goods_class == "success_applied":
+                        goods_result_status = "success"
+                        goods_ok = True
+                    elif goods_class == "success_noop":
+                        goods_result_status = "noop"
+                        goods_ok = True
+                    elif goods_class == "failed":
+                        goods_result_status = "failed"
+                        goods_ok = False
+                    else:
+                        goods_result_status = "pending"
+                        goods_ok = False
                     errors.append(
                         _err(
                             code="offers_missing",
@@ -4336,12 +4712,28 @@ async def kaspi_sync_now(
                             "merchant_uid": merchant_uid,
                             "orders_sync": orders_result,
                             "goods_import_result": {
-                                "ok": True,
-                                "status": "success",
+                                "ok": goods_ok,
+                                "status": goods_result_status,
                                 "import_id": str(import_run.id),
                                 "import_code": str(import_run.import_code),
                                 "kaspi_import_code": str(import_run.kaspi_import_code or ""),
-                                "import_status": import_run.status,
+                                "import_status": goods_status_norm or import_run.status,
+                                "result_summary": result_summary,
+                                "code": "import_failed"
+                                if goods_class == "failed"
+                                else "import_pending"
+                                if goods_class == "pending"
+                                else "import_noop"
+                                if goods_class == "success_noop"
+                                else None,
+                                "detail": "kaspi_import_failed"
+                                if goods_class == "failed"
+                                else "kaspi_import_pending"
+                                if goods_class == "pending"
+                                else "kaspi_import_noop"
+                                if goods_class == "success_noop"
+                                else None,
+                                "request_id": rid if goods_class != "success_applied" else None,
                             },
                             "offers_feed_result": {
                                 "status": "skipped",
@@ -4365,7 +4757,39 @@ async def kaspi_sync_now(
                     company.settings = json.dumps(settings_obj, ensure_ascii=False, separators=(",", ":"))
                     await session.commit()
 
-                status_value = "partial" if orders_timed_out else "ok"
+                from app.services.kaspi_import_run_utils import (
+                    classify_import_result,
+                    normalize_import_status,
+                )
+
+                goods_status_norm = normalize_import_status(import_run.status)
+                goods_class, result_summary = classify_import_result(import_run.status, import_run.result_json)
+
+                status_value = "ok" if goods_class == "success_applied" and not orders_timed_out else "partial"
+                if goods_class == "failed":
+                    errors.append(
+                        _err(
+                            code="import_failed",
+                            detail="kaspi_import_failed",
+                            phase_for_error="goods_import",
+                        )
+                    )
+                elif goods_class == "pending":
+                    errors.append(
+                        _err(
+                            code="import_pending",
+                            detail="kaspi_import_pending",
+                            phase_for_error="goods_import",
+                        )
+                    )
+                elif goods_class == "success_noop":
+                    errors.append(
+                        _err(
+                            code="import_noop",
+                            detail="kaspi_import_noop",
+                            phase_for_error="goods_import",
+                        )
+                    )
                 elapsed_ms = int((time.perf_counter() - started_at) * 1000)
                 logger.info(
                     "kaspi_sync_now done",
@@ -4379,13 +4803,44 @@ async def kaspi_sync_now(
                 )
 
                 goods_import_result = {
-                    "ok": True,
-                    "status": "success",
+                    "ok": goods_class in {"success_applied", "success_noop"},
+                    "status": "success"
+                    if goods_class == "success_applied"
+                    else "noop"
+                    if goods_class == "success_noop"
+                    else "failed"
+                    if goods_class == "failed"
+                    else "pending",
                     "import_id": str(import_run.id),
                     "import_code": str(import_run.import_code),
                     "kaspi_import_code": str(import_run.kaspi_import_code or ""),
-                    "import_status": import_run.status,
+                    "import_status": goods_status_norm or import_run.status,
+                    "result_summary": result_summary,
                 }
+                if goods_class == "failed":
+                    goods_import_result.update(
+                        {
+                            "code": "import_failed",
+                            "detail": "kaspi_import_failed",
+                            "request_id": rid,
+                        }
+                    )
+                elif goods_class == "pending":
+                    goods_import_result.update(
+                        {
+                            "code": "import_pending",
+                            "detail": "kaspi_import_pending",
+                            "request_id": rid,
+                        }
+                    )
+                elif goods_class == "success_noop":
+                    goods_import_result.update(
+                        {
+                            "code": "import_noop",
+                            "detail": "kaspi_import_noop",
+                            "request_id": rid,
+                        }
+                    )
                 offers_feed_result = {
                     "ok": True,
                     "status": "success",

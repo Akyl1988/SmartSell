@@ -26,6 +26,7 @@ class KaspiImportRun(Base):
     status_json = Column(JSONB, nullable=True)
     result_json = Column(JSONB, nullable=True)
     last_checked_at = Column(DateTime, nullable=True)
+    next_poll_at = Column(DateTime, nullable=True)
 
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
