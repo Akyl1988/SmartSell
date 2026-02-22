@@ -24,6 +24,23 @@ Kaspi Shop API does not provide a full catalog pull via X-Auth-Token. Use the pr
 The legacy `POST /api/v1/kaspi/products/sync` is retained for compatibility and returns
 `catalog_pull_not_supported`.
 
+## Local Import Cycle
+
+Minimal production-safe flow for offers dataset + goods import:
+
+1) Build offers dataset:
+    - `POST /api/v1/kaspi/offers/rebuild`
+    - Or manual upload: `POST /api/v1/kaspi/offers/import` (CSV/JSON file)
+2) Start import run:
+    - `POST /api/v1/kaspi/products/import/start`
+3) Upload offers payload to Kaspi:
+    - `POST /api/v1/kaspi/products/import/upload?i=<import_code>`
+4) Check status/result:
+    - `GET /api/v1/kaspi/products/import?i=<kaspi_import_code>`
+    - `GET /api/v1/kaspi/products/import/result?i=<kaspi_import_code>`
+5) Sync now uses offers if present:
+    - `POST /api/v1/kaspi/sync/now`
+
 ## Configuration
 
 Environment variables:
