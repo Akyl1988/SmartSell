@@ -2397,14 +2397,17 @@ class KaspiSchemaProbeOut(BaseModel):
 
 
 class KaspiFeedUploadProbeItem(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
     path: str
     url: str
     ok: bool
     status_code: int | None = None
     error_class: str | None = None
     message: str | None = None
-    response_snippet: str | None = None
+    response_snippet: str | None = Field(None, alias="snippet")
     location: str | None = None
+    import_code: str | None = None
     elapsed_ms: int
 
 
@@ -2594,18 +2597,19 @@ async def kaspi_feed_upload_probe(
     request: Request,
     store_name: str = Query(..., min_length=1, alias="store_name"),
     paths: list[str] | None = Query(None),
+    base_url: str | None = Query(None),
     current_user: User = Depends(_auth_user),
     session: AsyncSession = Depends(get_async_db),
 ):
     if not _is_dev_environment():
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="not_found")
 
-    require_platform_admin(current_user)
+    await _require_store_admin_company_scoped(current_user)
     token = await KaspiStoreToken.get_token(session, store_name)
     if not token:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="kaspi_token_not_found")
 
-    base_url = os.getenv("KASPI_FEED_BASE_URL", "https://kaspi.kz")
+    base_url = (base_url or "https://kaspi.kz").strip()
     default_paths = [
         "/shop/api/feeds/import",
         "/shop/api/feeds/import/offers",
