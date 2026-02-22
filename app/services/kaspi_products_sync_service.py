@@ -19,7 +19,7 @@ from app.core.logging import get_logger
 from app.models.company import Company
 from app.models.kaspi_catalog_product import KaspiCatalogProduct
 from app.models.marketplace import KaspiStoreToken
-from app.services.kaspi_service import KaspiService
+from app.services.kaspi_service import KaspiProductsUpstreamError, KaspiService
 
 logger = get_logger(__name__)
 
@@ -31,6 +31,7 @@ async def sync_kaspi_catalog_products(
     *,
     page_size: int = 100,
     max_pages: int = 100,
+    request_id: str | None = None,
 ) -> dict[str, Any]:
     """
     Synchronize Kaspi catalog products to local database.
@@ -68,7 +69,13 @@ async def sync_kaspi_catalog_products(
     try:
         # Fetch products from Kaspi API with pagination
         for page in range(1, max_pages + 1):
-            items = await kaspi.get_products(page=page, page_size=page_size)
+            items = await kaspi.get_products(
+                page=page,
+                page_size=page_size,
+                company_id=company_id,
+                store_name=store_name,
+                request_id=request_id,
+            )
             if not items:
                 break
 
@@ -156,6 +163,16 @@ async def sync_kaspi_catalog_products(
             "updated": updated,
         }
 
+    except KaspiProductsUpstreamError as e:
+        logger.error(
+            "Kaspi catalog sync failed: company_id=%s store=%s error_code=%s error=%s",
+            company_id,
+            store_name,
+            e.code,
+            repr(e),
+        )
+        await session.rollback()
+        raise
     except Exception as e:
         logger.error("Kaspi catalog sync failed: company_id=%s error=%s", company_id, e)
         await session.rollback()

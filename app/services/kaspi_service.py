@@ -57,6 +57,13 @@ class KaspiBadRequestError(RuntimeError):
         self.status_code = status_code
 
 
+class KaspiProductsUpstreamError(RuntimeError):
+    def __init__(self, code: str, *, status_code: int | None = None):
+        super().__init__(code)
+        self.code = code
+        self.status_code = status_code
+
+
 # ---------------------- small utils ---------------------- #
 
 
@@ -185,6 +192,50 @@ def _safe_httpx_url_path(exc: Exception) -> str | None:
         return None
 
 
+def _mask_token(value: str | None, *, head: int = 6, tail: int = 4) -> str:
+    if not value:
+        return ""
+    if len(value) <= head + tail:
+        return value
+    return f"{value[:head]}...{value[-tail:]}"
+
+
+def _response_snippet(value: str | None, limit: int = 800) -> str:
+    if not value:
+        return ""
+    text_value = value.strip()
+    if len(text_value) <= limit:
+        return text_value
+    return f"{text_value[:limit]}..."
+
+
+def _extract_httpx_root_cause(exc: Exception) -> tuple[str | None, str | None]:
+    cause = getattr(exc, "__cause__", None) or getattr(exc, "__context__", None)
+    if not cause:
+        return None, None
+    return type(cause).__name__, str(cause)
+
+
+def _classify_httpx_error(exc: Exception, root_type: str | None, root_message: str | None) -> str:
+    if isinstance(exc, httpx.TimeoutException):
+        return "timeout"
+    if isinstance(exc, httpx.ConnectTimeout):
+        return "connect_timeout"
+    if isinstance(exc, httpx.ReadTimeout):
+        return "read_timeout"
+    if isinstance(exc, httpx.WriteTimeout):
+        return "write_timeout"
+    if isinstance(exc, httpx.ConnectError):
+        return "connect_error"
+    cause_type = (root_type or "").lower()
+    cause_msg = (root_message or "").lower()
+    if "ssl" in cause_type or "tls" in cause_type or "ssl" in cause_msg or "tls" in cause_msg:
+        return "tls_error"
+    if "dns" in cause_type or "gaierror" in cause_type or "name or service" in cause_msg:
+        return "dns_error"
+    return "request_error"
+
+
 def _extract_kaspi_error_title(payload: Any) -> str | None:
     if not isinstance(payload, dict):
         return None
@@ -306,6 +357,26 @@ class KaspiService:
         effective_timeout = 30.0 if timeout is None else timeout
         effective_retries = 2 if retries is None else max(0, int(retries))
         return _RetryingAsyncClient(timeout=effective_timeout, retries=effective_retries, backoff_base=backoff_base)
+
+    def _products_timeout(self) -> httpx.Timeout:
+        total_timeout = max(60.0, float(getattr(settings, "KASPI_HTTP_TIMEOUT_SEC", 60) or 60))
+        connect_timeout = max(20.0, float(getattr(settings, "KASPI_ORDERS_CONNECT_TIMEOUT_SEC", 20) or 20))
+        return httpx.Timeout(total_timeout, connect=connect_timeout)
+
+    def _products_client(self) -> httpx.AsyncClient:
+        limits = httpx.Limits(max_connections=1, max_keepalive_connections=0)
+        headers = {
+            "Connection": "close",
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120 Safari/537.36",
+        }
+        return httpx.AsyncClient(
+            timeout=self._products_timeout(),
+            limits=limits,
+            headers=headers,
+            trust_env=False,
+            http2=False,
+        )
 
     def _orders_timeout(self, total_sec: float | None = None) -> httpx.Timeout:
         if total_sec is not None:
@@ -826,20 +897,115 @@ class KaspiService:
 
     # ---------------------- Products API ---------------------- #
 
-    async def get_products(self, *, page: int = 1, page_size: int = 100) -> list[dict[str, Any]]:
-        async with self._client() as client:
-            try:
+    async def get_products(
+        self,
+        *,
+        page: int = 1,
+        page_size: int = 100,
+        company_id: int | None = None,
+        store_name: str | None = None,
+        request_id: str | None = None,
+    ) -> list[dict[str, Any]]:
+        url = self._url("/products")
+        params = {"page": page, "pageSize": page_size}
+        masked_token = _mask_token(self.api_key)
+        try:
+            async with self._products_client() as client:
                 resp = await client.get(
-                    self._url("/products"),
+                    url,
                     headers=self.headers,
-                    params={"page": page, "pageSize": page_size},
+                    params=params,
                 )
-                resp.raise_for_status()
-                data = resp.json() or {}
-                return data.get("products") or data.get("items") or []
-            except httpx.HTTPError as e:
-                logger.error("Kaspi get_products error: %s", e)
-                raise RuntimeError(f"Failed to fetch products from Kaspi: {e}") from e
+        except httpx.TimeoutException as exc:
+            root_type, root_message = _extract_httpx_root_cause(exc)
+            error_kind = _classify_httpx_error(exc, root_type, root_message)
+            logger.warning(
+                "Kaspi get_products timeout",
+                extra={
+                    "company_id": company_id,
+                    "store_name": store_name,
+                    "request_id": request_id,
+                    "url": url,
+                    "params": params,
+                    "token_masked": masked_token,
+                    "exc_type": type(exc).__name__,
+                    "exc_repr": repr(exc),
+                    "error_kind": error_kind,
+                },
+            )
+            raise KaspiProductsUpstreamError(error_kind) from exc
+        except httpx.RequestError as exc:
+            root_type, root_message = _extract_httpx_root_cause(exc)
+            error_kind = _classify_httpx_error(exc, root_type, root_message)
+            logger.warning(
+                "Kaspi get_products request error",
+                extra={
+                    "company_id": company_id,
+                    "store_name": store_name,
+                    "request_id": request_id,
+                    "url": url,
+                    "params": params,
+                    "token_masked": masked_token,
+                    "exc_type": type(exc).__name__,
+                    "exc_repr": repr(exc),
+                    "error_kind": error_kind,
+                },
+            )
+            raise KaspiProductsUpstreamError(error_kind) from exc
+
+        if resp.status_code in {401, 403}:
+            logger.warning(
+                "Kaspi get_products unauthorized",
+                extra={
+                    "company_id": company_id,
+                    "store_name": store_name,
+                    "request_id": request_id,
+                    "url": url,
+                    "params": params,
+                    "token_masked": masked_token,
+                    "status_code": resp.status_code,
+                    "response_snippet": _response_snippet(resp.text),
+                },
+            )
+            raise KaspiProductsUpstreamError("NOT_AUTHENTICATED", status_code=resp.status_code)
+
+        if not (200 <= resp.status_code < 300):
+            logger.warning(
+                "Kaspi get_products http error",
+                extra={
+                    "company_id": company_id,
+                    "store_name": store_name,
+                    "request_id": request_id,
+                    "url": url,
+                    "params": params,
+                    "token_masked": masked_token,
+                    "status_code": resp.status_code,
+                    "response_snippet": _response_snippet(resp.text),
+                },
+            )
+            raise KaspiProductsUpstreamError("http_status", status_code=resp.status_code)
+
+        try:
+            data = resp.json() or {}
+        except Exception as exc:
+            logger.warning(
+                "Kaspi get_products invalid JSON",
+                extra={
+                    "company_id": company_id,
+                    "store_name": store_name,
+                    "request_id": request_id,
+                    "url": url,
+                    "params": params,
+                    "token_masked": masked_token,
+                    "status_code": resp.status_code,
+                    "response_snippet": _response_snippet(resp.text),
+                    "exc_type": type(exc).__name__,
+                    "exc_repr": repr(exc),
+                },
+            )
+            raise KaspiProductsUpstreamError("http_status", status_code=resp.status_code) from exc
+
+        return data.get("products") or data.get("items") or []
 
     async def update_product_availability(self, product_id: str, availability: int) -> bool:
         async with self._client() as client:

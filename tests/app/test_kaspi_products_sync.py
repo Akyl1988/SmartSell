@@ -1,3 +1,4 @@
+import httpx
 import pytest
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -13,7 +14,7 @@ class _DummyKaspiService:
         self._pages = pages
         self.calls: list[tuple[int, int]] = []
 
-    async def get_products(self, *, page: int = 1, page_size: int = 100) -> list[dict]:
+    async def get_products(self, *, page: int = 1, page_size: int = 100, **kwargs) -> list[dict]:
         self.calls.append((page, page_size))
         return self._pages.get(page, [])
 
@@ -107,3 +108,91 @@ async def test_kaspi_products_sync_requires_store_and_token(async_db_session: As
     with pytest.raises(ValueError) as exc2:
         await sync_kaspi_catalog_products(async_db_session, company.id, kaspi=_DummyKaspiService({}))
     assert "kaspi_token_not_found" in str(exc2.value)
+
+
+class _ResponseOk:
+    status_code = 200
+    text = "{}"
+
+    def json(self):
+        return {"products": []}
+
+
+class _FakeProductsClient:
+    def __init__(self, response):
+        self._response = response
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb):
+        return False
+
+    async def get(self, *args, **kwargs):
+        return self._response
+
+
+@pytest.mark.asyncio
+async def test_kaspi_products_client_config(monkeypatch):
+    from app.services import kaspi_service as kaspi_module
+
+    client_kwargs: dict[str, object] = {}
+
+    def _client_factory(*args, **kwargs):
+        client_kwargs.update(kwargs)
+        return _FakeProductsClient(_ResponseOk())
+
+    monkeypatch.setattr(kaspi_module.httpx, "AsyncClient", _client_factory)
+
+    svc = kaspi_module.KaspiService(api_key="token", base_url="https://kaspi.kz")
+    await svc.get_products(page=1, page_size=1, company_id=1, store_name="store-a", request_id="req-1")
+
+    assert client_kwargs.get("http2") is False
+    assert client_kwargs.get("trust_env") is False
+    headers = client_kwargs.get("headers") or {}
+    assert headers.get("Connection") == "close"
+    assert headers.get("User-Agent")
+    limits = client_kwargs.get("limits")
+    assert isinstance(limits, httpx.Limits)
+    assert limits.max_connections == 1
+    assert limits.max_keepalive_connections == 0
+
+
+class _TimeoutClient:
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb):
+        return False
+
+    async def get(self, *args, **kwargs):
+        raise httpx.TimeoutException("")
+
+
+@pytest.mark.asyncio
+async def test_kaspi_products_sync_timeout_returns_502(
+    async_client, async_db_session, monkeypatch, company_a_admin_headers
+):
+    from app.models.company import Company
+    from app.models.marketplace import KaspiStoreToken
+    from app.services import kaspi_service as kaspi_module
+
+    company = await async_db_session.get(Company, 1001)
+    if company is None:
+        company = Company(id=1001, name="Company 1001", kaspi_store_id="store-a")
+        async_db_session.add(company)
+    else:
+        company.kaspi_store_id = "store-a"
+    await async_db_session.commit()
+
+    async def _get_token(session: AsyncSession, store_name: str):  # noqa: ARG001
+        return "token-a"
+
+    monkeypatch.setattr(KaspiStoreToken, "get_token", _get_token)
+    monkeypatch.setattr(kaspi_module.httpx, "AsyncClient", lambda *args, **kwargs: _TimeoutClient())
+
+    resp = await async_client.post("/api/v1/kaspi/products/sync", headers=company_a_admin_headers)
+    assert resp.status_code == 502
+    payload = resp.json()
+    assert payload.get("code") == "timeout"
+    assert payload.get("detail") == "upstream_unavailable"

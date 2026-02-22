@@ -114,7 +114,7 @@ from app.services.kaspi_goods_import_service import (
     load_offers_payload,
 )
 from app.services.kaspi_mc_sync import mark_mc_session_error, sync_kaspi_mc_offers
-from app.services.kaspi_service import KaspiService, KaspiSyncAlreadyRunning
+from app.services.kaspi_service import KaspiProductsUpstreamError, KaspiService, KaspiSyncAlreadyRunning
 from app.services.otp_providers import is_otp_active, require_otp_provider_or_admin_bypass
 
 logger = get_logger(__name__)
@@ -2599,6 +2599,7 @@ class KaspiOfferListOut(BaseModel):
     response_model=KaspiProductSyncOut,
 )
 async def kaspi_products_sync(
+    request: Request,
     current_user: User = Depends(_auth_user),
     session: AsyncSession = Depends(get_async_db),
 ):
@@ -2611,8 +2612,10 @@ async def kaspi_products_sync(
 
     company_id = _resolve_company_id(current_user)
 
+    request_id = getattr(getattr(request, "state", None), "request_id", None)
+
     try:
-        result = await sync_kaspi_catalog_products(session, company_id)
+        result = await sync_kaspi_catalog_products(session, company_id, request_id=request_id)
         return KaspiProductSyncOut(**result)
     except ValueError as e:
         detail = str(e) or "kaspi_sync_not_configured"
@@ -2620,6 +2623,18 @@ async def kaspi_products_sync(
             status_code=status.HTTP_409_CONFLICT,
             detail=detail,
         )
+    except KaspiProductsUpstreamError as e:
+        detail = "upstream_unavailable"
+        status_code = status.HTTP_502_BAD_GATEWAY
+        if e.code == "NOT_AUTHENTICATED":
+            detail = "NOT_AUTHENTICATED"
+            status_code = status.HTTP_401_UNAUTHORIZED
+        payload = {
+            "detail": detail,
+            "code": e.code,
+            "request_id": request_id,
+        }
+        return JSONResponse(status_code=status_code, content=payload)
     except Exception as e:
         logger.error("Kaspi products sync failed: company_id=%s error=%s", company_id, e)
         raise HTTPException(

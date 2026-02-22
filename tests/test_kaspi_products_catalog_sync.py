@@ -78,7 +78,7 @@ async def test_kaspi_products_sync_creates_and_lists(
     monkeypatch.setattr(KaspiStoreToken, "get_token", _get_token)
 
     # Mock get_products
-    async def fake_get_products(self, *, page=1, page_size=100):  # noqa: ARG001
+    async def fake_get_products(self, *, page=1, page_size=100, **kwargs):  # noqa: ARG001
         return _fake_products_payload()
 
     monkeypatch.setattr(KaspiService, "get_products", fake_get_products)
@@ -137,7 +137,7 @@ async def test_kaspi_products_sync_idempotent(
     monkeypatch.setattr(KaspiStoreToken, "get_token", _get_token)
 
     # Mock get_products
-    async def fake_get_products(self, *, page=1, page_size=100):  # noqa: ARG001
+    async def fake_get_products(self, *, page=1, page_size=100, **kwargs):  # noqa: ARG001
         return _fake_products_payload()
 
     monkeypatch.setattr(KaspiService, "get_products", fake_get_products)
@@ -194,7 +194,7 @@ async def test_kaspi_products_tenant_isolation(
     # Mock get_products to return different data based on call count
     call_count = [0]
 
-    async def fake_get_products(self, *, page=1, page_size=100):  # noqa: ARG001
+    async def fake_get_products(self, *, page=1, page_size=100, **kwargs):  # noqa: ARG001
         call_count[0] += 1
         if call_count[0] == 1:
             # Company A products
