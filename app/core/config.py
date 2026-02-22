@@ -671,6 +671,31 @@ class Settings(BaseSettings):
     )
 
     # Kaspi feed upload poll runner settings
+    KASPI_FEED_BASE_URL: str = Field(
+        default="https://kaspi.kz",
+        description="Kaspi base URL for feed uploads",
+        validation_alias="KASPI_FEED_BASE_URL",
+    )
+    KASPI_FEED_UPLOAD_PATH: str = Field(
+        default="/shop/api/feeds/import",
+        description="Kaspi feed upload path (XML)",
+        validation_alias="KASPI_FEED_UPLOAD_PATH",
+    )
+    KASPI_FEED_UPLOAD_URL: str | None = Field(
+        default=None,
+        description="Full Kaspi feed upload URL override",
+        validation_alias="KASPI_FEED_UPLOAD_URL",
+    )
+    KASPI_FEED_STATUS_URL: str | None = Field(
+        default=None,
+        description="Kaspi feed status URL override",
+        validation_alias="KASPI_FEED_STATUS_URL",
+    )
+    KASPI_FEED_RESULT_URL: str | None = Field(
+        default=None,
+        description="Kaspi feed result URL override",
+        validation_alias="KASPI_FEED_RESULT_URL",
+    )
     KASPI_FEED_UPLOAD_ENABLED: bool = Field(
         default=False,
         description="Enable APScheduler job for Kaspi feed uploads",

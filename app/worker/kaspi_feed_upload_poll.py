@@ -38,14 +38,14 @@ def _utcnow() -> datetime:
 
 
 def _build_feed_upload_env(token: str) -> dict[str, str]:
-    base_url = getattr(settings, "KASPI_FEED_BASE_URL", "https://kaspi.kz")
+    base_url = (getattr(settings, "KASPI_FEED_BASE_URL", None) or "https://kaspi.kz").rstrip("/")
+    upload_path = getattr(settings, "KASPI_FEED_UPLOAD_PATH", None) or "/shop/api/feeds/import"
     upload_url = getattr(settings, "KASPI_FEED_UPLOAD_URL", None)
     status_url = getattr(settings, "KASPI_FEED_STATUS_URL", None)
     result_url = getattr(settings, "KASPI_FEED_RESULT_URL", None)
-    base_url = base_url or "https://kaspi.kz"
-    upload_url = upload_url or f"{base_url.rstrip('/')}/shop/api/feeds/import"
-    status_url = status_url or f"{base_url.rstrip('/')}/shop/api/feeds/import/status"
-    result_url = result_url or f"{base_url.rstrip('/')}/shop/api/feeds/import/result"
+    upload_url = upload_url or f"{base_url}{upload_path if upload_path.startswith('/') else '/' + upload_path}"
+    status_url = status_url or f"{base_url}/shop/api/feeds/import/status"
+    result_url = result_url or f"{base_url}/shop/api/feeds/import/result"
     return {
         "KASPI_FEED_UPLOAD_URL": upload_url,
         "KASPI_FEED_STATUS_URL": status_url,

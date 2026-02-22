@@ -2698,6 +2698,13 @@ async def kaspi_feed_upload_probe(
                 elapsed_ms=elapsed_ms,
             )
             ok = 200 <= resp.status_code < 300
+            import_code = None
+            try:
+                payload = resp.json()
+                if isinstance(payload, dict):
+                    import_code = payload.get("importCode") or payload.get("import_code")
+            except Exception:
+                import_code = None
             items.append(
                 KaspiFeedUploadProbeItem(
                     path=normalized,
@@ -2708,6 +2715,7 @@ async def kaspi_feed_upload_probe(
                     message=None if ok else "upstream_response",
                     response_snippet=_probe_response_snippet(resp.text),
                     location=resp.headers.get("location"),
+                    import_code=str(import_code) if import_code else None,
                     elapsed_ms=elapsed_ms,
                 )
             )
@@ -6315,10 +6323,14 @@ def _classify_feed_upload_status(status: str | None) -> str:
 
 
 def _build_feed_upload_env(token: str) -> dict[str, str]:
-    base_url = os.getenv("KASPI_FEED_BASE_URL", "https://kaspi.kz")
-    upload_url = os.getenv("KASPI_FEED_UPLOAD_URL", f"{base_url.rstrip('/')}/shop/api/feeds/import")
-    status_url = os.getenv("KASPI_FEED_STATUS_URL", f"{base_url.rstrip('/')}/shop/api/feeds/import/status")
-    result_url = os.getenv("KASPI_FEED_RESULT_URL", f"{base_url.rstrip('/')}/shop/api/feeds/import/result")
+    base_url = (settings.KASPI_FEED_BASE_URL or "https://kaspi.kz").rstrip("/")
+    upload_path = settings.KASPI_FEED_UPLOAD_PATH or "/shop/api/feeds/import"
+    upload_url = (
+        settings.KASPI_FEED_UPLOAD_URL
+        or f"{base_url}{upload_path if upload_path.startswith('/') else '/' + upload_path}"
+    )
+    status_url = settings.KASPI_FEED_STATUS_URL or f"{base_url}/shop/api/feeds/import/status"
+    result_url = settings.KASPI_FEED_RESULT_URL or f"{base_url}/shop/api/feeds/import/result"
     return {
         "KASPI_FEED_UPLOAD_URL": upload_url,
         "KASPI_FEED_STATUS_URL": status_url,

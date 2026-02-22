@@ -8,6 +8,7 @@ import pytest
 import pytest_asyncio
 from sqlalchemy import select
 
+from app.core.config import settings
 from app.core.subscriptions.plan_catalog import normalize_plan_id
 from app.integrations.kaspi_adapter import KaspiAdapterError
 from app.models.billing import Subscription
@@ -198,6 +199,46 @@ async def test_kaspi_feed_upload_create_and_refresh(
     )
     assert len(events) >= 2
     assert any(event.meta_json and event.meta_json.get("import_code") == "IC-FEED-1" for event in events)
+
+
+@pytest.mark.asyncio
+async def test_kaspi_feed_upload_uses_configured_url(
+    async_client,
+    async_db_session,
+    company_a_admin_headers,
+    monkeypatch,
+):
+    await _ensure_company(async_db_session, 1001, "store-a")
+
+    async def _get_token(session, store_name: str):
+        return "token-a"
+
+    monkeypatch.setattr(KaspiStoreToken, "get_token", _get_token)
+
+    offer = KaspiOffer(
+        company_id=1001,
+        merchant_uid="M123",
+        sku="SKU-URL",
+        title="Item URL",
+        price=1000,
+    )
+    async_db_session.add(offer)
+    await async_db_session.commit()
+
+    fake_adapter = _FakeKaspiAdapter()
+    from app.api.v1 import kaspi as kaspi_module
+
+    monkeypatch.setattr(kaspi_module, "KaspiAdapter", lambda: fake_adapter)
+    monkeypatch.setattr(settings, "KASPI_FEED_UPLOAD_URL", "https://kaspi.kz/shop/api/feeds/import")
+
+    resp = await async_client.post(
+        "/api/v1/kaspi/feed/uploads",
+        headers=company_a_admin_headers,
+        json={"merchant_uid": "M123", "source": "public_token"},
+    )
+    assert resp.status_code == 200
+    assert fake_adapter.last_extra_env
+    assert fake_adapter.last_extra_env.get("KASPI_FEED_UPLOAD_URL") == "https://kaspi.kz/shop/api/feeds/import"
 
 
 @pytest.mark.asyncio
