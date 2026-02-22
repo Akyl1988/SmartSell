@@ -24,6 +24,7 @@ from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from time import perf_counter
 from typing import Any, Optional
+from urllib.parse import urlparse, urlunparse
 
 import anyio
 import httpx
@@ -253,6 +254,18 @@ def _extract_kaspi_error_title(payload: Any) -> str | None:
     return None
 
 
+def _normalize_kaspi_base_url(value: str) -> str:
+    if not value:
+        return value
+    parsed = urlparse(value)
+    if not parsed.netloc:
+        return value
+    path = (parsed.path or "").rstrip("/")
+    if parsed.netloc.endswith("kaspi.kz") and path in {"", "/"}:
+        return urlunparse(parsed._replace(path="/shop/api"))
+    return value
+
+
 # ---------------------- resilient HTTP client ---------------------- #
 
 
@@ -328,7 +341,8 @@ class KaspiService:
     def __init__(self, api_key: Optional[str] = None, base_url: Optional[str] = None):
         # Читаем из settings, но допускаем явную прокидку при создании сервиса
         self.api_key = api_key or getattr(settings, "KASPI_API_TOKEN", "") or ""
-        self.base_url = (base_url or getattr(settings, "KASPI_API_URL", "") or "").rstrip("/")
+        raw_base_url = (base_url or getattr(settings, "KASPI_API_URL", "") or "").rstrip("/")
+        self.base_url = _normalize_kaspi_base_url(raw_base_url)
         self.headers = {
             "Authorization": f"Bearer {self.api_key}" if self.api_key else "",
             "Content-Type": "application/json",
@@ -369,6 +383,7 @@ class KaspiService:
             "Connection": "close",
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
             "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120 Safari/537.36",
+            "Accept": "application/json",
         }
         return httpx.AsyncClient(
             timeout=self._products_timeout(),
@@ -377,6 +392,12 @@ class KaspiService:
             trust_env=False,
             http2=False,
         )
+
+    def _products_headers(self) -> dict[str, str]:
+        headers = {"Accept": "application/json"}
+        if self.api_key:
+            headers["X-Auth-Token"] = self.api_key
+        return headers
 
     def _orders_timeout(self, total_sec: float | None = None) -> httpx.Timeout:
         if total_sec is not None:
@@ -913,7 +934,7 @@ class KaspiService:
             async with self._products_client() as client:
                 resp = await client.get(
                     url,
-                    headers=self.headers,
+                    headers=self._products_headers(),
                     params=params,
                 )
         except httpx.TimeoutException as exc:
@@ -968,6 +989,23 @@ class KaspiService:
                 },
             )
             raise KaspiProductsUpstreamError("NOT_AUTHENTICATED", status_code=resp.status_code)
+
+        if resp.status_code in {301, 302}:
+            logger.warning(
+                "Kaspi get_products redirect",
+                extra={
+                    "company_id": company_id,
+                    "store_name": store_name,
+                    "request_id": request_id,
+                    "url": url,
+                    "params": params,
+                    "token_masked": masked_token,
+                    "status_code": resp.status_code,
+                    "location": resp.headers.get("Location"),
+                    "response_snippet": _response_snippet(resp.text),
+                },
+            )
+            raise KaspiProductsUpstreamError(f"http_status_{resp.status_code}", status_code=resp.status_code)
 
         if not (200 <= resp.status_code < 300):
             logger.warning(
@@ -1336,7 +1374,10 @@ class KaspiService:
                         state.last_error_at = None
                         state.last_error_code = None
                         state.last_error_message = None
-                        state.last_result = "partial" if pagination_state.get("stopped_early") else "success"
+                        if pagination_state.get("no_orders"):
+                            state.last_result = "success"
+                        else:
+                            state.last_result = "partial" if pagination_state.get("stopped_early") else "success"
                         state.last_duration_ms = duration_ms
                         state.last_attempt_at = attempt_at
                         state.last_fetched = fetched
@@ -1554,9 +1595,11 @@ class KaspiService:
                 "duration_ms": duration_ms,
             }
 
+        no_orders = bool(pagination_state.get("no_orders")) if pagination_state is not None else False
+        summary_status = "success" if no_orders else "partial" if pagination_state.get("stopped_early") else "success"
         summary = {
             "ok": True,
-            "status": "partial" if pagination_state.get("stopped_early") else "success",
+            "status": summary_status,
             "company_id": company_id,
             "fetched": fetched,
             "inserted": inserted,
@@ -1569,7 +1612,7 @@ class KaspiService:
         if backfill_active:
             summary["backfill_days"] = backfill_days_value
 
-        if pagination_state.get("stopped_early"):
+        if pagination_state.get("stopped_early") and not no_orders:
             summary["last_page_processed"] = int(pagination_state.get("last_page", 0))
             summary["next_hint"] = "continue"
 
@@ -1925,6 +1968,15 @@ class KaspiService:
 
             items, meta = self._normalize_orders_response(batch, page, page_size)
             if not items:
+                if pagination_state is not None:
+                    total_pages = meta.get("total_pages")
+                    try:
+                        total_pages_int = int(total_pages) if total_pages is not None else None
+                    except (TypeError, ValueError):
+                        total_pages_int = None
+                    if total_pages_int == 0:
+                        pagination_state["no_orders"] = True
+                        pagination_state["stopped_early"] = False
                 break
 
             yield items

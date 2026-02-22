@@ -460,6 +460,32 @@ async def test_sync_respects_max_pages_partial(monkeypatch, async_client, compan
 
 
 @pytest.mark.asyncio
+async def test_sync_no_orders_meta_zero_is_success(monkeypatch, async_client, company_a_admin_headers):
+    async def fake_get_orders(self, *, date_from=None, date_to=None, status=None, page=1, page_size=100, **kwargs):  # noqa: ARG001
+        return {
+            "items": [],
+            "page": 1,
+            "total_pages": 0,
+            "has_next": False,
+            "meta": {"pageCount": 0, "totalCount": 0},
+        }
+
+    monkeypatch.setattr(KaspiService, "get_orders", fake_get_orders)
+
+    resp = await async_client.post("/api/v1/kaspi/orders/sync", headers=company_a_admin_headers)
+    assert resp.status_code == 200, resp.text
+    data = resp.json()
+    assert data["status"] == "success"
+    assert "next_hint" not in data
+
+    state_resp = await async_client.get("/api/v1/kaspi/orders/sync/state", headers=company_a_admin_headers)
+    assert state_resp.status_code == 200
+    state = state_resp.json()
+    assert state["last_result"] == "success"
+    assert state["last_success_at"] == state["watermark"]
+
+
+@pytest.mark.asyncio
 async def test_first_sync_creates_orders(monkeypatch, async_client, async_db_session, company_a_admin_headers):
     async def fake_get_orders(self, *, date_from=None, date_to=None, status=None, page=1, page_size=100):  # noqa: ARG001
         return _orders_payload() if page == 1 else []

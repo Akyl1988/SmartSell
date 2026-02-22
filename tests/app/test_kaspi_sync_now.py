@@ -340,6 +340,57 @@ async def test_kaspi_sync_now_orders_timeout_returns_200(
 
 
 @pytest.mark.asyncio
+async def test_kaspi_sync_now_offers_missing_returns_partial(
+    async_client,
+    async_db_session,
+    monkeypatch,
+    company_a_admin_headers,
+):
+    await _ensure_company(async_db_session, 1001, "store-a")
+
+    async def _get_token(session, store_name: str):
+        return "token-a"
+
+    from app.api.v1 import kaspi as kaspi_module
+
+    async def _lock_true(*args, **kwargs):
+        return True
+
+    async def _unlock(*args, **kwargs):
+        return None
+
+    async def _sync_orders(*args, **kwargs):
+        return {"ok": True, "status": "success"}
+
+    async def _load_offers_payload(*args, **kwargs):
+        return []
+
+    monkeypatch.setattr(kaspi_module, "_try_sync_now_lock", _lock_true)
+    monkeypatch.setattr(kaspi_module, "_release_sync_now_lock", _unlock)
+    monkeypatch.setattr(kaspi_module.KaspiService, "sync_orders", _sync_orders)
+    monkeypatch.setattr(kaspi_module, "load_offers_payload", _load_offers_payload)
+    monkeypatch.setattr(KaspiStoreToken, "get_token", _get_token)
+
+    resp = await async_client.post(
+        "/api/v1/kaspi/sync/now",
+        headers=company_a_admin_headers,
+        json={"merchant_uid": "M1"},
+    )
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data.get("status") == "partial"
+    assert data.get("result") == "partial"
+    assert data.get("orders_sync")
+    assert data["goods_import_result"]["status"] == "skipped"
+    assert data["goods_import_result"]["code"] == "offers_missing"
+    assert data["offers_feed_result"]["status"] == "skipped"
+    assert data["offers_feed_result"]["code"] == "offers_missing"
+    assert data.get("errors")
+    assert data["errors"][0]["code"] == "offers_missing"
+    assert data["errors"][0].get("request_id")
+
+
+@pytest.mark.asyncio
 async def test_kaspi_sync_now_orders_read_timeout_code(
     async_client,
     async_db_session,

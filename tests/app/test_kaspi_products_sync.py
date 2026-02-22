@@ -118,6 +118,11 @@ class _ResponseOk:
         return {"products": []}
 
 
+class _ResponseUnauthorized:
+    status_code = 401
+    text = "{}"
+
+
 class _FakeProductsClient:
     def __init__(self, response):
         self._response = response
@@ -130,6 +135,34 @@ class _FakeProductsClient:
 
     async def get(self, *args, **kwargs):
         return self._response
+
+
+@pytest.mark.asyncio
+async def test_kaspi_get_products_uses_shop_api_base_url(monkeypatch):
+    from app.services import kaspi_service as kaspi_module
+
+    captured: dict[str, object] = {}
+
+    class _CaptureClient:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+        async def get(self, url, *args, **kwargs):
+            captured["url"] = str(url)
+            return _ResponseOk()
+
+    monkeypatch.setattr(kaspi_module.settings, "KASPI_API_URL", "https://kaspi.kz", raising=False)
+    monkeypatch.setattr(kaspi_module.httpx, "AsyncClient", lambda *args, **kwargs: _CaptureClient())
+
+    svc = kaspi_module.KaspiService(api_key="token")
+    await svc.get_products(page=1, page_size=1, company_id=1, store_name="store-a", request_id="req-1")
+
+    url = captured.get("url")
+    assert isinstance(url, str)
+    assert "/shop/api/products" in url
 
 
 @pytest.mark.asyncio
@@ -158,24 +191,60 @@ async def test_kaspi_products_client_config(monkeypatch):
     assert limits.max_keepalive_connections == 0
 
 
-class _TimeoutClient:
-    async def __aenter__(self):
-        return self
+@pytest.mark.asyncio
+async def test_kaspi_get_products_uses_x_auth_token_header(monkeypatch):
+    from app.services import kaspi_service as kaspi_module
 
-    async def __aexit__(self, exc_type, exc, tb):
-        return False
+    captured: dict[str, object] = {}
 
-    async def get(self, *args, **kwargs):
-        raise httpx.TimeoutException("")
+    class _CaptureClient:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+        async def get(self, url, *args, **kwargs):
+            captured["headers"] = kwargs.get("headers")
+            return _ResponseUnauthorized()
+
+    monkeypatch.setattr(kaspi_module.httpx, "AsyncClient", lambda *args, **kwargs: _CaptureClient())
+
+    svc = kaspi_module.KaspiService(api_key="token", base_url="https://kaspi.kz")
+    with pytest.raises(kaspi_module.KaspiProductsUpstreamError) as exc:
+        await svc.get_products(page=1, page_size=1, company_id=1, store_name="store-a", request_id="req-1")
+
+    assert exc.value.code == "NOT_AUTHENTICATED"
+    headers = captured.get("headers")
+    assert isinstance(headers, dict)
+    assert headers.get("X-Auth-Token") == "token"
+    assert "Authorization" not in headers
+    assert headers.get("Accept") == "application/json"
 
 
 @pytest.mark.asyncio
-async def test_kaspi_products_sync_timeout_returns_502(
+async def test_kaspi_products_sync_returns_not_supported(async_client, async_db_session, company_a_admin_headers):
+    company = await async_db_session.get(Company, 1001)
+    if company is None:
+        company = Company(id=1001, name="Company 1001")
+        async_db_session.add(company)
+    await async_db_session.commit()
+
+    resp = await async_client.post("/api/v1/kaspi/products/sync", headers=company_a_admin_headers)
+    assert resp.status_code == 409
+    payload = resp.json()
+    assert payload.get("code") == "catalog_pull_not_supported"
+    assert payload.get("detail") == "catalog_pull_not_supported"
+    assert payload.get("errors")
+
+
+@pytest.mark.asyncio
+async def test_kaspi_products_import_status_endpoint(
     async_client, async_db_session, monkeypatch, company_a_admin_headers
 ):
     from app.models.company import Company
     from app.models.marketplace import KaspiStoreToken
-    from app.services import kaspi_service as kaspi_module
+    from app.services.kaspi_goods_import_client import KaspiGoodsImportClient
 
     company = await async_db_session.get(Company, 1001)
     if company is None:
@@ -188,11 +257,88 @@ async def test_kaspi_products_sync_timeout_returns_502(
     async def _get_token(session: AsyncSession, store_name: str):  # noqa: ARG001
         return "token-a"
 
-    monkeypatch.setattr(KaspiStoreToken, "get_token", _get_token)
-    monkeypatch.setattr(kaspi_module.httpx, "AsyncClient", lambda *args, **kwargs: _TimeoutClient())
+    async def _get_status(self, import_code: str):  # noqa: ANN001
+        assert import_code == "IC-1"
+        return {"status": "UPLOADED"}
 
-    resp = await async_client.post("/api/v1/kaspi/products/sync", headers=company_a_admin_headers)
-    assert resp.status_code == 502
-    payload = resp.json()
-    assert payload.get("code") == "timeout"
-    assert payload.get("detail") == "upstream_unavailable"
+    monkeypatch.setattr(KaspiStoreToken, "get_token", _get_token)
+    monkeypatch.setattr(KaspiGoodsImportClient, "get_status", _get_status)
+
+    resp = await async_client.get("/api/v1/kaspi/products/import?i=IC-1", headers=company_a_admin_headers)
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["import_code"] == "IC-1"
+    assert data["status"] == "UPLOADED"
+
+
+@pytest.mark.asyncio
+async def test_kaspi_products_import_result_endpoint(
+    async_client, async_db_session, monkeypatch, company_a_admin_headers
+):
+    from app.models.company import Company
+    from app.models.marketplace import KaspiStoreToken
+    from app.services.kaspi_goods_import_client import KaspiGoodsImportClient
+
+    company = await async_db_session.get(Company, 1001)
+    if company is None:
+        company = Company(id=1001, name="Company 1001", kaspi_store_id="store-a")
+        async_db_session.add(company)
+    else:
+        company.kaspi_store_id = "store-a"
+    await async_db_session.commit()
+
+    async def _get_token(session: AsyncSession, store_name: str):  # noqa: ARG001
+        return "token-a"
+
+    async def _get_result(self, import_code: str):  # noqa: ANN001
+        assert import_code == "IC-2"
+        return {"status": "DONE"}
+
+    monkeypatch.setattr(KaspiStoreToken, "get_token", _get_token)
+    monkeypatch.setattr(KaspiGoodsImportClient, "get_result", _get_result)
+
+    resp = await async_client.get("/api/v1/kaspi/products/import/result?i=IC-2", headers=company_a_admin_headers)
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["import_code"] == "IC-2"
+    assert data["status"] == "DONE"
+
+
+@pytest.mark.asyncio
+async def test_kaspi_products_import_client_headers(monkeypatch):
+    from app.services import kaspi_goods_import_client as import_module
+
+    captured: dict[str, object] = {}
+
+    class _DummyResponse:
+        status_code = 200
+        content = b"{}"
+
+        def json(self):
+            return {"status": "OK"}
+
+        def raise_for_status(self) -> None:
+            return None
+
+    class _DummyClient:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+        async def request(self, method, url, headers=None, params=None, content=None):
+            captured["headers"] = headers
+            captured["url"] = url
+            captured["params"] = params
+            return _DummyResponse()
+
+    monkeypatch.setattr(import_module.httpx, "AsyncClient", lambda *args, **kwargs: _DummyClient())
+
+    client = import_module.KaspiGoodsImportClient(token="token", base_url="https://kaspi.kz")
+    await client.get_status(import_code="IC-10")
+
+    headers = captured.get("headers")
+    assert isinstance(headers, dict)
+    assert headers.get("X-Auth-Token") == "token"
+    assert "application/json" in (headers.get("Accept") or "")

@@ -745,7 +745,7 @@ class Settings(BaseSettings):
         validation_alias=AliasChoices("KASPI_API_TOKEN", "KASPI_TOKEN", "KASPI_SHOP_TOKEN"),
     )
     KASPI_API_KEY: str | None = Field(default=None, description="Kaspi API key", validation_alias="KASPI_API_KEY")
-    KASPI_API_URL: str = Field(default="https://api.kaspi.kz", description="Kaspi API URL")
+    KASPI_API_URL: str = Field(default="https://kaspi.kz/shop/api", description="Kaspi API URL")
 
     # -------------------- ДОБАВЛЕНО --------------------
     # Отдельный базовый URL для Shop Orders JSON:API (по документации Kaspi)

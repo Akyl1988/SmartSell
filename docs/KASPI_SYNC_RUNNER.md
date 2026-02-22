@@ -14,6 +14,16 @@ Production-safe periodic background task that runs Kaspi orders sync for all act
 ✅ **Structured Logging**: Detailed logs for monitoring and debugging  
 ✅ **Graceful Shutdown**: Task is cancelled on application shutdown  
 
+## Catalog Strategy Note
+
+Kaspi Shop API does not provide a full catalog pull via X-Auth-Token. Use the products import status endpoints instead:
+
+- `GET /api/v1/kaspi/products/import?i=<import_code>`
+- `GET /api/v1/kaspi/products/import/result?i=<import_code>`
+
+The legacy `POST /api/v1/kaspi/products/sync` is retained for compatibility and returns
+`catalog_pull_not_supported`.
+
 ## Configuration
 
 Environment variables:

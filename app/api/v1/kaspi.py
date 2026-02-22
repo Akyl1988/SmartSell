@@ -114,7 +114,7 @@ from app.services.kaspi_goods_import_service import (
     load_offers_payload,
 )
 from app.services.kaspi_mc_sync import mark_mc_session_error, sync_kaspi_mc_offers
-from app.services.kaspi_service import KaspiProductsUpstreamError, KaspiService, KaspiSyncAlreadyRunning
+from app.services.kaspi_service import KaspiService, KaspiSyncAlreadyRunning
 from app.services.otp_providers import is_otp_active, require_otp_provider_or_admin_bypass
 
 logger = get_logger(__name__)
@@ -2387,6 +2387,13 @@ class KaspiProductSyncOut(BaseModel):
     updated: int
 
 
+class KaspiCatalogPullUnsupportedOut(BaseModel):
+    detail: str
+    code: str
+    request_id: str | None = None
+    errors: list[dict[str, Any]] = Field(default_factory=list)
+
+
 class KaspiProductOut(BaseModel):
     """Response model for single product in catalog list."""
 
@@ -2473,6 +2480,7 @@ class KaspiSyncNowIn(BaseModel):
 class KaspiSyncNowOut(BaseModel):
     ok: bool
     status: str | None = None
+    result: str | None = None
     phase: str | None = None
     errors: list[dict[str, Any]] = Field(default_factory=list)
     company_id: int
@@ -2596,7 +2604,7 @@ class KaspiOfferListOut(BaseModel):
 @router.post(
     "/products/sync",
     summary="Синхронизировать каталог Kaspi в локальную БД",
-    response_model=KaspiProductSyncOut,
+    response_model=KaspiCatalogPullUnsupportedOut,
 )
 async def kaspi_products_sync(
     request: Request,
@@ -2604,43 +2612,143 @@ async def kaspi_products_sync(
     session: AsyncSession = Depends(get_async_db),
 ):
     """
-    Синхронизирует каталог продуктов Kaspi для текущей компании.
-    Использует tenant isolation через resolved_company_id.
-    Идемпотентен: повторный запуск обновляет существующие записи.
+    Kaspi Shop API не поддерживает получение полного каталога через X-Auth-Token.
+    Используйте /api/v1/kaspi/products/import и /api/v1/kaspi/products/import/result.
     """
-    from app.services.kaspi_products_sync_service import sync_kaspi_catalog_products
-
-    company_id = _resolve_company_id(current_user)
-
+    _ = _resolve_company_id(current_user)
+    _ = session
     request_id = getattr(getattr(request, "state", None), "request_id", None)
+    payload = {
+        "detail": "catalog_pull_not_supported",
+        "code": "catalog_pull_not_supported",
+        "request_id": request_id,
+        "errors": [
+            {
+                "code": "catalog_pull_not_supported",
+                "detail": "catalog_pull_not_supported",
+                "request_id": request_id,
+            }
+        ],
+    }
+    return JSONResponse(status_code=status.HTTP_409_CONFLICT, content=payload)
 
+
+@router.get(
+    "/products/import",
+    summary="Kaspi products import status",
+    response_model=KaspiGoodsStatusOut,
+)
+async def kaspi_products_import_status(
+    request: Request,
+    import_code: str = Query(..., alias="i"),
+    current_user: User = Depends(_auth_user),
+    session: AsyncSession = Depends(get_async_db),
+):
+    company_id = _resolve_company_id(current_user)
+    _, token = await _resolve_kaspi_token(session, company_id)
+    from app.services.kaspi_goods_import_client import (
+        KaspiGoodsImportClient,
+        KaspiImportNotAuthenticated,
+        KaspiImportUpstreamError,
+        KaspiImportUpstreamUnavailable,
+    )
+
+    client = KaspiGoodsImportClient(token=token, base_url="https://kaspi.kz")
+    request_id = getattr(getattr(request, "state", None), "request_id", None)
     try:
-        result = await sync_kaspi_catalog_products(session, company_id, request_id=request_id)
-        return KaspiProductSyncOut(**result)
-    except ValueError as e:
-        detail = str(e) or "kaspi_sync_not_configured"
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail=detail,
-        )
-    except KaspiProductsUpstreamError as e:
-        detail = "upstream_unavailable"
-        status_code = status.HTTP_502_BAD_GATEWAY
-        if e.code == "NOT_AUTHENTICATED":
-            detail = "NOT_AUTHENTICATED"
-            status_code = status.HTTP_401_UNAUTHORIZED
+        response = await client.get_status(import_code=import_code)
+    except KaspiImportNotAuthenticated:
         payload = {
-            "detail": detail,
-            "code": e.code,
+            "detail": "NOT_AUTHENTICATED",
+            "code": "NOT_AUTHENTICATED",
             "request_id": request_id,
+            "errors": [{"code": "NOT_AUTHENTICATED", "detail": "NOT_AUTHENTICATED", "request_id": request_id}],
         }
-        return JSONResponse(status_code=status_code, content=payload)
-    except Exception as e:
-        logger.error("Kaspi products sync failed: company_id=%s error=%s", company_id, e)
-        raise HTTPException(
-            status_code=status.HTTP_502_BAD_GATEWAY,
-            detail="Failed to sync products from Kaspi",
-        )
+        return JSONResponse(status_code=status.HTTP_401_UNAUTHORIZED, content=payload)
+    except KaspiImportUpstreamUnavailable:
+        payload = {
+            "detail": "kaspi_upstream_unavailable",
+            "code": "upstream_unavailable",
+            "request_id": request_id,
+            "errors": [
+                {
+                    "code": "upstream_unavailable",
+                    "detail": "kaspi_upstream_unavailable",
+                    "request_id": request_id,
+                }
+            ],
+        }
+        return JSONResponse(status_code=status.HTTP_502_BAD_GATEWAY, content=payload)
+    except KaspiImportUpstreamError:
+        payload = {
+            "detail": "kaspi_upstream_error",
+            "code": "upstream_error",
+            "request_id": request_id,
+            "errors": [{"code": "upstream_error", "detail": "kaspi_upstream_error", "request_id": request_id}],
+        }
+        return JSONResponse(status_code=status.HTTP_502_BAD_GATEWAY, content=payload)
+
+    status_value = response.get("status") or "unknown"
+    return KaspiGoodsStatusOut(import_code=import_code, status=str(status_value), payload=response)
+
+
+@router.get(
+    "/products/import/result",
+    summary="Kaspi products import result",
+    response_model=KaspiGoodsResultOut,
+)
+async def kaspi_products_import_result(
+    request: Request,
+    import_code: str = Query(..., alias="i"),
+    current_user: User = Depends(_auth_user),
+    session: AsyncSession = Depends(get_async_db),
+):
+    company_id = _resolve_company_id(current_user)
+    _, token = await _resolve_kaspi_token(session, company_id)
+    from app.services.kaspi_goods_import_client import (
+        KaspiGoodsImportClient,
+        KaspiImportNotAuthenticated,
+        KaspiImportUpstreamError,
+        KaspiImportUpstreamUnavailable,
+    )
+
+    client = KaspiGoodsImportClient(token=token, base_url="https://kaspi.kz")
+    request_id = getattr(getattr(request, "state", None), "request_id", None)
+    try:
+        response = await client.get_result(import_code=import_code)
+    except KaspiImportNotAuthenticated:
+        payload = {
+            "detail": "NOT_AUTHENTICATED",
+            "code": "NOT_AUTHENTICATED",
+            "request_id": request_id,
+            "errors": [{"code": "NOT_AUTHENTICATED", "detail": "NOT_AUTHENTICATED", "request_id": request_id}],
+        }
+        return JSONResponse(status_code=status.HTTP_401_UNAUTHORIZED, content=payload)
+    except KaspiImportUpstreamUnavailable:
+        payload = {
+            "detail": "kaspi_upstream_unavailable",
+            "code": "upstream_unavailable",
+            "request_id": request_id,
+            "errors": [
+                {
+                    "code": "upstream_unavailable",
+                    "detail": "kaspi_upstream_unavailable",
+                    "request_id": request_id,
+                }
+            ],
+        }
+        return JSONResponse(status_code=status.HTTP_502_BAD_GATEWAY, content=payload)
+    except KaspiImportUpstreamError:
+        payload = {
+            "detail": "kaspi_upstream_error",
+            "code": "upstream_error",
+            "request_id": request_id,
+            "errors": [{"code": "upstream_error", "detail": "kaspi_upstream_error", "request_id": request_id}],
+        }
+        return JSONResponse(status_code=status.HTTP_502_BAD_GATEWAY, content=payload)
+
+    status_value = response.get("status") or "unknown"
+    return KaspiGoodsResultOut(import_code=import_code, status=str(status_value), payload=response)
 
 
 # ============================= GOODS API ==============================
@@ -3493,7 +3601,38 @@ async def kaspi_sync_now(
                     include_stock=flags["include_stock"],
                 )
                 if not payload:
-                    raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="offers_not_found")
+                    errors.append(
+                        _err(
+                            code="offers_missing",
+                            detail="offers_missing",
+                            phase_for_error="goods_import",
+                        )
+                    )
+                    payload = _with_phase(
+                        {
+                            "ok": True,
+                            "status": "partial",
+                            "result": "partial",
+                            "errors": errors,
+                            "company_id": company_id,
+                            "merchant_uid": merchant_uid,
+                            "orders_sync": orders_result,
+                            "goods_import_result": {
+                                "status": "skipped",
+                                "code": "offers_missing",
+                                "detail": "offers_missing",
+                                "request_id": rid,
+                            },
+                            "offers_feed_result": {
+                                "status": "skipped",
+                                "code": "offers_missing",
+                                "detail": "offers_missing",
+                                "phase": "goods_import",
+                                "request_id": rid,
+                            },
+                        }
+                    )
+                    return JSONResponse(status_code=status.HTTP_200_OK, content=payload, headers={"X-Request-ID": rid})
 
                 payload_json = build_payload_json(payload)
                 payload_hash = compute_payload_hash(payload_json)
@@ -3619,7 +3758,39 @@ async def kaspi_sync_now(
                     .all()
                 )
                 if not offers:
-                    raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="offers_not_found")
+                    errors.append(
+                        _err(
+                            code="offers_missing",
+                            detail="offers_missing",
+                            phase_for_error="offers_feed",
+                        )
+                    )
+                    payload = _with_phase(
+                        {
+                            "ok": True,
+                            "status": "partial",
+                            "result": "partial",
+                            "errors": errors,
+                            "company_id": company_id,
+                            "merchant_uid": merchant_uid,
+                            "orders_sync": orders_result,
+                            "goods_import_result": {
+                                "ok": True,
+                                "status": "success",
+                                "import_id": str(record.id),
+                                "import_code": str(import_code),
+                                "import_status": record.status,
+                            },
+                            "offers_feed_result": {
+                                "status": "skipped",
+                                "code": "offers_missing",
+                                "detail": "offers_missing",
+                                "phase": "offers_feed",
+                                "request_id": rid,
+                            },
+                        }
+                    )
+                    return JSONResponse(status_code=status.HTTP_200_OK, content=payload, headers={"X-Request-ID": rid})
 
                 company_name = (company.name if company else None) or f"Company {company_id}"
                 _build_kaspi_offers_xml(offers, company=company_name, merchant_id=merchant_uid)
