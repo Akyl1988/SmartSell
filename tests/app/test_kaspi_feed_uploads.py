@@ -10,11 +10,11 @@ from sqlalchemy import select
 
 from app.core.config import settings
 from app.core.subscriptions.plan_catalog import normalize_plan_id
-from app.integrations.kaspi_adapter import KaspiAdapterError
 from app.models.billing import Subscription
 from app.models.company import Company
 from app.models.integration_event import IntegrationEvent
 from app.models.kaspi_feed_export import KaspiFeedExport
+from app.models.kaspi_feed_public_token import KaspiFeedPublicToken
 from app.models.kaspi_feed_upload import KaspiFeedUpload
 from app.models.kaspi_offer import KaspiOffer
 from app.models.marketplace import KaspiStoreToken
@@ -62,19 +62,9 @@ class _FailingKaspiAdapter:
         raise RuntimeError("upstream_unavailable")
 
 
-class _UnsupportedContentTypeAdapter:
+class _ExplodingKaspiAdapter:
     def feed_upload(self, *args, **kwargs):
-        raise KaspiAdapterError("Content type 'application/xml' not supported")
-
-
-class _SuccessKaspiAdapter:
-    def __init__(self, status: str = "done"):
-        self.status = status
-        self.upload_calls = 0
-
-    def feed_upload(self, *args, **kwargs):
-        self.upload_calls += 1
-        return {"importCode": "IC-FEED-OK", "status": self.status}
+        raise AssertionError("KaspiAdapter should not be called for pull feeds")
 
 
 async def _ensure_company(async_db_session, company_id: int, store_id: str) -> None:
@@ -329,77 +319,14 @@ async def test_kaspi_feed_upload_permission_denied(
 
 
 @pytest.mark.asyncio
-async def test_kaspi_offers_feed_upload_idempotent_by_hash(
-    async_client,
-    async_db_session,
-    company_a_admin_headers,
-    monkeypatch,
-):
-    await _ensure_company(async_db_session, 1001, "store-a")
-
-    async def _get_token(session, store_name: str):
-        return "token-a"
-
-    monkeypatch.setattr(KaspiStoreToken, "get_token", _get_token)
-
-    async_db_session.add(
-        KaspiOffer(
-            company_id=1001,
-            merchant_uid="store-a",
-            sku="SKU-1",
-            title="Item 1",
-            price=1000,
-        )
-    )
-    await async_db_session.commit()
-
-    from app.api.v1 import kaspi as kaspi_module
-
-    fake_adapter = _SuccessKaspiAdapter(status="done")
-    monkeypatch.setattr(kaspi_module, "KaspiAdapter", lambda: fake_adapter)
-
-    resp1 = await async_client.post(
-        "/api/v1/kaspi/offers/feed/upload",
-        headers=company_a_admin_headers,
-        json={"merchant_uid": "store-a", "refresh": False},
-    )
-    assert resp1.status_code == 200
-    data1 = resp1.json()
-    assert data1["status"] in {"done", "success", "completed", "published"}
-    assert data1["payload_hash"]
-
-    resp2 = await async_client.post(
-        "/api/v1/kaspi/offers/feed/upload",
-        headers=company_a_admin_headers,
-        json={"merchant_uid": "store-a", "refresh": False},
-    )
-    assert resp2.status_code == 200
-    data2 = resp2.json()
-    assert data2["status"] == "noop"
-    assert data1["id"] == data2["id"]
-    assert fake_adapter.upload_calls == 1
-
-    uploads = (
-        (await async_db_session.execute(select(KaspiFeedUpload).where(KaspiFeedUpload.company_id == 1001)))
-        .scalars()
-        .all()
-    )
-    assert len(uploads) == 1
-
-
 @pytest.mark.asyncio
-async def test_kaspi_offers_feed_upload_unsupported_content_type_marks_failed(
+async def test_kaspi_offers_feed_upload_returns_public_url(
     async_client,
     async_db_session,
     company_a_admin_headers,
     monkeypatch,
 ):
     await _ensure_company(async_db_session, 1001, "store-a")
-
-    async def _get_token(session, store_name: str):
-        return "token-a"
-
-    monkeypatch.setattr(KaspiStoreToken, "get_token", _get_token)
 
     async_db_session.add(
         KaspiOffer(
@@ -414,7 +341,7 @@ async def test_kaspi_offers_feed_upload_unsupported_content_type_marks_failed(
 
     from app.api.v1 import kaspi as kaspi_module
 
-    monkeypatch.setattr(kaspi_module, "KaspiAdapter", lambda: _UnsupportedContentTypeAdapter())
+    monkeypatch.setattr(kaspi_module, "KaspiAdapter", lambda: _ExplodingKaspiAdapter())
 
     resp = await async_client.post(
         "/api/v1/kaspi/offers/feed/upload",
@@ -423,15 +350,22 @@ async def test_kaspi_offers_feed_upload_unsupported_content_type_marks_failed(
     )
     assert resp.status_code == 200
     data = resp.json()
-    assert data["status"] == "failed"
-    assert data["last_error_code"] == "unsupported_content_type"
-    assert data["next_attempt_at"] is None
+    assert data["merchant_uid"] == "store-a"
+    assert data["payload_hash"]
+    assert data["token_id"]
+    assert data["url"].endswith(".xml")
+    assert "/public/kaspi/price-list/" in data["url"]
 
-    record = await async_db_session.get(KaspiFeedUpload, data["id"])
-    assert record is not None
-    assert record.status == "failed"
-    assert record.last_error_code == "unsupported_content_type"
-    assert record.next_attempt_at is None
+    token_row = (
+        (
+            await async_db_session.execute(
+                select(KaspiFeedPublicToken).where(KaspiFeedPublicToken.id == data["token_id"])
+            )
+        )
+        .scalars()
+        .first()
+    )
+    assert token_row is not None
 
 
 @pytest.mark.asyncio

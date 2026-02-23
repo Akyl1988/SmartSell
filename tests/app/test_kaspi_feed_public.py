@@ -59,13 +59,18 @@ async def test_public_feed_ok(async_client, async_db_session, company_a_admin_he
     )
     token = token_resp.json()["token"]
 
-    resp = await async_client.get(
-        "/api/v1/kaspi/feed/public/offers.xml",
-        params={"token": token, "merchantUid": merchant_uid},
-    )
+    resp = await async_client.get(f"/public/kaspi/price-list/{token}.xml")
     assert resp.status_code == 200
     assert resp.headers.get("content-type", "").startswith("application/xml")
     assert sku in resp.text
+
+    etag = resp.headers.get("etag")
+    assert etag
+    cached = await async_client.get(
+        f"/public/kaspi/price-list/{token}.xml",
+        headers={"If-None-Match": etag},
+    )
+    assert cached.status_code == 304
 
 
 @pytest.mark.asyncio
@@ -81,10 +86,7 @@ async def test_public_feed_schema_minimal(async_client, async_db_session, compan
     )
     token = token_resp.json()["token"]
 
-    resp = await async_client.get(
-        "/api/v1/kaspi/feed/public/offers.xml",
-        params={"token": token, "merchantUid": "17319385"},
-    )
+    resp = await async_client.get(f"/public/kaspi/price-list/{token}.xml")
     assert resp.status_code == 200
 
     root = ET.fromstring(resp.text)
@@ -141,22 +143,13 @@ async def test_public_feed_not_found(async_client, async_db_session, company_a_a
     )
     token = token_resp.json()["token"]
 
-    missing_token = await async_client.get(
-        "/api/v1/kaspi/feed/public/offers.xml",
-        params={"merchantUid": "17319385"},
-    )
+    missing_token = await async_client.get("/public/kaspi/price-list/bad.xml")
     assert missing_token.status_code == 404
 
-    invalid = await async_client.get(
-        "/api/v1/kaspi/feed/public/offers.xml",
-        params={"merchantUid": "17319385", "token": "invalid"},
-    )
+    invalid = await async_client.get("/public/kaspi/price-list/invalid.xml")
     assert invalid.status_code == 404
 
-    no_offers = await async_client.get(
-        "/api/v1/kaspi/feed/public/offers.xml",
-        params={"token": token},
-    )
+    no_offers = await async_client.get(f"/public/kaspi/price-list/{token}.xml")
     assert no_offers.status_code == 404
 
 
@@ -164,7 +157,6 @@ async def test_public_feed_not_found(async_client, async_db_session, company_a_a
 async def test_public_feed_revoked_token(async_client, async_db_session, company_a_admin_headers, monkeypatch):
     monkeypatch.setenv("ENVIRONMENT", "development")
     await _create_company(async_db_session, 1001)
-    await _create_offer(async_db_session, 1001, "17319385", "S1")
 
     token_resp = await async_client.post(
         "/api/v1/kaspi/feed/public-tokens",
@@ -180,10 +172,7 @@ async def test_public_feed_revoked_token(async_client, async_db_session, company
     )
     assert revoke_resp.status_code == 200
 
-    resp = await async_client.get(
-        "/api/v1/kaspi/feed/public/offers.xml",
-        params={"token": token},
-    )
+    resp = await async_client.get(f"/public/kaspi/price-list/{token}.xml")
     assert resp.status_code == 404
 
 
@@ -191,7 +180,6 @@ async def test_public_feed_revoked_token(async_client, async_db_session, company
 async def test_public_feed_wrong_merchant_uid(async_client, async_db_session, company_a_admin_headers, monkeypatch):
     monkeypatch.setenv("ENVIRONMENT", "development")
     await _create_company(async_db_session, 1001)
-    await _create_offer(async_db_session, 1001, "17319385", "S1")
 
     token_resp = await async_client.post(
         "/api/v1/kaspi/feed/public-tokens",
@@ -200,10 +188,8 @@ async def test_public_feed_wrong_merchant_uid(async_client, async_db_session, co
     )
     token = token_resp.json()["token"]
 
-    resp = await async_client.get(
-        "/api/v1/kaspi/feed/public/offers.xml",
-        params={"merchantUid": "M2", "token": token},
-    )
+    await _create_offer(async_db_session, 1001, "M2", "S2")
+    resp = await async_client.get(f"/public/kaspi/price-list/{token}.xml")
     assert resp.status_code == 404
 
 
@@ -227,8 +213,5 @@ async def test_public_feed_tenant_isolation(
     )
     token = token_resp.json()["token"]
 
-    resp = await async_client.get(
-        "/api/v1/kaspi/feed/public/offers.xml",
-        params={"token": token},
-    )
+    resp = await async_client.get(f"/public/kaspi/price-list/{token}.xml")
     assert resp.status_code == 404

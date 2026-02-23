@@ -37,6 +37,7 @@ import secrets
 import time
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
+from email.utils import formatdate, parsedate_to_datetime
 from hashlib import sha256
 from pathlib import Path
 from typing import Any, Literal
@@ -56,7 +57,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
 from app.core.db import get_async_db  # noqa — для совместимости импорт-алиас
-from app.core.dependencies import require_store_admin_company
+from app.core.dependencies import enforce_rate_limit, require_store_admin_company
 from app.core.errors import safe_error_message
 from app.core.exceptions import AuthorizationError
 from app.core.logging import get_logger
@@ -126,6 +127,7 @@ from app.services.otp_providers import is_otp_active, require_otp_provider_or_ad
 
 logger = get_logger(__name__)
 router = APIRouter(prefix="/api/v1/kaspi", tags=["kaspi"])
+public_router = APIRouter(tags=["kaspi-public"])
 
 
 # ----------------------------- Константы/утилиты -----------------------------
@@ -3086,6 +3088,14 @@ class KaspiOffersFeedUploadIn(BaseModel):
     comment: str | None = Field(None, max_length=500)
 
 
+class KaspiOffersFeedUploadOut(BaseModel):
+    url: str
+    token_id: int
+    payload_hash: str
+    generated_at: datetime
+    merchant_uid: str
+
+
 class KaspiFeedUploadRecordOut(BaseModel):
     id: str
     merchant_uid: str
@@ -5147,53 +5157,24 @@ async def kaspi_sync_now(
                 offers_feed_upload_result: dict[str, Any] | None = None
                 feed_upload_enabled = bool(getattr(settings, "KASPI_FEED_UPLOAD_ENABLED", False))
                 if feed_upload_enabled:
-                    upload_job, upload_noop = await _create_offers_feed_upload(
-                        session=session,
-                        company=company,
-                        merchant_uid=merchant_uid,
-                        store_name=(company.kaspi_store_id or merchant_uid),
-                        token=token or "",
-                        request_id=rid,
-                        comment="sync_now",
-                        refresh=False,
-                    )
-                    upload_status_class = _classify_feed_upload_status(upload_job.status)
-                    offers_feed_upload_result = {
-                        "id": str(upload_job.id),
-                        "status": "noop"
-                        if upload_noop
-                        else "success"
-                        if upload_status_class == "success"
-                        else "failed"
-                        if upload_status_class == "failed"
-                        else "pending",
-                        "import_code": upload_job.import_code,
-                        "payload_hash": upload_job.payload_hash,
-                        "next_attempt_at": upload_job.next_attempt_at.isoformat()
-                        if upload_job.next_attempt_at
-                        else None,
-                    }
-                    if upload_noop:
-                        offers_feed_upload_result.update(
-                            {
-                                "code": "feed_upload_noop",
-                                "detail": "feed_upload_noop",
-                            }
+                    try:
+                        _xml_body, payload_hash, _last_modified = await _build_offers_xml_for_company(
+                            session,
+                            company_id=company.id,
+                            merchant_uid=merchant_uid,
                         )
-                    elif upload_status_class == "failed":
-                        offers_feed_upload_result.update(
-                            {
-                                "code": "feed_upload_failed",
-                                "detail": "feed_upload_failed",
-                            }
-                        )
-                    elif upload_status_class != "success":
-                        offers_feed_upload_result.update(
-                            {
-                                "code": "feed_upload_pending",
-                                "detail": "feed_upload_pending",
-                            }
-                        )
+                        offers_feed_upload_result = {
+                            "status": "success",
+                            "mode": "pull",
+                            "payload_hash": payload_hash,
+                        }
+                    except HTTPException as exc:
+                        offers_feed_upload_result = {
+                            "status": "failed",
+                            "mode": "pull",
+                            "code": "feed_pull_failed",
+                            "detail": str(exc.detail),
+                        }
                 status_value = "ok" if goods_class == "success_applied" and not orders_timed_out else "partial"
                 if feed_upload_enabled and offers_feed_upload_result is not None:
                     if offers_feed_upload_result.get("status") != "success":
@@ -6344,6 +6325,115 @@ def _build_feed_upload_env(token: str) -> dict[str, str]:
     }
 
 
+def _format_http_datetime(dt: datetime) -> str:
+    return formatdate(timeval=dt.timestamp(), usegmt=True)
+
+
+def _parse_http_datetime(value: str | None) -> datetime | None:
+    if not value:
+        return None
+    try:
+        parsed = parsedate_to_datetime(value)
+        if parsed.tzinfo:
+            return parsed.astimezone(UTC).replace(tzinfo=None)
+        return parsed
+    except Exception:
+        return None
+
+
+def _public_feed_etag(payload_hash: str) -> str:
+    return f'"{payload_hash}"'
+
+
+async def _load_public_offers_feed(
+    session: AsyncSession,
+    *,
+    token_value: str,
+    merchant_uid: str | None = None,
+) -> tuple[KaspiFeedPublicToken, str, str, datetime]:
+    token_hash = sha256(token_value.encode("utf-8")).hexdigest()
+    token_row = (
+        (
+            await session.execute(
+                sa.select(KaspiFeedPublicToken).where(
+                    KaspiFeedPublicToken.token_hash == token_hash,
+                    KaspiFeedPublicToken.revoked_at.is_(None),
+                )
+            )
+        )
+        .scalars()
+        .first()
+    )
+    if not token_row:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="not_found")
+
+    effective_merchant_uid = (merchant_uid or "").strip()
+    if effective_merchant_uid:
+        if not token_row.merchant_uid or token_row.merchant_uid != effective_merchant_uid:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="not_found")
+    else:
+        effective_merchant_uid = (token_row.merchant_uid or "").strip()
+        if not effective_merchant_uid:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="not_found")
+
+    xml_body, payload_hash, last_modified = await _build_offers_xml_for_company(
+        session,
+        company_id=token_row.company_id,
+        merchant_uid=effective_merchant_uid,
+    )
+    return token_row, xml_body, payload_hash, last_modified
+
+
+async def _build_offers_xml_for_company(
+    session: AsyncSession,
+    *,
+    company_id: int,
+    merchant_uid: str,
+) -> tuple[str, str, datetime]:
+    offers = (
+        (
+            await session.execute(
+                sa.select(KaspiOffer)
+                .where(
+                    KaspiOffer.company_id == company_id,
+                    KaspiOffer.merchant_uid == merchant_uid,
+                )
+                .order_by(KaspiOffer.updated_at.desc())
+            )
+        )
+        .scalars()
+        .all()
+    )
+    if not offers:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="not_found")
+
+    company = await session.get(Company, company_id)
+    company_name = (company.name if company else None) or f"Company {company_id}"
+    xml_body = _build_kaspi_offers_xml(offers, company=company_name, merchant_id=merchant_uid)
+    payload_hash = compute_feed_payload_hash(xml_body)
+    last_modified = max((offer.updated_at for offer in offers if offer.updated_at), default=datetime.utcnow())
+    return xml_body, payload_hash, last_modified
+
+
+def _log_public_feed_access(
+    *,
+    request: Request,
+    token_row: KaspiFeedPublicToken,
+    status_code: int,
+    size_bytes: int,
+) -> None:
+    request_id = getattr(getattr(request, "state", None), "request_id", None) or request.headers.get("X-Request-ID")
+    _safe_log_info(
+        "kaspi_public_feed_access",
+        request_id=request_id,
+        company_id=token_row.company_id,
+        token_id=token_row.id,
+        status_code=status_code,
+        bytes=size_bytes,
+        user_agent=request.headers.get("User-Agent"),
+    )
+
+
 @router.post(
     "/offers/seed",
     summary="Dev-only: seed minimal Kaspi offer",
@@ -6622,6 +6712,62 @@ class KaspiFeedPublicTokenOut(BaseModel):
 
 class KaspiFeedPublicTokenListOut(BaseModel):
     items: list[KaspiFeedPublicTokenOut]
+
+
+async def _rotate_public_feed_token(
+    session: AsyncSession,
+    *,
+    company_id: int,
+    merchant_uid: str,
+    comment: str | None,
+) -> tuple[KaspiFeedPublicToken, str]:
+    now = datetime.utcnow()
+    existing = (
+        (
+            await session.execute(
+                sa.select(KaspiFeedPublicToken).where(
+                    KaspiFeedPublicToken.company_id == company_id,
+                    KaspiFeedPublicToken.merchant_uid == merchant_uid,
+                    KaspiFeedPublicToken.revoked_at.is_(None),
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+    for row in existing:
+        row.revoked_at = now
+
+    token_value = None
+    token_hash = None
+    for _ in range(3):
+        candidate = secrets.token_urlsafe(32)
+        candidate_hash = sha256(candidate.encode("utf-8")).hexdigest()
+        exists = (
+            await session.execute(
+                sa.select(sa.func.count())
+                .select_from(KaspiFeedPublicToken)
+                .where(KaspiFeedPublicToken.token_hash == candidate_hash)
+            )
+        ).scalar_one()
+        if not exists:
+            token_value = candidate
+            token_hash = candidate_hash
+            break
+
+    if not token_value or not token_hash:
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="token_generation_failed")
+
+    token_row = KaspiFeedPublicToken(
+        company_id=company_id,
+        merchant_uid=merchant_uid,
+        token_hash=token_hash,
+        comment=comment,
+    )
+    session.add(token_row)
+    await session.commit()
+    await session.refresh(token_row)
+    return token_row, token_value
 
 
 class KaspiFeedGenerateOut(BaseModel):
@@ -6957,7 +7103,7 @@ async def _create_offers_feed_upload(
 @router.post(
     "/offers/feed/upload",
     summary="Upload Kaspi offers feed (XML)",
-    response_model=KaspiFeedUploadRecordOut,
+    response_model=KaspiOffersFeedUploadOut,
 )
 async def kaspi_offers_feed_upload(
     request: Request,
@@ -6971,23 +7117,40 @@ async def kaspi_offers_feed_upload(
         company=company,
         raw_merchant_uid=body.merchant_uid,
     )
-    store_name, token = await _resolve_kaspi_token(session, company_id)
-    request_id = getattr(getattr(request, "state", None), "request_id", None) or request.headers.get("X-Request-ID")
 
-    job, is_noop = await _create_offers_feed_upload(
-        session=session,
-        company=company,
+    if body.refresh:
+        rebuild_offers = await _build_offers_from_products(
+            session,
+            company_id=company_id,
+            merchant_uid=merchant_uid,
+            include_inactive=False,
+        )
+        if rebuild_offers:
+            await _upsert_kaspi_offers(session, offers=rebuild_offers)
+            await session.commit()
+
+    xml_body, payload_hash, _last_modified = await _build_offers_xml_for_company(
+        session,
+        company_id=company_id,
         merchant_uid=merchant_uid,
-        store_name=store_name,
-        token=token,
-        request_id=request_id,
-        comment=body.comment,
-        refresh=bool(body.refresh),
     )
-    response = _feed_upload_to_out(job)
-    if is_noop:
-        response.status = "noop"
-    return response
+    token_row, token_value = await _rotate_public_feed_token(
+        session,
+        company_id=company_id,
+        merchant_uid=merchant_uid,
+        comment=body.comment,
+    )
+    public_base = str(settings.PUBLIC_URL or request.base_url).rstrip("/")
+    url = f"{public_base}/public/kaspi/price-list/{token_value}.xml"
+    generated_at = datetime.utcnow()
+
+    return KaspiOffersFeedUploadOut(
+        url=url,
+        token_id=token_row.id,
+        payload_hash=payload_hash,
+        generated_at=generated_at,
+        merchant_uid=merchant_uid,
+    )
 
 
 @router.post(
@@ -7800,12 +7963,66 @@ async def kaspi_feed_public_token_revoke(
     )
 
 
+@public_router.get(
+    "/public/kaspi/price-list/{token}.xml",
+    summary="Public Kaspi price list feed",
+    response_class=Response,
+    include_in_schema=False,
+)
+async def kaspi_public_price_list(
+    request: Request,
+    token: str,
+    session: AsyncSession = Depends(get_async_db),
+):
+    await enforce_rate_limit(
+        tag="kaspi_public_feed",
+        ident=request.client.host if request.client else "0.0.0.0",
+        max_requests=int(getattr(settings, "RATE_LIMIT_PER_MINUTE", 100) or 100),
+        window_seconds=int(getattr(settings, "RATE_LIMIT_WINDOW_SECONDS", 60) or 60),
+        detail="rate_limited",
+    )
+    token_row, xml_body, payload_hash, last_modified = await _load_public_offers_feed(
+        session,
+        token_value=token,
+    )
+    etag = _public_feed_etag(payload_hash)
+    if_none_match = (request.headers.get("if-none-match") or "").strip()
+    if_modified_since = _parse_http_datetime(request.headers.get("if-modified-since"))
+    if if_none_match and if_none_match == etag:
+        _log_public_feed_access(request=request, token_row=token_row, status_code=304, size_bytes=0)
+        return Response(
+            status_code=status.HTTP_304_NOT_MODIFIED,
+            headers={"ETag": etag, "Last-Modified": _format_http_datetime(last_modified)},
+        )
+    if if_modified_since and if_modified_since >= last_modified:
+        _log_public_feed_access(request=request, token_row=token_row, status_code=304, size_bytes=0)
+        return Response(
+            status_code=status.HTTP_304_NOT_MODIFIED,
+            headers={"ETag": etag, "Last-Modified": _format_http_datetime(last_modified)},
+        )
+
+    token_row.last_used_at = datetime.utcnow()
+    await session.commit()
+    size_bytes = len(xml_body.encode("utf-8"))
+    _log_public_feed_access(request=request, token_row=token_row, status_code=200, size_bytes=size_bytes)
+    return Response(
+        content=xml_body,
+        media_type="application/xml; charset=utf-8",
+        headers={
+            "Cache-Control": "public, max-age=300",
+            "ETag": etag,
+            "Last-Modified": _format_http_datetime(last_modified),
+        },
+    )
+
+
 @router.get(
     "/feed/public/offers.xml",
     summary="Public Kaspi offers feed",
     response_class=Response,
 )
 async def kaspi_public_offers_feed(
+    request: Request,
     token: str | None = None,
     merchant_uid: str | None = Query(None, alias="merchantUid"),
     session: AsyncSession = Depends(get_async_db),
@@ -7813,59 +8030,46 @@ async def kaspi_public_offers_feed(
     if not token:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="not_found")
 
-    token_hash = sha256(token.encode("utf-8")).hexdigest()
-    token_row = (
-        (
-            await session.execute(
-                sa.select(KaspiFeedPublicToken).where(
-                    KaspiFeedPublicToken.token_hash == token_hash,
-                    KaspiFeedPublicToken.revoked_at.is_(None),
-                )
-            )
-        )
-        .scalars()
-        .first()
+    await enforce_rate_limit(
+        tag="kaspi_public_feed",
+        ident=request.client.host if request.client else "0.0.0.0",
+        max_requests=int(getattr(settings, "RATE_LIMIT_PER_MINUTE", 100) or 100),
+        window_seconds=int(getattr(settings, "RATE_LIMIT_WINDOW_SECONDS", 60) or 60),
+        detail="rate_limited",
     )
-    if not token_row:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="not_found")
-
-    effective_merchant_uid = (merchant_uid or "").strip()
-    if effective_merchant_uid:
-        if not token_row.merchant_uid or token_row.merchant_uid != effective_merchant_uid:
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="not_found")
-    else:
-        effective_merchant_uid = (token_row.merchant_uid or "").strip()
-        if not effective_merchant_uid:
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="not_found")
-
-    offers = (
-        (
-            await session.execute(
-                sa.select(KaspiOffer)
-                .where(
-                    KaspiOffer.company_id == token_row.company_id,
-                    KaspiOffer.merchant_uid == effective_merchant_uid,
-                )
-                .order_by(KaspiOffer.updated_at.desc())
-            )
-        )
-        .scalars()
-        .all()
+    token_row, xml_body, payload_hash, last_modified = await _load_public_offers_feed(
+        session,
+        token_value=token,
+        merchant_uid=merchant_uid,
     )
-    if not offers:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="not_found")
-
-    company = await session.get(Company, token_row.company_id)
-    company_name = (company.name if company else None) or f"Company {token_row.company_id}"
-    xml_body = _build_kaspi_offers_xml(offers, company=company_name, merchant_id=effective_merchant_uid)
+    etag = _public_feed_etag(payload_hash)
+    if_none_match = (request.headers.get("if-none-match") or "").strip()
+    if_modified_since = _parse_http_datetime(request.headers.get("if-modified-since"))
+    if if_none_match and if_none_match == etag:
+        _log_public_feed_access(request=request, token_row=token_row, status_code=304, size_bytes=0)
+        return Response(
+            status_code=status.HTTP_304_NOT_MODIFIED,
+            headers={"ETag": etag, "Last-Modified": _format_http_datetime(last_modified)},
+        )
+    if if_modified_since and if_modified_since >= last_modified:
+        _log_public_feed_access(request=request, token_row=token_row, status_code=304, size_bytes=0)
+        return Response(
+            status_code=status.HTTP_304_NOT_MODIFIED,
+            headers={"ETag": etag, "Last-Modified": _format_http_datetime(last_modified)},
+        )
 
     token_row.last_used_at = datetime.utcnow()
     await session.commit()
-
+    size_bytes = len(xml_body.encode("utf-8"))
+    _log_public_feed_access(request=request, token_row=token_row, status_code=200, size_bytes=size_bytes)
     return Response(
         content=xml_body,
-        media_type="application/xml",
-        headers={"Cache-Control": "no-store"},
+        media_type="application/xml; charset=utf-8",
+        headers={
+            "Cache-Control": "public, max-age=300",
+            "ETag": etag,
+            "Last-Modified": _format_http_datetime(last_modified),
+        },
     )
 
 

@@ -39,20 +39,16 @@ The legacy `POST /api/v1/kaspi/products/sync` is retained for compatibility and 
     - `GET /api/v1/kaspi/products/import?i=<kaspi_import_code>`
     - `GET /api/v1/kaspi/products/import/result?i=<kaspi_import_code>`
 
-### B) Offers Feed Upload (XML)
+### B) Offers Price List (XML, pull by URL)
 
-- Purpose: Update prices and stock via XML feed.
-- Kaspi endpoints:
-    - `POST /shop/api/feeds/import` (XML)
-    - `GET /shop/api/feeds/import/status` (JSON)
-    - `GET /shop/api/feeds/import/result` (JSON)
-- SmartSell endpoints:
-    - `POST /api/v1/kaspi/offers/feed/upload`
-    - `POST /api/v1/kaspi/feed/uploads`
+- Purpose: Update prices and stock via XML price list.
+- Kaspi behavior: Kaspi periodically downloads the XML from a public URL.
+- SmartSell endpoint:
+    - `POST /api/v1/kaspi/offers/feed/upload` → returns public URL
+    - `GET /public/kaspi/price-list/{token}.xml`
 
-> Warning: If you see `Content type 'application/xml' not supported`, the feed upload URL is misconfigured
-> (often pointed at the goods import endpoint). Use the dev-only probe to validate candidates:
-> `POST /api/v1/kaspi/_debug/feed-upload-probe?store_name=<store>`.
+> Warning: Push uploads to `/shop/api/feeds/*` are not used for price lists.
+> Use the public URL and configure it in the seller cabinet.
 
 ## Local Import Cycle
 
@@ -93,6 +89,20 @@ Minimal production-safe flow for offers dataset + goods import:
     - Returns `ok` only when goods import is `success_applied`
     - Returns `partial` with `import_pending`, `import_failed`, or `import_noop` otherwise
     - If feed upload is enabled, `ok` requires a successful feed upload
+
+## Operator Runbook (Price List Pull)
+
+1) Generate public URL:
+    - `POST /api/v1/kaspi/offers/feed/upload`
+2) Configure Kaspi cabinet:
+    - Kaspi seller cabinet → Товары → Прайс-лист → Автоматическая загрузка
+    - Paste the URL from step 1 and save
+3) Verify pulls:
+    - Check logs for `kaspi_public_feed_access` with status `200` or `304`
+    - Use `ETag`/`Last-Modified` headers to confirm caching behavior
+4) Troubleshooting:
+    - If Kaspi reports errors, re-generate URL (rotate token) and re-save
+    - Ensure offers exist for the merchant UID
 
 ## Configuration
 

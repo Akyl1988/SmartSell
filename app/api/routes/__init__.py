@@ -201,6 +201,9 @@ if invoices and _router_or_none(invoices):
 if kaspi_mod and _router_or_none(kaspi_mod):
     # в kaspi.py объявлен prefix '/api/v1/kaspi' → абсолютный
     V1_ROUTERS.append(("kaspi", kaspi_mod.router, True))
+    public_router = getattr(kaspi_mod, "public_router", None)
+    if isinstance(public_router, APIRouter):
+        V1_ROUTERS.append(("kaspi_public", public_router, True))
 if integrations_mod and _router_or_none(integrations_mod):
     V1_ROUTERS.append(("integrations", integrations_mod.router, True))
 if debug_db_mod and _router_or_none(debug_db_mod):
