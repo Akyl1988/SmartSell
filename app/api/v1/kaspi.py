@@ -75,6 +75,7 @@ from app.integrations.kaspi_adapter import KaspiAdapter, KaspiAdapterError
 from app.models import Product
 from app.models.catalog_import import CatalogImportBatch, CatalogImportRow
 from app.models.company import Company
+from app.models.kaspi_catalog_item import KaspiCatalogItem
 from app.models.kaspi_catalog_product import KaspiCatalogProduct
 from app.models.kaspi_feed_export import KaspiFeedExport
 from app.models.kaspi_feed_public_token import KaspiFeedPublicToken
@@ -2280,6 +2281,24 @@ class KaspiSyncOpsOut(KaspiSyncStateOut):
     lock_available: bool
 
 
+class KaspiCatalogItemOut(BaseModel):
+    sku: str
+    merchant_uid: str
+    offer_code: str | None = None
+    product_code: str | None = None
+    last_seen_name: str | None = None
+    last_seen_price: Decimal | None = None
+    last_seen_qty: int | None = None
+    last_seen_at: datetime | None = None
+
+
+class KaspiCatalogItemsOut(BaseModel):
+    items: list[KaspiCatalogItemOut]
+    total: int
+    limit: int
+    offset: int
+
+
 @router.get(
     "/orders/sync/state",
     summary="Текущее состояние синхронизации заказов Kaspi",
@@ -2363,6 +2382,88 @@ async def kaspi_orders_sync_ops(
         last_error_code=last_error_code,
         last_error_message=last_error_message,
         lock_available=bool(lock_available),
+    )
+
+
+@router.get(
+    "/catalog/items",
+    summary="Kaspi catalog items derived from orders",
+    response_model=KaspiCatalogItemsOut,
+)
+async def kaspi_catalog_items(
+    request: Request,
+    merchant_uid: str | None = Query(None, min_length=1),
+    q: str | None = Query(None),
+    limit: int = Query(50, ge=1, le=200),
+    offset: int = Query(0, ge=0),
+    current_user: User = Depends(require_store_admin_then_feature(FEATURE_KASPI_ORDERS_LIST)),
+    session: AsyncSession = Depends(get_async_db),
+):
+    company_id = _resolve_company_id(current_user)
+    request_id = getattr(getattr(request, "state", None), "request_id", None)
+    rid = request_id or request.headers.get("X-Request-ID") or str(uuid4())
+    company = await session.get(Company, company_id)
+    resolved_merchant_uid, _merchant_source, merchant_error = _resolve_company_store_uid(
+        company=company,
+        raw_merchant_uid=merchant_uid,
+    )
+    if merchant_error == "missing_merchant_uid":
+        payload = {"detail": "missing_merchant_uid", "code": "missing_merchant_uid", "request_id": rid}
+        return JSONResponse(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            content=payload,
+            headers={"X-Request-ID": rid},
+        )
+    if merchant_error == "merchant_not_found":
+        payload = {"detail": "merchant_not_found", "code": "merchant_not_found", "request_id": rid}
+        return JSONResponse(
+            status_code=status.HTTP_404_NOT_FOUND,
+            content=payload,
+            headers={"X-Request-ID": rid},
+        )
+
+    stmt = select(KaspiCatalogItem).where(KaspiCatalogItem.company_id == company_id)
+    if resolved_merchant_uid:
+        stmt = stmt.where(KaspiCatalogItem.merchant_uid == resolved_merchant_uid)
+    if q:
+        like = f"%{q}%"
+        stmt = stmt.where(
+            sa.or_(
+                KaspiCatalogItem.sku.ilike(like),
+                KaspiCatalogItem.last_seen_name.ilike(like),
+            )
+        )
+
+    total = (await session.scalar(select(sa.func.count()).select_from(stmt.subquery()))) or 0
+    rows = (
+        (
+            await session.execute(
+                stmt.order_by(sa.nullslast(KaspiCatalogItem.last_seen_at.desc()), KaspiCatalogItem.id.desc())
+                .limit(limit)
+                .offset(offset)
+            )
+        )
+        .scalars()
+        .all()
+    )
+
+    return KaspiCatalogItemsOut(
+        items=[
+            KaspiCatalogItemOut(
+                sku=item.sku,
+                merchant_uid=item.merchant_uid,
+                offer_code=item.offer_code,
+                product_code=item.product_code,
+                last_seen_name=item.last_seen_name,
+                last_seen_price=item.last_seen_price,
+                last_seen_qty=item.last_seen_qty,
+                last_seen_at=item.last_seen_at,
+            )
+            for item in rows
+        ],
+        total=int(total),
+        limit=limit,
+        offset=offset,
     )
 
 

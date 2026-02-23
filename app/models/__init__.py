@@ -199,6 +199,7 @@ _LAZY_MODELS: dict[str, tuple[str, str]] = {
     "SubscriptionOverride": ("app.models.subscription_override", "SubscriptionOverride"),
     "KaspiOrderSyncState": ("app.models.kaspi_order_sync_state", "KaspiOrderSyncState"),
     "KaspiCatalogProduct": ("app.models.kaspi_catalog_product", "KaspiCatalogProduct"),
+    "KaspiCatalogItem": ("app.models.kaspi_catalog_item", "KaspiCatalogItem"),
     "KaspiFeedExport": ("app.models.kaspi_feed_export", "KaspiFeedExport"),
     "KaspiFeedPublicToken": ("app.models.kaspi_feed_public_token", "KaspiFeedPublicToken"),
     "KaspiFeedUpload": ("app.models.kaspi_feed_upload", "KaspiFeedUpload"),
@@ -228,6 +229,7 @@ _DOMAIN_MODULES: tuple[str, ...] = (
     "app.models.inventory_outbox",
     "app.models.kaspi_order_sync_state",
     "app.models.kaspi_catalog_product",
+    "app.models.kaspi_catalog_item",
     "app.models.kaspi_feed_export",
     "app.models.kaspi_import_run",
     "app.models.kaspi_feed_public_token",
@@ -448,6 +450,7 @@ __all__ = [
     # Kaspi
     "KaspiOrderSyncState",
     "KaspiCatalogProduct",
+    "KaspiCatalogItem",
     "KaspiFeedExport",
 ]
 

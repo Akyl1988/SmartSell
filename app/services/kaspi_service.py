@@ -40,6 +40,7 @@ from app.core.errors import safe_error_message
 from app.core.logging import get_logger
 from app.integrations.kaspi_adapter import KaspiAdapterError
 from app.models import Order, OrderItem, Product
+from app.models.kaspi_catalog_item import KaspiCatalogItem
 from app.models.kaspi_order_sync_state import KaspiOrderSyncState
 from app.models.order import OrderSource, OrderStatus, OrderStatusHistory
 from app.models.preorder import Preorder, PreorderItem, PreorderStatus
@@ -1251,6 +1252,7 @@ class KaspiService:
                                 max_attempts=orders_max_attempts,
                                 client_retries=client_retries,
                             ):
+                                catalog_rows_map: dict[tuple[str, str], dict[str, Any]] = {}
                                 fetched += len(batch)
                                 for payload in batch:
                                     ext_id = _as_str(payload.get("id")).strip()
@@ -1283,6 +1285,18 @@ class KaspiService:
                                     status_changed_at = self._extract_order_timestamp(payload)
                                     updated_ts = status_changed_at or effective_to
                                     effective_updated = updated_ts or attempt_at
+
+                                    if merchant_uid:
+                                        for row in self._build_catalog_rows(
+                                            company_id=company_id,
+                                            merchant_uid=merchant_uid,
+                                            payload=payload,
+                                            last_seen_at=effective_updated,
+                                        ):
+                                            key = (row["merchant_uid"], row["sku"])
+                                            existing = catalog_rows_map.get(key)
+                                            if not existing or row["last_seen_at"] >= existing.get("last_seen_at"):
+                                                catalog_rows_map[key] = row
 
                                     update_values = {
                                         "status": mapped_status,
@@ -1393,6 +1407,9 @@ class KaspiService:
                                             mapped_status=mapped_status,
                                             order_id=order_pk,
                                         )
+
+                                if catalog_rows_map:
+                                    await self._upsert_catalog_items(db, list(catalog_rows_map.values()))
 
                                 # page handling happens inside _iter_orders_pages
 
@@ -1768,6 +1785,119 @@ class KaspiService:
             processed = True
 
         return processed
+
+    def _extract_catalog_entry_id(self, item: dict[str, Any]) -> str | None:
+        candidates = (
+            item.get("productSku"),
+            item.get("sku"),
+            item.get("offerCode"),
+            item.get("offer_code"),
+            item.get("productCode"),
+            item.get("product_code"),
+            item.get("productId"),
+            item.get("product_id"),
+            item.get("code"),
+        )
+        for value in candidates:
+            sku = _as_str(value).strip()
+            if sku:
+                return sku
+        return None
+
+    def _build_catalog_rows(
+        self,
+        *,
+        company_id: int,
+        merchant_uid: str,
+        payload: dict[str, Any],
+        last_seen_at: datetime,
+    ) -> list[dict[str, Any]]:
+        items = payload.get("items") or payload.get("orderItems") or payload.get("entries") or []
+        if not isinstance(items, list):
+            return []
+
+        rows: list[dict[str, Any]] = []
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            sku = self._extract_catalog_entry_id(item)
+            if not sku:
+                continue
+
+            offer_code = _as_str(item.get("offerCode") or item.get("offer_code") or "").strip() or None
+            product_code = (
+                _as_str(
+                    item.get("productCode")
+                    or item.get("product_code")
+                    or item.get("productId")
+                    or item.get("product_id")
+                    or ""
+                ).strip()
+                or None
+            )
+            name = _as_str(item.get("productName") or item.get("title") or item.get("name") or sku).strip() or None
+
+            qty_raw = item.get("quantity") or item.get("qty")
+            qty = None
+            if qty_raw is not None:
+                try:
+                    qty = max(0, int(qty_raw))
+                except Exception:
+                    qty = None
+
+            unit_price = self._decimal_or_zero(
+                item.get("basePrice") or item.get("unitPrice") or item.get("unit_price") or item.get("price") or 0
+            )
+            if not unit_price:
+                total_price_raw = item.get("totalPrice") or item.get("total_price")
+                if total_price_raw is not None and qty:
+                    unit_price = self._decimal_or_zero(total_price_raw) / Decimal(qty)
+
+            rows.append(
+                {
+                    "company_id": company_id,
+                    "merchant_uid": merchant_uid,
+                    "sku": sku,
+                    "offer_code": offer_code,
+                    "product_code": product_code,
+                    "last_seen_name": name,
+                    "last_seen_price": unit_price,
+                    "last_seen_qty": qty,
+                    "last_seen_at": last_seen_at,
+                    "raw": item,
+                }
+            )
+        return rows
+
+    async def _upsert_catalog_items(self, db: AsyncSession, rows: list[dict[str, Any]]) -> None:
+        if not rows:
+            return
+
+        now = _utcnow()
+        for row in rows:
+            row.setdefault("created_at", now)
+            row["updated_at"] = now
+
+        stmt = insert(KaspiCatalogItem).values(rows)
+        update_values = {
+            "offer_code": stmt.excluded.offer_code,
+            "product_code": stmt.excluded.product_code,
+            "last_seen_name": stmt.excluded.last_seen_name,
+            "last_seen_price": stmt.excluded.last_seen_price,
+            "last_seen_qty": stmt.excluded.last_seen_qty,
+            "last_seen_at": stmt.excluded.last_seen_at,
+            "raw": stmt.excluded.raw,
+            "updated_at": stmt.excluded.updated_at,
+        }
+        stmt = stmt.on_conflict_do_update(
+            index_elements=[
+                KaspiCatalogItem.company_id,
+                KaspiCatalogItem.merchant_uid,
+                KaspiCatalogItem.sku,
+            ],
+            set_=update_values,
+        )
+        await db.execute(stmt)
 
     async def _build_kaspi_preorder_items(
         self,
