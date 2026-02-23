@@ -1191,17 +1191,17 @@ class KaspiService:
 
                     # Hold advisory lock for the entire sync to prevent concurrent watermark reads/updates.
                     async with self._company_lock(db, company_id):
-                        state = await self._load_or_create_state(db, company_id)
+                        sync_state = await self._load_or_create_state(db, company_id)
 
-                        state.last_attempt_at = attempt_at
-                        state.last_result = None
-                        state.last_duration_ms = None
-                        state.last_fetched = None
-                        state.last_inserted = None
-                        state.last_updated = None
+                        sync_state.last_attempt_at = attempt_at
+                        sync_state.last_result = None
+                        sync_state.last_duration_ms = None
+                        sync_state.last_fetched = None
+                        sync_state.last_inserted = None
+                        sync_state.last_updated = None
 
-                        prev_last_synced = state.last_synced_at
-                        prev_last_ext = state.last_external_order_id
+                        prev_last_synced = sync_state.last_synced_at
+                        prev_last_ext = sync_state.last_external_order_id
                         is_new_state = prev_last_synced is None and prev_last_ext is None
 
                         if backfill_active and date_from is None:
@@ -1399,31 +1399,31 @@ class KaspiService:
                             page_limit_hit = bool(pagination_state.get("page_limit_hit"))
                             if (made_progress or is_new_state) and not page_limit_hit:
                                 final_wm = watermark if prev_last_synced is None else max(prev_last_synced, watermark)
-                                state.last_synced_at = final_wm
-                                state.last_external_order_id = last_ext
+                                sync_state.last_synced_at = final_wm
+                                sync_state.last_external_order_id = last_ext
                             else:
                                 final_wm = prev_last_synced
-                                state.last_synced_at = prev_last_synced
-                                state.last_external_order_id = prev_last_ext
+                                sync_state.last_synced_at = prev_last_synced
+                                sync_state.last_external_order_id = prev_last_ext
 
                             if pagination_state.get("stopped_early"):
                                 break
 
                         finished_at = _utcnow()
                         duration_ms = int((perf_counter() - started_at) * 1000)
-                        state.updated_at = finished_at
-                        state.last_error_at = None
-                        state.last_error_code = None
-                        state.last_error_message = None
+                        sync_state.updated_at = finished_at
+                        sync_state.last_error_at = None
+                        sync_state.last_error_code = None
+                        sync_state.last_error_message = None
                         if pagination_state.get("no_orders"):
-                            state.last_result = "success"
+                            sync_state.last_result = "success"
                         else:
-                            state.last_result = "partial" if pagination_state.get("stopped_early") else "success"
-                        state.last_duration_ms = duration_ms
-                        state.last_attempt_at = attempt_at
-                        state.last_fetched = fetched
-                        state.last_inserted = inserted
-                        state.last_updated = updated
+                            sync_state.last_result = "partial" if pagination_state.get("stopped_early") else "success"
+                        sync_state.last_duration_ms = duration_ms
+                        sync_state.last_attempt_at = attempt_at
+                        sync_state.last_fetched = fetched
+                        sync_state.last_inserted = inserted
+                        sync_state.last_updated = updated
                 if db.in_transaction():
                     await db.commit()
         except KaspiSyncAlreadyRunning:
@@ -1647,7 +1647,9 @@ class KaspiService:
             "updated": updated,
             "from": effective_from.isoformat(),
             "to": effective_to.isoformat(),
-            "watermark": (state.last_synced_at or final_wm).isoformat() if (state.last_synced_at or final_wm) else None,
+            "watermark": (sync_state.last_synced_at or final_wm).isoformat()
+            if (sync_state.last_synced_at or final_wm)
+            else None,
         }
 
         if backfill_active:
@@ -2599,14 +2601,30 @@ class KaspiService:
             return False
 
     async def _load_or_create_state(self, db: AsyncSession, company_id: int) -> KaspiOrderSyncState:
-        q = await db.execute(
-            select(KaspiOrderSyncState).where(KaspiOrderSyncState.company_id == company_id).with_for_update()
-        )
-        state = q.scalar_one_or_none()
-        if not state:
-            state = KaspiOrderSyncState(company_id=company_id)
-            db.add(state)
+        for _ in range(2):
+            q = await db.execute(
+                select(KaspiOrderSyncState).where(KaspiOrderSyncState.company_id == company_id).with_for_update()
+            )
+            state = q.scalar_one_or_none()
+            if state:
+                return state
+
+            stmt = (
+                insert(KaspiOrderSyncState)
+                .values(company_id=company_id)
+                .on_conflict_do_nothing(index_elements=[KaspiOrderSyncState.company_id])
+            )
+            await db.execute(stmt)
             await db.flush()
+
+        q = await db.execute(select(KaspiOrderSyncState).where(KaspiOrderSyncState.company_id == company_id))
+        state = q.scalar_one_or_none()
+        if state:
+            return state
+
+        state = KaspiOrderSyncState(company_id=company_id)
+        db.add(state)
+        await db.flush()
         return state
 
     def _order_number_from_payload(self, company_id: int, external_id: str, payload: dict[str, Any]) -> str:

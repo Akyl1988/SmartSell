@@ -83,6 +83,8 @@ async def _kaspi_orders_sync_setup(async_db_session, monkeypatch):
     from app.api.v1 import kaspi as kaspi_module
     from app.models.company import Company
 
+    monkeypatch.delenv("KASPI_ORDERS_SYNC_STATES", raising=False)
+
     company = await async_db_session.get(Company, 1001)
     if company is None:
         company = Company(id=1001, name="Company 1001", kaspi_store_id="store-a")
@@ -576,11 +578,29 @@ async def test_first_run_no_orders_sets_reasonable_watermark(
     assert state.last_synced_at >= now - timedelta(days=2)
     assert data["watermark"].startswith(state.last_synced_at.isoformat())
 
-    state_res = await async_db_session.execute(
-        sa.select(KaspiOrderSyncState).where(KaspiOrderSyncState.company_id == 1001)
-    )
-    state = state_res.scalar_one()
+
+@pytest.mark.asyncio
+async def test_sync_creates_state_when_missing(monkeypatch, async_client, async_db_session, company_a_admin_headers):
+    await async_db_session.execute(sa.delete(KaspiOrderSyncState).where(KaspiOrderSyncState.company_id == 1001))
+    await async_db_session.commit()
+
+    async def fake_get_orders(self, *, date_from=None, date_to=None, status=None, page=1, page_size=100):  # noqa: ARG001
+        return []
+
+    monkeypatch.setattr(KaspiService, "get_orders", fake_get_orders)
+
+    resp = await async_client.post("/api/v1/kaspi/orders/sync", headers=company_a_admin_headers)
+    assert resp.status_code == 200, resp.text
+    data = resp.json()
+
+    res = await async_db_session.execute(sa.select(KaspiOrderSyncState).where(KaspiOrderSyncState.company_id == 1001))
+    state = res.scalar_one_or_none()
+    assert state is not None
     assert state.last_synced_at is not None
+    now = datetime.utcnow()
+    assert state.last_synced_at <= now
+    assert state.last_synced_at >= now - timedelta(days=2)
+    assert data["watermark"].startswith(state.last_synced_at.isoformat())
 
 
 @pytest.mark.asyncio
