@@ -86,7 +86,7 @@ from app.models.kaspi_mc_session import KaspiMcSession
 from app.models.kaspi_offer import KaspiOffer
 from app.models.kaspi_order_sync_state import KaspiOrderSyncState
 from app.models.marketplace import KaspiStoreToken
-from app.models.order import Order, OrderSource, OrderStatus
+from app.models.order import Order, OrderSource, OrderStatus, OrderStatusHistory
 from app.models.user import User
 from app.schemas.kaspi import (
     ImportRequest,
@@ -1648,6 +1648,16 @@ class KaspiOrdersListOut(BaseModel):
     offset: int = 0
 
 
+class KaspiOrderActionOut(BaseModel):
+    ok: bool
+    status: str
+    code: str | None = None
+    message: str | None = None
+    request_id: str | None = None
+    upstream_status_code: int | None = None
+    retry_after: int | None = None
+
+
 def _parse_iso_dt(value: str) -> datetime:
     try:
         return datetime.fromisoformat(value.replace("Z", "+00:00"))
@@ -1946,6 +1956,187 @@ async def kaspi_order_detail(
 
     await session.refresh(order, attribute_names=["items"])
     return _order_to_detail(order)
+
+
+def _action_response_payload(result: dict[str, Any], *, request_id: str) -> dict[str, Any]:
+    payload = {
+        "ok": bool(result.get("ok")),
+        "status": result.get("status") or "error",
+        "code": result.get("code"),
+        "message": result.get("message"),
+        "request_id": request_id,
+    }
+    if result.get("upstream_status_code") is not None:
+        payload["upstream_status_code"] = result.get("upstream_status_code")
+    if result.get("retry_after") is not None:
+        payload["retry_after"] = result.get("retry_after")
+    return payload
+
+
+async def _handle_order_action(
+    *,
+    action: Literal["accept", "cancel"],
+    request: Request,
+    external_id: str,
+    merchant_uid: str | None,
+    current_user: User,
+    session: AsyncSession,
+):
+    company_id = _resolve_company_id(current_user)
+    request_id = getattr(getattr(request, "state", None), "request_id", None)
+    rid = request_id or request.headers.get("X-Request-ID") or str(uuid4())
+
+    company = await session.get(Company, company_id)
+    resolved_merchant_uid, _merchant_source, merchant_error = _resolve_company_store_uid(
+        company=company,
+        raw_merchant_uid=merchant_uid,
+    )
+    if merchant_error == "missing_merchant_uid":
+        payload = {"detail": "missing_merchant_uid", "code": "missing_merchant_uid", "request_id": rid}
+        return JSONResponse(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            content=payload,
+            headers={"X-Request-ID": rid},
+        )
+    if merchant_error == "merchant_not_found":
+        payload = {"detail": "merchant_not_found", "code": "merchant_not_found", "request_id": rid}
+        return JSONResponse(
+            status_code=status.HTTP_404_NOT_FOUND,
+            content=payload,
+            headers={"X-Request-ID": rid},
+        )
+
+    order = (
+        (
+            await session.execute(
+                select(Order).where(
+                    Order.company_id == company_id,
+                    Order.external_id == external_id,
+                    Order.source == OrderSource.KASPI,
+                )
+            )
+        )
+        .scalars()
+        .first()
+    )
+    if order is None:
+        payload = {"detail": "order_not_found", "code": "order_not_found", "request_id": rid}
+        return JSONResponse(
+            status_code=status.HTTP_404_NOT_FOUND,
+            content=payload,
+            headers={"X-Request-ID": rid},
+        )
+
+    svc = KaspiService()
+    if action == "accept":
+        result = await svc.accept_order(
+            external_id=external_id,
+            merchant_uid=resolved_merchant_uid,
+            request_id=rid,
+        )
+    else:
+        result = await svc.cancel_order(
+            external_id=external_id,
+            merchant_uid=resolved_merchant_uid,
+            request_id=rid,
+        )
+
+    http_status = int(result.get("http_status") or 500)
+    if not result.get("ok"):
+        return JSONResponse(
+            status_code=http_status,
+            content=_action_response_payload(result, request_id=rid),
+            headers={"X-Request-ID": rid},
+        )
+
+    mapped_status = result.get("mapped_status")
+    now = datetime.utcnow()
+    if mapped_status:
+        try:
+            new_status = OrderStatus(mapped_status)
+        except Exception:
+            new_status = None
+        if new_status and order.status != new_status:
+            old_status = order.status
+            order.status = new_status
+            session.add(
+                OrderStatusHistory(
+                    order_id=order.id,
+                    old_status=old_status,
+                    new_status=new_status,
+                    changed_by=getattr(current_user, "id", None),
+                    changed_at=now,
+                    note=f"kaspi_order_action:{action}",
+                )
+            )
+    order.updated_at = now
+
+    await _record_kaspi_event(
+        session,
+        company_id=company_id,
+        merchant_uid=resolved_merchant_uid,
+        kind="kaspi_order_action",
+        status="success",
+        request_id=rid,
+        meta_json={
+            "action": action,
+            "external_id": external_id,
+            "merchant_uid": resolved_merchant_uid,
+        },
+        commit=False,
+    )
+
+    await session.commit()
+
+    return JSONResponse(
+        status_code=200,
+        content=_action_response_payload(result, request_id=rid),
+        headers={"X-Request-ID": rid},
+    )
+
+
+@router.post(
+    "/orders/{external_id}/accept",
+    summary="Accept Kaspi order",
+    response_model=KaspiOrderActionOut,
+)
+async def kaspi_order_accept(
+    request: Request,
+    external_id: str,
+    merchant_uid: str | None = Query(None, min_length=1, alias="merchantUid"),
+    current_user: User = Depends(require_store_admin_then_feature(FEATURE_KASPI_ORDERS_LIST)),
+    session: AsyncSession = Depends(get_async_db),
+):
+    return await _handle_order_action(
+        action="accept",
+        request=request,
+        external_id=external_id,
+        merchant_uid=merchant_uid,
+        current_user=current_user,
+        session=session,
+    )
+
+
+@router.post(
+    "/orders/{external_id}/cancel",
+    summary="Cancel Kaspi order",
+    response_model=KaspiOrderActionOut,
+)
+async def kaspi_order_cancel(
+    request: Request,
+    external_id: str,
+    merchant_uid: str | None = Query(None, min_length=1, alias="merchantUid"),
+    current_user: User = Depends(require_store_admin_then_feature(FEATURE_KASPI_ORDERS_LIST)),
+    session: AsyncSession = Depends(get_async_db),
+):
+    return await _handle_order_action(
+        action="cancel",
+        request=request,
+        external_id=external_id,
+        merchant_uid=merchant_uid,
+        current_user=current_user,
+        session=session,
+    )
 
 
 @router.post(
@@ -3616,7 +3807,7 @@ async def kaspi_products_import_upload(
             "request_id": request_id,
             "errors": schema_errors,
         }
-        return JSONResponse(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, content=payload_error)
+        return JSONResponse(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, content=payload_error)
 
     payload_json = build_payload_json(payload)
     payload_hash = compute_payload_hash(payload_json)

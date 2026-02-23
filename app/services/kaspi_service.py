@@ -470,15 +470,19 @@ class KaspiService:
         transport = httpx.AsyncHTTPTransport(http2=False)
         return httpx.AsyncClient(timeout=timeout, trust_env=False, transport=transport)
 
-    async def _orders_http_get(
+    async def _orders_http_request(
         self,
         *,
+        method: str,
         url: str,
         headers: dict[str, str],
-        params: list[tuple[str, object]],
+        params: list[tuple[str, object]] | None,
+        json: dict[str, Any] | None,
         timeout: httpx.Timeout,
     ) -> httpx.Response:
         transport_mode = str(getattr(settings, "KASPI_ORDERS_TRANSPORT", "async") or "async").lower()
+        method_value = method.upper()
+        wants_get = method_value == "GET"
 
         if transport_mode == "sync":
             read_timeout = getattr(timeout, "read", None)
@@ -492,12 +496,33 @@ class KaspiService:
             def _do_request() -> httpx.Response:
                 transport = httpx.HTTPTransport(http2=False)
                 with httpx.Client(timeout=sync_timeout, trust_env=False, transport=transport) as client:
-                    return client.get(url, headers=headers, params=params)
+                    if wants_get and callable(getattr(client, "get", None)):
+                        return client.get(url, headers=headers, params=params)
+                    return client.request(method_value, url, headers=headers, params=params, json=json)
 
             return await anyio.to_thread.run_sync(_do_request, abandon_on_cancel=True)
 
         async with self._orders_client(timeout=timeout) as client:
-            return await client.get(url, headers=headers, params=params)
+            if wants_get and callable(getattr(client, "get", None)):
+                return await client.get(url, headers=headers, params=params)
+            return await client.request(method_value, url, headers=headers, params=params, json=json)
+
+    async def _orders_http_get(
+        self,
+        *,
+        url: str,
+        headers: dict[str, str],
+        params: list[tuple[str, object]],
+        timeout: httpx.Timeout,
+    ) -> httpx.Response:
+        return await self._orders_http_request(
+            method="GET",
+            url=url,
+            headers=headers,
+            params=params,
+            json=None,
+            timeout=timeout,
+        )
 
     def _orders_params(
         self,
@@ -948,6 +973,190 @@ class KaspiService:
             # Network/timeout errors
             logger.warning("Kaspi verify_token: network error store=%s error=%s", store_name or "N/A", type(e).__name__)
             raise
+
+    def _extract_action_status(self, payload: Any) -> str | None:
+        if not isinstance(payload, dict):
+            return None
+        data = payload.get("data")
+        if isinstance(data, dict):
+            attrs = data.get("attributes") if isinstance(data.get("attributes"), dict) else {}
+            return attrs.get("state") or attrs.get("status") or data.get("state") or data.get("status") or None
+        return payload.get("state") or payload.get("status") or None
+
+    def _parse_retry_after(self, response: httpx.Response) -> int | None:
+        value = response.headers.get("Retry-After") if response is not None else None
+        if not value:
+            return None
+        try:
+            return max(0, int(value))
+        except (TypeError, ValueError):
+            return None
+
+    async def _order_action(
+        self,
+        *,
+        action: str,
+        external_id: str,
+        merchant_uid: str | None,
+        request_id: str | None,
+        timeout_seconds: float | None = None,
+    ) -> dict[str, Any]:
+        timeout_obj = self._orders_timeout(timeout_seconds)
+        params: list[tuple[str, object]] = []
+        if merchant_uid:
+            params.append(("merchantUid", merchant_uid))
+
+        if action == "accept":
+            url = settings.kaspi_order_accept_url(external_id)
+            default_status = "CONFIRMED"
+        else:
+            url = settings.kaspi_order_cancel_url(external_id)
+            default_status = "CANCELLED"
+
+        try:
+            resp = await self._orders_http_request(
+                method="POST",
+                url=url,
+                headers=self._orders_headers(),
+                params=params,
+                json=None,
+                timeout=timeout_obj,
+            )
+        except httpx.TimeoutException:
+            return {
+                "ok": False,
+                "status": "error",
+                "code": "upstream_unavailable",
+                "message": "kaspi_timeout",
+                "request_id": request_id,
+                "upstream_status_code": None,
+                "http_status": 502,
+            }
+        except httpx.RequestError:
+            return {
+                "ok": False,
+                "status": "error",
+                "code": "upstream_unavailable",
+                "message": "kaspi_upstream_error",
+                "request_id": request_id,
+                "upstream_status_code": None,
+                "http_status": 502,
+            }
+
+        status_code = resp.status_code
+        if status_code in {401, 403}:
+            return {
+                "ok": False,
+                "status": "error",
+                "code": "upstream_auth_failed",
+                "message": "kaspi_auth_failed",
+                "request_id": request_id,
+                "upstream_status_code": status_code,
+                "http_status": 502,
+            }
+        if status_code == 404:
+            return {
+                "ok": False,
+                "status": "error",
+                "code": "upstream_not_found",
+                "message": "kaspi_not_found",
+                "request_id": request_id,
+                "upstream_status_code": status_code,
+                "http_status": 404,
+            }
+        if status_code in {409, 423}:
+            return {
+                "ok": False,
+                "status": "locked",
+                "code": "locked",
+                "message": "kaspi_locked",
+                "request_id": request_id,
+                "upstream_status_code": status_code,
+                "http_status": 423,
+            }
+        if status_code == 429:
+            return {
+                "ok": False,
+                "status": "rate_limited",
+                "code": "rate_limited",
+                "message": "kaspi_rate_limited",
+                "request_id": request_id,
+                "upstream_status_code": status_code,
+                "retry_after": self._parse_retry_after(resp),
+                "http_status": 429,
+            }
+        if status_code >= 500:
+            return {
+                "ok": False,
+                "status": "error",
+                "code": "upstream_unavailable",
+                "message": "kaspi_upstream_unavailable",
+                "request_id": request_id,
+                "upstream_status_code": status_code,
+                "http_status": 502,
+            }
+        if status_code >= 400:
+            return {
+                "ok": False,
+                "status": "error",
+                "code": "upstream_error",
+                "message": "kaspi_upstream_error",
+                "request_id": request_id,
+                "upstream_status_code": status_code,
+                "http_status": 502,
+            }
+
+        payload: Any = None
+        try:
+            payload = resp.json()
+        except Exception:
+            payload = None
+
+        kaspi_status = self._extract_action_status(payload) or default_status
+        mapped_status = self._map_kaspi_status(kaspi_status)
+        return {
+            "ok": True,
+            "status": "success",
+            "code": "ok",
+            "message": f"kaspi_order_{action}_success",
+            "request_id": request_id,
+            "upstream_status_code": status_code,
+            "mapped_status": mapped_status,
+            "kaspi_status": kaspi_status,
+            "http_status": 200,
+        }
+
+    async def accept_order(
+        self,
+        *,
+        external_id: str,
+        merchant_uid: str | None,
+        request_id: str | None,
+        timeout_seconds: float | None = None,
+    ) -> dict[str, Any]:
+        return await self._order_action(
+            action="accept",
+            external_id=external_id,
+            merchant_uid=merchant_uid,
+            request_id=request_id,
+            timeout_seconds=timeout_seconds,
+        )
+
+    async def cancel_order(
+        self,
+        *,
+        external_id: str,
+        merchant_uid: str | None,
+        request_id: str | None,
+        timeout_seconds: float | None = None,
+    ) -> dict[str, Any]:
+        return await self._order_action(
+            action="cancel",
+            external_id=external_id,
+            merchant_uid=merchant_uid,
+            request_id=request_id,
+            timeout_seconds=timeout_seconds,
+        )
 
     # ---------------------- Products API ---------------------- #
 

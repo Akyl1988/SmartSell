@@ -844,6 +844,21 @@ class Settings(BaseSettings):
     # -------------------- ДОБАВЛЕНО --------------------
     # Отдельный базовый URL для Shop Orders JSON:API (по документации Kaspi)
     KASPI_SHOP_API_URL: str = Field(default="https://kaspi.kz/shop/api", description="Kaspi Shop JSON:API base URL")
+    KASPI_ORDERS_ACTIONS_BASE_URL: str | None = Field(
+        default=None,
+        description="Kaspi base URL override for order actions",
+        validation_alias="KASPI_ORDERS_ACTIONS_BASE_URL",
+    )
+    KASPI_ORDERS_ACCEPT_PATH: str = Field(
+        default="/v2/orders/{external_id}/accept",
+        description="Kaspi accept order path (relative to actions base URL)",
+        validation_alias="KASPI_ORDERS_ACCEPT_PATH",
+    )
+    KASPI_ORDERS_CANCEL_PATH: str = Field(
+        default="/v2/orders/{external_id}/cancel",
+        description="Kaspi cancel order path (relative to actions base URL)",
+        validation_alias="KASPI_ORDERS_CANCEL_PATH",
+    )
     # Таймзона приложения для конвертаций (по умолчанию Asia/Almaty)
     APP_TIMEZONE: str = Field(default="Asia/Almaty", description="App timezone for Kaspi filters")
     # Максимальный размер страницы по документации (до 100)
@@ -1919,6 +1934,22 @@ class Settings(BaseSettings):
         """
         base = self.kaspi_shop_settings["base_url"]
         return f"{base}/v2/orders"
+
+    def kaspi_orders_actions_base_url(self) -> str:
+        base = (self.KASPI_ORDERS_ACTIONS_BASE_URL or self.kaspi_shop_settings["base_url"]).rstrip("/")
+        return base
+
+    def kaspi_order_accept_url(self, external_id: str) -> str:
+        path = self.KASPI_ORDERS_ACCEPT_PATH.format(external_id=external_id)
+        if not path.startswith("/"):
+            path = f"/{path}"
+        return f"{self.kaspi_orders_actions_base_url()}{path}"
+
+    def kaspi_order_cancel_url(self, external_id: str) -> str:
+        path = self.KASPI_ORDERS_CANCEL_PATH.format(external_id=external_id)
+        if not path.startswith("/"):
+            path = f"/{path}"
+        return f"{self.kaspi_orders_actions_base_url()}{path}"
 
     def kaspi_orderentries_product_url(self, order_entry_id: str) -> str:
         """
