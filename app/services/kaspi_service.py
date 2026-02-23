@@ -15,6 +15,7 @@ Kaspi.kz integration: product feed generation, orders sync, and availability syn
 
 import asyncio
 import hashlib
+import inspect
 import json
 import os
 import random
@@ -80,6 +81,35 @@ def _utcnow() -> datetime:
 
 def _as_str(v: Any) -> str:
     return "" if v is None else str(v)
+
+
+DEFAULT_KASPI_ORDER_STATES = (
+    "NEW",
+    "SIGN_REQUIRED",
+    "PICKUP",
+    "DELIVERY",
+    "KASPI_DELIVERY",
+    "ARCHIVE",
+)
+
+
+def _parse_kaspi_states(raw: Any) -> list[str]:
+    if raw is None:
+        return []
+    if isinstance(raw, str):
+        parts = [part.strip() for part in raw.replace(";", ",").split(",")]
+        return [part.upper() for part in parts if part]
+    if isinstance(raw, list | tuple | set):
+        states: list[str] = []
+        for item in raw:
+            if item is None:
+                continue
+            value = str(item).strip()
+            if not value:
+                continue
+            states.append(value.upper())
+        return states
+    return []
 
 
 def _normalize_address(value: Any) -> str | None:
@@ -473,7 +503,7 @@ class KaspiService:
         *,
         date_from: datetime,
         date_to: datetime,
-        status: str | None,
+        state: str | None,
         page: int,
         page_size: int,
         merchant_uid: str | None,
@@ -490,8 +520,8 @@ class KaspiService:
         ]
         if merchant_uid:
             params.append(("filter[orders][merchantUid]", merchant_uid))
-        if status:
-            params.append(("filter[orders][state]", status))
+        if state:
+            params.append(("filter[orders][state]", state))
         if include_entries:
             params.append(("include[orders]", "entries"))
         return params
@@ -621,6 +651,7 @@ class KaspiService:
         *,
         date_from: Optional[datetime] = None,
         date_to: Optional[datetime] = None,
+        state: Optional[str] = None,
         status: Optional[str] = None,
         page: int = 1,
         page_size: int = 100,
@@ -640,10 +671,11 @@ class KaspiService:
         if not date_to:
             date_to = _utcnow()
 
+        effective_state = state or status
         params = self._orders_params(
             date_from=date_from,
             date_to=date_to,
-            status=status,
+            state=effective_state,
             page=page,
             page_size=page_size,
             merchant_uid=merchant_uid,
@@ -689,10 +721,10 @@ class KaspiService:
         )
         if _diag_enabled():
             logger.info(
-                "[CI_DIAG] get_orders REAL HTTP CALL: page=%s page_size=%s status=%s monotonic=%s",
+                "[CI_DIAG] get_orders REAL HTTP CALL: page=%s page_size=%s state=%s monotonic=%s",
                 page,
                 page_size,
-                status,
+                effective_state,
                 perf_counter(),
             )
 
@@ -1116,7 +1148,13 @@ class KaspiService:
         timeout_seconds = float(timeout_seconds or self._sync_timeout_seconds or 30)
         max_pages = None if max_pages is None else max(1, int(max_pages))
         max_window_minutes = None if max_window_minutes is None else max(1, int(max_window_minutes))
-        pagination_state = {"pages_processed": 0, "last_page": 0, "stopped_early": False}
+        pagination_state = {
+            "pages_processed": 0,
+            "last_page": 0,
+            "stopped_early": False,
+            "page_limit_hit": False,
+            "window_truncated": False,
+        }
         backfill_days_value = int(backfill_days or 0)
         backfill_active = backfill_days_value > 0
 
@@ -1177,6 +1215,7 @@ class KaspiService:
                         )
                         if min_from is not None and base_from < min_from:
                             pagination_state["stopped_early"] = True
+                            pagination_state["window_truncated"] = True
                         effective_from = base_from - overlap
                         if min_from is not None and effective_from < min_from:
                             effective_from = min_from
@@ -1196,11 +1235,12 @@ class KaspiService:
                         last_ext = prev_last_ext
                         made_progress = False
 
-                        for status in statuses or [None]:
+                        state_filters = self._resolve_order_states(statuses)
+                        for order_state in state_filters:
                             async for batch in self._iter_orders_pages(
                                 date_from=effective_from,
                                 date_to=effective_to,
-                                status=status,
+                                state=order_state,
                                 page_size=100,
                                 company_id=company_id,
                                 merchant_uid=merchant_uid,
@@ -1356,12 +1396,13 @@ class KaspiService:
 
                                 # page handling happens inside _iter_orders_pages
 
-                            if made_progress or is_new_state:
+                            page_limit_hit = bool(pagination_state.get("page_limit_hit"))
+                            if (made_progress or is_new_state) and not page_limit_hit:
                                 final_wm = watermark if prev_last_synced is None else max(prev_last_synced, watermark)
                                 state.last_synced_at = final_wm
                                 state.last_external_order_id = last_ext
                             else:
-                                final_wm = prev_last_synced or watermark
+                                final_wm = prev_last_synced
                                 state.last_synced_at = prev_last_synced
                                 state.last_external_order_id = prev_last_ext
 
@@ -1612,9 +1653,13 @@ class KaspiService:
         if backfill_active:
             summary["backfill_days"] = backfill_days_value
 
-        if pagination_state.get("stopped_early") and not no_orders:
+        if pagination_state.get("page_limit_hit") and not no_orders:
             summary["last_page_processed"] = int(pagination_state.get("last_page", 0))
             summary["next_hint"] = "continue"
+        if pagination_state.get("page_limit_hit"):
+            summary["page_limit_hit"] = True
+        if pagination_state.get("window_truncated"):
+            summary["window_truncated"] = True
 
         logger.info(
             "Kaspi orders sync done: company_id=%s request_id=%s duration_ms=%s fetched=%s inserted=%s updated=%s",
@@ -1930,7 +1975,7 @@ class KaspiService:
         *,
         date_from: datetime,
         date_to: datetime,
-        status: str | None,
+        state: str | None,
         page_size: int,
         company_id: int,
         merchant_uid: str | None = None,
@@ -1947,11 +1992,12 @@ class KaspiService:
             if pagination_state is not None and max_pages is not None:
                 if pagination_state.get("pages_processed", 0) >= max_pages:
                     pagination_state["stopped_early"] = True
+                    pagination_state["page_limit_hit"] = True
                     break
             batch = await self._fetch_orders_page(
                 date_from=date_from,
                 date_to=date_to,
-                status=status,
+                state=state,
                 page=page,
                 page_size=page_size,
                 company_id=company_id,
@@ -1987,6 +2033,7 @@ class KaspiService:
             if pagination_state is not None and max_pages is not None:
                 if pagination_state.get("pages_processed", 0) >= max_pages:
                     pagination_state["stopped_early"] = True
+                    pagination_state["page_limit_hit"] = True
                     break
             page = next_page
 
@@ -1995,7 +2042,7 @@ class KaspiService:
         *,
         date_from: datetime,
         date_to: datetime,
-        status: str | None,
+        state: str | None,
         page: int,
         page_size: int,
         company_id: int,
@@ -2011,10 +2058,10 @@ class KaspiService:
             try:
                 if _diag_enabled():
                     logger.info(
-                        "[CI_DIAG] _fetch_orders_page PRE get_orders: company_id=%s page=%s status=%s attempt=%s timeout=%s monotonic=%s",
+                        "[CI_DIAG] _fetch_orders_page PRE get_orders: company_id=%s page=%s state=%s attempt=%s timeout=%s monotonic=%s",
                         company_id,
                         page,
-                        status,
+                        state,
                         attempt + 1,
                         self._orders_timeout(orders_timeout_sec),
                         perf_counter(),
@@ -2033,7 +2080,7 @@ class KaspiService:
                 base_kwargs = {
                     "date_from": date_from,
                     "date_to": date_to,
-                    "status": status,
+                    "state": state,
                     "page": page,
                     "page_size": page_size,
                     "company_id": company_id,
@@ -2046,23 +2093,9 @@ class KaspiService:
                 if client_retries is not None:
                     extra_kwargs["retries"] = client_retries
 
-                try:
-                    result = await self.get_orders(**base_kwargs, **extra_kwargs)
-                except TypeError as exc:
-                    msg = str(exc)
-                    if "unexpected keyword argument" in msg and any(
-                        key in msg for key in ("timeout", "retries", "company_id", "merchant_uid", "request_id")
-                    ):
-                        minimal_kwargs = {
-                            "date_from": date_from,
-                            "date_to": date_to,
-                            "status": status,
-                            "page": page,
-                            "page_size": page_size,
-                        }
-                        result = await self.get_orders(**minimal_kwargs)
-                    else:
-                        raise
+                call_kwargs = {**base_kwargs, **extra_kwargs}
+                call_kwargs = self._filter_get_orders_kwargs(call_kwargs)
+                result = await self.get_orders(**call_kwargs)
                 if _diag_enabled():
                     logger.info(
                         "[CI_DIAG] _fetch_orders_page POST get_orders SUCCESS: company_id=%s page=%s items=%s monotonic=%s",
@@ -2311,15 +2344,23 @@ class KaspiService:
     def _map_kaspi_status(self, kaspi_status: str) -> str:
         mapping = {
             "NEW": "pending",
+            "ACCEPTED": "confirmed",
+            "APPROVED": "confirmed",
             "CONFIRMED": "confirmed",
+            "PACKING": "processing",
             "PROCESSING": "processing",
             "SHIPPED": "shipped",
             "DELIVERED": "delivered",
             "COMPLETED": "completed",
             "CANCELLED": "cancelled",
+            "CANCELED": "cancelled",
             "RETURNED": "refunded",
+            "RETURNED_TO_SHOP": "refunded",
+            "RETURNED_TO_SELLER": "refunded",
+            "REFUNDED": "refunded",
         }
-        return mapping.get(kaspi_status.upper(), "pending")
+        normalized = _as_str(kaspi_status).strip().upper()
+        return mapping.get(normalized, "pending")
 
     def _company_lock_key(self, company_id: int) -> int:
         raw = f"kaspi-sync-{company_id}".encode()
@@ -2574,6 +2615,37 @@ class KaspiService:
             return candidate
         return f"KASPI-{company_id}-{external_id}"
 
+    def _filter_get_orders_kwargs(self, kwargs: dict[str, Any]) -> dict[str, Any]:
+        try:
+            signature = inspect.signature(self.get_orders)
+        except (TypeError, ValueError):
+            return kwargs
+
+        params = signature.parameters
+        if any(param.kind == inspect.Parameter.VAR_KEYWORD for param in params.values()):
+            return kwargs
+
+        filtered = {key: value for key, value in kwargs.items() if key in params}
+
+        if "state" in kwargs and "state" not in filtered and "status" in params:
+            filtered["status"] = kwargs.get("state")
+
+        return filtered
+
+    def _resolve_order_states(self, statuses: list[str] | None) -> list[str | None]:
+        if statuses:
+            resolved = _parse_kaspi_states(statuses)
+            return resolved or [None]
+
+        raw_env = os.environ.get("KASPI_ORDERS_SYNC_STATES")
+        if raw_env:
+            if raw_env.strip().lower() in {"all", "*", "default"}:
+                return list(DEFAULT_KASPI_ORDER_STATES)
+            resolved = _parse_kaspi_states(raw_env)
+            return resolved or [None]
+
+        return [None]
+
     def _extract_order_timestamp(self, payload: dict[str, Any]) -> datetime | None:
         candidates = [
             payload.get("updated_at"),
@@ -2582,6 +2654,7 @@ class KaspiService:
             payload.get("modificationDate"),
             payload.get("modified_at"),
             payload.get("changedAt"),
+            payload.get("creationDate"),
             payload.get("created_at"),
             payload.get("createdAt"),
         ]
@@ -2595,6 +2668,19 @@ class KaspiService:
     def _parse_dt(value: Any) -> datetime | None:
         if isinstance(value, datetime):
             return value.astimezone(UTC).replace(tzinfo=None) if value.tzinfo else value
+        if isinstance(value, int | float):
+            try:
+                ts = float(value)
+            except Exception:
+                return None
+            if ts <= 0:
+                return None
+            if ts > 10**12:
+                ts = ts / 1000.0
+            try:
+                return datetime.fromtimestamp(ts, tz=UTC).replace(tzinfo=None)
+            except Exception:
+                return None
         if isinstance(value, str):
             try:
                 cleaned = value.replace("Z", "+00:00")

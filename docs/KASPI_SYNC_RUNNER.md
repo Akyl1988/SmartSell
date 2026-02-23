@@ -13,6 +13,8 @@ Production-safe periodic background task that runs Kaspi orders sync for all act
 ✅ **Jitter**: Random delay between syncs to prevent thundering herd  
 ✅ **Structured Logging**: Detailed logs for monitoring and debugging  
 ✅ **Graceful Shutdown**: Task is cancelled on application shutdown  
+✅ **Result-Aware Handling**: Counts locked/rate-limited responses (no exceptions required)  
+✅ **Integration Events**: Records kaspi_orders_sync events for runner-driven syncs  
 
 ## Catalog Strategy Note
 
@@ -110,6 +112,9 @@ Environment variables:
 
 - `ENABLE_KASPI_SYNC_RUNNER`: Set to `1` to enable (default: `0`)
 - `KASPI_SYNC_INTERVAL_SECONDS`: Interval between sync runs (default: `300` = 5 minutes)
+- `KASPI_ORDERS_SYNC_STATES`: Optional Kaspi orders state filter (maps to `filter[orders][state]`).
+    - Use comma-separated values (e.g., `NEW,SIGN_REQUIRED,PICKUP,DELIVERY,KASPI_DELIVERY,ARCHIVE`).
+    - Use `all` to expand to the full state list above.
 
 ### Kaspi Goods Import Poller (APScheduler)
 
@@ -185,6 +190,8 @@ if kaspi_sync_task and not kaspi_sync_task.done():
 - **`KaspiSyncAlreadyRunning`**: Logged as info, counted as "locked", continues to next company
 - **`asyncio.TimeoutError`**: Logged as warning, counted as "failed", continues to next company
 - **Generic `Exception`**: Logged as error with traceback, counted as "failed", continues to next company
+- **Result `status=locked`**: Counted as "locked" and recorded as a skipped integration event
+- **Result `status=rate_limited`**: Counted as "failed" with backoff delay (respects Retry-After)
 
 ## Tests
 

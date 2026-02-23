@@ -460,6 +460,33 @@ async def test_sync_respects_max_pages_partial(monkeypatch, async_client, compan
 
 
 @pytest.mark.asyncio
+async def test_sync_max_pages_does_not_advance_watermark(
+    monkeypatch, async_client, async_db_session, company_a_admin_headers
+):
+    existing_ts = datetime(2025, 1, 1, 12, 0, tzinfo=UTC).replace(tzinfo=None)
+    state = KaspiOrderSyncState(company_id=1001, last_synced_at=existing_ts, last_external_order_id="prev")
+    async_db_session.add(state)
+    await async_db_session.commit()
+
+    async def fake_get_orders(self, *, date_from=None, date_to=None, state=None, page=1, page_size=100, **kwargs):  # noqa: ARG001
+        return {
+            "items": _orders_payload() if page == 1 else [],
+            "page": page,
+            "total_pages": 2,
+            "has_next": True,
+        }
+
+    monkeypatch.setattr(KaspiService, "get_orders", fake_get_orders)
+
+    resp = await async_client.post("/api/v1/kaspi/orders/sync?max_pages=1", headers=company_a_admin_headers)
+    assert resp.status_code == 200, resp.text
+
+    await async_db_session.refresh(state)
+    assert state.last_synced_at == existing_ts
+    assert state.last_external_order_id == "prev"
+
+
+@pytest.mark.asyncio
 async def test_sync_no_orders_meta_zero_is_success(monkeypatch, async_client, company_a_admin_headers):
     async def fake_get_orders(self, *, date_from=None, date_to=None, status=None, page=1, page_size=100, **kwargs):  # noqa: ARG001
         return {
