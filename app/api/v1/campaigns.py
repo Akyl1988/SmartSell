@@ -15,6 +15,7 @@ from pydantic import BaseModel, Field, ValidationError, field_validator
 from sqlalchemy import func, select
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
 from app.core.db import get_async_db
 from app.core.dependencies import require_active_subscription, require_company_access, require_store_admin_company
@@ -23,7 +24,10 @@ from app.core.rbac import is_platform_admin, is_store_admin, is_store_manager
 from app.core.security import get_current_user
 from app.models.campaign import Campaign as DbCampaign
 from app.models.campaign import CampaignProcessingStatus as DbCampaignProcessingStatus
+from app.models.campaign import CampaignStatus as DbCampaignStatus
+from app.models.campaign import ChannelType as DbChannelType
 from app.models.campaign import Message as DbMessage
+from app.models.campaign import MessageStatus as DbMessageStatus
 from app.models.user import User
 from app.services.campaign_runner import queue_campaign_run, should_force_requeue
 
@@ -571,6 +575,15 @@ class Campaign(BaseModel):
     updated_at: str | None = None
     schedule: str | None = None  # ISO datetime (UTC)
     owner: str | None = Field(None, max_length=100)
+    processing_status: str | None = None
+    queued_at: str | None = None
+    started_at: str | None = None
+    finished_at: str | None = None
+    failed_at: str | None = None
+    next_attempt_at: str | None = None
+    last_error: str | None = None
+    attempts: int | None = None
+    request_id: str | None = None
 
     @field_validator("tags", mode="before")
     def _ensure_tags(cls, v):
@@ -720,11 +733,11 @@ def _get_campaign_or_404(campaign_id: int, user: User | None = None) -> Campaign
     user = user or _campaign_user_ctx.get(None)
     data = storage.get_campaign(campaign_id)
     if not data:
-        raise HTTPException(status_code=404, detail="Campaign not found")
+        raise NotFoundError("campaign_not_found", code="campaign_not_found", http_status=404)
     if user is not None and not is_platform_admin(user):
         cid = data.get("company_id")
         if cid is not None and cid != getattr(user, "company_id", None):
-            raise HTTPException(status_code=404, detail="Campaign not found")
+            raise NotFoundError("campaign_not_found", code="campaign_not_found", http_status=404)
     msgs = [Message(**m) if isinstance(m, dict) else m for m in data.get("messages") or []]
     data = {**data, "messages": [mm.model_dump() for mm in msgs]}
     return Campaign(**data)
@@ -732,6 +745,62 @@ def _get_campaign_or_404(campaign_id: int, user: User | None = None) -> Campaign
 
 def _save_campaign(c: Campaign) -> None:
     storage.save_campaign(c.model_dump())
+
+
+_ORM_ACTIVE_STATUSES = [
+    DbCampaignStatus.ACTIVE,
+    DbCampaignStatus.READY,
+    DbCampaignStatus.SCHEDULED,
+    DbCampaignStatus.RUNNING,
+    DbCampaignStatus.SUCCESS,
+]
+
+
+def _orm_status_is_active(status: DbCampaignStatus | None) -> bool:
+    if status is None:
+        return False
+    return status in _ORM_ACTIVE_STATUSES
+
+
+def _orm_message_to_payload(message: DbMessage) -> dict[str, Any]:
+    return {
+        "id": message.id,
+        "recipient": message.recipient,
+        "content": message.content,
+        "status": message.status.value,
+        "channel": message.channel.value,
+        "scheduled_for": None,
+        "error": message.error_message,
+    }
+
+
+def _orm_campaign_to_payload(campaign: DbCampaign, messages: list[DbMessage]) -> dict[str, Any]:
+    processing_status = campaign.processing_status
+    if processing_status is None:
+        processing_status = DbCampaignProcessingStatus.DONE
+    return {
+        "id": campaign.id,
+        "title": campaign.title,
+        "description": campaign.description,
+        "active": _orm_status_is_active(campaign.status),
+        "archived": campaign.deleted_at is not None,
+        "company_id": campaign.company_id,
+        "tags": [],
+        "messages": [_orm_message_to_payload(message) for message in messages],
+        "created_at": campaign.created_at.isoformat() if campaign.created_at else None,
+        "updated_at": campaign.updated_at.isoformat() if campaign.updated_at else None,
+        "schedule": campaign.scheduled_at.isoformat() if campaign.scheduled_at else None,
+        "owner": None,
+        "processing_status": processing_status.value,
+        "queued_at": campaign.queued_at.isoformat() if campaign.queued_at else None,
+        "started_at": campaign.started_at.isoformat() if campaign.started_at else None,
+        "finished_at": campaign.finished_at.isoformat() if campaign.finished_at else None,
+        "failed_at": campaign.failed_at.isoformat() if campaign.failed_at else None,
+        "next_attempt_at": campaign.next_attempt_at.isoformat() if campaign.next_attempt_at else None,
+        "last_error": campaign.last_error,
+        "attempts": int(campaign.attempts or 0),
+        "request_id": campaign.request_id,
+    }
 
 
 def _title_exists(
@@ -844,11 +913,94 @@ admin_router = APIRouter(
     status_code=status.HTTP_201_CREATED,
     dependencies=[Depends(require_store_admin_company)],
 )
-async def create_campaign(campaign: Campaign = Body(...), user: User = Depends(_auth_user)):
+async def create_campaign(
+    campaign: Campaign = Body(...),
+    user: User = Depends(_auth_user),
+    db: AsyncSession = Depends(get_async_db),
+):
+    backend = _get_campaigns_storage_backend()
     # owner, учитываем при уникальности
     owner = (campaign.owner or user.username or "").strip()
     if _title_exists(campaign.title, owner=owner, company_id=getattr(user, "company_id", None)):
         raise ConflictError("Campaign with this title already exists", "DUPLICATE_TITLE", http_status=409)
+
+    if backend == "orm":
+        company_id = getattr(user, "company_id", None)
+        if company_id is None:
+            raise NotFoundError("campaign_not_found", code="campaign_not_found", http_status=404)
+
+        title_stmt = (
+            select(DbCampaign.id)
+            .where(
+                DbCampaign.company_id == company_id,
+                DbCampaign.deleted_at.is_(None),
+                func.lower(DbCampaign.title) == campaign.title.strip().lower(),
+            )
+            .limit(1)
+        )
+        if (await db.execute(title_stmt)).scalar_one_or_none() is not None:
+            raise ConflictError("Campaign with this title already exists", "DUPLICATE_TITLE", http_status=409)
+
+        status = DbCampaignStatus.READY
+        scheduled_at = _parse_dt(campaign.schedule) if campaign.schedule else None
+        if scheduled_at is not None:
+            status = DbCampaignStatus.SCHEDULED
+        elif campaign.active is False:
+            status = DbCampaignStatus.PAUSED
+
+        db_campaign = DbCampaign(
+            title=campaign.title,
+            description=campaign.description,
+            status=status,
+            scheduled_at=scheduled_at,
+            company_id=company_id,
+            processing_status=DbCampaignProcessingStatus.DONE,
+        )
+        db.add(db_campaign)
+        await db.flush()
+
+        db_messages: list[DbMessage] = []
+        seen = set()
+        for msg in campaign.messages or []:
+            key = (msg.recipient.strip().lower(), str(msg.channel))
+            if key in seen:
+                continue
+            channel_value = getattr(msg, "channel", None)
+            if isinstance(channel_value, Enum):
+                channel_value = channel_value.value
+            channel_value = channel_value or DbChannelType.EMAIL.value
+
+            status_value = getattr(msg, "status", None)
+            if isinstance(status_value, Enum):
+                status_value = status_value.value
+            status_value = status_value or DbMessageStatus.PENDING.value
+            try:
+                channel = DbChannelType(channel_value)
+            except Exception:
+                channel = DbChannelType.EMAIL
+            try:
+                status_msg = DbMessageStatus(status_value)
+            except Exception:
+                status_msg = DbMessageStatus.PENDING
+            db_message = DbMessage(
+                campaign_id=db_campaign.id,
+                recipient=msg.recipient,
+                content=msg.content,
+                status=status_msg,
+                channel=channel,
+            )
+            db.add(db_message)
+            db_messages.append(db_message)
+            seen.add(key)
+
+        await db.commit()
+        await db.refresh(db_campaign)
+
+        payload = _orm_campaign_to_payload(db_campaign, db_messages)
+        payload["tags"] = _normalize_tags(campaign.tags)
+        payload["owner"] = owner
+        return Campaign(**payload)
+
     new_id = storage.next_id("campaigns")
 
     # подготовим payload
@@ -897,7 +1049,39 @@ async def list_campaigns(
     sort: Literal["created_at", "updated_at", "title"] = Query("created_at"),
     order: Literal["asc", "desc"] = Query("desc"),
     user: User = Depends(_auth_user),
+    db: AsyncSession = Depends(get_async_db),
 ):
+    backend = _get_campaigns_storage_backend()
+    if backend == "orm":
+        where = []
+        if not is_platform_admin(user):
+            where.append(DbCampaign.company_id == getattr(user, "company_id", None))
+        if archived is True:
+            where.append(DbCampaign.deleted_at.is_not(None))
+        elif archived is False:
+            where.append(DbCampaign.deleted_at.is_(None))
+        if active is True:
+            where.append(DbCampaign.status.in_(_ORM_ACTIVE_STATUSES))
+        elif active is False:
+            where.append(DbCampaign.status.notin_(_ORM_ACTIVE_STATUSES))
+
+        sort_col = getattr(DbCampaign, sort)
+        sort_expr = sort_col.desc() if order == "desc" else sort_col.asc()
+
+        total_stmt = select(func.count()).select_from(DbCampaign).where(*where)
+        total = int((await db.execute(total_stmt)).scalar_one())
+        stmt = (
+            select(DbCampaign)
+            .where(*where)
+            .order_by(sort_expr)
+            .offset((page - 1) * size)
+            .limit(size)
+            .options(selectinload(DbCampaign.messages))
+        )
+        rows = (await db.execute(stmt)).scalars().all()
+        items = [Campaign(**_orm_campaign_to_payload(row, list(row.messages or []))) for row in rows]
+        return CampaignListResponse(items=items, meta=PageMeta(page=page, size=size, total=total))
+
     try:
         raw_campaigns = storage.list_campaigns(company_id=getattr(user, "company_id", None))
     except TypeError:
@@ -938,15 +1122,59 @@ async def queue_campaign_run_store(
     if not (is_platform_admin(user) or is_store_admin(user) or is_store_manager(user)):
         raise HTTPException(status_code=403, detail="forbidden")
 
-    campaign = await db.get(DbCampaign, campaign_id)
-    if not campaign:
-        raise NotFoundError("campaign_not_found", code="campaign_not_found", http_status=404)
-
-    if not is_platform_admin(user):
-        user_company_id = getattr(user, "company_id", None)
-        if user_company_id is None or campaign.company_id != user_company_id:
+    user_company_id = getattr(user, "company_id", None)
+    is_platform = is_platform_admin(user)
+    if not is_platform:
+        if user_company_id is None:
             raise NotFoundError("campaign_not_found", code="campaign_not_found", http_status=404)
         await require_active_subscription(request=request, current_user=user, db=db)
+
+    stmt = select(DbCampaign).where(DbCampaign.id == campaign_id)
+    if not is_platform:
+        stmt = stmt.where(DbCampaign.company_id == user_company_id)
+    campaign = (await db.execute(stmt)).scalar_one_or_none()
+
+    if not campaign:
+        backend = _get_campaigns_storage_backend()
+        if backend == "orm":
+            raise NotFoundError("campaign_not_found", code="campaign_not_found", http_status=404)
+
+        store_campaign = _get_campaign_or_404(campaign_id, user)
+        company_id = store_campaign.company_id or user_company_id
+        if company_id is None:
+            raise NotFoundError("campaign_not_found", code="campaign_not_found", http_status=404)
+        campaign = DbCampaign(
+            id=campaign_id,
+            title=store_campaign.title,
+            description=store_campaign.description,
+            status=DbCampaignStatus.READY,
+            scheduled_at=_parse_dt(store_campaign.schedule) if store_campaign.schedule else None,
+            company_id=company_id,
+            processing_status=DbCampaignProcessingStatus.DONE,
+        )
+        db.add(campaign)
+        await db.flush()
+
+        for msg in store_campaign.messages or []:
+            channel_value = getattr(msg, "channel", None) or DbChannelType.email.value
+            status_value = getattr(msg, "status", None) or DbMessageStatus.PENDING.value
+            try:
+                channel = DbChannelType(channel_value)
+            except Exception:
+                channel = DbChannelType.email
+            try:
+                status = DbMessageStatus(status_value)
+            except Exception:
+                status = DbMessageStatus.PENDING
+            db.add(
+                DbMessage(
+                    campaign_id=campaign.id,
+                    recipient=msg.recipient,
+                    content=msg.content,
+                    status=status,
+                    channel=channel,
+                )
+            )
 
     if campaign.processing_status in (
         DbCampaignProcessingStatus.QUEUED,
@@ -971,6 +1199,22 @@ async def queue_campaign_run_store(
         request_id=request_id,
         now=datetime.now(UTC),
     )
+
+    backend = _get_campaigns_storage_backend()
+    if backend != "orm":
+        stored = storage.get_campaign(campaign_id)
+        if stored:
+            stored["processing_status"] = campaign.processing_status.value
+            stored["queued_at"] = campaign.queued_at.isoformat() if campaign.queued_at else None
+            stored["started_at"] = campaign.started_at.isoformat() if campaign.started_at else None
+            stored["finished_at"] = campaign.finished_at.isoformat() if campaign.finished_at else None
+            stored["failed_at"] = campaign.failed_at.isoformat() if campaign.failed_at else None
+            stored["next_attempt_at"] = campaign.next_attempt_at.isoformat() if campaign.next_attempt_at else None
+            stored["last_error"] = campaign.last_error
+            stored["attempts"] = int(campaign.attempts or 0)
+            stored["request_id"] = campaign.request_id
+            stored["updated_at"] = _now_iso()
+            storage.save_campaign(stored)
 
     return {
         "campaign_id": campaign.id,
@@ -1360,7 +1604,23 @@ async def get_campaign_draft(campaign_id: int = Path(..., ge=1), user: User = De
 
 # ---- DYNAMIC PATHS (/{campaign_id}...) ---------------------------------------
 @read_router.get("/{campaign_id}", response_model=Campaign)
-async def get_campaign(campaign_id: int = Path(..., ge=1), user: User = Depends(_auth_user)):
+async def get_campaign(
+    campaign_id: int = Path(..., ge=1),
+    user: User = Depends(_auth_user),
+    db: AsyncSession = Depends(get_async_db),
+):
+    backend = _get_campaigns_storage_backend()
+    if backend == "orm":
+        stmt = select(DbCampaign).where(DbCampaign.id == campaign_id, DbCampaign.deleted_at.is_(None))
+        if not is_platform_admin(user):
+            stmt = stmt.where(DbCampaign.company_id == getattr(user, "company_id", None))
+        stmt = stmt.options(selectinload(DbCampaign.messages))
+        campaign = (await db.execute(stmt)).scalar_one_or_none()
+        if not campaign:
+            raise NotFoundError("campaign_not_found", code="campaign_not_found", http_status=404)
+        payload = _orm_campaign_to_payload(campaign, list(campaign.messages or []))
+        return Campaign(**payload)
+
     return _get_campaign_or_404(campaign_id, user)
 
 

@@ -13,6 +13,98 @@ Production-safe periodic background task that runs Kaspi orders sync for all act
 ✅ **Jitter**: Random delay between syncs to prevent thundering herd  
 ✅ **Structured Logging**: Detailed logs for monitoring and debugging  
 ✅ **Graceful Shutdown**: Task is cancelled on application shutdown  
+✅ **Result-Aware Handling**: Counts locked/rate-limited responses (no exceptions required)  
+✅ **Integration Events**: Records kaspi_orders_sync events for runner-driven syncs  
+
+## Catalog Strategy Note
+
+Kaspi Shop API does not provide a full catalog pull via X-Auth-Token. Use the products import status endpoints instead:
+
+- `GET /api/v1/kaspi/products/import?i=<import_code>`
+- `GET /api/v1/kaspi/products/import/result?i=<import_code>`
+
+The legacy `POST /api/v1/kaspi/products/sync` is retained for compatibility and returns
+`catalog_pull_not_supported`.
+
+## Two Independent Pipelines
+
+### A) Goods Import (JSON)
+
+- Purpose: Import catalog attributes (Kaspi schema JSON). Does NOT update prices or stock.
+- Kaspi endpoints:
+    - `POST /shop/api/products/import` (JSON)
+    - `GET /shop/api/products/import/status` (JSON)
+    - `GET /shop/api/products/import/result` (JSON)
+- SmartSell endpoints:
+    - `POST /api/v1/kaspi/products/import/start`
+    - `POST /api/v1/kaspi/products/import/upload?i=<import_code>`
+    - `GET /api/v1/kaspi/products/import?i=<kaspi_import_code>`
+    - `GET /api/v1/kaspi/products/import/result?i=<kaspi_import_code>`
+
+### B) Offers Price List (XML, pull by URL)
+
+- Purpose: Update prices and stock via XML price list.
+- Kaspi behavior: Kaspi periodically downloads the XML from a public URL.
+- SmartSell endpoint:
+    - `POST /api/v1/kaspi/offers/feed/upload` → returns public URL
+    - `GET /public/kaspi/price-list/{token}.xml`
+
+> Warning: Push uploads to `/shop/api/feeds/*` are not used for price lists.
+> Use the public URL and configure it in the seller cabinet.
+
+## Local Import Cycle
+
+Minimal production-safe flow for offers dataset + goods import:
+
+> Warning: The products import endpoint uses the Kaspi attributes schema and does NOT update prices or stock levels.
+> Use feed uploads or a future dedicated price/stock import when available.
+
+1) Build offers dataset:
+    - `POST /api/v1/kaspi/offers/rebuild`
+    - Or manual upload: `POST /api/v1/kaspi/offers/import` (CSV/JSON file)
+2) Start import run:
+    - `POST /api/v1/kaspi/products/import/start`
+3) Upload offers payload to Kaspi:
+    - `POST /api/v1/kaspi/products/import/upload?i=<import_code>`
+4) Check status/result:
+    - `GET /api/v1/kaspi/products/import?i=<kaspi_import_code>`
+    - `GET /api/v1/kaspi/products/import/result?i=<kaspi_import_code>`
+5) Sync now uses offers if present:
+    - `POST /api/v1/kaspi/sync/now`
+
+> Note: Price/stock updates happen via the offers feed upload pipeline.
+> The products import schema does NOT update prices or stock levels.
+
+## Operator Runbook (Goods Import)
+
+1) Build offers dataset:
+    - `POST /api/v1/kaspi/offers/rebuild`
+    - Or upload: `POST /api/v1/kaspi/offers/import` (CSV/JSON file)
+2) Start a goods import run:
+    - `POST /api/v1/kaspi/products/import/start`
+3) Upload offers payload to Kaspi (idempotent within 24h by payload hash):
+    - `POST /api/v1/kaspi/products/import/upload?i=<import_code>`
+4) Polling runner finalizes the run:
+    - Enable `KASPI_IMPORT_POLL_ENABLED=1`
+    - Runner polls status/result with backoff until terminal status
+5) Sync now status expectations:
+    - Returns `ok` only when goods import is `success_applied`
+    - Returns `partial` with `import_pending`, `import_failed`, or `import_noop` otherwise
+    - If feed upload is enabled, `ok` requires a successful feed upload
+
+## Operator Runbook (Price List Pull)
+
+1) Generate public URL:
+    - `POST /api/v1/kaspi/offers/feed/upload`
+2) Configure Kaspi cabinet:
+    - Kaspi seller cabinet → Товары → Прайс-лист → Автоматическая загрузка
+    - Paste the URL from step 1 and save
+3) Verify pulls:
+    - Check logs for `kaspi_public_feed_access` with status `200` or `304`
+    - Use `ETag`/`Last-Modified` headers to confirm caching behavior
+4) Troubleshooting:
+    - If Kaspi reports errors, re-generate URL (rotate token) and re-save
+    - Ensure offers exist for the merchant UID
 
 ## Configuration
 
@@ -20,6 +112,22 @@ Environment variables:
 
 - `ENABLE_KASPI_SYNC_RUNNER`: Set to `1` to enable (default: `0`)
 - `KASPI_SYNC_INTERVAL_SECONDS`: Interval between sync runs (default: `300` = 5 minutes)
+- `KASPI_ORDERS_SYNC_STATES`: Optional Kaspi orders state filter (maps to `filter[orders][state]`).
+    - Use comma-separated values (e.g., `NEW,SIGN_REQUIRED,PICKUP,DELIVERY,KASPI_DELIVERY,ARCHIVE`).
+    - Use `all` to expand to the full state list above.
+
+### Kaspi Goods Import Poller (APScheduler)
+
+Background polling for `/api/v1/kaspi/products/import/*` runs with backoff and advisory lock.
+
+Environment variables:
+
+- `KASPI_IMPORT_POLL_ENABLED`: Set to `1` to enable (default: `0`)
+- `KASPI_IMPORT_POLL_INTERVAL_SECONDS`: Polling interval (default: `60`)
+- `KASPI_IMPORT_POLL_MAX_CONCURRENCY`: Parallel polls per tick (default: `5`)
+- `KASPI_IMPORT_POLL_BATCH_SIZE`: Max runs per tick (default: `100`)
+- `KASPI_IMPORT_POLL_BACKOFF_BASE_SECONDS`: Base backoff (default: `30`)
+- `KASPI_IMPORT_POLL_BACKOFF_MAX_SECONDS`: Max backoff (default: `900`)
 
 ## Implementation
 
@@ -82,6 +190,8 @@ if kaspi_sync_task and not kaspi_sync_task.done():
 - **`KaspiSyncAlreadyRunning`**: Logged as info, counted as "locked", continues to next company
 - **`asyncio.TimeoutError`**: Logged as warning, counted as "failed", continues to next company
 - **Generic `Exception`**: Logged as error with traceback, counted as "failed", continues to next company
+- **Result `status=locked`**: Counted as "locked" and recorded as a skipped integration event
+- **Result `status=rate_limited`**: Counted as "failed" with backoff delay (respects Retry-After)
 
 ## Tests
 

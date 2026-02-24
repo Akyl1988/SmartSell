@@ -120,7 +120,7 @@ async def test_kaspi_get_orders_uses_shop_api_url_and_jsonapi_pagination(monkeyp
     monkeypatch.setattr(kaspi_service.settings, "KASPI_ORDERS_TRANSPORT", "async")
     monkeypatch.setattr(kaspi_service.httpx, "AsyncClient", _DummyClient)
 
-    await svc.get_orders(page=0, page_size=0)
+    await svc.get_orders(page=0, page_size=0, state="NEW")
 
     url = captured.get("url")
     params = captured.get("params")
@@ -130,6 +130,7 @@ async def test_kaspi_get_orders_uses_shop_api_url_and_jsonapi_pagination(monkeyp
     assert isinstance(params, list)
     assert ("page[number]", 1) in params
     assert ("page[size]", 100) in params
+    assert ("filter[orders][state]", "NEW") in params
     assert captured.get("trust_env") is False
     transport = captured.get("transport")
     if transport is not None:

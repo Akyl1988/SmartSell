@@ -1,3 +1,4 @@
+import httpx
 import pytest
 import sqlalchemy as sa
 
@@ -9,12 +10,13 @@ class _FakeResponse:
     def __init__(self, status_code: int):
         self.status_code = status_code
         self.content = b""
+        self.text = ""
 
 
 class _FakeAsyncClient:
-    def __init__(self, responses: list[_FakeResponse], timeout=None):
+    def __init__(self, responses: list[_FakeResponse], **kwargs):
         self._responses = responses
-        self.timeout = timeout
+        self.kwargs = kwargs
 
     async def __aenter__(self):
         return self
@@ -46,7 +48,7 @@ async def test_kaspi_token_selftest_goods_hint(async_client, async_db_session, m
 
     from app.api.v1 import kaspi as kaspi_router
 
-    timeouts: dict[str, object] = {}
+    client_kwargs: dict[str, object] = {}
 
     fake_client = _FakeAsyncClient(
         [
@@ -57,7 +59,7 @@ async def test_kaspi_token_selftest_goods_hint(async_client, async_db_session, m
     )
 
     def _client_factory(*args, **kwargs):
-        timeouts["value"] = kwargs.get("timeout")
+        client_kwargs.update(kwargs)
         return fake_client
 
     monkeypatch.setattr(kaspi_router.httpx, "AsyncClient", _client_factory)
@@ -82,7 +84,19 @@ async def test_kaspi_token_selftest_goods_hint(async_client, async_db_session, m
     assert row is not None
     assert row.last_selftest_at is not None
     assert row.last_selftest_status == "ok"
-    assert timeouts.get("value") == 5.0
+    assert client_kwargs.get("http2") is False
+    headers = client_kwargs.get("headers") or {}
+    assert headers.get("Connection") == "close"
+    assert headers.get("User-Agent")
+    timeout = client_kwargs.get("timeout")
+    assert isinstance(timeout, httpx.Timeout)
+    assert (timeout.connect or 0) >= 20
+    total_like = max(
+        timeout.read or 0,
+        timeout.write or 0,
+        timeout.pool or 0,
+    )
+    assert total_like >= 60
 
 
 @pytest.mark.asyncio

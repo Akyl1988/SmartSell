@@ -134,7 +134,7 @@ async def test_get_eligible_companies_filters_correctly(async_db_session: AsyncS
 
     # Должна вернуться только активная компания с kaspi_store_id
     assert len(result) == 1
-    assert result[0] == company_active.id
+    assert result[0] == (company_active.id, "store_123")
 
 
 @pytest.mark.asyncio
@@ -144,11 +144,11 @@ async def test_sync_respects_concurrency_limit():
     и не запускать больше N синхронизаций параллельно.
     """
     # Моделируем 10 компаний
-    company_ids = list(range(1, 11))
+    company_rows = [(cid, f"store_{cid}") for cid in range(1, 11)]
     max_concurrency = 3
 
     # Мок для _sync_company: просто задержка
-    async def mock_sync_company(company_id, db):
+    async def mock_sync_company(company_id, merchant_uid, db):
         await asyncio.sleep(0.1)
         return {"company_id": company_id, "status": "success"}
 
@@ -160,7 +160,7 @@ async def test_sync_respects_concurrency_limit():
             from app.worker.kaspi_autosync import _sync_companies_batch
 
             # Запускаем batch
-            results = await _sync_companies_batch(company_ids)
+            results = await _sync_companies_batch(company_rows)
 
             # Должно быть 10 результатов
             assert len(results) == 10
@@ -190,10 +190,10 @@ async def test_locked_companies_dont_stop_batch(async_db_session: AsyncSession):
     for c in companies:
         await async_db_session.refresh(c)
 
-    company_ids = [c.id for c in companies]
+    company_rows = [(c.id, c.kaspi_store_id or "") for c in companies]
 
     # Мок: вторая компания вернет статус "locked"
-    async def mock_sync_company(company_id, db):
+    async def mock_sync_company(company_id, merchant_uid, db):
         if company_id == companies[1].id:
             return {"company_id": company_id, "status": "locked"}
         return {"company_id": company_id, "status": "success"}
@@ -201,7 +201,7 @@ async def test_locked_companies_dont_stop_batch(async_db_session: AsyncSession):
     with patch("app.worker.kaspi_autosync._sync_company", side_effect=mock_sync_company):
         from app.worker.kaspi_autosync import _sync_companies_batch
 
-        results = await _sync_companies_batch(company_ids)
+        results = await _sync_companies_batch(company_rows)
 
         # Должно быть 3 результата
         assert len(results) == 3
@@ -234,10 +234,10 @@ async def test_failed_companies_tracked_in_summary(async_db_session: AsyncSessio
     for c in companies:
         await async_db_session.refresh(c)
 
-    company_ids = [c.id for c in companies]
+    company_rows = [(c.id, c.kaspi_store_id or "") for c in companies]
 
     # Мок: первая компания выбросит RuntimeError
-    async def mock_sync_company(company_id, db):
+    async def mock_sync_company(company_id, merchant_uid, db):
         if company_id == companies[0].id:
             raise RuntimeError("Simulated error")
         return {"company_id": company_id, "status": "success"}
@@ -245,7 +245,7 @@ async def test_failed_companies_tracked_in_summary(async_db_session: AsyncSessio
     with patch("app.worker.kaspi_autosync._sync_company", side_effect=mock_sync_company):
         from app.worker.kaspi_autosync import _sync_companies_batch
 
-        results = await _sync_companies_batch(company_ids)
+        results = await _sync_companies_batch(company_rows)
 
         # Должно быть 2 результата
         assert len(results) == 2

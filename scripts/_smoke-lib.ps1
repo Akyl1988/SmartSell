@@ -2,6 +2,7 @@ Set-StrictMode -Version Latest
 $script:SmartsellAccessToken = $null
 $script:SmartsellRefreshToken = $null
 $script:SmartsellCachePath = $null
+$script:SmartsellWebSessions = @{}
 
 function Mask-Secret([string]$Value) {
   if ([string]::IsNullOrWhiteSpace($Value)) { return "" }
@@ -12,6 +13,9 @@ function Mask-Secret([string]$Value) {
 function Get-SmokeCachePath {
   if ($script:SmartsellCachePath) { return $script:SmartsellCachePath }
   $root = $PSScriptRoot
+  if (-not $root -and $MyInvocation -and $MyInvocation.MyCommand -and $MyInvocation.MyCommand.Path) {
+    $root = Split-Path -Parent $MyInvocation.MyCommand.Path
+  }
   if (-not $root) { $root = (Get-Location).Path }
   $script:SmartsellCachePath = Join-Path $root ".smoke-cache.json"
   return $script:SmartsellCachePath
@@ -72,6 +76,12 @@ function Normalize-JwtToken {
   return $null
 }
 
+function Get-JwtPartsCount {
+  param([string]$Value)
+  if ([string]::IsNullOrWhiteSpace($Value)) { return 0 }
+  return (@(([string]$Value).Trim() -split '\.').Count)
+}
+
 function Resolve-TokenField {
   param(
     [object]$Entry,
@@ -116,8 +126,18 @@ function Save-SmartsellTokensToCache {
   if (-not $BaseUrl) { return $false }
   $cache = Read-SmokeCache
   $entry = @{}
-  if ($AccessToken) { $entry.access = $AccessToken }
-  if ($RefreshToken) { $entry.refresh = $RefreshToken }
+  if ($AccessToken) {
+    $normalizedAccess = Normalize-JwtToken -Value $AccessToken
+    if (-not $normalizedAccess) { throw "access_token has invalid format" }
+    $entry.access = $normalizedAccess
+    $entry.access_token = $normalizedAccess
+  }
+  if ($RefreshToken) {
+    $normalizedRefresh = Normalize-JwtToken -Value $RefreshToken
+    if (-not $normalizedRefresh) { throw "refresh_token has invalid format" }
+    $entry.refresh = $normalizedRefresh
+    $entry.refresh_token = $normalizedRefresh
+  }
   $entry.updated_at = (Get-Date).ToString("o")
   $cache[$BaseUrl] = $entry
   return (Write-SmokeCache -Data $cache)
@@ -593,6 +613,16 @@ function Get-PlatformAuthHeader {
 
 function Invoke-WebRequestSafe {
   param([hashtable]$Params)
+  $timeout = Resolve-RequestTimeoutSec -TimeoutSec ($Params.TimeoutSec ?? 0)
+  $Params.TimeoutSec = $timeout
+
+  if (-not $Params.ContainsKey("WebSession")) {
+    if (-not $script:SmartsellWebSessions.ContainsKey($timeout)) {
+      $script:SmartsellWebSessions[$timeout] = New-Object Microsoft.PowerShell.Commands.WebRequestSession
+    }
+    $Params.WebSession = $script:SmartsellWebSessions[$timeout]
+  }
+
   if ((Get-Command Invoke-WebRequest).Parameters.ContainsKey("SkipHttpErrorCheck")) {
     $Params.SkipHttpErrorCheck = $true
   }
@@ -600,6 +630,12 @@ function Invoke-WebRequestSafe {
     $Params.UseBasicParsing = $true
   }
   return Invoke-WebRequest @Params
+}
+
+function Resolve-RequestTimeoutSec {
+  param([int]$TimeoutSec)
+  if ($TimeoutSec -le 0) { return 20 }
+  return [int]$TimeoutSec
 }
 
 function Resolve-ProfileValue {

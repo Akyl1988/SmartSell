@@ -9,6 +9,7 @@ class _FakeResponse:
     def __init__(self, status_code: int):
         self.status_code = status_code
         self.content = b""
+        self.text = ""
 
 
 class _FakeAsyncClient:

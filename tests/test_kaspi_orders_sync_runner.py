@@ -35,8 +35,8 @@ async def test_runner_iterates_multiple_companies_with_isolation(monkeypatch, as
     from app.models.company import Company
 
     # Create two test companies
-    company1 = Company(id=9001, name="Test Company 1", is_active=True)
-    company2 = Company(id=9002, name="Test Company 2", is_active=True)
+    company1 = Company(id=9001, name="Test Company 1", is_active=True, kaspi_store_id="store-9001")
+    company2 = Company(id=9002, name="Test Company 2", is_active=True, kaspi_store_id="store-9002")
     async_db_session.add(company1)
     async_db_session.add(company2)
     await async_db_session.commit()
@@ -75,8 +75,8 @@ async def test_runner_handles_locked_sync(monkeypatch, async_db_session):
     from app.models.company import Company
 
     # Create two test companies
-    company1 = Company(id=9003, name="Locked Company", is_active=True)
-    company2 = Company(id=9004, name="Available Company", is_active=True)
+    company1 = Company(id=9003, name="Locked Company", is_active=True, kaspi_store_id="store-9003")
+    company2 = Company(id=9004, name="Available Company", is_active=True, kaspi_store_id="store-9004")
     async_db_session.add(company1)
     async_db_session.add(company2)
     await async_db_session.commit()
@@ -107,7 +107,7 @@ async def test_runner_handles_timeout(monkeypatch, async_db_session):
     """Runner should handle asyncio.TimeoutError gracefully."""
     from app.models.company import Company
 
-    company = Company(id=9005, name="Timeout Company", is_active=True)
+    company = Company(id=9005, name="Timeout Company", is_active=True, kaspi_store_id="store-9005")
     async_db_session.add(company)
     await async_db_session.commit()
 
@@ -148,13 +148,38 @@ async def test_runner_no_companies_returns_empty_summary(async_db_session):
 
 
 @pytest.mark.asyncio
+async def test_runner_skips_missing_merchant_uid(monkeypatch, async_db_session):
+    """Runner should not call sync_orders when merchant_uid is missing."""
+    company = Company(id=9201, name="Missing Merchant", is_active=True, kaspi_store_id=None)
+    async_db_session.add(company)
+    await async_db_session.commit()
+
+    sync_calls = []
+
+    async def fake_sync_orders(self, *, db, company_id, **kwargs):  # noqa: ARG001
+        sync_calls.append(company_id)
+        return {"fetched": 0, "inserted": 0, "updated": 0}
+
+    from app.services import kaspi_service
+
+    monkeypatch.setattr(kaspi_service.KaspiService, "sync_orders", fake_sync_orders)
+
+    result = await run_kaspi_orders_sync_once(base_delay_seconds=0.0)
+
+    assert sync_calls == []
+    assert result["total"] == 1
+    assert result["success"] == 0
+    assert result["failed"] == 1
+
+
+@pytest.mark.asyncio
 async def test_runner_respects_max_concurrent(monkeypatch, async_db_session):
     """Runner should respect max_concurrent limit using semaphore."""
     from app.models.company import Company
 
     # Create 5 companies
     for i in range(5):
-        company = Company(id=9100 + i, name=f"Company {i}", is_active=True)
+        company = Company(id=9100 + i, name=f"Company {i}", is_active=True, kaspi_store_id=f"store-{i}")
         async_db_session.add(company)
     await async_db_session.commit()
 

@@ -3,25 +3,17 @@ from __future__ import annotations
 import pytest
 
 from app.models.company import Company
-from app.models.kaspi_offer import KaspiOffer
+from app.models.marketplace import KaspiStoreToken
 
 pytestmark = pytest.mark.asyncio
 
 
 async def test_kaspi_trial_granted_once_per_merchant_uid(async_client, async_db_session, auth_headers):
-    company_a = Company(id=9101, name="Kaspi Trial A")
+    company_a = Company(id=9101, name="Kaspi Trial A", kaspi_store_id="M-TRIAL-1")
     async_db_session.add(company_a)
     await async_db_session.commit()
 
-    async_db_session.add(
-        KaspiOffer(
-            company_id=company_a.id,
-            merchant_uid="M-TRIAL-1",
-            sku="SKU-A",
-            title="Item A",
-            price=1000,
-        )
-    )
+    async_db_session.add(KaspiStoreToken(store_name="M-TRIAL-1", token_ciphertext=b"token-a"))
     await async_db_session.commit()
 
     first = await async_client.post(
@@ -33,17 +25,6 @@ async def test_kaspi_trial_granted_once_per_merchant_uid(async_client, async_db_
 
     company_b = Company(id=9102, name="Kaspi Trial B")
     async_db_session.add(company_b)
-    await async_db_session.commit()
-
-    async_db_session.add(
-        KaspiOffer(
-            company_id=company_b.id,
-            merchant_uid="M-TRIAL-1",
-            sku="SKU-B",
-            title="Item B",
-            price=1000,
-        )
-    )
     await async_db_session.commit()
 
     second = await async_client.post(

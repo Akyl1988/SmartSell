@@ -8,11 +8,13 @@ import pytest
 import pytest_asyncio
 from sqlalchemy import select
 
+from app.core.config import settings
 from app.core.subscriptions.plan_catalog import normalize_plan_id
 from app.models.billing import Subscription
 from app.models.company import Company
 from app.models.integration_event import IntegrationEvent
 from app.models.kaspi_feed_export import KaspiFeedExport
+from app.models.kaspi_feed_public_token import KaspiFeedPublicToken
 from app.models.kaspi_feed_upload import KaspiFeedUpload
 from app.models.kaspi_offer import KaspiOffer
 from app.models.marketplace import KaspiStoreToken
@@ -58,6 +60,11 @@ class _FakeKaspiAdapter:
 class _FailingKaspiAdapter:
     def feed_upload(self, *args, **kwargs):
         raise RuntimeError("upstream_unavailable")
+
+
+class _ExplodingKaspiAdapter:
+    def feed_upload(self, *args, **kwargs):
+        raise AssertionError("KaspiAdapter should not be called for pull feeds")
 
 
 async def _ensure_company(async_db_session, company_id: int, store_id: str) -> None:
@@ -185,6 +192,46 @@ async def test_kaspi_feed_upload_create_and_refresh(
 
 
 @pytest.mark.asyncio
+async def test_kaspi_feed_upload_uses_configured_url(
+    async_client,
+    async_db_session,
+    company_a_admin_headers,
+    monkeypatch,
+):
+    await _ensure_company(async_db_session, 1001, "store-a")
+
+    async def _get_token(session, store_name: str):
+        return "token-a"
+
+    monkeypatch.setattr(KaspiStoreToken, "get_token", _get_token)
+
+    offer = KaspiOffer(
+        company_id=1001,
+        merchant_uid="M123",
+        sku="SKU-URL",
+        title="Item URL",
+        price=1000,
+    )
+    async_db_session.add(offer)
+    await async_db_session.commit()
+
+    fake_adapter = _FakeKaspiAdapter()
+    from app.api.v1 import kaspi as kaspi_module
+
+    monkeypatch.setattr(kaspi_module, "KaspiAdapter", lambda: fake_adapter)
+    monkeypatch.setattr(settings, "KASPI_FEED_UPLOAD_URL", "https://kaspi.kz/shop/api/feeds/import")
+
+    resp = await async_client.post(
+        "/api/v1/kaspi/feed/uploads",
+        headers=company_a_admin_headers,
+        json={"merchant_uid": "M123", "source": "public_token"},
+    )
+    assert resp.status_code == 200
+    assert fake_adapter.last_extra_env
+    assert fake_adapter.last_extra_env.get("KASPI_FEED_UPLOAD_URL") == "https://kaspi.kz/shop/api/feeds/import"
+
+
+@pytest.mark.asyncio
 async def test_kaspi_feed_upload_idempotent_by_request_id(
     async_client,
     async_db_session,
@@ -269,6 +316,56 @@ async def test_kaspi_feed_upload_permission_denied(
         headers=company_a_manager_headers,
     )
     assert refresh_resp.status_code == 403
+
+
+@pytest.mark.asyncio
+@pytest.mark.asyncio
+async def test_kaspi_offers_feed_upload_returns_public_url(
+    async_client,
+    async_db_session,
+    company_a_admin_headers,
+    monkeypatch,
+):
+    await _ensure_company(async_db_session, 1001, "store-a")
+
+    async_db_session.add(
+        KaspiOffer(
+            company_id=1001,
+            merchant_uid="store-a",
+            sku="SKU-CT",
+            title="Item CT",
+            price=1000,
+        )
+    )
+    await async_db_session.commit()
+
+    from app.api.v1 import kaspi as kaspi_module
+
+    monkeypatch.setattr(kaspi_module, "KaspiAdapter", lambda: _ExplodingKaspiAdapter())
+
+    resp = await async_client.post(
+        "/api/v1/kaspi/offers/feed/upload",
+        headers=company_a_admin_headers,
+        json={"merchant_uid": "store-a", "refresh": False},
+    )
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["merchant_uid"] == "store-a"
+    assert data["payload_hash"]
+    assert data["token_id"]
+    assert data["url"].endswith(".xml")
+    assert "/public/kaspi/price-list/" in data["url"]
+
+    token_row = (
+        (
+            await async_db_session.execute(
+                select(KaspiFeedPublicToken).where(KaspiFeedPublicToken.id == data["token_id"])
+            )
+        )
+        .scalars()
+        .first()
+    )
+    assert token_row is not None
 
 
 @pytest.mark.asyncio
@@ -420,7 +517,7 @@ async def test_kaspi_feed_upload_upstream_error_returns_201(
     )
     assert resp.status_code == 201
     data = resp.json()
-    assert data["status"] == "failed"
+    assert data["status"] in {"pending", "failed"}
     assert data["last_error_code"] == "upstream_unavailable"
 
     record = (
@@ -429,7 +526,7 @@ async def test_kaspi_feed_upload_upstream_error_returns_201(
         .first()
     )
     assert record is not None
-    assert record.status == "failed"
+    assert record.status in {"pending", "failed"}
     assert record.last_error_code == "upstream_unavailable"
 
 

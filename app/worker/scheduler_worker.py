@@ -166,6 +166,38 @@ def should_register_kaspi_autosync() -> bool:
     return scheduler_enabled
 
 
+def should_register_kaspi_import_poll() -> bool:
+    """
+    Determine if Kaspi import polling APScheduler job should be registered.
+
+    Returns True only when:
+    - PROCESS_ROLE == "scheduler"
+    - AND settings.KASPI_IMPORT_POLL_ENABLED is True
+    """
+    import os
+
+    role = getattr(settings, "PROCESS_ROLE", os.getenv("PROCESS_ROLE", "web")) or "web"
+    if role != "scheduler":
+        return False
+    return bool(getattr(settings, "KASPI_IMPORT_POLL_ENABLED", False))
+
+
+def should_register_kaspi_feed_upload_poll() -> bool:
+    """
+    Determine if Kaspi feed upload polling APScheduler job should be registered.
+
+    Returns True only when:
+    - PROCESS_ROLE == "scheduler"
+    - AND settings.KASPI_FEED_UPLOAD_ENABLED is True
+    """
+    import os
+
+    role = getattr(settings, "PROCESS_ROLE", os.getenv("PROCESS_ROLE", "web")) or "web"
+    if role != "scheduler":
+        return False
+    return bool(getattr(settings, "KASPI_FEED_UPLOAD_ENABLED", False))
+
+
 # -------- Вспомогательные сущности -------- #
 
 
@@ -355,6 +387,8 @@ scheduler = BackgroundScheduler(
 
 _JOB_ID_PROCESS_CAMPAIGNS = "process_campaigns"
 _JOB_ID_KASPI_AUTOSYNC = "kaspi_autosync"
+_JOB_ID_KASPI_IMPORT_POLL = "kaspi_import_poll"
+_JOB_ID_KASPI_FEED_UPLOAD_POLL = "kaspi_feed_upload_poll"
 _JOB_ID_CAMPAIGN_CLEANUP = "campaign_cleanup"
 _JOB_ID_REPRICING_AUTORUN = "repricing_autorun"
 
@@ -748,6 +782,50 @@ def start() -> None:
         elif not getattr(settings, "KASPI_AUTOSYNC_ENABLED", False):
             logger.debug("Kaspi autosync APScheduler job skipped: KASPI_AUTOSYNC_ENABLED=False")
 
+    # Kaspi goods import polling job
+    if should_register_kaspi_import_poll():
+        try:
+            from app.worker.kaspi_import_poll import run_kaspi_import_poll
+
+            interval_seconds = int(getattr(settings, "KASPI_IMPORT_POLL_INTERVAL_SECONDS", 60) or 60)
+            scheduler.add_job(
+                run_kaspi_import_poll,
+                trigger=IntervalTrigger(seconds=interval_seconds),
+                id=_JOB_ID_KASPI_IMPORT_POLL,
+                replace_existing=True,
+                max_instances=1,
+                coalesce=True,
+                misfire_grace_time=60,
+            )
+            logger.info("Kaspi import poll job added (interval=%ds)", interval_seconds)
+        except ImportError as e:
+            logger.warning("Не удалось загрузить kaspi_import_poll: %s", e)
+    else:
+        if not getattr(settings, "KASPI_IMPORT_POLL_ENABLED", False):
+            logger.debug("Kaspi import poll APScheduler job skipped: KASPI_IMPORT_POLL_ENABLED=False")
+
+    # Kaspi feed upload polling job
+    if should_register_kaspi_feed_upload_poll():
+        try:
+            from app.worker.kaspi_feed_upload_poll import run_kaspi_feed_upload_poll
+
+            interval_seconds = int(getattr(settings, "KASPI_FEED_UPLOAD_INTERVAL_SECONDS", 120) or 120)
+            scheduler.add_job(
+                run_kaspi_feed_upload_poll,
+                trigger=IntervalTrigger(seconds=interval_seconds),
+                id=_JOB_ID_KASPI_FEED_UPLOAD_POLL,
+                replace_existing=True,
+                max_instances=1,
+                coalesce=True,
+                misfire_grace_time=60,
+            )
+            logger.info("Kaspi feed upload poll job added (interval=%ds)", interval_seconds)
+        except ImportError as e:
+            logger.warning("Не удалось загрузить kaspi_feed_upload_poll: %s", e)
+    else:
+        if not getattr(settings, "KASPI_FEED_UPLOAD_ENABLED", False):
+            logger.debug("Kaspi feed upload poll APScheduler job skipped: KASPI_FEED_UPLOAD_ENABLED=False")
+
     if _repricing_autorun_enabled():
         import os
 
@@ -826,6 +904,28 @@ def reload_jobs() -> None:
         runner_enabled = _env_truthy(os.getenv("ENABLE_KASPI_SYNC_RUNNER", "0"))
         if runner_enabled:
             logger.info("Kaspi autosync APScheduler job reload skipped: runner enabled")
+
+    try:
+        scheduler.remove_job(_JOB_ID_KASPI_IMPORT_POLL)
+    except Exception:
+        pass
+
+    if should_register_kaspi_import_poll():
+        try:
+            from app.worker.kaspi_import_poll import run_kaspi_import_poll
+
+            interval_seconds = int(getattr(settings, "KASPI_IMPORT_POLL_INTERVAL_SECONDS", 60) or 60)
+            scheduler.add_job(
+                run_kaspi_import_poll,
+                trigger=IntervalTrigger(seconds=interval_seconds),
+                id=_JOB_ID_KASPI_IMPORT_POLL,
+                replace_existing=True,
+                max_instances=1,
+                coalesce=True,
+                misfire_grace_time=60,
+            )
+        except ImportError as e:
+            logger.warning("Не удалось загрузить kaspi_import_poll: %s", e)
 
     try:
         scheduler.remove_job(_JOB_ID_REPRICING_AUTORUN)

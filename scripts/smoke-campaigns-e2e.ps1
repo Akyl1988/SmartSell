@@ -1,25 +1,10 @@
-<#
-Smoke: campaigns E2E (enqueue -> process -> queue visibility)
-
-Usage:
-  pwsh -NoProfile -File .\scripts\smoke-campaigns-e2e.ps1 -BaseUrl http://127.0.0.1:8000 -Identifier platform@local -Password admin -CompanyId 1
-  pwsh -NoProfile -File .\scripts\smoke-campaigns-e2e.ps1 -Identifier platform@local -Password admin -CompanyId 1 -Limit 20 -AllowFailure
-
-Env:
-  BASE_URL, PLATFORM_IDENTIFIER, PLATFORM_PASSWORD, SMARTSELL_PLATFORM_*, COMPANY_ID, LIMIT
-#>
-
 param(
-  [string]$BaseUrl = $env:BASE_URL,
-  [Alias("AdminIdentifier","PlatformIdentifier")][string]$Identifier = $env:PLATFORM_IDENTIFIER,
-  [Alias("AdminPassword","PlatformPassword")][string]$Password = $env:PLATFORM_PASSWORD,
-  [int]$CompanyId = $(if ($env:COMPANY_ID) { [int]$env:COMPANY_ID } else { 0 }),
-  [int]$Limit = $(if ($env:LIMIT) { [int]$env:LIMIT } else { 50 }),
-  [switch]$AllowFailure
+  [string]$BaseUrl = $env:SMARTSELL_BASE_URL
 )
 
-Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
+
+if (-not $BaseUrl) { $BaseUrl = "http://127.0.0.1:8000" }
 
 function Get-ScriptDir {
   if ($PSScriptRoot) { return $PSScriptRoot }
@@ -29,158 +14,240 @@ function Get-ScriptDir {
   return (Get-Location).Path
 }
 
-function Fail([string]$msg) { Write-Host "[FAIL] $msg" -ForegroundColor Red; exit 1 }
-function Ok([string]$msg) { Write-Host "[OK] $msg" -ForegroundColor Green }
-function Info([string]$msg) { Write-Host "[INFO] $msg" -ForegroundColor Cyan }
+$ScriptDir = Get-ScriptDir
+. (Join-Path $ScriptDir "_smoke-lib.ps1")
 
-function Token-Prefix([string]$Value) {
-  if ([string]::IsNullOrWhiteSpace($Value)) { return "" }
-  $token = $Value.Trim()
-  if ($token.Length -le 4) { return ($token + "...") }
-  return ($token.Substring(0, 4) + "...")
+Test-SmokeApiUp -BaseUrl $BaseUrl -TimeoutSec 3 | Out-Null
+
+$authHeaders = Get-SmokeAuthHeader -BaseUrl $BaseUrl
+$accessToken = $null
+if ($authHeaders -and $authHeaders.Authorization) {
+  $accessToken = ([string]$authHeaders.Authorization).Replace("Bearer ", "").Trim()
 }
 
-function Assert-Status([object]$Resp, [int[]]$Allowed, [string]$Label) {
-  $status = [int]($Resp.StatusCode ?? 0)
-  if ($Allowed -notcontains $status) {
-    $body = $Resp.Body
-    $text = if ($body -is [string]) { $body } elseif ($body) { $body | ConvertTo-Json -Depth 20 } else { "" }
-    Fail "$Label failed: status=$status body=$text"
+function Assert-Ok {
+  param(
+    [object]$Resp,
+    [string]$Action
+  )
+  if (-not $Resp) { throw "$Action failed: no response" }
+  $status = $Resp.StatusCode
+  if ($status -lt 200 -or $status -ge 300) {
+    $bodyText = $null
+    try { $bodyText = $Resp.Body | ConvertTo-Json -Depth 10 } catch { $bodyText = $Resp.Body }
+    throw "$Action failed: status=$status body=$bodyText"
   }
+  return $Resp.Body
 }
 
-function Print-Queue([object]$Items, [int]$Max) {
-  if (-not $Items) { return }
-  $Items | Select-Object -First $Max | Select-Object id, company_id, processing_status, attempts, last_error, queued_at, started_at, finished_at, failed_at, request_id | Format-Table -AutoSize
+function Get-RespItems {
+  param([object]$Body)
+  if (-not $Body) { return @() }
+  if ($Body.PSObject.Properties["items"]) { return @($Body.items) }
+  if ($Body.PSObject.Properties["data"]) { return @($Body.data) }
+  return @()
 }
 
-if (-not $BaseUrl) { $BaseUrl = "http://127.0.0.1:8000" }
-
-$scriptDir = Get-ScriptDir
-. (Join-Path $scriptDir "_smoke-lib.ps1")
-
-$identifierProvided = $PSBoundParameters.ContainsKey("Identifier") -or $PSBoundParameters.ContainsKey("AdminIdentifier")
-$passwordProvided = $PSBoundParameters.ContainsKey("Password") -or $PSBoundParameters.ContainsKey("AdminPassword")
-
-if (-not $identifierProvided -and -not $Identifier) { $Identifier = $env:PLATFORM_IDENTIFIER }
-if (-not $passwordProvided -and -not $Password) { $Password = $env:PLATFORM_PASSWORD }
-if (-not $Identifier) { $Identifier = $env:SMARTSELL_PLATFORM_IDENTIFIER }
-if (-not $Password) { $Password = $env:SMARTSELL_PLATFORM_PASSWORD }
-if (-not $Identifier) { $Identifier = $env:SMARTSELL_PLATFORM_ADMIN_IDENTIFIER }
-if (-not $Password) { $Password = $env:SMARTSELL_PLATFORM_ADMIN_PASSWORD }
-
-$access = $null
-$refresh = $null
-if ($CompanyId -le 0) {
-  Fail "CompanyId is required. Provide -CompanyId or set COMPANY_ID."
+function Get-Id {
+  param([object]$Obj)
+  if (-not $Obj) { return $null }
+  $prop = $Obj.PSObject.Properties["id"]
+  if ($prop) { return $prop.Value }
+  return $null
 }
 
-$authHeaders = Ensure-SmartsellAuth -BaseUrl $BaseUrl -Identifier $Identifier -Password $Password -AccessToken $access -RefreshToken $refresh
-$access = (($authHeaders.Authorization ?? "") -replace "^Bearer\s+", "").Trim()
-$refresh = $script:SmartsellRefreshToken
-if ($access) { Ok ("Token loaded: " + (Token-Prefix $access)) }
+function Get-PropValue {
+  param(
+    [object]$Obj,
+    [string]$Name
+  )
+  if (-not $Obj) { return $null }
+  $prop = $Obj.PSObject.Properties[$Name]
+  if ($prop) { return $prop.Value }
+  return $null
+}
 
-$campaignId = $null
-$seedUrl = "$BaseUrl/api/v1/admin/dev/seed/campaign_due?company_id=$CompanyId"
-Info "Seed campaign (dev/test endpoint): $seedUrl"
-$seedResp = Invoke-SmartsellApi -Method "POST" -Url $seedUrl -TimeoutSec 20 -AccessToken $access -RefreshToken $refresh -Identifier $Identifier -Password $Password
-if ($seedResp.StatusCode -ge 200 -and $seedResp.StatusCode -lt 300) {
-  $campaignId = $seedResp.Body.campaign_id
-  if ($campaignId) { Ok "Seeded campaign_id=$campaignId" }
+function Invoke-Api {
+  param(
+    [string]$Method,
+    [string]$Url,
+    [object]$Body = $null,
+    [int]$TimeoutSec = 20
+  )
+  return Invoke-SmartsellApi -Method $Method -Url $Url -Body $Body -TimeoutSec $TimeoutSec -AccessToken $accessToken
+}
+
+function Format-RespBrief {
+  param([object]$Resp)
+  if (-not $Resp) { return "status=(no response) body=(none)" }
+  $status = $Resp.StatusCode
+  $bodyText = $null
+  try { $bodyText = $Resp.Body | ConvertTo-Json -Depth 8 } catch { $bodyText = $Resp.Body }
+  return "status=$status body=$bodyText"
+}
+
+function Try-Get-Profile {
+  $meResp = Invoke-Api -Method "GET" -Url "$BaseUrl/api/v1/auth/me"
+  if ($meResp.StatusCode -ge 200 -and $meResp.StatusCode -lt 300) { return $meResp.Body }
+  return $null
+}
+
+function Try-Seed-DbCampaign {
+  param([int]$CompanyId)
+  $seedUrl = "$BaseUrl/api/v1/admin/dev/seed/campaign_due"
+  if ($CompanyId -gt 0) { $seedUrl = "${seedUrl}?company_id=$CompanyId" }
+  $seedResp = Invoke-Api -Method "POST" -Url $seedUrl -TimeoutSec 60
+  if ($seedResp.StatusCode -eq 403 -or $seedResp.StatusCode -eq 404) {
+    Write-Host "[WARN] Seed campaign endpoint not available for this token (403/404)"
+    return $null
+  }
+  $seedBody = Assert-Ok -Resp $seedResp -Action "Seed campaign"
+  return (Get-PropValue -Obj $seedBody -Name "campaign_id")
+}
+
+function Get-CampaignState {
+  param([int]$CampaignId)
+  $resp = Invoke-Api -Method "GET" -Url "$BaseUrl/api/v1/campaigns/$CampaignId"
+  if ($resp.StatusCode -ge 200 -and $resp.StatusCode -lt 300) { return @{ source = "store"; body = $resp.Body } }
+
+  $adminResp = Invoke-Api -Method "GET" -Url "$BaseUrl/api/v1/admin/campaigns/$CampaignId"
+  if ($adminResp.StatusCode -ge 200 -and $adminResp.StatusCode -lt 300) { return @{ source = "admin"; body = $adminResp.Body } }
+
+  return $null
+}
+
+$runId = ([guid]::NewGuid().ToString("N")).Substring(0, 8)
+$title = "Smoke Campaign $runId"
+$allowSkip = $false
+$allowSkipRaw = ($env:SMARTSELL_SMOKE_ALLOW_SKIP ?? "").ToString().Trim().ToLower()
+if ($allowSkipRaw -in @("1", "true", "yes", "on")) { $allowSkip = $true }
+
+$campaignPayload = @{
+  title = $title
+  description = "Smoke campaigns run $runId"
+  messages = @(
+    @{
+      recipient = "smoke+$runId@example.com"
+      content = "Smoke campaigns $runId"
+      status = "pending"
+      channel = "email"
+    }
+  )
+  tags = @("smoke", "campaign")
+  active = $true
+}
+
+$createResp = Invoke-Api -Method "POST" -Url "$BaseUrl/api/v1/campaigns/" -Body $campaignPayload
+if ($createResp.StatusCode -eq 409) {
+  Write-Host "[WARN] Campaign title already exists; reusing existing campaign"
+  $listResp = Invoke-Api -Method "GET" -Url "$BaseUrl/api/v1/campaigns/?page=1&size=50&order=desc"
+  $listBody = Assert-Ok -Resp $listResp -Action "List campaigns"
+  $items = @(Get-RespItems -Body $listBody)
+  $match = $items | Where-Object { $_.title -eq $title } | Select-Object -First 1
+  if (-not $match) { throw "Campaign create failed and no existing campaign found" }
+  $campaign = $match
 } else {
-  Info "Seed endpoint not available; continuing without seed"
+  $campaign = Assert-Ok -Resp $createResp -Action "Create campaign"
 }
 
-if (-not $campaignId) {
-  $createUrl = "$BaseUrl/api/v1/campaigns/"
-  $payload = @{
-    title = "Smoke E2E " + ([guid]::NewGuid().ToString("N").Substring(0, 8))
-    description = "smoke-e2e"
-    messages = @(
-      @{ recipient = "smoke@example.com"; content = "Smoke message"; status = "pending"; channel = "email" }
-    )
-    tags = @("smoke")
-    active = $true
-  }
-  Info "Create campaign via /api/v1/campaigns/ (store_admin only)"
-  $createResp = Invoke-SmartsellApi -Method "POST" -Url $createUrl -Body $payload -TimeoutSec 20 -AccessToken $access -RefreshToken $refresh -Identifier $Identifier -Password $Password
-  if ($createResp.StatusCode -ge 200 -and $createResp.StatusCode -lt 300) {
-    $campaignId = $createResp.Body.id
-    if ($campaignId) { Ok "Created campaign_id=$campaignId" }
-  } else {
-    Info "Create campaign not allowed for current user; continuing without create"
-  }
+$campaignId = Get-Id -Obj $campaign
+if (-not $campaignId) { throw "Missing campaign id" }
+
+$stateBefore = Get-CampaignState -CampaignId $campaignId
+$beforeQueuedAt = $null
+$beforeAttempts = $null
+if ($stateBefore) {
+  $beforeQueuedAt = Get-PropValue -Obj $stateBefore.body -Name "queued_at"
+  $beforeAttempts = Get-PropValue -Obj $stateBefore.body -Name "attempts"
 }
 
-$runUrl = "$BaseUrl/api/v1/admin/tasks/campaigns/run?company_id=$CompanyId"
-Info "POST $runUrl"
-$runResp = Invoke-SmartsellApi -Method "POST" -Url $runUrl -Body @{} -TimeoutSec 30 -AccessToken $access -RefreshToken $refresh -Identifier $Identifier -Password $Password
-Assert-Status -Resp $runResp -Allowed @(200) -Label "campaigns run"
-Write-Host ("run response: " + ($runResp.Body | ConvertTo-Json -Depth 20))
-
-$queueUrl = "$BaseUrl/api/v1/admin/campaigns/queue?companyId=$CompanyId&limit=$Limit"
-Info "GET $queueUrl"
-$queueResp = Invoke-SmartsellApi -Method "GET" -Url $queueUrl -TimeoutSec 20 -AccessToken $access -RefreshToken $refresh -Identifier $Identifier -Password $Password
-Assert-Status -Resp $queueResp -Allowed @(200) -Label "queue list"
-$items = $queueResp.Body
-Print-Queue -Items $items -Max $Limit
-
-if (-not $campaignId -and $items -and $items.Count -gt 0) {
-  $campaignId = $items[0].id
-  if ($campaignId) { Info "Using campaign_id=$campaignId from queue" }
-}
-
-if (-not $campaignId) {
-  Write-Host "no campaigns"
-  exit 0
-}
-
-function Get-CampaignStatus([int]$Id) {
-  $url = "$BaseUrl/api/v1/admin/campaigns/$Id"
-  $resp = Invoke-SmartsellApi -Method "GET" -Url $url -TimeoutSec 20 -AccessToken $access -RefreshToken $refresh -Identifier $Identifier -Password $Password
-  return $resp
-}
-
-$finalResp = $null
-for ($i = 0; $i -lt 6; $i++) {
-  Start-Sleep -Seconds 1
-  $finalResp = Get-CampaignStatus -Id $campaignId
-  if ($finalResp.StatusCode -ge 200 -and $finalResp.StatusCode -lt 300) {
-    $ps = $finalResp.Body.processing_status
-    if ($ps -in @("done", "failed")) { break }
-  }
-}
-
-if ($finalResp -and $finalResp.StatusCode -ge 200 -and $finalResp.StatusCode -lt 300) {
-  $status = $finalResp.Body.processing_status
-  $lastError = $finalResp.Body.last_error
-  Info "Final status: $status last_error=$lastError"
-
-  if ($status -eq "failed" -and $lastError -eq "max_attempts_exceeded") {
-    $requeueUrl = "$BaseUrl/api/v1/admin/campaigns/$campaignId/requeue?force=false"
-    Info "Requeue due to max_attempts_exceeded: $requeueUrl"
-    $requeueResp = Invoke-SmartsellApi -Method "POST" -Url $requeueUrl -TimeoutSec 20 -AccessToken $access -RefreshToken $refresh -Identifier $Identifier -Password $Password
-    Assert-Status -Resp $requeueResp -Allowed @(200, 409) -Label "requeue"
-
-    Info "Re-run campaigns task"
-    $rerunResp = Invoke-SmartsellApi -Method "POST" -Url $runUrl -Body @{} -TimeoutSec 30 -AccessToken $access -RefreshToken $refresh -Identifier $Identifier -Password $Password
-    Assert-Status -Resp $rerunResp -Allowed @(200) -Label "campaigns run (retry)"
-
-    $finalResp = Get-CampaignStatus -Id $campaignId
-    $status = $finalResp.Body.processing_status
-    $lastError = $finalResp.Body.last_error
-    Info "Final status after retry: $status last_error=$lastError"
+$runResp = Invoke-Api -Method "POST" -Url "$BaseUrl/api/v1/campaigns/$campaignId/run" -TimeoutSec 60
+$runBody = $null
+$skipRun = $false
+$seedResp = $null
+if ($runResp.StatusCode -eq 404) {
+  $runCode = Get-PropValue -Obj $runResp.Body -Name "code"
+  if (-not $runCode) { $runCode = Get-PropValue -Obj $runResp.Body -Name "detail" }
+  if ($runCode -ne "campaign_not_found") {
+    $runInfo = Format-RespBrief -Resp $runResp
+    throw "Campaign run endpoint returned 404 (non campaign_not_found): $runInfo"
   }
 
-  if ($status -eq "done") {
-    Ok "DONE"
+  $profile = Try-Get-Profile
+  $companyId = 0
+  if ($profile) { $companyId = [int](Get-PropValue -Obj $profile -Name "company_id") }
+  $seedResp = Invoke-Api -Method "POST" -Url ("$BaseUrl/api/v1/admin/dev/seed/campaign_due" + ($(if ($companyId -gt 0) { "?company_id=$companyId" } else { "" }))) -TimeoutSec 60
+  if ($seedResp.StatusCode -eq 403 -or $seedResp.StatusCode -eq 404) {
+    Write-Host "[WARN] Seed campaign endpoint not available for this token (403/404)"
+    if (-not $allowSkip) {
+      $runInfo = Format-RespBrief -Resp $runResp
+      $seedInfo = Format-RespBrief -Resp $seedResp
+      throw "E2E impossible: campaigns storage mismatch (create uses non-DB storage) and admin seed not available for this token. run=$runInfo seed=$seedInfo"
+    }
+    Write-Host "[WARN] SMARTSELL_SMOKE_ALLOW_SKIP=1; skipping campaigns run"
     exit 0
   }
+  $seedBody = Assert-Ok -Resp $seedResp -Action "Seed campaign"
+  $seededId = Get-PropValue -Obj $seedBody -Name "campaign_id"
+  if ($seededId) {
+    $campaignId = [int]$seededId
+    $runResp = Invoke-Api -Method "POST" -Url "$BaseUrl/api/v1/campaigns/$campaignId/run" -TimeoutSec 60
+  }
 }
 
-if ($AllowFailure) {
-  Write-Host "AllowFailure enabled; exiting 0"
-  exit 0
+if ($runResp.StatusCode -eq 404) {
+  $runInfo = Format-RespBrief -Resp $runResp
+  throw "Campaign run failed: $runInfo"
+} elseif ($runResp.StatusCode -eq 409) {
+  Write-Host "[WARN] Campaign run already queued"
+  $runBody = $runResp.Body
+} else {
+  $runBody = Assert-Ok -Resp $runResp -Action "Run campaign"
 }
 
-Fail "Campaign did not reach done status"
+$runRequestId = Get-PropValue -Obj $runBody -Name "request_id"
+if (-not $runRequestId) { $runRequestId = Get-PropValue -Obj $runBody -Name "requestId" }
+
+$processResp = Invoke-Api -Method "POST" -Url "$BaseUrl/api/v1/admin/tasks/campaigns/process/run?limit=100" -TimeoutSec 60
+if ($processResp.StatusCode -eq 403 -or $processResp.StatusCode -eq 404) {
+  Write-Host "[WARN] Campaigns process task not available for this token (403/404); skipping"
+} else {
+  $null = Assert-Ok -Resp $processResp -Action "Process campaigns"
+}
+
+$changed = $false
+for ($i = 0; $i -lt 10; $i++) {
+  Start-Sleep -Milliseconds 500
+  $state = Get-CampaignState -CampaignId $campaignId
+  if (-not $state) { continue }
+  $queuedAt = Get-PropValue -Obj $state.body -Name "queued_at"
+  $attempts = Get-PropValue -Obj $state.body -Name "attempts"
+  $processing = Get-PropValue -Obj $state.body -Name "processing_status"
+  if ($queuedAt -and $queuedAt -ne $beforeQueuedAt) { $changed = $true; break }
+  if ($attempts -and $beforeAttempts -ne $null -and [int]$attempts -gt [int]$beforeAttempts) { $changed = $true; break }
+  if ($processing -in @("done", "failed", "processing", "queued")) { $changed = $true; break }
+}
+
+if (-not $changed) {
+  $stateInfo = $null
+  if ($state) { $stateInfo = "processing_status=$processing queued_at=$queuedAt attempts=$attempts" }
+  throw "Campaign run did not update status in time. $stateInfo"
+}
+
+$cleanupResp = Invoke-Api -Method "POST" -Url "$BaseUrl/api/v1/admin/tasks/campaigns/cleanup/run?limit=100&done_days=1&failed_days=1" -TimeoutSec 60
+if ($cleanupResp.StatusCode -eq 403 -or $cleanupResp.StatusCode -eq 404) {
+  Write-Host "[WARN] Campaigns cleanup task not available for this token (403/404); deleting campaign"
+  $deleteResp = Invoke-Api -Method "DELETE" -Url "$BaseUrl/api/v1/campaigns/$campaignId"
+  if ($deleteResp.StatusCode -ne 204 -and $deleteResp.StatusCode -ne 200 -and $deleteResp.StatusCode -ne 404) {
+    $null = Assert-Ok -Resp $deleteResp -Action "Delete campaign"
+  }
+} else {
+  $null = Assert-Ok -Resp $cleanupResp -Action "Cleanup campaigns"
+}
+
+Write-Host "OK: campaigns e2e complete"
+Write-Host ("  campaign_id: {0}" -f $campaignId)
+if ($runRequestId) {
+  Write-Host ("  run_id: {0}" -f $runRequestId)
+}
+Write-Host ("  cache: {0}" -f (Get-SmokeCachePath))

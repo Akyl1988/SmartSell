@@ -15,6 +15,8 @@ Kaspi.kz integration: product feed generation, orders sync, and availability syn
 
 import asyncio
 import hashlib
+import inspect
+import json
 import os
 import random
 from collections.abc import AsyncIterator, Mapping
@@ -23,10 +25,11 @@ from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from time import perf_counter
 from typing import Any, Optional
+from urllib.parse import urlparse, urlunparse
 
 import anyio
 import httpx
-from sqlalchemy import and_, literal_column, select, text
+from sqlalchemy import and_, literal_column, select, text, update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from sqlalchemy.orm import selectinload
@@ -37,8 +40,12 @@ from app.core.errors import safe_error_message
 from app.core.logging import get_logger
 from app.integrations.kaspi_adapter import KaspiAdapterError
 from app.models import Order, OrderItem, Product
+from app.models.kaspi_catalog_item import KaspiCatalogItem
 from app.models.kaspi_order_sync_state import KaspiOrderSyncState
 from app.models.order import OrderSource, OrderStatus, OrderStatusHistory
+from app.models.preorder import Preorder, PreorderItem, PreorderStatus
+from app.services.preorder_policy import evaluate_preorder_state
+from app.services.preorders import cancel_preorder, confirm_preorder, fulfill_preorder
 
 logger = get_logger(__name__)
 
@@ -50,6 +57,13 @@ class KaspiSyncAlreadyRunning(RuntimeError):
 class KaspiBadRequestError(RuntimeError):
     def __init__(self, message: str, *, status_code: int | None = None):
         super().__init__(message)
+        self.status_code = status_code
+
+
+class KaspiProductsUpstreamError(RuntimeError):
+    def __init__(self, code: str, *, status_code: int | None = None):
+        super().__init__(code)
+        self.code = code
         self.status_code = status_code
 
 
@@ -68,6 +82,99 @@ def _utcnow() -> datetime:
 
 def _as_str(v: Any) -> str:
     return "" if v is None else str(v)
+
+
+DEFAULT_KASPI_ORDER_STATES = (
+    "NEW",
+    "SIGN_REQUIRED",
+    "PICKUP",
+    "DELIVERY",
+    "KASPI_DELIVERY",
+    "ARCHIVE",
+)
+
+
+def _parse_kaspi_states(raw: Any) -> list[str]:
+    if raw is None:
+        return []
+    if isinstance(raw, str):
+        parts = [part.strip() for part in raw.replace(";", ",").split(",")]
+        return [part.upper() for part in parts if part]
+    if isinstance(raw, list | tuple | set):
+        states: list[str] = []
+        for item in raw:
+            if item is None:
+                continue
+            value = str(item).strip()
+            if not value:
+                continue
+            states.append(value.upper())
+        return states
+    return []
+
+
+def _normalize_address(value: Any) -> str | None:
+    if value is None:
+        return None
+    if isinstance(value, str):
+        return value
+    if isinstance(value, dict | list):
+        try:
+            return json.dumps(value, separators=(",", ":"), sort_keys=True)
+        except (TypeError, ValueError):
+            return str(value)
+    return str(value)
+
+
+def _extract_kaspi_order_attrs(payload: dict[str, Any]) -> dict[str, Any]:
+    keys = (
+        "plannedDeliveryDate",
+        "reservationDate",
+        "preOrder",
+        "deliveryMode",
+        "deliveryAddress",
+        "deliveryCost",
+        "deliveryCostForSeller",
+        "isKaspiDelivery",
+    )
+    return {key: payload[key] for key in keys if key in payload}
+
+
+def _epoch_ms_to_utc_iso(value: Any) -> str | None:
+    if isinstance(value, bool) or not isinstance(value, int | float):
+        return None
+    try:
+        ms = int(value)
+    except (TypeError, ValueError):
+        return None
+    if ms <= 0:
+        return None
+    dt = datetime.utcfromtimestamp(ms / 1000)
+    return f"{dt.isoformat(timespec='seconds')}Z"
+
+
+def _merge_kaspi_internal_notes(existing: Any, kaspi_attrs: dict[str, Any]) -> dict[str, Any]:
+    base: dict[str, Any]
+    if existing is None:
+        base = {}
+    elif isinstance(existing, dict):
+        base = dict(existing)
+    elif isinstance(existing, str):
+        try:
+            parsed = json.loads(existing) if existing.strip() else {}
+        except json.JSONDecodeError:
+            parsed = {"text": existing}
+        base = parsed if isinstance(parsed, dict) else {"text": existing}
+    else:
+        base = {}
+
+    kaspi = base.get("kaspi")
+    if not isinstance(kaspi, dict):
+        kaspi = {}
+    for key, value in kaspi_attrs.items():
+        kaspi[key] = value
+    base["kaspi"] = kaspi
+    return base
 
 
 def _first_present(data: Mapping[str, Any], *keys: str) -> Any | None:
@@ -117,6 +224,50 @@ def _safe_httpx_url_path(exc: Exception) -> str | None:
         return None
 
 
+def _mask_token(value: str | None, *, head: int = 6, tail: int = 4) -> str:
+    if not value:
+        return ""
+    if len(value) <= head + tail:
+        return value
+    return f"{value[:head]}...{value[-tail:]}"
+
+
+def _response_snippet(value: str | None, limit: int = 800) -> str:
+    if not value:
+        return ""
+    text_value = value.strip()
+    if len(text_value) <= limit:
+        return text_value
+    return f"{text_value[:limit]}..."
+
+
+def _extract_httpx_root_cause(exc: Exception) -> tuple[str | None, str | None]:
+    cause = getattr(exc, "__cause__", None) or getattr(exc, "__context__", None)
+    if not cause:
+        return None, None
+    return type(cause).__name__, str(cause)
+
+
+def _classify_httpx_error(exc: Exception, root_type: str | None, root_message: str | None) -> str:
+    if isinstance(exc, httpx.TimeoutException):
+        return "timeout"
+    if isinstance(exc, httpx.ConnectTimeout):
+        return "connect_timeout"
+    if isinstance(exc, httpx.ReadTimeout):
+        return "read_timeout"
+    if isinstance(exc, httpx.WriteTimeout):
+        return "write_timeout"
+    if isinstance(exc, httpx.ConnectError):
+        return "connect_error"
+    cause_type = (root_type or "").lower()
+    cause_msg = (root_message or "").lower()
+    if "ssl" in cause_type or "tls" in cause_type or "ssl" in cause_msg or "tls" in cause_msg:
+        return "tls_error"
+    if "dns" in cause_type or "gaierror" in cause_type or "name or service" in cause_msg:
+        return "dns_error"
+    return "request_error"
+
+
 def _extract_kaspi_error_title(payload: Any) -> str | None:
     if not isinstance(payload, dict):
         return None
@@ -132,6 +283,18 @@ def _extract_kaspi_error_title(payload: Any) -> str | None:
     if "detail" in payload and payload.get("detail"):
         return str(payload.get("detail"))
     return None
+
+
+def _normalize_kaspi_base_url(value: str) -> str:
+    if not value:
+        return value
+    parsed = urlparse(value)
+    if not parsed.netloc:
+        return value
+    path = (parsed.path or "").rstrip("/")
+    if parsed.netloc.endswith("kaspi.kz") and path in {"", "/"}:
+        return urlunparse(parsed._replace(path="/shop/api"))
+    return value
 
 
 # ---------------------- resilient HTTP client ---------------------- #
@@ -209,7 +372,8 @@ class KaspiService:
     def __init__(self, api_key: Optional[str] = None, base_url: Optional[str] = None):
         # Читаем из settings, но допускаем явную прокидку при создании сервиса
         self.api_key = api_key or getattr(settings, "KASPI_API_TOKEN", "") or ""
-        self.base_url = (base_url or getattr(settings, "KASPI_API_URL", "") or "").rstrip("/")
+        raw_base_url = (base_url or getattr(settings, "KASPI_API_URL", "") or "").rstrip("/")
+        self.base_url = _normalize_kaspi_base_url(raw_base_url)
         self.headers = {
             "Authorization": f"Bearer {self.api_key}" if self.api_key else "",
             "Content-Type": "application/json",
@@ -238,6 +402,33 @@ class KaspiService:
         effective_timeout = 30.0 if timeout is None else timeout
         effective_retries = 2 if retries is None else max(0, int(retries))
         return _RetryingAsyncClient(timeout=effective_timeout, retries=effective_retries, backoff_base=backoff_base)
+
+    def _products_timeout(self) -> httpx.Timeout:
+        total_timeout = max(60.0, float(getattr(settings, "KASPI_HTTP_TIMEOUT_SEC", 60) or 60))
+        connect_timeout = max(20.0, float(getattr(settings, "KASPI_ORDERS_CONNECT_TIMEOUT_SEC", 20) or 20))
+        return httpx.Timeout(total_timeout, connect=connect_timeout)
+
+    def _products_client(self) -> httpx.AsyncClient:
+        limits = httpx.Limits(max_connections=1, max_keepalive_connections=0)
+        headers = {
+            "Connection": "close",
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120 Safari/537.36",
+            "Accept": "application/json",
+        }
+        return httpx.AsyncClient(
+            timeout=self._products_timeout(),
+            limits=limits,
+            headers=headers,
+            trust_env=False,
+            http2=False,
+        )
+
+    def _products_headers(self) -> dict[str, str]:
+        headers = {"Accept": "application/json"}
+        if self.api_key:
+            headers["X-Auth-Token"] = self.api_key
+        return headers
 
     def _orders_timeout(self, total_sec: float | None = None) -> httpx.Timeout:
         if total_sec is not None:
@@ -279,15 +470,19 @@ class KaspiService:
         transport = httpx.AsyncHTTPTransport(http2=False)
         return httpx.AsyncClient(timeout=timeout, trust_env=False, transport=transport)
 
-    async def _orders_http_get(
+    async def _orders_http_request(
         self,
         *,
+        method: str,
         url: str,
         headers: dict[str, str],
-        params: list[tuple[str, object]],
+        params: list[tuple[str, object]] | None,
+        json: dict[str, Any] | None,
         timeout: httpx.Timeout,
     ) -> httpx.Response:
         transport_mode = str(getattr(settings, "KASPI_ORDERS_TRANSPORT", "async") or "async").lower()
+        method_value = method.upper()
+        wants_get = method_value == "GET"
 
         if transport_mode == "sync":
             read_timeout = getattr(timeout, "read", None)
@@ -301,19 +496,40 @@ class KaspiService:
             def _do_request() -> httpx.Response:
                 transport = httpx.HTTPTransport(http2=False)
                 with httpx.Client(timeout=sync_timeout, trust_env=False, transport=transport) as client:
-                    return client.get(url, headers=headers, params=params)
+                    if wants_get and callable(getattr(client, "get", None)):
+                        return client.get(url, headers=headers, params=params)
+                    return client.request(method_value, url, headers=headers, params=params, json=json)
 
             return await anyio.to_thread.run_sync(_do_request, abandon_on_cancel=True)
 
         async with self._orders_client(timeout=timeout) as client:
-            return await client.get(url, headers=headers, params=params)
+            if wants_get and callable(getattr(client, "get", None)):
+                return await client.get(url, headers=headers, params=params)
+            return await client.request(method_value, url, headers=headers, params=params, json=json)
+
+    async def _orders_http_get(
+        self,
+        *,
+        url: str,
+        headers: dict[str, str],
+        params: list[tuple[str, object]],
+        timeout: httpx.Timeout,
+    ) -> httpx.Response:
+        return await self._orders_http_request(
+            method="GET",
+            url=url,
+            headers=headers,
+            params=params,
+            json=None,
+            timeout=timeout,
+        )
 
     def _orders_params(
         self,
         *,
         date_from: datetime,
         date_to: datetime,
-        status: str | None,
+        state: str | None,
         page: int,
         page_size: int,
         merchant_uid: str | None,
@@ -330,8 +546,8 @@ class KaspiService:
         ]
         if merchant_uid:
             params.append(("filter[orders][merchantUid]", merchant_uid))
-        if status:
-            params.append(("filter[orders][state]", status))
+        if state:
+            params.append(("filter[orders][state]", state))
         if include_entries:
             params.append(("include[orders]", "entries"))
         return params
@@ -461,6 +677,7 @@ class KaspiService:
         *,
         date_from: Optional[datetime] = None,
         date_to: Optional[datetime] = None,
+        state: Optional[str] = None,
         status: Optional[str] = None,
         page: int = 1,
         page_size: int = 100,
@@ -480,10 +697,11 @@ class KaspiService:
         if not date_to:
             date_to = _utcnow()
 
+        effective_state = state or status
         params = self._orders_params(
             date_from=date_from,
             date_to=date_to,
-            status=status,
+            state=effective_state,
             page=page,
             page_size=page_size,
             merchant_uid=merchant_uid,
@@ -529,10 +747,10 @@ class KaspiService:
         )
         if _diag_enabled():
             logger.info(
-                "[CI_DIAG] get_orders REAL HTTP CALL: page=%s page_size=%s status=%s monotonic=%s",
+                "[CI_DIAG] get_orders REAL HTTP CALL: page=%s page_size=%s state=%s monotonic=%s",
                 page,
                 page_size,
-                status,
+                effective_state,
                 perf_counter(),
             )
 
@@ -756,22 +974,318 @@ class KaspiService:
             logger.warning("Kaspi verify_token: network error store=%s error=%s", store_name or "N/A", type(e).__name__)
             raise
 
+    def _extract_action_status(self, payload: Any) -> str | None:
+        if not isinstance(payload, dict):
+            return None
+        data = payload.get("data")
+        if isinstance(data, dict):
+            attrs = data.get("attributes") if isinstance(data.get("attributes"), dict) else {}
+            return attrs.get("state") or attrs.get("status") or data.get("state") or data.get("status") or None
+        return payload.get("state") or payload.get("status") or None
+
+    def _parse_retry_after(self, response: httpx.Response) -> int | None:
+        value = response.headers.get("Retry-After") if response is not None else None
+        if not value:
+            return None
+        try:
+            return max(0, int(value))
+        except (TypeError, ValueError):
+            return None
+
+    async def _order_action(
+        self,
+        *,
+        action: str,
+        external_id: str,
+        merchant_uid: str | None,
+        request_id: str | None,
+        timeout_seconds: float | None = None,
+    ) -> dict[str, Any]:
+        timeout_obj = self._orders_timeout(timeout_seconds)
+        params: list[tuple[str, object]] = []
+        if merchant_uid:
+            params.append(("merchantUid", merchant_uid))
+
+        if action == "accept":
+            url = settings.kaspi_order_accept_url(external_id)
+            default_status = "CONFIRMED"
+        else:
+            url = settings.kaspi_order_cancel_url(external_id)
+            default_status = "CANCELLED"
+
+        try:
+            resp = await self._orders_http_request(
+                method="POST",
+                url=url,
+                headers=self._orders_headers(),
+                params=params,
+                json=None,
+                timeout=timeout_obj,
+            )
+        except httpx.TimeoutException:
+            return {
+                "ok": False,
+                "status": "error",
+                "code": "upstream_unavailable",
+                "message": "kaspi_timeout",
+                "request_id": request_id,
+                "upstream_status_code": None,
+                "http_status": 502,
+            }
+        except httpx.RequestError:
+            return {
+                "ok": False,
+                "status": "error",
+                "code": "upstream_unavailable",
+                "message": "kaspi_upstream_error",
+                "request_id": request_id,
+                "upstream_status_code": None,
+                "http_status": 502,
+            }
+
+        status_code = resp.status_code
+        if status_code in {401, 403}:
+            return {
+                "ok": False,
+                "status": "error",
+                "code": "upstream_auth_failed",
+                "message": "kaspi_auth_failed",
+                "request_id": request_id,
+                "upstream_status_code": status_code,
+                "http_status": 502,
+            }
+        if status_code == 404:
+            return {
+                "ok": False,
+                "status": "error",
+                "code": "upstream_not_found",
+                "message": "kaspi_not_found",
+                "request_id": request_id,
+                "upstream_status_code": status_code,
+                "http_status": 404,
+            }
+        if status_code in {409, 423}:
+            return {
+                "ok": False,
+                "status": "locked",
+                "code": "locked",
+                "message": "kaspi_locked",
+                "request_id": request_id,
+                "upstream_status_code": status_code,
+                "http_status": 423,
+            }
+        if status_code == 429:
+            return {
+                "ok": False,
+                "status": "rate_limited",
+                "code": "rate_limited",
+                "message": "kaspi_rate_limited",
+                "request_id": request_id,
+                "upstream_status_code": status_code,
+                "retry_after": self._parse_retry_after(resp),
+                "http_status": 429,
+            }
+        if status_code >= 500:
+            return {
+                "ok": False,
+                "status": "error",
+                "code": "upstream_unavailable",
+                "message": "kaspi_upstream_unavailable",
+                "request_id": request_id,
+                "upstream_status_code": status_code,
+                "http_status": 502,
+            }
+        if status_code >= 400:
+            return {
+                "ok": False,
+                "status": "error",
+                "code": "upstream_error",
+                "message": "kaspi_upstream_error",
+                "request_id": request_id,
+                "upstream_status_code": status_code,
+                "http_status": 502,
+            }
+
+        payload: Any = None
+        try:
+            payload = resp.json()
+        except Exception:
+            payload = None
+
+        kaspi_status = self._extract_action_status(payload) or default_status
+        mapped_status = self._map_kaspi_status(kaspi_status)
+        return {
+            "ok": True,
+            "status": "success",
+            "code": "ok",
+            "message": f"kaspi_order_{action}_success",
+            "request_id": request_id,
+            "upstream_status_code": status_code,
+            "mapped_status": mapped_status,
+            "kaspi_status": kaspi_status,
+            "http_status": 200,
+        }
+
+    async def accept_order(
+        self,
+        *,
+        external_id: str,
+        merchant_uid: str | None,
+        request_id: str | None,
+        timeout_seconds: float | None = None,
+    ) -> dict[str, Any]:
+        return await self._order_action(
+            action="accept",
+            external_id=external_id,
+            merchant_uid=merchant_uid,
+            request_id=request_id,
+            timeout_seconds=timeout_seconds,
+        )
+
+    async def cancel_order(
+        self,
+        *,
+        external_id: str,
+        merchant_uid: str | None,
+        request_id: str | None,
+        timeout_seconds: float | None = None,
+    ) -> dict[str, Any]:
+        return await self._order_action(
+            action="cancel",
+            external_id=external_id,
+            merchant_uid=merchant_uid,
+            request_id=request_id,
+            timeout_seconds=timeout_seconds,
+        )
+
     # ---------------------- Products API ---------------------- #
 
-    async def get_products(self, *, page: int = 1, page_size: int = 100) -> list[dict[str, Any]]:
-        async with self._client() as client:
-            try:
+    async def get_products(
+        self,
+        *,
+        page: int = 1,
+        page_size: int = 100,
+        company_id: int | None = None,
+        store_name: str | None = None,
+        request_id: str | None = None,
+    ) -> list[dict[str, Any]]:
+        url = self._url("/products")
+        params = {"page": page, "pageSize": page_size}
+        masked_token = _mask_token(self.api_key)
+        try:
+            async with self._products_client() as client:
                 resp = await client.get(
-                    self._url("/products"),
-                    headers=self.headers,
-                    params={"page": page, "pageSize": page_size},
+                    url,
+                    headers=self._products_headers(),
+                    params=params,
                 )
-                resp.raise_for_status()
-                data = resp.json() or {}
-                return data.get("products") or data.get("items") or []
-            except httpx.HTTPError as e:
-                logger.error("Kaspi get_products error: %s", e)
-                raise RuntimeError(f"Failed to fetch products from Kaspi: {e}") from e
+        except httpx.TimeoutException as exc:
+            root_type, root_message = _extract_httpx_root_cause(exc)
+            error_kind = _classify_httpx_error(exc, root_type, root_message)
+            logger.warning(
+                "Kaspi get_products timeout",
+                extra={
+                    "company_id": company_id,
+                    "store_name": store_name,
+                    "request_id": request_id,
+                    "url": url,
+                    "params": params,
+                    "token_masked": masked_token,
+                    "exc_type": type(exc).__name__,
+                    "exc_repr": repr(exc),
+                    "error_kind": error_kind,
+                },
+            )
+            raise KaspiProductsUpstreamError(error_kind) from exc
+        except httpx.RequestError as exc:
+            root_type, root_message = _extract_httpx_root_cause(exc)
+            error_kind = _classify_httpx_error(exc, root_type, root_message)
+            logger.warning(
+                "Kaspi get_products request error",
+                extra={
+                    "company_id": company_id,
+                    "store_name": store_name,
+                    "request_id": request_id,
+                    "url": url,
+                    "params": params,
+                    "token_masked": masked_token,
+                    "exc_type": type(exc).__name__,
+                    "exc_repr": repr(exc),
+                    "error_kind": error_kind,
+                },
+            )
+            raise KaspiProductsUpstreamError(error_kind) from exc
+
+        if resp.status_code in {401, 403}:
+            logger.warning(
+                "Kaspi get_products unauthorized",
+                extra={
+                    "company_id": company_id,
+                    "store_name": store_name,
+                    "request_id": request_id,
+                    "url": url,
+                    "params": params,
+                    "token_masked": masked_token,
+                    "status_code": resp.status_code,
+                    "response_snippet": _response_snippet(resp.text),
+                },
+            )
+            raise KaspiProductsUpstreamError("NOT_AUTHENTICATED", status_code=resp.status_code)
+
+        if resp.status_code in {301, 302}:
+            logger.warning(
+                "Kaspi get_products redirect",
+                extra={
+                    "company_id": company_id,
+                    "store_name": store_name,
+                    "request_id": request_id,
+                    "url": url,
+                    "params": params,
+                    "token_masked": masked_token,
+                    "status_code": resp.status_code,
+                    "location": resp.headers.get("Location"),
+                    "response_snippet": _response_snippet(resp.text),
+                },
+            )
+            raise KaspiProductsUpstreamError(f"http_status_{resp.status_code}", status_code=resp.status_code)
+
+        if not (200 <= resp.status_code < 300):
+            logger.warning(
+                "Kaspi get_products http error",
+                extra={
+                    "company_id": company_id,
+                    "store_name": store_name,
+                    "request_id": request_id,
+                    "url": url,
+                    "params": params,
+                    "token_masked": masked_token,
+                    "status_code": resp.status_code,
+                    "response_snippet": _response_snippet(resp.text),
+                },
+            )
+            raise KaspiProductsUpstreamError("http_status", status_code=resp.status_code)
+
+        try:
+            data = resp.json() or {}
+        except Exception as exc:
+            logger.warning(
+                "Kaspi get_products invalid JSON",
+                extra={
+                    "company_id": company_id,
+                    "store_name": store_name,
+                    "request_id": request_id,
+                    "url": url,
+                    "params": params,
+                    "token_masked": masked_token,
+                    "status_code": resp.status_code,
+                    "response_snippet": _response_snippet(resp.text),
+                    "exc_type": type(exc).__name__,
+                    "exc_repr": repr(exc),
+                },
+            )
+            raise KaspiProductsUpstreamError("http_status", status_code=resp.status_code) from exc
+
+        return data.get("products") or data.get("items") or []
 
     async def update_product_availability(self, product_id: str, availability: int) -> bool:
         async with self._client() as client:
@@ -844,7 +1358,13 @@ class KaspiService:
         timeout_seconds = float(timeout_seconds or self._sync_timeout_seconds or 30)
         max_pages = None if max_pages is None else max(1, int(max_pages))
         max_window_minutes = None if max_window_minutes is None else max(1, int(max_window_minutes))
-        pagination_state = {"pages_processed": 0, "last_page": 0, "stopped_early": False}
+        pagination_state = {
+            "pages_processed": 0,
+            "last_page": 0,
+            "stopped_early": False,
+            "page_limit_hit": False,
+            "window_truncated": False,
+        }
         backfill_days_value = int(backfill_days or 0)
         backfill_active = backfill_days_value > 0
 
@@ -881,17 +1401,17 @@ class KaspiService:
 
                     # Hold advisory lock for the entire sync to prevent concurrent watermark reads/updates.
                     async with self._company_lock(db, company_id):
-                        state = await self._load_or_create_state(db, company_id)
+                        sync_state = await self._load_or_create_state(db, company_id)
 
-                        state.last_attempt_at = attempt_at
-                        state.last_result = None
-                        state.last_duration_ms = None
-                        state.last_fetched = None
-                        state.last_inserted = None
-                        state.last_updated = None
+                        sync_state.last_attempt_at = attempt_at
+                        sync_state.last_result = None
+                        sync_state.last_duration_ms = None
+                        sync_state.last_fetched = None
+                        sync_state.last_inserted = None
+                        sync_state.last_updated = None
 
-                        prev_last_synced = state.last_synced_at
-                        prev_last_ext = state.last_external_order_id
+                        prev_last_synced = sync_state.last_synced_at
+                        prev_last_ext = sync_state.last_external_order_id
                         is_new_state = prev_last_synced is None and prev_last_ext is None
 
                         if backfill_active and date_from is None:
@@ -905,6 +1425,7 @@ class KaspiService:
                         )
                         if min_from is not None and base_from < min_from:
                             pagination_state["stopped_early"] = True
+                            pagination_state["window_truncated"] = True
                         effective_from = base_from - overlap
                         if min_from is not None and effective_from < min_from:
                             effective_from = min_from
@@ -924,11 +1445,12 @@ class KaspiService:
                         last_ext = prev_last_ext
                         made_progress = False
 
-                        for status in statuses or [None]:
+                        state_filters = self._resolve_order_states(statuses)
+                        for order_state in state_filters:
                             async for batch in self._iter_orders_pages(
                                 date_from=effective_from,
                                 date_to=effective_to,
-                                status=status,
+                                state=order_state,
                                 page_size=100,
                                 company_id=company_id,
                                 merchant_uid=merchant_uid,
@@ -939,6 +1461,7 @@ class KaspiService:
                                 max_attempts=orders_max_attempts,
                                 client_retries=client_retries,
                             ):
+                                catalog_rows_map: dict[tuple[str, str], dict[str, Any]] = {}
                                 fetched += len(batch)
                                 for payload in batch:
                                     ext_id = _as_str(payload.get("id")).strip()
@@ -955,9 +1478,51 @@ class KaspiService:
                                         or payload.get("total")
                                         or 0
                                     )
+                                    delivery_address = _normalize_address(
+                                        payload.get("deliveryAddress") or payload.get("delivery_address")
+                                    )
+                                    kaspi_attrs = _extract_kaspi_order_attrs(payload)
+                                    planned_date = (
+                                        payload.get("plannedDeliveryDate") if "plannedDeliveryDate" in payload else None
+                                    )
+                                    reservation_date = (
+                                        payload.get("reservationDate") if "reservationDate" in payload else None
+                                    )
+                                    delivery_date = _epoch_ms_to_utc_iso(planned_date)
+                                    if delivery_date is None:
+                                        delivery_date = _epoch_ms_to_utc_iso(reservation_date)
                                     status_changed_at = self._extract_order_timestamp(payload)
                                     updated_ts = status_changed_at or effective_to
                                     effective_updated = updated_ts or attempt_at
+
+                                    if merchant_uid:
+                                        for row in self._build_catalog_rows(
+                                            company_id=company_id,
+                                            merchant_uid=merchant_uid,
+                                            payload=payload,
+                                            last_seen_at=effective_updated,
+                                        ):
+                                            key = (row["merchant_uid"], row["sku"])
+                                            existing = catalog_rows_map.get(key)
+                                            if not existing or row["last_seen_at"] >= existing.get("last_seen_at"):
+                                                catalog_rows_map[key] = row
+
+                                    update_values = {
+                                        "status": mapped_status,
+                                        "source": OrderSource.KASPI,
+                                        "order_number": order_number,
+                                        "customer_phone": customer.get("phone") or None,
+                                        "customer_name": customer.get("name") or None,
+                                        "customer_address": delivery_address,
+                                        "delivery_method": payload.get("deliveryMode")
+                                        or payload.get("delivery_mode")
+                                        or None,
+                                        "total_amount": total_amount,
+                                        "currency": currency,
+                                        "updated_at": effective_updated,
+                                    }
+                                    if delivery_date is not None:
+                                        update_values["delivery_date"] = delivery_date
 
                                     stmt = (
                                         insert(Order)
@@ -969,34 +1534,18 @@ class KaspiService:
                                             status=mapped_status,
                                             customer_phone=customer.get("phone") or None,
                                             customer_name=customer.get("name") or None,
-                                            customer_address=payload.get("deliveryAddress")
-                                            or payload.get("delivery_address")
-                                            or None,
+                                            customer_address=delivery_address,
                                             delivery_method=payload.get("deliveryMode")
                                             or payload.get("delivery_mode")
                                             or None,
+                                            delivery_date=delivery_date,
                                             total_amount=total_amount,
                                             currency=currency,
                                             updated_at=effective_updated,
                                         )
                                         .on_conflict_do_update(
                                             index_elements=[Order.company_id, Order.external_id],
-                                            set_={
-                                                "status": mapped_status,
-                                                "source": OrderSource.KASPI,
-                                                "order_number": order_number,
-                                                "customer_phone": customer.get("phone") or None,
-                                                "customer_name": customer.get("name") or None,
-                                                "customer_address": payload.get("deliveryAddress")
-                                                or payload.get("delivery_address")
-                                                or None,
-                                                "delivery_method": payload.get("deliveryMode")
-                                                or payload.get("delivery_mode")
-                                                or None,
-                                                "total_amount": total_amount,
-                                                "currency": currency,
-                                                "updated_at": effective_updated,
-                                            },
+                                            set_=update_values,
                                         )
                                         .returning(Order.id, literal_column("xmax = 0").label("inserted"))
                                     )
@@ -1012,6 +1561,26 @@ class KaspiService:
                                         updated += 1
 
                                     order_pk = row.id
+
+                                    if kaspi_attrs:
+                                        notes_row = await db.execute(
+                                            select(Order.internal_notes).where(Order.id == order_pk)
+                                        )
+                                        merged_notes = _merge_kaspi_internal_notes(
+                                            notes_row.scalar_one_or_none(),
+                                            kaspi_attrs,
+                                        )
+                                        await db.execute(
+                                            update(Order)
+                                            .where(Order.id == order_pk)
+                                            .values(
+                                                internal_notes=json.dumps(
+                                                    merged_notes,
+                                                    separators=(",", ":"),
+                                                    sort_keys=True,
+                                                )
+                                            )
+                                        )
 
                                     if updated_ts > watermark or (
                                         updated_ts == watermark and ext_id and ext_id > (last_ext or "")
@@ -1034,32 +1603,53 @@ class KaspiService:
                                         changed_at=status_changed_at,
                                     )
 
+                                    preorder = await self._get_or_create_kaspi_preorder(
+                                        db,
+                                        company_id=company_id,
+                                        payload=payload,
+                                    )
+                                    if preorder is not None:
+                                        await self._apply_kaspi_preorder_transition(
+                                            db,
+                                            company_id=company_id,
+                                            preorder=preorder,
+                                            mapped_status=mapped_status,
+                                            order_id=order_pk,
+                                        )
+
+                                if catalog_rows_map:
+                                    await self._upsert_catalog_items(db, list(catalog_rows_map.values()))
+
                                 # page handling happens inside _iter_orders_pages
 
-                            if made_progress or is_new_state:
+                            page_limit_hit = bool(pagination_state.get("page_limit_hit"))
+                            if (made_progress or is_new_state) and not page_limit_hit:
                                 final_wm = watermark if prev_last_synced is None else max(prev_last_synced, watermark)
-                                state.last_synced_at = final_wm
-                                state.last_external_order_id = last_ext
+                                sync_state.last_synced_at = final_wm
+                                sync_state.last_external_order_id = last_ext
                             else:
-                                final_wm = prev_last_synced or watermark
-                                state.last_synced_at = prev_last_synced
-                                state.last_external_order_id = prev_last_ext
+                                final_wm = prev_last_synced
+                                sync_state.last_synced_at = prev_last_synced
+                                sync_state.last_external_order_id = prev_last_ext
 
                             if pagination_state.get("stopped_early"):
                                 break
 
                         finished_at = _utcnow()
                         duration_ms = int((perf_counter() - started_at) * 1000)
-                        state.updated_at = finished_at
-                        state.last_error_at = None
-                        state.last_error_code = None
-                        state.last_error_message = None
-                        state.last_result = "partial" if pagination_state.get("stopped_early") else "success"
-                        state.last_duration_ms = duration_ms
-                        state.last_attempt_at = attempt_at
-                        state.last_fetched = fetched
-                        state.last_inserted = inserted
-                        state.last_updated = updated
+                        sync_state.updated_at = finished_at
+                        sync_state.last_error_at = None
+                        sync_state.last_error_code = None
+                        sync_state.last_error_message = None
+                        if pagination_state.get("no_orders"):
+                            sync_state.last_result = "success"
+                        else:
+                            sync_state.last_result = "partial" if pagination_state.get("stopped_early") else "success"
+                        sync_state.last_duration_ms = duration_ms
+                        sync_state.last_attempt_at = attempt_at
+                        sync_state.last_fetched = fetched
+                        sync_state.last_inserted = inserted
+                        sync_state.last_updated = updated
                 if db.in_transaction():
                     await db.commit()
         except KaspiSyncAlreadyRunning:
@@ -1272,24 +1862,32 @@ class KaspiService:
                 "duration_ms": duration_ms,
             }
 
+        no_orders = bool(pagination_state.get("no_orders")) if pagination_state is not None else False
+        summary_status = "success" if no_orders else "partial" if pagination_state.get("stopped_early") else "success"
         summary = {
             "ok": True,
-            "status": "partial" if pagination_state.get("stopped_early") else "success",
+            "status": summary_status,
             "company_id": company_id,
             "fetched": fetched,
             "inserted": inserted,
             "updated": updated,
             "from": effective_from.isoformat(),
             "to": effective_to.isoformat(),
-            "watermark": (state.last_synced_at or final_wm).isoformat() if (state.last_synced_at or final_wm) else None,
+            "watermark": (sync_state.last_synced_at or final_wm).isoformat()
+            if (sync_state.last_synced_at or final_wm)
+            else None,
         }
 
         if backfill_active:
             summary["backfill_days"] = backfill_days_value
 
-        if pagination_state.get("stopped_early"):
+        if pagination_state.get("page_limit_hit") and not no_orders:
             summary["last_page_processed"] = int(pagination_state.get("last_page", 0))
             summary["next_hint"] = "continue"
+        if pagination_state.get("page_limit_hit"):
+            summary["page_limit_hit"] = True
+        if pagination_state.get("window_truncated"):
+            summary["window_truncated"] = True
 
         logger.info(
             "Kaspi orders sync done: company_id=%s request_id=%s duration_ms=%s fetched=%s inserted=%s updated=%s",
@@ -1397,6 +1995,277 @@ class KaspiService:
 
         return processed
 
+    def _extract_catalog_entry_id(self, item: dict[str, Any]) -> str | None:
+        candidates = (
+            item.get("productSku"),
+            item.get("sku"),
+            item.get("offerCode"),
+            item.get("offer_code"),
+            item.get("productCode"),
+            item.get("product_code"),
+            item.get("productId"),
+            item.get("product_id"),
+            item.get("code"),
+        )
+        for value in candidates:
+            sku = _as_str(value).strip()
+            if sku:
+                return sku
+        return None
+
+    def _build_catalog_rows(
+        self,
+        *,
+        company_id: int,
+        merchant_uid: str,
+        payload: dict[str, Any],
+        last_seen_at: datetime,
+    ) -> list[dict[str, Any]]:
+        items = payload.get("items") or payload.get("orderItems") or payload.get("entries") or []
+        if not isinstance(items, list):
+            return []
+
+        rows: list[dict[str, Any]] = []
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            sku = self._extract_catalog_entry_id(item)
+            if not sku:
+                continue
+
+            offer_code = _as_str(item.get("offerCode") or item.get("offer_code") or "").strip() or None
+            product_code = (
+                _as_str(
+                    item.get("productCode")
+                    or item.get("product_code")
+                    or item.get("productId")
+                    or item.get("product_id")
+                    or ""
+                ).strip()
+                or None
+            )
+            name = _as_str(item.get("productName") or item.get("title") or item.get("name") or sku).strip() or None
+
+            qty_raw = item.get("quantity") or item.get("qty")
+            qty = None
+            if qty_raw is not None:
+                try:
+                    qty = max(0, int(qty_raw))
+                except Exception:
+                    qty = None
+
+            unit_price = self._decimal_or_zero(
+                item.get("basePrice") or item.get("unitPrice") or item.get("unit_price") or item.get("price") or 0
+            )
+            if not unit_price:
+                total_price_raw = item.get("totalPrice") or item.get("total_price")
+                if total_price_raw is not None and qty:
+                    unit_price = self._decimal_or_zero(total_price_raw) / Decimal(qty)
+
+            rows.append(
+                {
+                    "company_id": company_id,
+                    "merchant_uid": merchant_uid,
+                    "sku": sku,
+                    "offer_code": offer_code,
+                    "product_code": product_code,
+                    "last_seen_name": name,
+                    "last_seen_price": unit_price,
+                    "last_seen_qty": qty,
+                    "last_seen_at": last_seen_at,
+                    "raw": item,
+                }
+            )
+        return rows
+
+    async def _upsert_catalog_items(self, db: AsyncSession, rows: list[dict[str, Any]]) -> None:
+        if not rows:
+            return
+
+        now = _utcnow()
+        for row in rows:
+            row.setdefault("created_at", now)
+            row["updated_at"] = now
+
+        stmt = insert(KaspiCatalogItem).values(rows)
+        update_values = {
+            "offer_code": stmt.excluded.offer_code,
+            "product_code": stmt.excluded.product_code,
+            "last_seen_name": stmt.excluded.last_seen_name,
+            "last_seen_price": stmt.excluded.last_seen_price,
+            "last_seen_qty": stmt.excluded.last_seen_qty,
+            "last_seen_at": stmt.excluded.last_seen_at,
+            "raw": stmt.excluded.raw,
+            "updated_at": stmt.excluded.updated_at,
+        }
+        stmt = stmt.on_conflict_do_update(
+            index_elements=[
+                KaspiCatalogItem.company_id,
+                KaspiCatalogItem.merchant_uid,
+                KaspiCatalogItem.sku,
+            ],
+            set_=update_values,
+        )
+        await db.execute(stmt)
+
+    async def _build_kaspi_preorder_items(
+        self,
+        db: AsyncSession,
+        *,
+        company_id: int,
+        payload: dict[str, Any],
+    ) -> tuple[list[PreorderItem], Decimal | None]:
+        items_payload = payload.get("items") or payload.get("orderItems") or []
+        if not items_payload:
+            return [], None
+
+        total = Decimal("0.00")
+        items: list[PreorderItem] = []
+
+        for item in items_payload:
+            sku = _as_str(item.get("productSku") or item.get("sku")).strip()
+            name = _as_str(item.get("productName") or item.get("title") or item.get("name") or sku).strip() or sku
+
+            qty_raw = item.get("quantity") or item.get("qty") or 1
+            try:
+                qty = max(1, int(qty_raw))
+            except Exception:
+                qty = 1
+
+            unit_price = self._decimal_or_zero(
+                item.get("basePrice") or item.get("unitPrice") or item.get("unit_price") or item.get("price") or 0
+            )
+            if not unit_price:
+                total_price_raw = item.get("totalPrice") or item.get("total_price")
+                if total_price_raw is not None and qty > 0:
+                    unit_price = self._decimal_or_zero(total_price_raw) / Decimal(qty)
+
+            product_id = None
+            product_ext_id = _as_str(item.get("productId") or item.get("product_id") or "").strip()
+            if product_ext_id:
+                try:
+                    res = await db.execute(
+                        select(Product.id).where(
+                            and_(Product.company_id == company_id, Product.kaspi_product_id == product_ext_id)
+                        )
+                    )
+                    product_id = res.scalar_one_or_none()
+                except Exception:
+                    product_id = None
+
+            items.append(
+                PreorderItem(
+                    product_id=product_id,
+                    sku=sku or None,
+                    name=name or None,
+                    qty=qty,
+                    price=unit_price,
+                )
+            )
+            total += (unit_price or Decimal("0")) * Decimal(qty)
+
+        return items, total.quantize(Decimal("0.01"))
+
+    async def _get_or_create_kaspi_preorder(
+        self,
+        db: AsyncSession,
+        *,
+        company_id: int,
+        payload: dict[str, Any],
+    ) -> Preorder | None:
+        raw_external_id = payload.get("id")
+        if not isinstance(raw_external_id, str) or not raw_external_id.strip():
+            logger.warning(
+                "Kaspi preorder skipped: missing order id (company_id=%s, keys=%s)",
+                company_id,
+                sorted(payload.keys()),
+            )
+            return None
+        external_id = raw_external_id.strip()
+        currency = _as_str(payload.get("currency")) or "KZT"
+        customer = payload.get("customer") or {}
+        notes = _as_str(payload.get("notes") or "").strip() or None
+
+        result = await db.execute(
+            select(Preorder)
+            .where(
+                Preorder.company_id == company_id,
+                Preorder.source == OrderSource.KASPI.value,
+                Preorder.external_id == external_id,
+            )
+            .options(selectinload(Preorder.items))
+        )
+        preorder = result.scalar_one_or_none()
+
+        items, total = await self._build_kaspi_preorder_items(db, company_id=company_id, payload=payload)
+
+        if preorder is None:
+            preorder = Preorder(
+                company_id=company_id,
+                status=PreorderStatus.NEW,
+                currency=currency,
+                total=total,
+                customer_name=customer.get("name") or None,
+                customer_phone=customer.get("phone") or None,
+                notes=notes,
+                source=OrderSource.KASPI.value,
+                external_id=external_id,
+            )
+            preorder.items = items
+            db.add(preorder)
+            await db.flush()
+            return preorder
+
+        if preorder.status == PreorderStatus.NEW:
+            preorder.currency = currency or preorder.currency
+            preorder.customer_name = customer.get("name") or preorder.customer_name
+            preorder.customer_phone = customer.get("phone") or preorder.customer_phone
+            preorder.notes = notes or preorder.notes
+            preorder.total = total
+            preorder.items.clear()
+            preorder.items.extend(items)
+
+        return preorder
+
+    async def _apply_kaspi_preorder_transition(
+        self,
+        db: AsyncSession,
+        *,
+        company_id: int,
+        preorder: Preorder,
+        mapped_status: str,
+        order_id: int,
+    ) -> Preorder:
+        status_value = (mapped_status or "").lower()
+        confirm_statuses = {
+            OrderStatus.CONFIRMED.value,
+            OrderStatus.PROCESSING.value,
+            OrderStatus.SHIPPED.value,
+        }
+        fulfill_statuses = {OrderStatus.DELIVERED.value, OrderStatus.COMPLETED.value}
+        cancel_statuses = {OrderStatus.CANCELLED.value}
+
+        if preorder.status in {PreorderStatus.CANCELLED, PreorderStatus.FULFILLED}:
+            return preorder
+
+        if status_value in cancel_statuses:
+            return await cancel_preorder(db, company_id=company_id, preorder_id=preorder.id)
+
+        if status_value in fulfill_statuses:
+            if preorder.status == PreorderStatus.NEW:
+                preorder = await confirm_preorder(db, company_id=company_id, preorder_id=preorder.id)
+            return await fulfill_preorder(
+                db,
+                company_id=company_id,
+                preorder_id=preorder.id,
+                existing_order_id=order_id,
+            )
+
+        if status_value in confirm_statuses and preorder.status == PreorderStatus.NEW:
+            return await confirm_preorder(db, company_id=company_id, preorder_id=preorder.id)
+
+        return preorder
+
     async def _recalculate_order_totals(self, db: AsyncSession, *, order_id: int) -> None:
         res = await db.execute(select(Order).options(selectinload(Order.items)).where(Order.id == order_id))
         order = res.scalar_one_or_none()
@@ -1447,7 +2316,7 @@ class KaspiService:
         *,
         date_from: datetime,
         date_to: datetime,
-        status: str | None,
+        state: str | None,
         page_size: int,
         company_id: int,
         merchant_uid: str | None = None,
@@ -1464,11 +2333,12 @@ class KaspiService:
             if pagination_state is not None and max_pages is not None:
                 if pagination_state.get("pages_processed", 0) >= max_pages:
                     pagination_state["stopped_early"] = True
+                    pagination_state["page_limit_hit"] = True
                     break
             batch = await self._fetch_orders_page(
                 date_from=date_from,
                 date_to=date_to,
-                status=status,
+                state=state,
                 page=page,
                 page_size=page_size,
                 company_id=company_id,
@@ -1485,6 +2355,15 @@ class KaspiService:
 
             items, meta = self._normalize_orders_response(batch, page, page_size)
             if not items:
+                if pagination_state is not None:
+                    total_pages = meta.get("total_pages")
+                    try:
+                        total_pages_int = int(total_pages) if total_pages is not None else None
+                    except (TypeError, ValueError):
+                        total_pages_int = None
+                    if total_pages_int == 0:
+                        pagination_state["no_orders"] = True
+                        pagination_state["stopped_early"] = False
                 break
 
             yield items
@@ -1495,6 +2374,7 @@ class KaspiService:
             if pagination_state is not None and max_pages is not None:
                 if pagination_state.get("pages_processed", 0) >= max_pages:
                     pagination_state["stopped_early"] = True
+                    pagination_state["page_limit_hit"] = True
                     break
             page = next_page
 
@@ -1503,7 +2383,7 @@ class KaspiService:
         *,
         date_from: datetime,
         date_to: datetime,
-        status: str | None,
+        state: str | None,
         page: int,
         page_size: int,
         company_id: int,
@@ -1519,10 +2399,10 @@ class KaspiService:
             try:
                 if _diag_enabled():
                     logger.info(
-                        "[CI_DIAG] _fetch_orders_page PRE get_orders: company_id=%s page=%s status=%s attempt=%s timeout=%s monotonic=%s",
+                        "[CI_DIAG] _fetch_orders_page PRE get_orders: company_id=%s page=%s state=%s attempt=%s timeout=%s monotonic=%s",
                         company_id,
                         page,
-                        status,
+                        state,
                         attempt + 1,
                         self._orders_timeout(orders_timeout_sec),
                         perf_counter(),
@@ -1541,7 +2421,7 @@ class KaspiService:
                 base_kwargs = {
                     "date_from": date_from,
                     "date_to": date_to,
-                    "status": status,
+                    "state": state,
                     "page": page,
                     "page_size": page_size,
                     "company_id": company_id,
@@ -1554,23 +2434,9 @@ class KaspiService:
                 if client_retries is not None:
                     extra_kwargs["retries"] = client_retries
 
-                try:
-                    result = await self.get_orders(**base_kwargs, **extra_kwargs)
-                except TypeError as exc:
-                    msg = str(exc)
-                    if "unexpected keyword argument" in msg and any(
-                        key in msg for key in ("timeout", "retries", "company_id", "merchant_uid", "request_id")
-                    ):
-                        minimal_kwargs = {
-                            "date_from": date_from,
-                            "date_to": date_to,
-                            "status": status,
-                            "page": page,
-                            "page_size": page_size,
-                        }
-                        result = await self.get_orders(**minimal_kwargs)
-                    else:
-                        raise
+                call_kwargs = {**base_kwargs, **extra_kwargs}
+                call_kwargs = self._filter_get_orders_kwargs(call_kwargs)
+                result = await self.get_orders(**call_kwargs)
                 if _diag_enabled():
                     logger.info(
                         "[CI_DIAG] _fetch_orders_page POST get_orders SUCCESS: company_id=%s page=%s items=%s monotonic=%s",
@@ -1763,7 +2629,7 @@ class KaspiService:
                 status=self._map_kaspi_status(_as_str(kaspi_order.get("status"))),
                 customer_phone=(kaspi_order.get("customer") or {}).get("phone"),
                 customer_name=(kaspi_order.get("customer") or {}).get("name"),
-                customer_address=kaspi_order.get("deliveryAddress"),
+                customer_address=_normalize_address(kaspi_order.get("deliveryAddress")),
                 delivery_method=kaspi_order.get("deliveryMode"),
                 total_amount=kaspi_order.get("totalPrice", 0),
                 currency="KZT",
@@ -1819,15 +2685,23 @@ class KaspiService:
     def _map_kaspi_status(self, kaspi_status: str) -> str:
         mapping = {
             "NEW": "pending",
+            "ACCEPTED": "confirmed",
+            "APPROVED": "confirmed",
             "CONFIRMED": "confirmed",
+            "PACKING": "processing",
             "PROCESSING": "processing",
             "SHIPPED": "shipped",
             "DELIVERED": "delivered",
             "COMPLETED": "completed",
             "CANCELLED": "cancelled",
+            "CANCELED": "cancelled",
             "RETURNED": "refunded",
+            "RETURNED_TO_SHOP": "refunded",
+            "RETURNED_TO_SELLER": "refunded",
+            "REFUNDED": "refunded",
         }
-        return mapping.get(kaspi_status.upper(), "pending")
+        normalized = _as_str(kaspi_status).strip().upper()
+        return mapping.get(normalized, "pending")
 
     def _company_lock_key(self, company_id: int) -> int:
         raw = f"kaspi-sync-{company_id}".encode()
@@ -2066,14 +2940,30 @@ class KaspiService:
             return False
 
     async def _load_or_create_state(self, db: AsyncSession, company_id: int) -> KaspiOrderSyncState:
-        q = await db.execute(
-            select(KaspiOrderSyncState).where(KaspiOrderSyncState.company_id == company_id).with_for_update()
-        )
-        state = q.scalar_one_or_none()
-        if not state:
-            state = KaspiOrderSyncState(company_id=company_id)
-            db.add(state)
+        for _ in range(2):
+            q = await db.execute(
+                select(KaspiOrderSyncState).where(KaspiOrderSyncState.company_id == company_id).with_for_update()
+            )
+            state = q.scalar_one_or_none()
+            if state:
+                return state
+
+            stmt = (
+                insert(KaspiOrderSyncState)
+                .values(company_id=company_id)
+                .on_conflict_do_nothing(index_elements=[KaspiOrderSyncState.company_id])
+            )
+            await db.execute(stmt)
             await db.flush()
+
+        q = await db.execute(select(KaspiOrderSyncState).where(KaspiOrderSyncState.company_id == company_id))
+        state = q.scalar_one_or_none()
+        if state:
+            return state
+
+        state = KaspiOrderSyncState(company_id=company_id)
+        db.add(state)
+        await db.flush()
         return state
 
     def _order_number_from_payload(self, company_id: int, external_id: str, payload: dict[str, Any]) -> str:
@@ -2081,6 +2971,37 @@ class KaspiService:
         if candidate:
             return candidate
         return f"KASPI-{company_id}-{external_id}"
+
+    def _filter_get_orders_kwargs(self, kwargs: dict[str, Any]) -> dict[str, Any]:
+        try:
+            signature = inspect.signature(self.get_orders)
+        except (TypeError, ValueError):
+            return kwargs
+
+        params = signature.parameters
+        if any(param.kind == inspect.Parameter.VAR_KEYWORD for param in params.values()):
+            return kwargs
+
+        filtered = {key: value for key, value in kwargs.items() if key in params}
+
+        if "state" in kwargs and "state" not in filtered and "status" in params:
+            filtered["status"] = kwargs.get("state")
+
+        return filtered
+
+    def _resolve_order_states(self, statuses: list[str] | None) -> list[str | None]:
+        if statuses:
+            resolved = _parse_kaspi_states(statuses)
+            return resolved or [None]
+
+        raw_env = os.environ.get("KASPI_ORDERS_SYNC_STATES")
+        if raw_env:
+            if raw_env.strip().lower() in {"all", "*", "default"}:
+                return list(DEFAULT_KASPI_ORDER_STATES)
+            resolved = _parse_kaspi_states(raw_env)
+            return resolved or [None]
+
+        return [None]
 
     def _extract_order_timestamp(self, payload: dict[str, Any]) -> datetime | None:
         candidates = [
@@ -2090,6 +3011,7 @@ class KaspiService:
             payload.get("modificationDate"),
             payload.get("modified_at"),
             payload.get("changedAt"),
+            payload.get("creationDate"),
             payload.get("created_at"),
             payload.get("createdAt"),
         ]
@@ -2103,6 +3025,19 @@ class KaspiService:
     def _parse_dt(value: Any) -> datetime | None:
         if isinstance(value, datetime):
             return value.astimezone(UTC).replace(tzinfo=None) if value.tzinfo else value
+        if isinstance(value, int | float):
+            try:
+                ts = float(value)
+            except Exception:
+                return None
+            if ts <= 0:
+                return None
+            if ts > 10**12:
+                ts = ts / 1000.0
+            try:
+                return datetime.fromtimestamp(ts, tz=UTC).replace(tzinfo=None)
+            except Exception:
+                return None
         if isinstance(value, str):
             try:
                 cleaned = value.replace("Z", "+00:00")
@@ -2232,7 +3167,7 @@ class KaspiService:
 
     # ---------------------- Availability sync ---------------------- #
 
-    async def sync_product_availability(self, product: Product) -> bool:
+    async def sync_product_availability(self, product: Product, db: AsyncSession | None = None) -> bool:
         """
         Апдейт доступности конкретного товара на стороне Kaspi.
         Если kaspi_product_id отсутствует — пропускаем (True), чтобы не ронять пайплайн.
@@ -2244,6 +3179,9 @@ class KaspiService:
                 getattr(product, "id", "?"),
             )
             return True
+
+        if db is not None and getattr(product, "company_id", None) is not None:
+            await evaluate_preorder_state(db, company_id=product.company_id, product_id=product.id)
 
         free_stock = getattr(product, "free_stock", 0) or 0
         is_preorder = False
@@ -2275,7 +3213,7 @@ class KaspiService:
 
         for p in products:
             try:
-                if await self.sync_product_availability(p):
+                if await self.sync_product_availability(p, db=db):
                     ok += 1
                 else:
                     fail += 1

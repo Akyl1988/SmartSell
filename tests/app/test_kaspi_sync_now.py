@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import time
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
@@ -182,10 +183,88 @@ async def test_kaspi_sync_now_order_flow(
     assert resp.status_code == 200
     data = resp.json()
     assert data["ok"] is True
-    assert data["status"] == "ok"
-    assert data["errors"] == []
+    assert data["status"] == "partial"
+    assert data["errors"]
+    assert data["errors"][0]["code"] == "import_pending"
     assert data["goods_import_code"] == "IC-1"
     assert order == ["orders", "goods_import", "goods_refresh", "feed"]
+
+
+@pytest.mark.asyncio
+async def test_kaspi_sync_now_merchant_isolates_offers(
+    async_client,
+    async_db_session,
+    monkeypatch,
+    company_a_admin_headers,
+):
+    await _ensure_company(async_db_session, 1001, "store-a")
+
+    async def _get_token(session, store_name: str):
+        return "token-a"
+
+    monkeypatch.setattr(KaspiStoreToken, "get_token", _get_token)
+
+    async_db_session.add_all(
+        [
+            KaspiOffer(
+                company_id=1001,
+                merchant_uid="M1",
+                sku="SKU-ISO",
+                title="Item M1",
+                price=1000,
+            ),
+            KaspiOffer(
+                company_id=1001,
+                merchant_uid="M2",
+                sku="SKU-ISO",
+                title="Item M2",
+                price=1100,
+            ),
+        ]
+    )
+    await async_db_session.commit()
+
+    from app.api.v1 import kaspi as kaspi_module
+
+    async def _lock_true(*args, **kwargs):
+        return True
+
+    async def _unlock(*args, **kwargs):
+        return None
+
+    async def _sync_orders(*args, **kwargs):
+        return {"ok": True}
+
+    async def _submit_import(self, payload_json: str, *args, **kwargs):
+        payload = json.loads(payload_json)
+        names = {item.get("name") for item in payload}
+        assert "Item M2" in names
+        assert "Item M1" not in names
+        return {"code": "IC-2", "status": "UPLOADED"}
+
+    async def _get_status(*args, **kwargs):
+        return {"status": "UPLOADED"}
+
+    def _build_xml(offers, *args, **kwargs):
+        assert {offer.merchant_uid for offer in offers} == {"M2"}
+        return "<xml/>"
+
+    monkeypatch.setattr(kaspi_module, "_try_sync_now_lock", _lock_true)
+    monkeypatch.setattr(kaspi_module, "_release_sync_now_lock", _unlock)
+    monkeypatch.setattr(kaspi_module.KaspiService, "sync_orders", _sync_orders)
+    monkeypatch.setattr(kaspi_module.KaspiGoodsImportClient, "submit_import", _submit_import)
+    monkeypatch.setattr(kaspi_module.KaspiGoodsImportClient, "get_status", _get_status)
+    monkeypatch.setattr(kaspi_module, "_build_kaspi_offers_xml", _build_xml)
+
+    resp = await async_client.post(
+        "/api/v1/kaspi/sync/now",
+        headers=company_a_admin_headers,
+        json={"merchant_uid": "M2"},
+    )
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["ok"] is True
+    assert data["status"] in {"ok", "partial"}
 
 
 @pytest.mark.asyncio
@@ -257,8 +336,127 @@ async def test_kaspi_sync_now_orders_timeout_returns_200(
     assert data.get("phase")
     assert data["errors"][0].get("phase")
     assert data["errors"][0]["request_id"]
-    assert data["goods_import_result"]["status"] == "success"
+    assert data["goods_import_result"]["status"] in {"pending", "failed"}
     assert data["offers_feed_result"]["status"] == "success"
+
+
+@pytest.mark.asyncio
+async def test_kaspi_sync_now_finished_noop_is_partial(
+    async_client,
+    async_db_session,
+    monkeypatch,
+    company_a_admin_headers,
+):
+    await _ensure_company(async_db_session, 1001, "store-a")
+
+    async def _get_token(session, store_name: str):
+        return "token-a"
+
+    monkeypatch.setattr(KaspiStoreToken, "get_token", _get_token)
+
+    offer = KaspiOffer(
+        company_id=1001,
+        merchant_uid="M1",
+        sku="S1",
+        title="Item 1",
+        price=1000,
+    )
+    async_db_session.add(offer)
+    await async_db_session.commit()
+
+    from app.api.v1 import kaspi as kaspi_module
+
+    async def _lock_true(*args, **kwargs):
+        return True
+
+    async def _unlock(*args, **kwargs):
+        return None
+
+    async def _sync_orders(*args, **kwargs):
+        return {"ok": True}
+
+    async def _submit_import(*args, **kwargs):
+        return {"code": "IC-1", "status": "FINISHED"}
+
+    async def _get_status(*args, **kwargs):
+        return {"status": "FINISHED"}
+
+    async def _get_result(*args, **kwargs):
+        return {"errors": 0, "warnings": 0, "skipped": 0, "total": 0, "result": []}
+
+    def _build_xml(*args, **kwargs):
+        return "<xml/>"
+
+    monkeypatch.setattr(kaspi_module, "_try_sync_now_lock", _lock_true)
+    monkeypatch.setattr(kaspi_module, "_release_sync_now_lock", _unlock)
+    monkeypatch.setattr(kaspi_module.KaspiService, "sync_orders", _sync_orders)
+    monkeypatch.setattr(kaspi_module.KaspiGoodsImportClient, "submit_import", _submit_import)
+    monkeypatch.setattr(kaspi_module.KaspiGoodsImportClient, "get_status", _get_status)
+    monkeypatch.setattr(kaspi_module.KaspiGoodsImportClient, "get_result", _get_result)
+    monkeypatch.setattr(kaspi_module, "_build_kaspi_offers_xml", _build_xml)
+
+    resp = await async_client.post(
+        "/api/v1/kaspi/sync/now",
+        headers=company_a_admin_headers,
+        json={"merchant_uid": "M1"},
+    )
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["status"] == "partial"
+    assert data["goods_import_result"]["status"] == "noop"
+    assert data["goods_import_result"]["code"] == "import_noop"
+    assert data["errors"][0]["code"] == "import_noop"
+
+
+@pytest.mark.asyncio
+async def test_kaspi_sync_now_offers_missing_returns_partial(
+    async_client,
+    async_db_session,
+    monkeypatch,
+    company_a_admin_headers,
+):
+    await _ensure_company(async_db_session, 1001, "store-a")
+
+    async def _get_token(session, store_name: str):
+        return "token-a"
+
+    from app.api.v1 import kaspi as kaspi_module
+
+    async def _lock_true(*args, **kwargs):
+        return True
+
+    async def _unlock(*args, **kwargs):
+        return None
+
+    async def _sync_orders(*args, **kwargs):
+        return {"ok": True, "status": "success"}
+
+    async def _load_offers_payload(*args, **kwargs):
+        return []
+
+    monkeypatch.setattr(kaspi_module, "_try_sync_now_lock", _lock_true)
+    monkeypatch.setattr(kaspi_module, "_release_sync_now_lock", _unlock)
+    monkeypatch.setattr(kaspi_module.KaspiService, "sync_orders", _sync_orders)
+    monkeypatch.setattr(kaspi_module, "load_offers_payload", _load_offers_payload)
+    monkeypatch.setattr(KaspiStoreToken, "get_token", _get_token)
+
+    resp = await async_client.post(
+        "/api/v1/kaspi/sync/now",
+        headers=company_a_admin_headers,
+        json={"merchant_uid": "M1"},
+    )
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data.get("status") == "partial"
+    assert data.get("result") == "partial"
+    assert data.get("orders_sync")
+    assert data["goods_import_result"]["status"] == "skipped"
+    assert data["goods_import_result"]["code"] == "offers_missing"
+    assert data["offers_feed_result"]["status"] == "skipped"
+    assert data["offers_feed_result"]["code"] == "offers_missing"
+    assert data.get("errors")
+    assert data["errors"][0]["code"] == "offers_missing"
+    assert data["errors"][0].get("request_id")
 
 
 @pytest.mark.asyncio
@@ -332,7 +530,7 @@ async def test_kaspi_sync_now_orders_read_timeout_code(
     assert data["orders_sync"]["status"] == "timeout"
     assert data["orders_sync"]["code"] == "upstream_timeout"
     assert data["orders_sync"]["detail"] == "Kaspi orders sync timed out"
-    assert data["goods_import_result"]["status"] == "success"
+    assert data["goods_import_result"]["status"] in {"pending", "failed"}
     assert data["offers_feed_result"]["status"] == "success"
     assert data.get("phase")
     assert data["errors"][0].get("phase")

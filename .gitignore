@@ -185,6 +185,14 @@ data/
 local/
 local2/
 
+# Kaspi docs extracted artifacts
+docs/kaspi/*.pdf
+docs/kaspi/*.extracted.txt
+
+# Local Kaspi schema/preview artifacts
+kaspi_import_schema.json
+offers_preview.json
+
 # Local smoke scripts (do not commit)
 scripts/*.local.ps1
 scripts/smoke-*.local.ps1
@@ -417,3 +425,7 @@ openapi.json
 
 
 
+
+orders-*.csv
+
+scripts/*.local.ps1

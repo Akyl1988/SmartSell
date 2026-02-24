@@ -15,6 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.core.db import _get_async_engine
 from app.models.company import Company
+from app.services.integration_events import record_integration_event
 from app.services.kaspi_service import KaspiService, KaspiSyncAlreadyRunning
 
 logger = structlog.get_logger(__name__)
@@ -52,7 +53,11 @@ async def run_kaspi_orders_sync_once(
 
     async with session_maker() as db:
         # Query all active companies
-        stmt = select(Company.id, Company.name).where(Company.is_active.is_(True)).order_by(Company.id)
+        stmt = (
+            select(Company.id, Company.name, Company.kaspi_store_id)
+            .where(Company.is_active.is_(True))
+            .order_by(Company.id)
+        )
         result = await db.execute(stmt)
         companies = result.all()
 
@@ -66,7 +71,7 @@ async def run_kaspi_orders_sync_once(
     # Process companies with concurrency limit
     semaphore = asyncio.Semaphore(max_concurrent)
 
-    async def _sync_company(company_id: int, company_name: str) -> None:
+    async def _sync_company(company_id: int, company_name: str, merchant_uid: str | None) -> None:
         nonlocal success_count, failed_count, locked_count
 
         async with semaphore:
@@ -78,21 +83,139 @@ async def run_kaspi_orders_sync_once(
             async with session_maker() as session:
                 svc = KaspiService()
                 try:
-                    result = await svc.sync_orders(db=session, company_id=company_id)
-                    logger.info(
-                        "kaspi_sync_runner: sync success",
+                    merchant_uid_value = (merchant_uid or "").strip()
+                    if not merchant_uid_value:
+                        logger.warning(
+                            "kaspi_sync_runner: missing merchant_uid",
+                            company_id=company_id,
+                            company_name=company_name,
+                        )
+                        await record_integration_event(
+                            session,
+                            company_id=company_id,
+                            merchant_uid=None,
+                            kind="kaspi_orders_sync",
+                            status="skipped",
+                            error_code="missing_merchant_uid",
+                            error_message="missing_merchant_uid",
+                        )
+                        failed_count += 1
+                        return
+                    result = await svc.sync_orders(
+                        db=session,
+                        company_id=company_id,
+                        merchant_uid=merchant_uid_value,
+                        request_id=f"kaspi-sync-runner-{company_id}",
+                    )
+                    result_ok = result.get("ok", True)
+                    status_value = str(result.get("status") or "").lower()
+                    code_value = str(result.get("code") or "").lower()
+
+                    if result_ok:
+                        logger.info(
+                            "kaspi_sync_runner: sync success",
+                            company_id=company_id,
+                            company_name=company_name,
+                            merchant_uid=merchant_uid_value,
+                            fetched=result.get("fetched", 0),
+                            inserted=result.get("inserted", 0),
+                            updated=result.get("updated", 0),
+                        )
+                        await record_integration_event(
+                            session,
+                            company_id=company_id,
+                            merchant_uid=merchant_uid_value,
+                            kind="kaspi_orders_sync",
+                            status="success",
+                            meta_json={
+                                "fetched": result.get("fetched", 0),
+                                "inserted": result.get("inserted", 0),
+                                "updated": result.get("updated", 0),
+                                "watermark": result.get("watermark"),
+                                "page_limit_hit": result.get("page_limit_hit"),
+                                "window_truncated": result.get("window_truncated"),
+                            },
+                        )
+                        success_count += 1
+                        return
+
+                    if status_value == "locked" or code_value in {"locked", "sync_locked"}:
+                        logger.info(
+                            "kaspi_sync_runner: sync locked",
+                            company_id=company_id,
+                            company_name=company_name,
+                            merchant_uid=merchant_uid_value,
+                        )
+                        await record_integration_event(
+                            session,
+                            company_id=company_id,
+                            merchant_uid=merchant_uid_value,
+                            kind="kaspi_orders_sync",
+                            status="skipped",
+                            error_code="locked",
+                            error_message="kaspi sync already running",
+                        )
+                        locked_count += 1
+                        return
+
+                    if status_value == "rate_limited" or code_value == "rate_limited":
+                        retry_after = result.get("retry_after")
+                        delay = max(base_delay_seconds, float(retry_after or base_delay_seconds))
+                        delay = min(delay, max_delay_seconds)
+                        logger.warning(
+                            "kaspi_sync_runner: rate limited",
+                            company_id=company_id,
+                            company_name=company_name,
+                            merchant_uid=merchant_uid_value,
+                            retry_after=retry_after,
+                            backoff_seconds=delay,
+                        )
+                        await record_integration_event(
+                            session,
+                            company_id=company_id,
+                            merchant_uid=merchant_uid_value,
+                            kind="kaspi_orders_sync",
+                            status="failed",
+                            error_code="rate_limited",
+                            error_message="kaspi rate limited",
+                        )
+                        failed_count += 1
+                        if delay > 0:
+                            await asyncio.sleep(delay)
+                        return
+
+                    logger.warning(
+                        "kaspi_sync_runner: sync failed",
                         company_id=company_id,
                         company_name=company_name,
-                        fetched=result.get("fetched", 0),
-                        inserted=result.get("inserted", 0),
-                        updated=result.get("updated", 0),
+                        merchant_uid=merchant_uid_value,
+                        status=status_value or None,
+                        code=code_value or None,
                     )
-                    success_count += 1
+                    await record_integration_event(
+                        session,
+                        company_id=company_id,
+                        merchant_uid=merchant_uid_value,
+                        kind="kaspi_orders_sync",
+                        status="failed",
+                        error_code=code_value or "failed",
+                        error_message="kaspi orders sync failed",
+                    )
+                    failed_count += 1
                 except KaspiSyncAlreadyRunning:
                     logger.info(
                         "kaspi_sync_runner: sync locked (concurrent run)",
                         company_id=company_id,
                         company_name=company_name,
+                    )
+                    await record_integration_event(
+                        session,
+                        company_id=company_id,
+                        merchant_uid=merchant_uid_value,
+                        kind="kaspi_orders_sync",
+                        status="skipped",
+                        error_code="locked",
+                        error_message="kaspi sync already running",
                     )
                     locked_count += 1
                 except asyncio.TimeoutError:
@@ -100,6 +223,15 @@ async def run_kaspi_orders_sync_once(
                         "kaspi_sync_runner: sync timeout",
                         company_id=company_id,
                         company_name=company_name,
+                    )
+                    await record_integration_event(
+                        session,
+                        company_id=company_id,
+                        merchant_uid=merchant_uid_value,
+                        kind="kaspi_orders_sync",
+                        status="failed",
+                        error_code="timeout",
+                        error_message="kaspi orders sync timeout",
                     )
                     failed_count += 1
                 except Exception as exc:
@@ -110,10 +242,21 @@ async def run_kaspi_orders_sync_once(
                         error=str(exc),
                         exc_info=True,
                     )
+                    await record_integration_event(
+                        session,
+                        company_id=company_id,
+                        merchant_uid=merchant_uid_value,
+                        kind="kaspi_orders_sync",
+                        status="failed",
+                        error_code="internal_error",
+                        error_message=str(exc),
+                    )
                     failed_count += 1
 
     # Launch all company syncs concurrently (semaphore limits actual concurrency)
-    tasks = [_sync_company(company_id, company_name) for company_id, company_name in companies]
+    tasks = [
+        _sync_company(company_id, company_name, merchant_uid) for company_id, company_name, merchant_uid in companies
+    ]
     await asyncio.gather(*tasks, return_exceptions=True)
 
     summary = {

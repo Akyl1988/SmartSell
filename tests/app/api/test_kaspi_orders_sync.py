@@ -7,6 +7,7 @@ import pytest_asyncio
 import sqlalchemy as sa
 
 from app.models import Order, OrderItem
+from app.models.kaspi_catalog_item import KaspiCatalogItem
 from app.models.kaspi_order_sync_state import KaspiOrderSyncState
 from app.models.order import OrderStatusHistory
 from app.services import kaspi_service
@@ -82,6 +83,8 @@ def _orders_payload_with_status_timestamp(status: str, ts: datetime) -> list[dic
 async def _kaspi_orders_sync_setup(async_db_session, monkeypatch):
     from app.api.v1 import kaspi as kaspi_module
     from app.models.company import Company
+
+    monkeypatch.delenv("KASPI_ORDERS_SYNC_STATES", raising=False)
 
     company = await async_db_session.get(Company, 1001)
     if company is None:
@@ -180,11 +183,7 @@ async def test_sync_missing_merchant_uid_returns_422(async_client, async_db_sess
 async def test_sync_stub_mode_returns_501(monkeypatch, async_client, company_a_admin_headers):
     from app.api.v1 import kaspi as kaspi_module
 
-    monkeypatch.setattr(
-        kaspi_module.KaspiAdapter,
-        "health",
-        lambda *args, **kwargs: {"note": "Kaspi.ps1 stub: ks:health implemented"},
-    )
+    monkeypatch.setenv("SMARTSELL_KASPI_STUB", "1")
 
     async def fake_sync_orders(*args, **kwargs):  # noqa: ANN001, ARG001
         raise AssertionError("sync_orders should not be called in stub mode")
@@ -198,6 +197,30 @@ async def test_sync_stub_mode_returns_501(monkeypatch, async_client, company_a_a
     assert resp.status_code == 501
     payload = resp.json()
     assert payload.get("code") == "KASPI_STUB_NOT_IMPLEMENTED"
+
+
+@pytest.mark.asyncio
+async def test_sync_stub_note_ignored_without_env(monkeypatch, async_client, company_a_admin_headers):
+    from app.api.v1 import kaspi as kaspi_module
+
+    monkeypatch.delenv("SMARTSELL_KASPI_STUB", raising=False)
+    monkeypatch.setattr(
+        kaspi_module.KaspiAdapter,
+        "health",
+        lambda *args, **kwargs: {"note": "Kaspi.ps1 stub: ks:health implemented"},
+    )
+
+    async def fake_sync_orders(self, **kwargs):  # noqa: ANN001, ARG001
+        return {"ok": True, "status": "success", "fetched": 0, "inserted": 0, "updated": 0}
+
+    monkeypatch.setattr(KaspiService, "sync_orders", fake_sync_orders)
+
+    resp = await async_client.post(
+        "/api/v1/kaspi/orders/sync?merchantUid=17319385",
+        headers=company_a_admin_headers,
+    )
+    assert resp.status_code == 200
+    assert resp.json().get("code") != "KASPI_STUB_NOT_IMPLEMENTED"
 
 
 @pytest.mark.asyncio
@@ -440,6 +463,59 @@ async def test_sync_respects_max_pages_partial(monkeypatch, async_client, compan
 
 
 @pytest.mark.asyncio
+async def test_sync_max_pages_does_not_advance_watermark(
+    monkeypatch, async_client, async_db_session, company_a_admin_headers
+):
+    existing_ts = datetime(2025, 1, 1, 12, 0, tzinfo=UTC).replace(tzinfo=None)
+    state = KaspiOrderSyncState(company_id=1001, last_synced_at=existing_ts, last_external_order_id="prev")
+    async_db_session.add(state)
+    await async_db_session.commit()
+
+    async def fake_get_orders(self, *, date_from=None, date_to=None, state=None, page=1, page_size=100, **kwargs):  # noqa: ARG001
+        return {
+            "items": _orders_payload() if page == 1 else [],
+            "page": page,
+            "total_pages": 2,
+            "has_next": True,
+        }
+
+    monkeypatch.setattr(KaspiService, "get_orders", fake_get_orders)
+
+    resp = await async_client.post("/api/v1/kaspi/orders/sync?max_pages=1", headers=company_a_admin_headers)
+    assert resp.status_code == 200, resp.text
+
+    await async_db_session.refresh(state)
+    assert state.last_synced_at == existing_ts
+    assert state.last_external_order_id == "prev"
+
+
+@pytest.mark.asyncio
+async def test_sync_no_orders_meta_zero_is_success(monkeypatch, async_client, company_a_admin_headers):
+    async def fake_get_orders(self, *, date_from=None, date_to=None, status=None, page=1, page_size=100, **kwargs):  # noqa: ARG001
+        return {
+            "items": [],
+            "page": 1,
+            "total_pages": 0,
+            "has_next": False,
+            "meta": {"pageCount": 0, "totalCount": 0},
+        }
+
+    monkeypatch.setattr(KaspiService, "get_orders", fake_get_orders)
+
+    resp = await async_client.post("/api/v1/kaspi/orders/sync", headers=company_a_admin_headers)
+    assert resp.status_code == 200, resp.text
+    data = resp.json()
+    assert data["status"] == "success"
+    assert "next_hint" not in data
+
+    state_resp = await async_client.get("/api/v1/kaspi/orders/sync/state", headers=company_a_admin_headers)
+    assert state_resp.status_code == 200
+    state = state_resp.json()
+    assert state["last_result"] == "success"
+    assert state["last_success_at"] == state["watermark"]
+
+
+@pytest.mark.asyncio
 async def test_first_sync_creates_orders(monkeypatch, async_client, async_db_session, company_a_admin_headers):
     async def fake_get_orders(self, *, date_from=None, date_to=None, status=None, page=1, page_size=100):  # noqa: ARG001
         return _orders_payload() if page == 1 else []
@@ -503,11 +579,29 @@ async def test_first_run_no_orders_sets_reasonable_watermark(
     assert state.last_synced_at >= now - timedelta(days=2)
     assert data["watermark"].startswith(state.last_synced_at.isoformat())
 
-    state_res = await async_db_session.execute(
-        sa.select(KaspiOrderSyncState).where(KaspiOrderSyncState.company_id == 1001)
-    )
-    state = state_res.scalar_one()
+
+@pytest.mark.asyncio
+async def test_sync_creates_state_when_missing(monkeypatch, async_client, async_db_session, company_a_admin_headers):
+    await async_db_session.execute(sa.delete(KaspiOrderSyncState).where(KaspiOrderSyncState.company_id == 1001))
+    await async_db_session.commit()
+
+    async def fake_get_orders(self, *, date_from=None, date_to=None, status=None, page=1, page_size=100):  # noqa: ARG001
+        return []
+
+    monkeypatch.setattr(KaspiService, "get_orders", fake_get_orders)
+
+    resp = await async_client.post("/api/v1/kaspi/orders/sync", headers=company_a_admin_headers)
+    assert resp.status_code == 200, resp.text
+    data = resp.json()
+
+    res = await async_db_session.execute(sa.select(KaspiOrderSyncState).where(KaspiOrderSyncState.company_id == 1001))
+    state = res.scalar_one_or_none()
+    assert state is not None
     assert state.last_synced_at is not None
+    now = datetime.utcnow()
+    assert state.last_synced_at <= now
+    assert state.last_synced_at >= now - timedelta(days=2)
+    assert data["watermark"].startswith(state.last_synced_at.isoformat())
 
 
 @pytest.mark.asyncio
@@ -529,6 +623,198 @@ async def test_second_sync_is_idempotent(monkeypatch, async_client, async_db_ses
     res = await async_db_session.execute(sa.select(Order).where(Order.company_id == 1001))
     orders = res.scalars().all()
     assert len(orders) == 2
+
+
+@pytest.mark.asyncio
+async def test_sync_creates_catalog_items_from_entries(
+    monkeypatch, async_client, async_db_session, company_a_admin_headers
+):
+    async def fake_get_orders(self, *, date_from=None, date_to=None, status=None, page=1, page_size=100):  # noqa: ARG001
+        if page > 1:
+            return []
+        return {
+            "items": [
+                {
+                    "id": "ext-101",
+                    "status": "NEW",
+                    "totalPrice": 100,
+                    "items": [
+                        {
+                            "productSku": "SKU-101",
+                            "offerCode": "OFFER-101",
+                            "productName": "Catalog Item 101",
+                            "quantity": 2,
+                            "basePrice": 50,
+                        },
+                        {
+                            "productCode": "PC-202",
+                            "title": "Catalog Item 202",
+                            "quantity": 1,
+                            "totalPrice": 25,
+                        },
+                    ],
+                }
+            ],
+            "page": 1,
+            "total_pages": 1,
+            "has_next": False,
+        }
+
+    monkeypatch.setattr(KaspiService, "get_orders", fake_get_orders)
+
+    resp = await async_client.post("/api/v1/kaspi/orders/sync", headers=company_a_admin_headers)
+    assert resp.status_code == 200, resp.text
+
+    res = await async_db_session.execute(
+        sa.select(KaspiCatalogItem).where(
+            KaspiCatalogItem.company_id == 1001,
+            KaspiCatalogItem.merchant_uid == "store-a",
+        )
+    )
+    items = res.scalars().all()
+    assert len(items) == 2
+    item_map = {item.sku: item for item in items}
+    assert item_map["SKU-101"].last_seen_name == "Catalog Item 101"
+    assert item_map["SKU-101"].last_seen_qty == 2
+    assert str(item_map["SKU-101"].last_seen_price) in {"50", "50.00"}
+    assert item_map["PC-202"].last_seen_name == "Catalog Item 202"
+
+
+@pytest.mark.asyncio
+async def test_sync_catalog_items_upsert_idempotent(
+    monkeypatch, async_client, async_db_session, company_a_admin_headers
+):
+    call_count = {"n": 0}
+
+    async def fake_get_orders(self, *, date_from=None, date_to=None, status=None, page=1, page_size=100):  # noqa: ARG001
+        if page > 1:
+            return []
+        call_count["n"] += 1
+        price = 50 if call_count["n"] == 1 else 60
+        return {
+            "items": [
+                {
+                    "id": "ext-201",
+                    "status": "NEW",
+                    "totalPrice": price,
+                    "items": [
+                        {
+                            "productSku": "SKU-201",
+                            "productName": "Catalog Item 201",
+                            "quantity": 1,
+                            "basePrice": price,
+                        }
+                    ],
+                }
+            ],
+            "page": 1,
+            "total_pages": 1,
+            "has_next": False,
+        }
+
+    monkeypatch.setattr(KaspiService, "get_orders", fake_get_orders)
+
+    resp = await async_client.post("/api/v1/kaspi/orders/sync", headers=company_a_admin_headers)
+    assert resp.status_code == 200, resp.text
+    resp = await async_client.post("/api/v1/kaspi/orders/sync", headers=company_a_admin_headers)
+    assert resp.status_code == 200, resp.text
+
+    res = await async_db_session.execute(
+        sa.select(KaspiCatalogItem).where(
+            KaspiCatalogItem.company_id == 1001,
+            KaspiCatalogItem.merchant_uid == "store-a",
+        )
+    )
+    items = res.scalars().all()
+    assert len(items) == 1
+    assert str(items[0].last_seen_price) in {"60", "60.00"}
+
+
+@pytest.mark.asyncio
+async def test_catalog_items_endpoint_tenant_isolation(
+    async_client, async_db_session, company_a_admin_headers, company_b_admin_headers
+):
+    from app.models.company import Company
+
+    company_b = await async_db_session.get(Company, 2001)
+    if company_b is None:
+        company_b = Company(id=2001, name="Company 2001", kaspi_store_id="store-b")
+        async_db_session.add(company_b)
+        await async_db_session.commit()
+    elif not company_b.kaspi_store_id:
+        company_b.kaspi_store_id = "store-b"
+        await async_db_session.commit()
+
+    async_db_session.add_all(
+        [
+            KaspiCatalogItem(
+                company_id=1001,
+                merchant_uid="store-a",
+                sku="SKU-A",
+                last_seen_name="Item A",
+                last_seen_price=10,
+            ),
+            KaspiCatalogItem(
+                company_id=2001,
+                merchant_uid="store-b",
+                sku="SKU-B",
+                last_seen_name="Item B",
+                last_seen_price=20,
+            ),
+        ]
+    )
+    await async_db_session.commit()
+
+    resp = await async_client.get(
+        "/api/v1/kaspi/catalog/items?merchant_uid=store-a",
+        headers=company_a_admin_headers,
+    )
+    assert resp.status_code == 200, resp.text
+    data = resp.json()
+    assert len(data["items"]) == 1
+    assert data["items"][0]["sku"] == "SKU-A"
+
+    resp = await async_client.get(
+        "/api/v1/kaspi/catalog/items?merchant_uid=store-b",
+        headers=company_b_admin_headers,
+    )
+    assert resp.status_code == 200, resp.text
+    data = resp.json()
+    assert len(data["items"]) == 1
+    assert data["items"][0]["sku"] == "SKU-B"
+
+
+@pytest.mark.asyncio
+async def test_catalog_items_endpoint_latest_first(async_client, async_db_session, company_a_admin_headers):
+    # Latest-first ordering uses the (company_id, merchant_uid, last_seen_at DESC) index.
+    now = datetime.utcnow()
+    async_db_session.add_all(
+        [
+            KaspiCatalogItem(
+                company_id=1001,
+                merchant_uid="store-a",
+                sku="SKU-OLD",
+                last_seen_name="Old Item",
+                last_seen_at=now - timedelta(hours=1),
+            ),
+            KaspiCatalogItem(
+                company_id=1001,
+                merchant_uid="store-a",
+                sku="SKU-NEW",
+                last_seen_name="New Item",
+                last_seen_at=now,
+            ),
+        ]
+    )
+    await async_db_session.commit()
+
+    resp = await async_client.get(
+        "/api/v1/kaspi/catalog/items?merchant_uid=store-a&limit=2",
+        headers=company_a_admin_headers,
+    )
+    assert resp.status_code == 200, resp.text
+    data = resp.json()
+    assert [item["sku"] for item in data["items"]][:2] == ["SKU-NEW", "SKU-OLD"]
 
 
 @pytest.mark.asyncio

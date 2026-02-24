@@ -101,5 +101,12 @@ class KaspiGoodsImportClient:
             params={"i": import_code},
         )
 
+    async def get_result(self, import_code: str) -> dict:
+        return await self._request(
+            "GET",
+            "/shop/api/products/import/result",
+            params={"i": import_code},
+        )
+
     async def get_schema(self) -> dict:
         return await self._request("GET", "/shop/api/products/import/schema")

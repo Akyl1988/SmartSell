@@ -503,7 +503,7 @@ class Settings(BaseSettings):
     KASPI_STUB: bool = Field(
         default=False,
         description="Enable Kaspi stub mode (must be disabled in production)",
-        validation_alias="KASPI_STUB",
+        validation_alias="SMARTSELL_KASPI_STUB",
     )
     API_V1_STR: str = Field(default="/api/v1", description="API v1 prefix")
     HOST: str = Field(default="127.0.0.1", description="Server host", validation_alias="HOST")
@@ -638,6 +638,100 @@ class Settings(BaseSettings):
         validation_alias="KASPI_AUTOSYNC_MAX_CONCURRENCY",
     )
 
+    # Kaspi import poll runner settings
+    KASPI_IMPORT_POLL_ENABLED: bool = Field(
+        default=False,
+        description="Enable APScheduler job for Kaspi goods import polling",
+        validation_alias="KASPI_IMPORT_POLL_ENABLED",
+    )
+    KASPI_IMPORT_POLL_INTERVAL_SECONDS: int = Field(
+        default=60,
+        description="Kaspi import poll interval in seconds",
+        validation_alias="KASPI_IMPORT_POLL_INTERVAL_SECONDS",
+    )
+    KASPI_IMPORT_POLL_MAX_CONCURRENCY: int = Field(
+        default=5,
+        description="Maximum concurrent Kaspi import polls",
+        validation_alias="KASPI_IMPORT_POLL_MAX_CONCURRENCY",
+    )
+    KASPI_IMPORT_POLL_BATCH_SIZE: int = Field(
+        default=100,
+        description="Max import runs polled per tick",
+        validation_alias="KASPI_IMPORT_POLL_BATCH_SIZE",
+    )
+    KASPI_IMPORT_POLL_BACKOFF_BASE_SECONDS: int = Field(
+        default=30,
+        description="Base backoff (seconds) for Kaspi import polling",
+        validation_alias="KASPI_IMPORT_POLL_BACKOFF_BASE_SECONDS",
+    )
+    KASPI_IMPORT_POLL_BACKOFF_MAX_SECONDS: int = Field(
+        default=900,
+        description="Max backoff (seconds) for Kaspi import polling",
+        validation_alias="KASPI_IMPORT_POLL_BACKOFF_MAX_SECONDS",
+    )
+
+    # Kaspi feed upload poll runner settings
+    KASPI_FEED_BASE_URL: str = Field(
+        default="https://kaspi.kz",
+        description="Kaspi base URL for feed uploads",
+        validation_alias="KASPI_FEED_BASE_URL",
+    )
+    KASPI_FEED_UPLOAD_PATH: str = Field(
+        default="/shop/api/feeds/import",
+        description="Kaspi feed upload path (XML)",
+        validation_alias="KASPI_FEED_UPLOAD_PATH",
+    )
+    KASPI_FEED_UPLOAD_URL: str | None = Field(
+        default=None,
+        description="Full Kaspi feed upload URL override",
+        validation_alias="KASPI_FEED_UPLOAD_URL",
+    )
+    KASPI_FEED_STATUS_URL: str | None = Field(
+        default=None,
+        description="Kaspi feed status URL override",
+        validation_alias="KASPI_FEED_STATUS_URL",
+    )
+    KASPI_FEED_RESULT_URL: str | None = Field(
+        default=None,
+        description="Kaspi feed result URL override",
+        validation_alias="KASPI_FEED_RESULT_URL",
+    )
+    KASPI_FEED_UPLOAD_ENABLED: bool = Field(
+        default=False,
+        description="Enable APScheduler job for Kaspi feed uploads",
+        validation_alias="KASPI_FEED_UPLOAD_ENABLED",
+    )
+    KASPI_FEED_UPLOAD_INTERVAL_SECONDS: int = Field(
+        default=120,
+        description="Kaspi feed upload poll interval in seconds",
+        validation_alias="KASPI_FEED_UPLOAD_INTERVAL_SECONDS",
+    )
+    KASPI_FEED_UPLOAD_MAX_CONCURRENCY: int = Field(
+        default=3,
+        description="Maximum concurrent Kaspi feed upload polls",
+        validation_alias="KASPI_FEED_UPLOAD_MAX_CONCURRENCY",
+    )
+    KASPI_FEED_UPLOAD_BATCH_SIZE: int = Field(
+        default=50,
+        description="Max feed uploads processed per tick",
+        validation_alias="KASPI_FEED_UPLOAD_BATCH_SIZE",
+    )
+    KASPI_FEED_UPLOAD_BACKOFF_BASE_SECONDS: int = Field(
+        default=30,
+        description="Base backoff (seconds) for Kaspi feed uploads",
+        validation_alias="KASPI_FEED_UPLOAD_BACKOFF_BASE_SECONDS",
+    )
+    KASPI_FEED_UPLOAD_BACKOFF_MAX_SECONDS: int = Field(
+        default=900,
+        description="Max backoff (seconds) for Kaspi feed uploads",
+        validation_alias="KASPI_FEED_UPLOAD_BACKOFF_MAX_SECONDS",
+    )
+    KASPI_FEED_UPLOAD_MAX_ATTEMPTS: int = Field(
+        default=5,
+        description="Max attempts per Kaspi feed upload",
+        validation_alias="KASPI_FEED_UPLOAD_MAX_ATTEMPTS",
+    )
+
     # ---- rate limits
     RATE_LIMIT_PER_MINUTE: int = Field(
         default=100, description="Rate limit per minute", validation_alias="RATE_LIMIT_PER_MINUTE"
@@ -745,11 +839,26 @@ class Settings(BaseSettings):
         validation_alias=AliasChoices("KASPI_API_TOKEN", "KASPI_TOKEN", "KASPI_SHOP_TOKEN"),
     )
     KASPI_API_KEY: str | None = Field(default=None, description="Kaspi API key", validation_alias="KASPI_API_KEY")
-    KASPI_API_URL: str = Field(default="https://api.kaspi.kz", description="Kaspi API URL")
+    KASPI_API_URL: str = Field(default="https://kaspi.kz/shop/api", description="Kaspi API URL")
 
     # -------------------- ДОБАВЛЕНО --------------------
     # Отдельный базовый URL для Shop Orders JSON:API (по документации Kaspi)
     KASPI_SHOP_API_URL: str = Field(default="https://kaspi.kz/shop/api", description="Kaspi Shop JSON:API base URL")
+    KASPI_ORDERS_ACTIONS_BASE_URL: str | None = Field(
+        default=None,
+        description="Kaspi base URL override for order actions",
+        validation_alias="KASPI_ORDERS_ACTIONS_BASE_URL",
+    )
+    KASPI_ORDERS_ACCEPT_PATH: str = Field(
+        default="/v2/orders/{external_id}/accept",
+        description="Kaspi accept order path (relative to actions base URL)",
+        validation_alias="KASPI_ORDERS_ACCEPT_PATH",
+    )
+    KASPI_ORDERS_CANCEL_PATH: str = Field(
+        default="/v2/orders/{external_id}/cancel",
+        description="Kaspi cancel order path (relative to actions base URL)",
+        validation_alias="KASPI_ORDERS_CANCEL_PATH",
+    )
     # Таймзона приложения для конвертаций (по умолчанию Asia/Almaty)
     APP_TIMEZONE: str = Field(default="Asia/Almaty", description="App timezone for Kaspi filters")
     # Максимальный размер страницы по документации (до 100)
@@ -1825,6 +1934,22 @@ class Settings(BaseSettings):
         """
         base = self.kaspi_shop_settings["base_url"]
         return f"{base}/v2/orders"
+
+    def kaspi_orders_actions_base_url(self) -> str:
+        base = (self.KASPI_ORDERS_ACTIONS_BASE_URL or self.kaspi_shop_settings["base_url"]).rstrip("/")
+        return base
+
+    def kaspi_order_accept_url(self, external_id: str) -> str:
+        path = self.KASPI_ORDERS_ACCEPT_PATH.format(external_id=external_id)
+        if not path.startswith("/"):
+            path = f"/{path}"
+        return f"{self.kaspi_orders_actions_base_url()}{path}"
+
+    def kaspi_order_cancel_url(self, external_id: str) -> str:
+        path = self.KASPI_ORDERS_CANCEL_PATH.format(external_id=external_id)
+        if not path.startswith("/"):
+            path = f"/{path}"
+        return f"{self.kaspi_orders_actions_base_url()}{path}"
 
     def kaspi_orderentries_product_url(self, order_entry_id: str) -> str:
         """
