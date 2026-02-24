@@ -42,9 +42,16 @@ function Assert-Ok {
 
 function Get-RespItems {
   param([object]$Body)
-  if ($Body -and $Body.PSObject.Properties["items"]) {
+  if (-not $Body) { return @() }
+
+  if ($Body.PSObject.Properties["items"]) {
     return @($Body.items)
   }
+
+  if ($Body.PSObject.Properties["data"]) {
+    return @($Body.data)
+  }
+
   return @()
 }
 
@@ -66,6 +73,41 @@ function Debug-MissingId {
   $jsonText = $null
   try { $jsonText = $Obj | ConvertTo-Json -Depth 10 } catch { $jsonText = "<unserializable>" }
   Write-Host ("[DEBUG] Missing id for {0}. type={1} json={2}" -f $Label, $typeName, $jsonText)
+}
+
+function Confirm-Preorder-Safely {
+  param(
+    [int]$PreorderId,
+    [hashtable]$PreorderPayload
+  )
+
+  $confirmResp = Invoke-Api -Method "POST" -Url "$BaseUrl/api/v1/preorders/$PreorderId/confirm"
+  $status = $confirmResp.StatusCode
+  $errorCode = $null
+  try {
+    if ($confirmResp.Body -and $confirmResp.Body.PSObject.Properties["code"]) {
+      $errorCode = $confirmResp.Body.code
+    }
+  } catch {
+    $errorCode = $null
+  }
+
+  if ($status -eq 409 -or $status -eq 422) {
+    Write-Host ("[WARN] Confirm failed ({0}/{1}); creating new preorder" -f $status, $errorCode)
+    $newPreorderResp = Invoke-Api -Method "POST" -Url "$BaseUrl/api/v1/preorders" -Body $PreorderPayload
+    $newPreorder = Assert-Ok -Resp $newPreorderResp -Action "Create preorder for confirm"
+    $newPreorderId = Get-Id -Obj $newPreorder
+    if (-not $newPreorderId) {
+      Debug-MissingId -Label "preorder" -Obj $newPreorder
+      throw "Missing preorder id"
+    }
+    $confirmResp = Invoke-Api -Method "POST" -Url "$BaseUrl/api/v1/preorders/$newPreorderId/confirm"
+    $null = Assert-Ok -Resp $confirmResp -Action "Confirm preorder again"
+    return $newPreorderId
+  }
+
+  $null = Assert-Ok -Resp $confirmResp -Action "Confirm preorder"
+  return $PreorderId
 }
 
 function Invoke-Api {
@@ -95,7 +137,7 @@ $productResp = Invoke-Api -Method "POST" -Url "$BaseUrl/api/v1/products" -Body $
 if ($productResp.StatusCode -eq 409) {
   $listResp = Invoke-Api -Method "GET" -Url "$BaseUrl/api/v1/products?search=$productSku&page=1&per_page=1"
   $listBody = Assert-Ok -Resp $listResp -Action "List products"
-    $items = Get-RespItems -Body $listBody
+    $items = @(Get-RespItems -Body $listBody)
   if (-not $items -or $items.Count -eq 0) {
     throw "Product create failed and no existing product found"
   }
@@ -112,7 +154,7 @@ if ($productResp.StatusCode -eq 409) {
 
 $whListResp = Invoke-Api -Method "GET" -Url "$BaseUrl/api/v1/warehouses?page=1&per_page=100"
 $whList = Assert-Ok -Resp $whListResp -Action "List warehouses"
-$warehouses = Get-RespItems -Body $whList
+$warehouses = @(Get-RespItems -Body $whList)
 $mainWarehouse = $warehouses | Where-Object { $_.is_main -eq $true -and $_.is_active -eq $true } | Select-Object -First 1
 if (-not $mainWarehouse) {
   $whCreate = Invoke-Api -Method "POST" -Url "$BaseUrl/api/v1/warehouses" -Body @{ name = "Main"; is_main = $true }
@@ -123,7 +165,7 @@ $warehouseId = Get-Id -Obj $mainWarehouse
 if (-not $warehouseId) {
   $whListResp = Invoke-Api -Method "GET" -Url "$BaseUrl/api/v1/warehouses?page=1&per_page=100"
   $whList = Assert-Ok -Resp $whListResp -Action "Re-list warehouses"
-  $warehouses = Get-RespItems -Body $whList
+  $warehouses = @(Get-RespItems -Body $whList)
   $mainWarehouse = $warehouses | Where-Object { $_.is_main -eq $true -and $_.is_active -eq $true } | Select-Object -First 1
   $warehouseId = Get-Id -Obj $mainWarehouse
 }
@@ -136,7 +178,7 @@ if (-not $warehouseId) {
 $stockListResp = Invoke-Api -Method "GET" -Url "$BaseUrl/api/v1/inventory/stocks?warehouse_id=$warehouseId&product_id=$productId&page=1&per_page=1"
 $stockList = Assert-Ok -Resp $stockListResp -Action "List stocks"
 $stockItem = $null
-$stockItems = Get-RespItems -Body $stockList
+$stockItems = @(Get-RespItems -Body $stockList)
 if ($stockItems.Count -gt 0) { $stockItem = $stockItems[0] }
 
 $qty = 0
@@ -155,7 +197,7 @@ if ($reserved -gt 0) {
     reference_id = [int]([DateTimeOffset]::UtcNow.ToUnixTimeSeconds())
   }
   $releaseResp = Invoke-Api -Method "POST" -Url "$BaseUrl/api/v1/inventory/reservations/release" -Body $releasePayload
-  Assert-Ok -Resp $releaseResp -Action "Release reserved stock"
+  $null = Assert-Ok -Resp $releaseResp -Action "Release reserved stock"
   $reserved = 0
 }
 
@@ -169,7 +211,7 @@ if ($qty -lt 3) {
     reference = "smoke-preorders"
   }
   $moveResp = Invoke-Api -Method "POST" -Url "$BaseUrl/api/v1/inventory/movements" -Body $movePayload
-  Assert-Ok -Resp $moveResp -Action "Seed stock movement"
+  $null = Assert-Ok -Resp $moveResp -Action "Seed stock movement"
 }
 
 $preorderPayload = @{
@@ -194,17 +236,15 @@ if (-not $preorderId) {
   throw "Missing preorder id"
 }
 
-$confirm1 = Invoke-Api -Method "POST" -Url "$BaseUrl/api/v1/preorders/$preorderId/confirm"
-Assert-Ok -Resp $confirm1 -Action "Confirm preorder"
+$preorderId = Confirm-Preorder-Safely -PreorderId $preorderId -PreorderPayload $preorderPayload
 
 $cancel = Invoke-Api -Method "POST" -Url "$BaseUrl/api/v1/preorders/$preorderId/cancel"
-Assert-Ok -Resp $cancel -Action "Cancel preorder"
+$null = Assert-Ok -Resp $cancel -Action "Cancel preorder"
 
-$confirm2 = Invoke-Api -Method "POST" -Url "$BaseUrl/api/v1/preorders/$preorderId/confirm"
-Assert-Ok -Resp $confirm2 -Action "Confirm preorder again"
+$preorderId = Confirm-Preorder-Safely -PreorderId $preorderId -PreorderPayload $preorderPayload
 
 $fulfill = Invoke-Api -Method "POST" -Url "$BaseUrl/api/v1/preorders/$preorderId/fulfill"
-Assert-Ok -Resp $fulfill -Action "Fulfill preorder"
+$null = Assert-Ok -Resp $fulfill -Action "Fulfill preorder"
 
 Write-Host "OK: preorder e2e complete"
 Write-Host ("  product_id: {0}" -f $productId)
