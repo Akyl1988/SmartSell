@@ -111,7 +111,39 @@ async def update_preorder_endpoint(
     return PreorderOut.model_validate(preorder)
 
 
-@store_router.post("/{preorder_id}/confirm", response_model=PreorderOut)
+@store_router.post(
+    "/{preorder_id}/confirm",
+    response_model=PreorderOut,
+    responses={
+        422: {
+            "description": "Reservation validation error",
+            "content": {
+                "application/json": {
+                    "examples": {
+                        "warehouse_not_configured": {
+                            "summary": "Warehouse missing",
+                            "value": {
+                                "detail": "Warehouse is not configured",
+                                "code": "WAREHOUSE_NOT_CONFIGURED",
+                                "request_id": "req-123",
+                                "errors": [],
+                            },
+                        },
+                        "insufficient_stock": {
+                            "summary": "Insufficient stock",
+                            "value": {
+                                "detail": "Insufficient stock",
+                                "code": "INSUFFICIENT_STOCK",
+                                "request_id": "req-123",
+                                "errors": [],
+                            },
+                        },
+                    }
+                }
+            },
+        }
+    },
+)
 async def confirm_preorder_endpoint(
     preorder_id: int = Path(..., ge=1),
     current_user: User = Depends(get_current_verified_user),
