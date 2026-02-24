@@ -166,6 +166,13 @@ $runBody = $null
 $skipRun = $false
 $seedResp = $null
 if ($runResp.StatusCode -eq 404) {
+  $runCode = Get-PropValue -Obj $runResp.Body -Name "code"
+  if (-not $runCode) { $runCode = Get-PropValue -Obj $runResp.Body -Name "detail" }
+  if ($runCode -ne "campaign_not_found") {
+    $runInfo = Format-RespBrief -Resp $runResp
+    throw "Campaign run endpoint returned 404 (non campaign_not_found): $runInfo"
+  }
+
   $profile = Try-Get-Profile
   $companyId = 0
   if ($profile) { $companyId = [int](Get-PropValue -Obj $profile -Name "company_id") }
