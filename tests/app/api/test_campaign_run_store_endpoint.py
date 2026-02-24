@@ -122,6 +122,19 @@ async def _seed_campaign(
     return campaign
 
 
+async def test_campaign_timestamps_present(async_db_session):
+    campaign = await _seed_campaign(async_db_session, company_id=3001, title_suffix="timestamps")
+
+    assert campaign.created_at is not None
+    assert campaign.updated_at is not None
+
+    message = (
+        await async_db_session.execute(select(Message).where(Message.campaign_id == campaign.id).limit(1))
+    ).scalar_one()
+    assert message.created_at is not None
+    assert message.updated_at is not None
+
+
 async def test_campaign_run_store_admin_idempotent(async_client, async_db_session, company_a_admin_headers):
     campaign = await _seed_campaign(async_db_session, company_id=1001, title_suffix="admin")
 

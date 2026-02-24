@@ -138,6 +138,10 @@ class Campaign(SoftDeleteMixin, Base):
     __tablename__ = "campaigns"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)  # сохраняем совместимость
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now()
+    )
 
     title: Mapped[str] = mapped_column(String(MAX_TITLE_LEN), nullable=False)
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
@@ -757,6 +761,10 @@ class Message(SoftDeleteMixin, Base):
     __tablename__ = "messages"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now()
+    )
 
     campaign_id: Mapped[int] = mapped_column(
         Integer, ForeignKey("campaigns.id", ondelete="CASCADE"), nullable=False, index=True
