@@ -2,6 +2,7 @@ Set-StrictMode -Version Latest
 $script:SmartsellAccessToken = $null
 $script:SmartsellRefreshToken = $null
 $script:SmartsellCachePath = $null
+$script:SmartsellWebSessions = @{}
 
 function Mask-Secret([string]$Value) {
   if ([string]::IsNullOrWhiteSpace($Value)) { return "" }
@@ -612,6 +613,16 @@ function Get-PlatformAuthHeader {
 
 function Invoke-WebRequestSafe {
   param([hashtable]$Params)
+  $timeout = Resolve-RequestTimeoutSec -TimeoutSec ($Params.TimeoutSec ?? 0)
+  $Params.TimeoutSec = $timeout
+
+  if (-not $Params.ContainsKey("WebSession")) {
+    if (-not $script:SmartsellWebSessions.ContainsKey($timeout)) {
+      $script:SmartsellWebSessions[$timeout] = New-Object Microsoft.PowerShell.Commands.WebRequestSession
+    }
+    $Params.WebSession = $script:SmartsellWebSessions[$timeout]
+  }
+
   if ((Get-Command Invoke-WebRequest).Parameters.ContainsKey("SkipHttpErrorCheck")) {
     $Params.SkipHttpErrorCheck = $true
   }
@@ -619,6 +630,12 @@ function Invoke-WebRequestSafe {
     $Params.UseBasicParsing = $true
   }
   return Invoke-WebRequest @Params
+}
+
+function Resolve-RequestTimeoutSec {
+  param([int]$TimeoutSec)
+  if ($TimeoutSec -le 0) { return 20 }
+  return [int]$TimeoutSec
 }
 
 function Resolve-ProfileValue {
