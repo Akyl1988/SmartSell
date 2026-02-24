@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+from uuid import uuid4
+
 import pytest
 from sqlalchemy import select
 
+from app.models.company import Company
 from app.models.product import Product
 from app.models.user import User
 from app.models.warehouse import ProductStock, StockMovement, Warehouse
@@ -120,6 +123,180 @@ async def test_preorder_confirm_reserves_stock_idempotent(
         .all()
     )
     assert len(moves) == 1
+
+
+async def test_preorder_confirm_insufficient_stock_returns_422(
+    async_client,
+    db_session,
+    async_db_session,
+    company_a_admin_headers,
+):
+    user_a = _get_user_by_phone(db_session, "+70000010001")
+    product, warehouse = await _seed_inventory(async_db_session, user_a.company_id, quantity=1)
+
+    created = await async_client.post(
+        "/api/v1/preorders",
+        json={
+            "currency": "KZT",
+            "customer_name": "Alice",
+            "items": [
+                {
+                    "product_id": product.id,
+                    "sku": product.sku,
+                    "name": product.name,
+                    "qty": 2,
+                    "price": "100.00",
+                }
+            ],
+        },
+        headers=company_a_admin_headers,
+    )
+    preorder_id = created.json().get("id")
+
+    confirmed = await async_client.post(
+        f"/api/v1/preorders/{preorder_id}/confirm",
+        headers=company_a_admin_headers,
+    )
+    assert confirmed.status_code == 422, confirmed.text
+    assert confirmed.json().get("code") == "INSUFFICIENT_STOCK"
+
+    stock = (
+        (
+            await async_db_session.execute(
+                select(ProductStock).where(
+                    ProductStock.product_id == product.id,
+                    ProductStock.warehouse_id == warehouse.id,
+                )
+            )
+        )
+        .scalars()
+        .one()
+    )
+    assert stock.reserved_quantity == 0
+
+
+async def test_preorder_confirm_missing_warehouse_returns_422(
+    async_client,
+    db_session,
+    async_db_session,
+    company_a_admin_headers,
+):
+    user_a = _get_user_by_phone(db_session, "+70000010001")
+    suffix = uuid4().hex[:8]
+    product = Product(
+        company_id=user_a.company_id,
+        name=f"Inventory Product {suffix}",
+        slug=f"inventory-product-{suffix}",
+        sku=f"INV-{suffix}",
+        price=100,
+        stock_quantity=5,
+    )
+    async_db_session.add(product)
+    await async_db_session.commit()
+    await async_db_session.refresh(product)
+
+    created = await async_client.post(
+        "/api/v1/preorders",
+        json={
+            "currency": "KZT",
+            "customer_name": "Alice",
+            "items": [
+                {
+                    "product_id": product.id,
+                    "sku": product.sku,
+                    "name": product.name,
+                    "qty": 1,
+                    "price": "100.00",
+                }
+            ],
+        },
+        headers=company_a_admin_headers,
+    )
+    preorder_id = created.json().get("id")
+
+    confirmed = await async_client.post(
+        f"/api/v1/preorders/{preorder_id}/confirm",
+        headers=company_a_admin_headers,
+    )
+    assert confirmed.status_code == 422, confirmed.text
+    assert confirmed.json().get("code") == "WAREHOUSE_NOT_CONFIGURED"
+
+
+async def test_preorder_confirm_tenant_isolation(
+    async_client,
+    db_session,
+    async_db_session,
+    company_a_admin_headers,
+):
+    company_b = await async_db_session.get(Company, 2001)
+    if company_b is None:
+        company_b = Company(id=2001, name="Company 2001")
+        async_db_session.add(company_b)
+        await async_db_session.commit()
+        await async_db_session.refresh(company_b)
+    suffix = uuid4().hex[:8]
+    product_b = Product(
+        company_id=company_b.id,
+        name=f"Other Product {suffix}",
+        slug=f"other-product-{suffix}",
+        sku=f"OTH-{suffix}",
+        price=120,
+        stock_quantity=2,
+    )
+    warehouse_b = Warehouse(company_id=company_b.id, name="Other Main", is_main=True)
+    async_db_session.add_all([product_b, warehouse_b])
+    await async_db_session.commit()
+    await async_db_session.refresh(product_b)
+    await async_db_session.refresh(warehouse_b)
+
+    stock_b = ProductStock(
+        product_id=product_b.id,
+        warehouse_id=warehouse_b.id,
+        quantity=2,
+        reserved_quantity=0,
+    )
+    async_db_session.add(stock_b)
+    await async_db_session.commit()
+
+    created = await async_client.post(
+        "/api/v1/preorders",
+        json={
+            "currency": "KZT",
+            "customer_name": "Alice",
+            "items": [
+                {
+                    "product_id": product_b.id,
+                    "sku": product_b.sku,
+                    "name": product_b.name,
+                    "qty": 1,
+                    "price": "120.00",
+                }
+            ],
+        },
+        headers=company_a_admin_headers,
+    )
+    preorder_id = created.json().get("id")
+
+    confirmed = await async_client.post(
+        f"/api/v1/preorders/{preorder_id}/confirm",
+        headers=company_a_admin_headers,
+    )
+    assert confirmed.status_code == 404, confirmed.text
+    assert confirmed.json().get("code") == "PRODUCT_NOT_FOUND"
+
+    stock = (
+        (
+            await async_db_session.execute(
+                select(ProductStock).where(
+                    ProductStock.product_id == product_b.id,
+                    ProductStock.warehouse_id == warehouse_b.id,
+                )
+            )
+        )
+        .scalars()
+        .one()
+    )
+    assert stock.reserved_quantity == 0
 
 
 async def test_preorder_cancel_releases_stock_idempotent(

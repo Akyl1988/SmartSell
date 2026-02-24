@@ -91,6 +91,36 @@ async def _get_or_create_stock(
     return stock
 
 
+async def _find_movement_stock(
+    db: AsyncSession,
+    *,
+    tenant_id: int,
+    product_id: int,
+    movement_type: str,
+    reference_type: str,
+    reference_id: int,
+    warehouse_id: int | None = None,
+) -> ProductStock | None:
+    stmt = (
+        select(ProductStock)
+        .join(StockMovement, StockMovement.stock_id == ProductStock.id)
+        .join(Warehouse, Warehouse.id == ProductStock.warehouse_id)
+        .where(
+            StockMovement.movement_type == movement_type,
+            StockMovement.reference_type == reference_type,
+            StockMovement.reference_id == reference_id,
+            StockMovement.product_id == product_id,
+            Warehouse.company_id == tenant_id,
+        )
+        .order_by(StockMovement.id.desc())
+        .limit(1)
+    )
+    if warehouse_id is not None:
+        stmt = stmt.where(ProductStock.warehouse_id == warehouse_id)
+    result = await db.execute(stmt)
+    return result.scalar_one_or_none()
+
+
 def _build_result(stock: ProductStock) -> dict[str, int]:
     return {
         "product_id": int(stock.product_id),
@@ -154,6 +184,17 @@ async def release_and_log(
     warehouse_id: int | None = None,
 ) -> dict[str, int]:
     qty_int = _validate_qty(qty)
+    existing = await _find_movement_stock(
+        db,
+        tenant_id=tenant_id,
+        product_id=product_id,
+        movement_type=MovementType.RELEASE.value,
+        reference_type=reference_type,
+        reference_id=reference_id,
+        warehouse_id=warehouse_id,
+    )
+    if existing is not None:
+        return _build_result(existing)
     product = await _get_product(db, tenant_id=tenant_id, product_id=product_id)
     if warehouse_id is None:
         warehouse = await _get_default_warehouse(db, tenant_id=tenant_id)
@@ -196,6 +237,17 @@ async def fulfill_reservation(
     warehouse_id: int | None = None,
 ) -> dict[str, int]:
     qty_int = _validate_qty(qty)
+    existing = await _find_movement_stock(
+        db,
+        tenant_id=tenant_id,
+        product_id=product_id,
+        movement_type=MovementType.FULFILL.value,
+        reference_type=reference_type,
+        reference_id=reference_id,
+        warehouse_id=warehouse_id,
+    )
+    if existing is not None:
+        return _build_result(existing)
     product = await _get_product(db, tenant_id=tenant_id, product_id=product_id)
     if warehouse_id is None:
         warehouse = await _get_default_warehouse(db, tenant_id=tenant_id)
