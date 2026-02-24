@@ -362,6 +362,22 @@ async def test_preorder_cancel_releases_stock_idempotent(
     )
     assert cancelled_again.status_code == 200, cancelled_again.text
 
+    stock = (
+        (
+            await async_db_session.execute(
+                select(ProductStock)
+                .where(
+                    ProductStock.product_id == product.id,
+                    ProductStock.warehouse_id == warehouse.id,
+                )
+                .execution_options(populate_existing=True)
+            )
+        )
+        .scalars()
+        .one()
+    )
+    assert stock.reserved_quantity == 0
+
     moves = (
         (
             await async_db_session.execute(
@@ -527,6 +543,23 @@ async def test_preorder_fulfill_decrements_stock_idempotent(
         headers=company_a_admin_headers,
     )
     assert fulfilled_again.status_code == 200, fulfilled_again.text
+
+    stock = (
+        (
+            await async_db_session.execute(
+                select(ProductStock)
+                .where(
+                    ProductStock.product_id == product.id,
+                    ProductStock.warehouse_id == warehouse.id,
+                )
+                .execution_options(populate_existing=True)
+            )
+        )
+        .scalars()
+        .one()
+    )
+    assert stock.quantity == 3
+    assert stock.reserved_quantity == 0
 
     moves = (
         (

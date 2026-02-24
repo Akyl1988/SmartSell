@@ -142,6 +142,17 @@ async def reserve_and_log(
     warehouse_id: int | None = None,
 ) -> dict[str, int]:
     qty_int = _validate_qty(qty)
+    existing = await _find_movement_stock(
+        db,
+        tenant_id=tenant_id,
+        product_id=product_id,
+        movement_type=MovementType.RESERVE.value,
+        reference_type=reference_type,
+        reference_id=reference_id,
+        warehouse_id=warehouse_id,
+    )
+    if existing is not None:
+        return _build_result(existing)
     product = await _get_product(db, tenant_id=tenant_id, product_id=product_id)
     if warehouse_id is None:
         warehouse = await _get_default_warehouse(db, tenant_id=tenant_id)
