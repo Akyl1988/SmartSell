@@ -5,7 +5,7 @@ Warehouse Pydantic schemas.
 
 from pydantic import EmailStr, Field
 
-from app.schemas.base import BaseCreateSchema, BaseResponseSchema, BaseSchema, BaseUpdateSchema
+from app.schemas.base import BaseCreateSchema, BaseResponseSchema, BaseSchema, BaseUpdateSchema, TimestampedSchema
 
 
 class WarehouseCreate(BaseCreateSchema):
@@ -41,7 +41,7 @@ class WarehouseUpdate(BaseUpdateSchema):
     is_main: bool | None = None
 
 
-class WarehouseResponse(BaseResponseSchema):
+class WarehouseResponse(TimestampedSchema):
     """Schema for warehouse response"""
 
     name: str

@@ -40,6 +40,34 @@ function Assert-Ok {
   return $Resp.Body
 }
 
+function Get-RespItems {
+  param([object]$Body)
+  if ($Body -and $Body.PSObject.Properties["items"]) {
+    return @($Body.items)
+  }
+  return @()
+}
+
+function Get-Id {
+  param([object]$Obj)
+  if (-not $Obj) { return $null }
+  $prop = $Obj.PSObject.Properties["id"]
+  if ($prop) { return $prop.Value }
+  return $null
+}
+
+function Debug-MissingId {
+  param(
+    [string]$Label,
+    [object]$Obj
+  )
+  $typeName = $null
+  try { $typeName = $Obj.GetType().FullName } catch { $typeName = "<unknown>" }
+  $jsonText = $null
+  try { $jsonText = $Obj | ConvertTo-Json -Depth 10 } catch { $jsonText = "<unserializable>" }
+  Write-Host ("[DEBUG] Missing id for {0}. type={1} json={2}" -f $Label, $typeName, $jsonText)
+}
+
 function Invoke-Api {
   param(
     [string]$Method,
@@ -67,7 +95,7 @@ $productResp = Invoke-Api -Method "POST" -Url "$BaseUrl/api/v1/products" -Body $
 if ($productResp.StatusCode -eq 409) {
   $listResp = Invoke-Api -Method "GET" -Url "$BaseUrl/api/v1/products?search=$productSku&page=1&per_page=1"
   $listBody = Assert-Ok -Resp $listResp -Action "List products"
-  $items = $listBody.items
+    $items = Get-RespItems -Body $listBody
   if (-not $items -or $items.Count -eq 0) {
     throw "Product create failed and no existing product found"
   }
@@ -76,27 +104,40 @@ if ($productResp.StatusCode -eq 409) {
   $product = Assert-Ok -Resp $productResp -Action "Create product"
 }
 
-$productId = $product.id
-if (-not $productId) { throw "Missing product id" }
+  $productId = Get-Id -Obj $product
+  if (-not $productId) {
+    Debug-MissingId -Label "product" -Obj $product
+    throw "Missing product id"
+  }
 
 $whListResp = Invoke-Api -Method "GET" -Url "$BaseUrl/api/v1/warehouses?page=1&per_page=100"
 $whList = Assert-Ok -Resp $whListResp -Action "List warehouses"
-$warehouses = @($whList.items)
+$warehouses = Get-RespItems -Body $whList
 $mainWarehouse = $warehouses | Where-Object { $_.is_main -eq $true -and $_.is_active -eq $true } | Select-Object -First 1
 if (-not $mainWarehouse) {
   $whCreate = Invoke-Api -Method "POST" -Url "$BaseUrl/api/v1/warehouses" -Body @{ name = "Main"; is_main = $true }
   $mainWarehouse = Assert-Ok -Resp $whCreate -Action "Create main warehouse"
 }
 
-$warehouseId = $mainWarehouse.id
-if (-not $warehouseId) { throw "Missing warehouse id" }
+$warehouseId = Get-Id -Obj $mainWarehouse
+if (-not $warehouseId) {
+  $whListResp = Invoke-Api -Method "GET" -Url "$BaseUrl/api/v1/warehouses?page=1&per_page=100"
+  $whList = Assert-Ok -Resp $whListResp -Action "Re-list warehouses"
+  $warehouses = Get-RespItems -Body $whList
+  $mainWarehouse = $warehouses | Where-Object { $_.is_main -eq $true -and $_.is_active -eq $true } | Select-Object -First 1
+  $warehouseId = Get-Id -Obj $mainWarehouse
+}
+
+if (-not $warehouseId) {
+  Debug-MissingId -Label "warehouse" -Obj $mainWarehouse
+  throw "Missing warehouse id (restart API after schema update if responses omit id)"
+}
 
 $stockListResp = Invoke-Api -Method "GET" -Url "$BaseUrl/api/v1/inventory/stocks?warehouse_id=$warehouseId&product_id=$productId&page=1&per_page=1"
 $stockList = Assert-Ok -Resp $stockListResp -Action "List stocks"
 $stockItem = $null
-if ($stockList.items -and $stockList.items.Count -gt 0) {
-  $stockItem = $stockList.items[0]
-}
+$stockItems = Get-RespItems -Body $stockList
+if ($stockItems.Count -gt 0) { $stockItem = $stockItems[0] }
 
 $qty = 0
 $reserved = 0
@@ -147,8 +188,11 @@ $preorderPayload = @{
 
 $preorderResp = Invoke-Api -Method "POST" -Url "$BaseUrl/api/v1/preorders" -Body $preorderPayload
 $preorder = Assert-Ok -Resp $preorderResp -Action "Create preorder"
-$preorderId = $preorder.id
-if (-not $preorderId) { throw "Missing preorder id" }
+$preorderId = Get-Id -Obj $preorder
+if (-not $preorderId) {
+  Debug-MissingId -Label "preorder" -Obj $preorder
+  throw "Missing preorder id"
+}
 
 $confirm1 = Invoke-Api -Method "POST" -Url "$BaseUrl/api/v1/preorders/$preorderId/confirm"
 Assert-Ok -Resp $confirm1 -Action "Confirm preorder"
