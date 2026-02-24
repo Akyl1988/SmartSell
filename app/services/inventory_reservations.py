@@ -48,8 +48,9 @@ async def _get_default_warehouse(db: AsyncSession, *, tenant_id: int) -> Warehou
             Warehouse.company_id == tenant_id,
             Warehouse.is_active.is_(True),
             Warehouse.is_archived.is_(False),
+            Warehouse.is_main.is_(True),
         )
-        .order_by(Warehouse.is_main.desc(), Warehouse.id.asc())
+        .order_by(Warehouse.id.asc())
     )
     warehouse = result.scalars().first()
     if not warehouse:
