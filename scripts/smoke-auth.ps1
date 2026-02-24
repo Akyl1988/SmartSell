@@ -90,7 +90,12 @@ try {
 
 $access = $tokens.access
 $refresh = $tokens.refresh
+if (-not $access) { throw "Login returned empty access token" }
+$jwtParts = Get-JwtPartsCount -Value $access
+if ($jwtParts -ne 3) { throw "access_token has invalid format (jwtParts=$jwtParts)" }
+Write-Host ("TOKEN OK: len={0}, jwtParts={1}" -f $access.Length, $jwtParts)
 Set-SmartsellTokens -AccessToken $access -RefreshToken $refresh -BaseUrl $BaseUrl
+Write-Host ("CACHE PATH: {0}" -f (Get-SmokeCachePath))
 
 Write-Host ("ACCESS: {0}" -f (Mask-Secret $access))
 Write-Host ("REFRESH: {0}" -f (Mask-Secret $refresh))
