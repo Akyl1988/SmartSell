@@ -45,7 +45,7 @@ export type PreorderItemOut = {
   preorder_id: number
 }
 
-export type PreorderOut = {
+export type Preorder = {
   id: number
   created_at: string
   updated_at: string
@@ -70,37 +70,37 @@ export type PreorderListParams = {
   per_page?: number
 }
 
-export async function listPreorders(params: PreorderListParams = {}): Promise<PaginatedResponse<PreorderOut>> {
-  const { data } = await apiClient.get<PaginatedResponse<PreorderOut>>('/api/v1/preorders', { params })
+export async function listPreorders(): Promise<Preorder[]> {
+  const { data } = await apiClient.get<PaginatedResponse<Preorder>>('/api/v1/preorders')
+  return data.items
+}
+
+export async function getPreorderById(preorderId: number): Promise<Preorder> {
+  const { data } = await apiClient.get<Preorder>(`/api/v1/preorders/${preorderId}`)
   return data
 }
 
-export async function getPreorderById(preorderId: number): Promise<PreorderOut> {
-  const { data } = await apiClient.get<PreorderOut>(`/api/v1/preorders/${preorderId}`)
+export async function createPreorder(payload: PreorderCreateIn): Promise<Preorder> {
+  const { data } = await apiClient.post<Preorder>('/api/v1/preorders', payload)
   return data
 }
 
-export async function createPreorder(payload: PreorderCreateIn): Promise<PreorderOut> {
-  const { data } = await apiClient.post<PreorderOut>('/api/v1/preorders', payload)
+export async function updatePreorder(preorderId: number, payload: PreorderUpdateIn): Promise<Preorder> {
+  const { data } = await apiClient.patch<Preorder>(`/api/v1/preorders/${preorderId}`, payload)
   return data
 }
 
-export async function updatePreorder(preorderId: number, payload: PreorderUpdateIn): Promise<PreorderOut> {
-  const { data } = await apiClient.patch<PreorderOut>(`/api/v1/preorders/${preorderId}`, payload)
+export async function confirmPreorder(preorderId: number): Promise<Preorder> {
+  const { data } = await apiClient.post<Preorder>(`/api/v1/preorders/${preorderId}/confirm`)
   return data
 }
 
-export async function confirmPreorder(preorderId: number): Promise<PreorderOut> {
-  const { data } = await apiClient.post<PreorderOut>(`/api/v1/preorders/${preorderId}/confirm`)
+export async function cancelPreorder(preorderId: number): Promise<Preorder> {
+  const { data } = await apiClient.post<Preorder>(`/api/v1/preorders/${preorderId}/cancel`)
   return data
 }
 
-export async function cancelPreorder(preorderId: number): Promise<PreorderOut> {
-  const { data } = await apiClient.post<PreorderOut>(`/api/v1/preorders/${preorderId}/cancel`)
-  return data
-}
-
-export async function fulfillPreorder(preorderId: number): Promise<PreorderOut> {
-  const { data } = await apiClient.post<PreorderOut>(`/api/v1/preorders/${preorderId}/fulfill`)
+export async function fulfillPreorder(preorderId: number): Promise<Preorder> {
+  const { data } = await apiClient.post<Preorder>(`/api/v1/preorders/${preorderId}/fulfill`)
   return data
 }
