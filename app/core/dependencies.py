@@ -220,15 +220,26 @@ async def _get_auth_db():
 # Security helpers (advanced -> legacy)
 # ------------------------------------------------------------------------------
 _HAS_ADV_SECURITY = False
+_legacy_verify_token = None  # type: ignore
+denylist_key_for_token = None  # type: ignore[assignment]
+is_token_revoked = None  # type: ignore[assignment]
+is_access_token_revoked = None  # type: ignore[assignment]
 try:
     from app.core.security import (  # type: ignore; noqa: F401 (may be unused here); -> dict payload {sub, scp, role, jti, exp, kid, ...}
         decode_and_validate,
         denylist_key_for_token,
         is_token_revoked,
+        is_access_token_revoked,
     )
 
     _HAS_ADV_SECURITY = True
 except Exception:  # pragma: no cover
+    try:
+        from app.core.security import denylist_key_for_token, is_token_revoked, is_access_token_revoked  # type: ignore
+    except Exception:
+        denylist_key_for_token = None  # type: ignore[assignment]
+        is_token_revoked = None  # type: ignore[assignment]
+        is_access_token_revoked = None  # type: ignore[assignment]
     try:
         from app.core.security import verify_token as _legacy_verify_token  # type: ignore
     except Exception:
@@ -302,6 +313,22 @@ def _decode_token_soft(token: str) -> dict | None:
     return None
 
 
+def _is_token_revoked_for_payload(token: str, payload: dict | None) -> bool:
+    if not payload or not token:
+        return False
+    if callable(is_access_token_revoked) and is_access_token_revoked(token):
+        return True
+    if not callable(denylist_key_for_token) or not callable(is_token_revoked):
+        return False
+    key = denylist_key_for_token(token, payload)
+    if key and is_token_revoked(key):
+        return True
+    token_hash_key = denylist_key_for_token(token, None)
+    if token_hash_key and token_hash_key != key and is_token_revoked(token_hash_key):
+        return True
+    return False
+
+
 def _auth_context_from_payload(token: str, payload: dict) -> AuthContext:
     sub = str(payload.get("sub", ""))
     scopes = set(payload.get("scp") or [])
@@ -352,8 +379,13 @@ async def get_current_user_optional(
         token = request.cookies.get("access_token")
     if not token:
         return None
+    if callable(is_access_token_revoked) and is_access_token_revoked(token):
+        return None
+
     payload = _decode_token_soft(token)
     if not payload:
+        return None
+    if _is_token_revoked_for_payload(token, payload):
         return None
     ctx = _auth_context_from_payload(token, payload)
     if ctx.user_id <= 0:
@@ -374,12 +406,14 @@ async def get_current_user(
     if not token:
         raise AuthenticationError("Authentication required", "AUTH_REQUIRED")
 
+    if callable(is_access_token_revoked) and is_access_token_revoked(token):
+        raise AuthenticationError("Invalid or expired token", "INVALID_TOKEN")
+
     payload = None
     if _HAS_ADV_SECURITY:
         try:
             payload = decode_and_validate(token, expected_type="access")  # type: ignore
-            key = denylist_key_for_token(token, payload)
-            if key and is_token_revoked(key):
+            if _is_token_revoked_for_payload(token, payload):
                 raise AuthenticationError("Invalid or expired token", "INVALID_TOKEN")
         except ValueError as exc:
             if str(exc) == "Token expired":
@@ -396,6 +430,9 @@ async def get_current_user(
             audit_logger.log_auth_failure(reason="invalid_token", **info)
         except Exception:
             pass
+        raise AuthenticationError("Invalid or expired token", "INVALID_TOKEN")
+
+    if _is_token_revoked_for_payload(token, payload):
         raise AuthenticationError("Invalid or expired token", "INVALID_TOKEN")
 
     ctx = _auth_context_from_payload(token, payload)
