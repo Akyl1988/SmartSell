@@ -19,7 +19,7 @@ from app.core.dependencies import (
 )
 from app.core.exceptions import NotFoundError, SmartSellValidationError
 from app.core.security import resolve_tenant_company_id
-from app.core.subscriptions.features import require_feature
+from app.core.subscriptions import FEATURE_REPRICING, require_feature
 from app.models.product import Product
 from app.models.repricing import RepricingDiff, RepricingRule, RepricingRun, repricing_run_stats
 from app.models.user import User
@@ -36,8 +36,6 @@ from app.schemas.pricing import (
 )
 from app.services.pricing_engine import RuleConfig, evaluate_product
 from app.services.subscription_features import enforce_feature_limit
-
-FEATURE_REPRICING = "repricing"
 
 router = APIRouter()
 

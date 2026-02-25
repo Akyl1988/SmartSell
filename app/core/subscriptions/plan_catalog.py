@@ -47,6 +47,8 @@ FEATURE_MATRIX: dict[str, set[str]] = {
         "kaspi.autosync",
     },
     "pro": {
+        "repricing",
+        "preorders",
         "kaspi.orders_list",
         "kaspi.sync_now",
         "kaspi.goods_imports",

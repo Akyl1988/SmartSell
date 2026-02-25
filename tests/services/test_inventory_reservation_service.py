@@ -236,5 +236,3 @@ async def test_reserve_stock_for_preorder_insufficient(async_db_session, factory
     )
     assert result.ok is False
     assert result.error_code == "INSUFFICIENT_STOCK"
-
-

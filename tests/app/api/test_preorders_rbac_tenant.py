@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+from datetime import UTC, datetime, timedelta
+
 import pytest
 from sqlalchemy import func, select
 
+from app.models.billing import Subscription
 from app.models.order import Order
 
 pytestmark = pytest.mark.asyncio
@@ -186,3 +189,82 @@ async def test_preorders_fulfill_requires_item_price(
         headers=company_a_admin_headers,
     )
     assert fulfilled.status_code == 422, fulfilled.text
+
+
+@pytest.mark.no_subscription
+async def test_preorders_require_subscription(async_client, company_a_admin_headers):
+    created = await async_client.post(
+        "/api/v1/preorders",
+        json=_payload(),
+        headers=company_a_admin_headers,
+    )
+    assert created.status_code == 402, created.text
+    detail = created.json().get("detail")
+    assert isinstance(detail, dict)
+    assert detail.get("code") == "SUBSCRIPTION_REQUIRED"
+
+
+async def test_preorders_blocked_on_basic_plan(async_client, async_db_session, company_a_admin_headers):
+    sub = (
+        (
+            await async_db_session.execute(
+                select(Subscription).where(
+                    Subscription.company_id == 1001,
+                    Subscription.deleted_at.is_(None),
+                )
+            )
+        )
+        .scalars()
+        .first()
+    )
+    assert sub is not None
+    sub.plan = "basic"
+    sub.status = "active"
+    now = datetime.now(UTC)
+    sub.started_at = now
+    sub.period_start = now
+    sub.period_end = now + timedelta(days=30)
+    await async_db_session.commit()
+
+    created = await async_client.post(
+        "/api/v1/preorders",
+        json=_payload(),
+        headers=company_a_admin_headers,
+    )
+    assert created.status_code == 402, created.text
+    detail = created.json().get("detail")
+    assert isinstance(detail, dict)
+    assert detail.get("code") == "SUBSCRIPTION_REQUIRED"
+
+
+async def test_preorders_blocked_after_trial_expiry(async_client, async_db_session, company_a_admin_headers):
+    sub = (
+        (
+            await async_db_session.execute(
+                select(Subscription).where(
+                    Subscription.company_id == 1001,
+                    Subscription.deleted_at.is_(None),
+                )
+            )
+        )
+        .scalars()
+        .first()
+    )
+    assert sub is not None
+    sub.plan = "pro"
+    sub.status = "trialing"
+    now = datetime.now(UTC)
+    sub.started_at = now - timedelta(days=16)
+    sub.period_start = sub.started_at
+    sub.period_end = now - timedelta(days=1)
+    await async_db_session.commit()
+
+    created = await async_client.post(
+        "/api/v1/preorders",
+        json=_payload(),
+        headers=company_a_admin_headers,
+    )
+    assert created.status_code == 402, created.text
+    detail = created.json().get("detail")
+    assert isinstance(detail, dict)
+    assert detail.get("code") == "SUBSCRIPTION_REQUIRED"

@@ -7,6 +7,7 @@ from sqlalchemy import select
 
 from app.models.company import Company
 from app.models.product import Product
+from app.models.subscription_catalog import Feature, FeatureUsage
 from app.models.user import User
 from app.models.warehouse import ProductStock, StockMovement, Warehouse
 
@@ -74,6 +75,23 @@ async def test_preorder_confirm_reserves_stock_idempotent(
     )
     assert confirmed.status_code == 200, confirmed.text
 
+    feature = (await async_db_session.execute(select(Feature).where(Feature.code == "preorders"))).scalars().first()
+    assert feature is not None
+    usage = (
+        (
+            await async_db_session.execute(
+                select(FeatureUsage).where(
+                    FeatureUsage.company_id == user_a.company_id,
+                    FeatureUsage.feature_id == feature.id,
+                )
+            )
+        )
+        .scalars()
+        .first()
+    )
+    assert usage is not None
+    assert usage.used_count == 1
+
     stock = (
         (
             await async_db_session.execute(
@@ -93,6 +111,21 @@ async def test_preorder_confirm_reserves_stock_idempotent(
         headers=company_a_admin_headers,
     )
     assert confirmed_again.status_code == 200, confirmed_again.text
+
+    usage = (
+        (
+            await async_db_session.execute(
+                select(FeatureUsage).where(
+                    FeatureUsage.company_id == user_a.company_id,
+                    FeatureUsage.feature_id == feature.id,
+                )
+            )
+        )
+        .scalars()
+        .first()
+    )
+    assert usage is not None
+    assert usage.used_count == 1
 
     stock = (
         (

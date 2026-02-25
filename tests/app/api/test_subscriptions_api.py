@@ -1,3 +1,5 @@
+from datetime import datetime, timedelta
+
 import pytest
 import sqlalchemy as sa
 
@@ -17,7 +19,7 @@ async def test_create_subscription_trial_ok(client, auth_headers, async_db_sessi
             "billing_cycle": "monthly",
             "price": "24900",
             "currency": "KZT",
-            "trial_days": 7,
+            "trial_days": 0,
         },
         headers=auth_headers,
     )
@@ -25,12 +27,15 @@ async def test_create_subscription_trial_ok(client, auth_headers, async_db_sessi
     data = r.json()
     assert data["company_id"] == 1
     assert data["plan"] == "Pro"
-    assert data["status"] in ("trial", "active")
+    assert data["status"] in ("trial", "trialing")
     assert data["next_billing_date"]
+    started_at = datetime.fromisoformat(data["started_at"])
+    expires_at = datetime.fromisoformat(data["expires_at"])
+    assert expires_at - started_at == timedelta(days=15)
 
 
 @pytest.mark.asyncio
-async def test_create_subscription_trial_blocked_for_non_admin(client, company_a_admin_headers):
+async def test_create_subscription_trial_allowed_for_non_admin_pro(client, company_a_admin_headers):
     r = await client.post(
         BASE,
         json={
@@ -42,9 +47,9 @@ async def test_create_subscription_trial_blocked_for_non_admin(client, company_a
         },
         headers=company_a_admin_headers,
     )
-    assert r.status_code == 422, r.text
+    assert r.status_code == 201, r.text
     payload = r.json()
-    assert payload.get("detail") == "trial_days is not allowed here; trial is granted via Kaspi merchant_uid"
+    assert payload.get("status") in ("trial", "trialing")
 
 
 @pytest.mark.asyncio
