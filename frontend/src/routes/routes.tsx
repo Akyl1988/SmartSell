@@ -1,0 +1,47 @@
+import { Navigate, Outlet, Route, Routes } from 'react-router-dom'
+import LoginPage from '../pages/Auth/LoginPage'
+import DashboardPage from '../pages/Dashboard/DashboardPage'
+import ProductsPage from '../pages/Products/ProductsPage'
+import PreordersPage from '../pages/Preorders/PreordersPage'
+import RepricingPage from '../pages/Repricing/RepricingPage'
+import WalletPage from '../pages/Wallet/WalletPage'
+import SubscriptionsPage from '../pages/Subscriptions/SubscriptionsPage'
+import ReportsPage from '../pages/Reports/ReportsPage'
+import SettingsPage from '../pages/Settings/SettingsPage'
+
+export function AppRoutes() {
+  return (
+    <Routes>
+      <Route path="/" element={<Navigate to="/dashboard" replace />} />
+      <Route path="/auth/login" element={<LoginPage />} />
+      <Route element={<ProtectedRoute />}>
+        <Route path="/dashboard" element={<DashboardPage />} />
+        <Route path="/products" element={<ProductsPage />} />
+        <Route path="/preorders" element={<PreordersPage />} />
+        <Route path="/repricing" element={<RepricingPage />} />
+        <Route path="/wallet" element={<WalletPage />} />
+        <Route path="/subscriptions" element={<SubscriptionsPage />} />
+        <Route path="/reports" element={<ReportsPage />} />
+        <Route path="/settings" element={<SettingsPage />} />
+      </Route>
+      <Route path="*" element={<NotFound />} />
+    </Routes>
+  )
+}
+
+function ProtectedRoute() {
+  const token = localStorage.getItem('access_token')
+  if (!token) {
+    return <Navigate to="/auth/login" replace />
+  }
+  return <Outlet />
+}
+
+function NotFound() {
+  return (
+    <section>
+      <h1>Not found</h1>
+      <p>The page you requested does not exist.</p>
+    </section>
+  )
+}
