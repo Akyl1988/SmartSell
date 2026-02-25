@@ -169,9 +169,9 @@ export type ProductListParams = {
   per_page?: number
 }
 
-export async function listProducts(params: ProductListParams = {}): Promise<PaginatedResponse<ProductResponse>> {
+export async function listProducts(params: ProductListParams = {}): Promise<ProductResponse[]> {
   const { data } = await apiClient.get<PaginatedResponse<ProductResponse>>('/api/v1/products', { params })
-  return data
+  return data.items
 }
 
 export async function fetchProductById(productId: number): Promise<ProductResponse> {
