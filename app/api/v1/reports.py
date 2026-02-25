@@ -30,9 +30,14 @@ from app.core.exceptions import AuthorizationError, NotFoundError, _ensure_reque
 from app.core.logging import audit_logger
 from app.core.rbac import is_platform_admin, is_store_admin, is_store_manager
 from app.core.security import resolve_tenant_company_id
+from app.core.subscriptions import FEATURE_PREORDERS, FEATURE_REPRICING, require_feature
 from app.models.billing import BillingInvoice, WalletBalance, WalletTransaction
 from app.models.order import Order, OrderItem
+from app.models.preorder import Preorder, PreorderItem
+from app.models.product import Product
+from app.models.repricing import RepricingRun
 from app.models.user import User
+from app.models.warehouse import ProductStock, Warehouse
 from app.services.reports.sales_pdf import build_sales_pdf
 from app.utils.pii import mask_phone
 
@@ -431,6 +436,216 @@ async def _fetch_order_items_csv_rows(
     return items
 
 
+async def _fetch_preorders_csv_rows(
+    db: AsyncSession,
+    *,
+    company_id: int,
+    date_from: datetime | None,
+    date_to: datetime | None,
+    limit: int,
+) -> list[dict[str, str]]:
+    items_count_sq = (
+        select(
+            PreorderItem.preorder_id.label("pid"),
+            func.count(PreorderItem.id).label("items_count"),
+        )
+        .group_by(PreorderItem.preorder_id)
+        .subquery()
+    )
+    items_count = func.coalesce(items_count_sq.c.items_count, 0).label("items_count")
+
+    stmt = (
+        select(
+            Preorder.id,
+            Preorder.company_id,
+            Preorder.created_at,
+            Preorder.status,
+            Preorder.total,
+            Preorder.currency,
+            Preorder.customer_name,
+            Preorder.customer_phone,
+            items_count,
+            Preorder.source,
+            Preorder.external_id,
+            Preorder.fulfilled_order_id,
+            Preorder.fulfilled_at,
+        )
+        .outerjoin(items_count_sq, items_count_sq.c.pid == Preorder.id)
+        .where(Preorder.company_id == company_id)
+    )
+    if date_from:
+        stmt = stmt.where(Preorder.created_at >= date_from)
+    if date_to:
+        stmt = stmt.where(Preorder.created_at <= date_to)
+    stmt = stmt.order_by(Preorder.created_at.desc(), Preorder.id.desc()).limit(limit)
+
+    rows = (await db.execute(stmt)).all()
+    items: list[dict[str, str]] = []
+    for (
+        preorder_id,
+        preorder_company_id,
+        created_at,
+        status,
+        total,
+        currency,
+        customer_name,
+        customer_phone,
+        count,
+        source,
+        external_id,
+        fulfilled_order_id,
+        fulfilled_at,
+    ) in rows:
+        items.append(
+            {
+                "preorder_id": str(preorder_id),
+                "company_id": str(preorder_company_id),
+                "created_at": created_at.isoformat() if created_at else "",
+                "status": str(status or ""),
+                "total_amount": str(total) if total is not None else "",
+                "currency": str(currency or ""),
+                "customer_name": str(customer_name or ""),
+                "customer_phone": str(customer_phone or ""),
+                "items_count": str(int(count or 0)),
+                "source": str(source or ""),
+                "external_id": str(external_id or ""),
+                "fulfilled_order_id": _to_optional_str(fulfilled_order_id),
+                "fulfilled_at": _to_optional_str(fulfilled_at),
+            }
+        )
+    return items
+
+
+async def _fetch_inventory_csv_rows(
+    db: AsyncSession,
+    *,
+    company_id: int,
+    warehouse_id: int | None,
+    limit: int,
+) -> list[dict[str, str]]:
+    stmt = (
+        select(
+            Warehouse.id,
+            Warehouse.name,
+            ProductStock.product_id,
+            ProductStock.quantity,
+            ProductStock.reserved_quantity,
+            ProductStock.updated_at,
+            Product.sku,
+            Product.name,
+            Product.company_id,
+        )
+        .join(Warehouse, Warehouse.id == ProductStock.warehouse_id)
+        .join(Product, Product.id == ProductStock.product_id)
+        .where(Warehouse.company_id == company_id)
+        .where(Product.company_id == company_id)
+    )
+    if warehouse_id is not None:
+        stmt = stmt.where(Warehouse.id == warehouse_id)
+    stmt = stmt.order_by(ProductStock.updated_at.desc(), ProductStock.id.desc()).limit(limit)
+
+    rows = (await db.execute(stmt)).all()
+    items: list[dict[str, str]] = []
+    for (
+        wh_id,
+        wh_name,
+        product_id,
+        quantity,
+        reserved_quantity,
+        updated_at,
+        sku,
+        product_name,
+        product_company_id,
+    ) in rows:
+        on_hand = int(quantity or 0)
+        reserved = int(reserved_quantity or 0)
+        available = on_hand - reserved
+        items.append(
+            {
+                "company_id": str(product_company_id or company_id),
+                "warehouse_id": str(wh_id),
+                "warehouse_name": str(wh_name or ""),
+                "product_id": str(product_id),
+                "sku": str(sku or ""),
+                "product_name": str(product_name or ""),
+                "on_hand": str(on_hand),
+                "reserved": str(reserved),
+                "available": str(available),
+                "updated_at": _to_optional_str(updated_at),
+            }
+        )
+    return items
+
+
+async def _fetch_repricing_runs_csv_rows(
+    db: AsyncSession,
+    *,
+    company_id: int,
+    date_from: datetime | None,
+    date_to: datetime | None,
+    status: str | None,
+    limit: int,
+) -> list[dict[str, str]]:
+    stmt = select(
+        RepricingRun.id,
+        RepricingRun.rule_id,
+        RepricingRun.status,
+        RepricingRun.created_at,
+        RepricingRun.started_at,
+        RepricingRun.finished_at,
+        RepricingRun.processed,
+        RepricingRun.changed,
+        RepricingRun.failed,
+        RepricingRun.error_code,
+        RepricingRun.error_message,
+        RepricingRun.request_id,
+        RepricingRun.company_id,
+    ).where(RepricingRun.company_id == company_id)
+    if date_from:
+        stmt = stmt.where(RepricingRun.created_at >= date_from)
+    if date_to:
+        stmt = stmt.where(RepricingRun.created_at <= date_to)
+    if status:
+        stmt = stmt.where(RepricingRun.status == status)
+    stmt = stmt.order_by(RepricingRun.created_at.desc(), RepricingRun.id.desc()).limit(limit)
+
+    rows = (await db.execute(stmt)).all()
+    items: list[dict[str, str]] = []
+    for (
+        run_id,
+        rule_id,
+        run_status,
+        created_at,
+        started_at,
+        finished_at,
+        processed,
+        changed,
+        failed,
+        error_code,
+        error_message,
+        request_id,
+        run_company_id,
+    ) in rows:
+        items.append(
+            {
+                "company_id": str(run_company_id),
+                "run_id": str(run_id),
+                "rule_id": _to_optional_str(rule_id),
+                "status": str(run_status or ""),
+                "created_at": _to_optional_str(created_at),
+                "started_at": _to_optional_str(started_at),
+                "finished_at": _to_optional_str(finished_at),
+                "processed_count": _to_optional_str(processed),
+                "changed_count": _to_optional_str(changed),
+                "failed_count": _to_optional_str(failed),
+                "error_code": _to_optional_str(error_code),
+                "error_message": _to_optional_str(error_message),
+                "request_id": _to_optional_str(request_id),
+            }
+        )
+    return items
+
+
 @router.get(
     "/wallet/transactions.csv",
     responses={
@@ -615,6 +830,198 @@ async def report_order_items_csv(
         _csv_stream(rows, headers),
         media_type="text/csv; charset=utf-8",
         headers={"Content-Disposition": "attachment; filename=order-items.csv"},
+    )
+
+
+@router.get(
+    "/preorders.csv",
+    responses={
+        200: {
+            "content": {"text/csv": {"schema": {"type": "string", "format": "binary"}}},
+            "description": "Preorders CSV",
+        }
+    },
+    dependencies=[Depends(require_feature(FEATURE_PREORDERS))],
+)
+async def report_preorders_csv(
+    request: Request,
+    limit: int = Query(default=500, ge=1, le=5000),
+    date_from: str | None = Query(default=None),
+    date_to: str | None = Query(default=None),
+    companyId: int | None = Query(default=None, ge=1, alias="companyId"),
+    admin: User = Depends(get_current_verified_user),
+    db: AsyncSession = Depends(get_async_db),
+) -> StreamingResponse:
+    _ = admin
+    company_id = _resolve_company_id_param(request, companyId)
+    resolved_company_id = _resolve_wallet_report_company_id(admin, company_id)
+    df = _parse_dt(date_from, "date_from")
+    dt = _parse_dt(date_to, "date_to")
+
+    rows = await _fetch_preorders_csv_rows(
+        db,
+        company_id=resolved_company_id,
+        date_from=df,
+        date_to=dt,
+        limit=limit,
+    )
+
+    _log_report_event(
+        request=request,
+        event="report_preorders_csv",
+        resolved_company_id=resolved_company_id,
+        date_from=date_from,
+        date_to=date_to,
+        limit=limit,
+        rows_count=len(rows),
+    )
+
+    headers = [
+        "preorder_id",
+        "company_id",
+        "created_at",
+        "status",
+        "total_amount",
+        "currency",
+        "customer_name",
+        "customer_phone",
+        "items_count",
+        "source",
+        "external_id",
+        "fulfilled_order_id",
+        "fulfilled_at",
+    ]
+
+    return StreamingResponse(
+        _csv_stream(rows, headers),
+        media_type="text/csv; charset=utf-8",
+        headers={"Content-Disposition": "attachment; filename=preorders.csv"},
+    )
+
+
+@router.get(
+    "/inventory.csv",
+    responses={
+        200: {
+            "content": {"text/csv": {"schema": {"type": "string", "format": "binary"}}},
+            "description": "Inventory CSV",
+        }
+    },
+)
+async def report_inventory_csv(
+    request: Request,
+    limit: int = Query(default=500, ge=1, le=5000),
+    warehouseId: int | None = Query(default=None, ge=1, alias="warehouseId"),
+    companyId: int | None = Query(default=None, ge=1, alias="companyId"),
+    admin: User = Depends(get_current_verified_user),
+    db: AsyncSession = Depends(get_async_db),
+) -> StreamingResponse:
+    _ = admin
+    company_id = _resolve_company_id_param(request, companyId)
+    resolved_company_id = _resolve_wallet_report_company_id(admin, company_id)
+
+    rows = await _fetch_inventory_csv_rows(
+        db,
+        company_id=resolved_company_id,
+        warehouse_id=warehouseId,
+        limit=limit,
+    )
+
+    _log_report_event(
+        request=request,
+        event="report_inventory_csv",
+        resolved_company_id=resolved_company_id,
+        date_from=None,
+        date_to=None,
+        limit=limit,
+        rows_count=len(rows),
+    )
+
+    headers = [
+        "company_id",
+        "warehouse_id",
+        "warehouse_name",
+        "product_id",
+        "sku",
+        "product_name",
+        "on_hand",
+        "reserved",
+        "available",
+        "updated_at",
+    ]
+
+    return StreamingResponse(
+        _csv_stream(rows, headers),
+        media_type="text/csv; charset=utf-8",
+        headers={"Content-Disposition": "attachment; filename=inventory.csv"},
+    )
+
+
+@router.get(
+    "/repricing_runs.csv",
+    responses={
+        200: {
+            "content": {"text/csv": {"schema": {"type": "string", "format": "binary"}}},
+            "description": "Repricing runs CSV",
+        }
+    },
+    dependencies=[Depends(require_feature(FEATURE_REPRICING))],
+)
+async def report_repricing_runs_csv(
+    request: Request,
+    limit: int = Query(default=500, ge=1, le=5000),
+    date_from: str | None = Query(default=None),
+    date_to: str | None = Query(default=None),
+    status: str | None = Query(default=None, max_length=32),
+    companyId: int | None = Query(default=None, ge=1, alias="companyId"),
+    admin: User = Depends(get_current_verified_user),
+    db: AsyncSession = Depends(get_async_db),
+) -> StreamingResponse:
+    _ = admin
+    company_id = _resolve_company_id_param(request, companyId)
+    resolved_company_id = _resolve_wallet_report_company_id(admin, company_id)
+    df = _parse_dt(date_from, "date_from")
+    dt = _parse_dt(date_to, "date_to")
+
+    rows = await _fetch_repricing_runs_csv_rows(
+        db,
+        company_id=resolved_company_id,
+        date_from=df,
+        date_to=dt,
+        status=(status or "").strip() or None,
+        limit=limit,
+    )
+
+    _log_report_event(
+        request=request,
+        event="report_repricing_runs_csv",
+        resolved_company_id=resolved_company_id,
+        date_from=date_from,
+        date_to=date_to,
+        limit=limit,
+        rows_count=len(rows),
+    )
+
+    headers = [
+        "company_id",
+        "run_id",
+        "rule_id",
+        "status",
+        "created_at",
+        "started_at",
+        "finished_at",
+        "processed_count",
+        "changed_count",
+        "failed_count",
+        "error_code",
+        "error_message",
+        "request_id",
+    ]
+
+    return StreamingResponse(
+        _csv_stream(rows, headers),
+        media_type="text/csv; charset=utf-8",
+        headers={"Content-Disposition": "attachment; filename=repricing-runs.csv"},
     )
 
 
