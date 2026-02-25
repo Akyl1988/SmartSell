@@ -709,6 +709,7 @@ async def _grant_trial_subscription(
     sub.billing_anchor_day = now.day
     sub.grace_until = grace_until
     sub.expires_at = period_end
+    sub.trial_used = True
 
     await db.flush()
     return sub

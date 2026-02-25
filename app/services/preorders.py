@@ -11,6 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.core.exceptions import NotFoundError, SmartSellValidationError
+from app.core.subscriptions import FEATURE_PREORDERS
 from app.models.order import Order, OrderItem, OrderSource, OrderStatus
 from app.models.preorder import Preorder, PreorderItem, PreorderStatus
 from app.models.product import Product
@@ -22,6 +23,7 @@ from app.services.inventory_reservations import (
     release_stock_for_preorder,
     reserve_stock_for_preorder,
 )
+from app.services.subscription_features import enforce_feature_limit
 
 
 def _parse_dt(value: str | None, field: str) -> datetime | None:
@@ -263,6 +265,14 @@ async def confirm_preorder(db: AsyncSession, *, company_id: int, preorder_id: in
                 _raise_reservation_error(result)
 
         _transition(preorder, PreorderStatus.CONFIRMED)
+        await enforce_feature_limit(
+            db,
+            company_id=company_id,
+            feature_code=FEATURE_PREORDERS,
+            increment_by=1,
+            limit_key="max_preorders_per_period",
+            now=datetime.now(UTC),
+        )
 
     if nested:
         await db.commit()

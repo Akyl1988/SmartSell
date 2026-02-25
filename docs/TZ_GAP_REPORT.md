@@ -1,3 +1,4 @@
+
 # TZ Gap Report (FastAPI)
 
 Legend: ✅ implemented, ⚠️ partially implemented, ❌ no evidence found
@@ -48,6 +49,37 @@ Legend: ✅ implemented, ⚠️ partially implemented, ❌ no evidence found
 | Integrations | Cloudinary image service | ✅ | [app/services/cloudinary_service.py](app/services/cloudinary_service.py#L1-L120) |
 | AI Bot | AI chatbot/assistant | ❌ | No evidence found in [app/](app/) or [app/services/](app/services/) |
 | Messaging | WhatsApp/Telegram messaging | ❌ | No evidence found in [app/](app/) or [app/services/](app/services/) |
+
+## Targeted Gap Updates
+
+### Auth / Logout revoke
+- [x] /auth/logout makes access tokens invalid immediately.
+- Implementation:
+	- denylist revoke (jti + token hash) plus in-memory access-token revoke fallback.
+	- get_current_user and get_current_user_optional always check revoke.
+- Coverage:
+	- [tests/app/test_auth.py](tests/app/test_auth.py#L576-L612)
+
+### Preorders + Inventory
+- [x] Preorder confirm/cancel/fulfill uses warehouse reservation flow.
+- Implementation:
+	- reservation helpers on ProductStock + StockMovement.
+	- warehouse selection: main -> first active.
+	- no Product.stock_quantity fallback for reservations.
+- Coverage:
+	- [tests/services/test_inventory_reservation_service.py](tests/services/test_inventory_reservation_service.py#L1-L210)
+	- [tests/app/api/test_preorders_inventory.py](tests/app/api/test_preorders_inventory.py#L1-L700)
+
+### Campaigns storage (in-memory vs ORM)
+- [x] Prevent silent divergence between in-memory and ORM storage.
+- Implementation:
+	- centralized guard for storage-only endpoints in ORM mode.
+	- 409 with detail=campaigns_orm_mode_not_supported_for_this_endpoint.
+- Status:
+	- in-memory: full functionality.
+	- ORM: limited mode (guarded endpoints are blocked but behavior is explicit).
+- Smoke:
+	- [scripts/smoke-campaigns-e2e.ps1](scripts/smoke-campaigns-e2e.ps1#L214-L238)
 
 ## Notes and Gaps
 - Orders API: no router file found for order CRUD or status management under [app/api/v1/](app/api/v1/) (search for *order*.py returned none).

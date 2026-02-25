@@ -228,14 +228,14 @@ try:
     from app.core.security import (  # type: ignore; noqa: F401 (may be unused here); -> dict payload {sub, scp, role, jti, exp, kid, ...}
         decode_and_validate,
         denylist_key_for_token,
-        is_token_revoked,
         is_access_token_revoked,
+        is_token_revoked,
     )
 
     _HAS_ADV_SECURITY = True
 except Exception:  # pragma: no cover
     try:
-        from app.core.security import denylist_key_for_token, is_token_revoked, is_access_token_revoked  # type: ignore
+        from app.core.security import denylist_key_for_token, is_access_token_revoked, is_token_revoked  # type: ignore
     except Exception:
         denylist_key_for_token = None  # type: ignore[assignment]
         is_token_revoked = None  # type: ignore[assignment]

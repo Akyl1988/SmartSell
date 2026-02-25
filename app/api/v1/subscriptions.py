@@ -369,15 +369,22 @@ async def create_subscription(
         normalized_plan = normalize_plan_id(payload.plan, default=payload.plan)
         plan = get_plan(normalized_plan, default=None)
 
-        if payload.trial_days > 0 and not is_platform_admin(user):
+        is_pro = normalized_plan == "pro"
+        requested_trial_days = int(payload.trial_days or 0)
+
+        if requested_trial_days > 0 and not is_platform_admin(user) and not is_pro:
             raise HTTPException(
                 status_code=422,
                 detail="trial_days is not allowed here; trial is granted via Kaspi merchant_uid",
             )
-        if payload.trial_days < 0 or payload.trial_days > 15:
+        if requested_trial_days < 0 or requested_trial_days > 15:
             raise HTTPException(status_code=400, detail="trial_days_invalid")
 
-        if payload.trial_days:
+        effective_trial_days = requested_trial_days
+        if is_pro:
+            effective_trial_days = 15
+
+        if effective_trial_days:
             period_end = now + timedelta(days=15)
             grace_until = _ceil_to_midnight_utc(period_end + timedelta(days=3))
             status_value = "trial"
@@ -396,10 +403,11 @@ async def create_subscription(
             started_at=now,
             period_start=now,
             period_end=period_end,
-            expires_at=period_end if payload.trial_days else None,
+            expires_at=period_end if effective_trial_days else None,
             next_billing_date=period_end,
             billing_anchor_day=now.day,
             grace_until=grace_until,
+            trial_used=bool(effective_trial_days),
         )
         db.add(sub)
         await db.commit()

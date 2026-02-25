@@ -21,6 +21,8 @@ from app.core.subscriptions.state import get_company_subscription, is_subscripti
 
 logger = get_logger(__name__)
 
+FEATURE_REPRICING = "repricing"
+FEATURE_PREORDERS = "preorders"
 FEATURE_KASPI_ORDERS_LIST = "kaspi.orders_list"
 FEATURE_KASPI_SYNC_NOW = "kaspi.sync_now"
 FEATURE_KASPI_GOODS_IMPORTS = "kaspi.goods_imports"
@@ -97,6 +99,8 @@ def get_plan_features(plan: str) -> Iterable[str]:
 
 
 __all__ = [
+    "FEATURE_REPRICING",
+    "FEATURE_PREORDERS",
     "FEATURE_KASPI_ORDERS_LIST",
     "FEATURE_KASPI_SYNC_NOW",
     "FEATURE_KASPI_GOODS_IMPORTS",

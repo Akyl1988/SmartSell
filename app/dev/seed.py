@@ -292,7 +292,7 @@ async def ensure_dev_seed(*, session: AsyncSession | None = None) -> None:
             price="0.00",
             currency="KZT",
             is_active=True,
-            trial_days_default=14,
+            trial_days_default=15,
         )
         repricing = await _ensure_feature(
             target_session,
