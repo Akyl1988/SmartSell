@@ -77,6 +77,51 @@ export default function PreordersPage() {
     return { isCanceled, isFulfilled, isConfirmed }
   }
 
+  function formatTimestampForFile(date: Date) {
+    const year = date.getFullYear()
+    const month = String(date.getMonth() + 1).padStart(2, '0')
+    const day = String(date.getDate()).padStart(2, '0')
+    const hour = String(date.getHours()).padStart(2, '0')
+    const minute = String(date.getMinutes()).padStart(2, '0')
+    return `${year}${month}${day}-${hour}${minute}`
+  }
+
+  function escapeCsvValue(value: string | number | null | undefined) {
+    if (value === null || value === undefined) return ''
+    const stringValue = String(value)
+    if (/[",\n\r]/.test(stringValue)) {
+      return `"${stringValue.replace(/"/g, '""')}"`
+    }
+    return stringValue
+  }
+
+  function exportPreordersToCsv(preorders: Preorder[]) {
+    const header = ['id', 'status', 'total_qty', 'product_label', 'created_at', 'updated_at']
+    const rows = preorders.map((preorder) => [
+      preorder.id,
+      preorder.status,
+      getTotalQty(preorder),
+      getProductLabel(preorder),
+      preorder.created_at,
+      preorder.updated_at,
+    ])
+
+    const csvLines = [header, ...rows]
+      .map((row) => row.map((value) => escapeCsvValue(value)).join(','))
+      .join('\n')
+
+    const blob = new Blob([csvLines], { type: 'text/csv;charset=utf-8' })
+    const url = URL.createObjectURL(blob)
+    const timestamp = formatTimestampForFile(new Date())
+    const link = document.createElement('a')
+    link.href = url
+    link.download = `preorders-${timestamp}.csv`
+    document.body.appendChild(link)
+    link.click()
+    document.body.removeChild(link)
+    URL.revokeObjectURL(url)
+  }
+
   async function handleAction(id: number, action: ActionKind) {
     setProcessing(id, action)
     setActionError(null)
@@ -102,7 +147,24 @@ export default function PreordersPage() {
 
   return (
     <section>
-      <h1>Preorders</h1>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap' }}>
+        <h1>Preorders</h1>
+        <button
+          onClick={() => {
+            try {
+              setActionError(null)
+              exportPreordersToCsv(items)
+            } catch (err) {
+              const info = getHttpErrorInfo(err)
+              console.error('Failed to export preorders', err)
+              setActionError(`Failed to export preorders: ${info.message}`)
+            }
+          }}
+          disabled={loading || items.length === 0 || error !== null}
+        >
+          Export CSV
+        </button>
+      </div>
       {loading && <p>Loading preorders...</p>}
       {error && <p style={{ color: '#b91c1c' }}>{error}</p>}
       {!loading && !error && items.length === 0 && <p>No preorders yet.</p>}
