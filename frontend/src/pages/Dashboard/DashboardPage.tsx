@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import { DashboardStats, getDashboardStats } from '../../api/analytics'
+import { getHttpErrorInfo } from '../../api/client'
 
 export default function DashboardPage() {
   const [stats, setStats] = useState<DashboardStats | null>(null)
@@ -8,7 +9,15 @@ export default function DashboardPage() {
   useEffect(() => {
     getDashboardStats()
       .then(setStats)
-      .catch(() => setError('Failed to load dashboard stats.'))
+      .catch((err) => {
+        console.error('dashboard error', err)
+        const info = getHttpErrorInfo(err)
+        if (info.status) {
+          setError(`Failed to load dashboard stats (status ${info.status}): ${info.message}`)
+        } else {
+          setError(`Failed to load dashboard stats: ${info.message}`)
+        }
+      })
   }, [])
 
   return (

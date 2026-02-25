@@ -29,3 +29,37 @@ apiClient.interceptors.response.use(
     return Promise.reject(error)
   }
 )
+
+export function getHttpErrorInfo(error: unknown): { status?: number; message: string } {
+  if (axios.isAxiosError(error)) {
+    const status = error.response?.status
+    const data = error.response?.data
+    if (typeof data === 'string' && data.trim().length > 0) {
+      return { status, message: data }
+    }
+
+    if (data && typeof data === 'object') {
+      const maybeDetail = (data as { detail?: unknown }).detail
+      if (typeof maybeDetail === 'string' && maybeDetail.trim().length > 0) {
+        return { status, message: maybeDetail }
+      }
+
+      const maybeMessage = (data as { message?: unknown }).message
+      if (typeof maybeMessage === 'string' && maybeMessage.trim().length > 0) {
+        return { status, message: maybeMessage }
+      }
+    }
+
+    if (error.message) {
+      return { status, message: error.message }
+    }
+
+    return { status, message: 'Unknown error' }
+  }
+
+  if (error instanceof Error && error.message) {
+    return { message: error.message }
+  }
+
+  return { message: 'Unknown error' }
+}
