@@ -334,6 +334,38 @@ class _StorageProxy:
 
 storage: Any = _StorageProxy()
 
+CAMPAIGNS_ORM_GUARD_STATUS = status.HTTP_409_CONFLICT
+CAMPAIGNS_ORM_GUARD_DETAIL = "campaigns_orm_mode_not_supported_for_this_endpoint"
+
+
+def ensure_campaigns_mode_is_storage(
+    *,
+    request: Request | None = None,
+    user: User | None = None,
+    endpoint: str | None = None,
+) -> None:
+    backend = _get_campaigns_storage_backend()
+    if backend != "orm":
+        return
+    if request is None:
+        request = _campaign_request_ctx.get(None)
+    if user is None:
+        user = _campaign_user_ctx.get(None)
+    endpoint_value = endpoint or (request.url.path if request else "unknown")
+    user_id = getattr(user, "id", None) if user else None
+    company_id = getattr(user, "company_id", None) if user else None
+    logger.warning(
+        "campaigns storage guard: endpoint=%s user_id=%s company_id=%s mode=%s",
+        endpoint_value,
+        user_id,
+        company_id,
+        backend,
+    )
+    raise HTTPException(
+        status_code=CAMPAIGNS_ORM_GUARD_STATUS,
+        detail=CAMPAIGNS_ORM_GUARD_DETAIL,
+    )
+
 
 # ------------------------------------------------------------------------------
 # ВСПОМОГАТЕЛЬНЫЙ СЕЙВЕР ДЛЯ СООБЩЕНИЙ С ГАРАНТИЕЙ campaign_id
@@ -345,6 +377,7 @@ def _save_message_with_cid(mid: int, payload: dict[str, Any], campaign_id: int) 
     - совместимо с InMemoryStorage (проглотит поле);
     - совместимо с SQL-стораджем (поле NOT NULL).
     """
+    ensure_campaigns_mode_is_storage()
     data = dict(payload)
     data["campaign_id"] = int(campaign_id)
     try:
@@ -385,10 +418,12 @@ class RateLimiter:
 
 rate_limiter = RateLimiter()
 _campaign_user_ctx: ContextVar[User | None] = ContextVar("campaign_user_ctx", default=None)
+_campaign_request_ctx: ContextVar[Request | None] = ContextVar("campaign_request_ctx", default=None)
 
 
-async def _auth_user(current_user: User = Depends(get_current_user)) -> User:
+async def _auth_user(request: Request, current_user: User = Depends(get_current_user)) -> User:
     _campaign_user_ctx.set(current_user)
+    _campaign_request_ctx.set(request)
     return current_user
 
 
@@ -730,6 +765,7 @@ class BulkUpsertMessageRequest(BaseModel):
 # ХЕЛПЕРЫ ДЛЯ КАМПАНИЙ / СООБЩЕНИЙ
 # ------------------------------------------------------------------------------
 def _get_campaign_or_404(campaign_id: int, user: User | None = None) -> Campaign:
+    ensure_campaigns_mode_is_storage()
     user = user or _campaign_user_ctx.get(None)
     data = storage.get_campaign(campaign_id)
     if not data:
@@ -744,6 +780,7 @@ def _get_campaign_or_404(campaign_id: int, user: User | None = None) -> Campaign
 
 
 def _save_campaign(c: Campaign) -> None:
+    ensure_campaigns_mode_is_storage()
     storage.save_campaign(c.model_dump())
 
 
@@ -921,8 +958,6 @@ async def create_campaign(
     backend = _get_campaigns_storage_backend()
     # owner, учитываем при уникальности
     owner = (campaign.owner or user.username or "").strip()
-    if _title_exists(campaign.title, owner=owner, company_id=getattr(user, "company_id", None)):
-        raise ConflictError("Campaign with this title already exists", "DUPLICATE_TITLE", http_status=409)
 
     if backend == "orm":
         company_id = getattr(user, "company_id", None)
@@ -1000,6 +1035,9 @@ async def create_campaign(
         payload["tags"] = _normalize_tags(campaign.tags)
         payload["owner"] = owner
         return Campaign(**payload)
+
+    if _title_exists(campaign.title, owner=owner, company_id=getattr(user, "company_id", None)):
+        raise ConflictError("Campaign with this title already exists", "DUPLICATE_TITLE", http_status=409)
 
     new_id = storage.next_id("campaigns")
 
@@ -1320,6 +1358,7 @@ async def search_campaigns(
     order: Literal["asc", "desc"] = Query("desc"),
     user: User = Depends(_auth_user),
 ):
+    ensure_campaigns_mode_is_storage()
     try:
         raw_campaigns = storage.list_campaigns(company_id=getattr(user, "company_id", None))
     except TypeError:
@@ -1349,6 +1388,7 @@ async def search_campaigns(
 
 @read_router.get("/recipients", response_model=list[str])
 async def list_all_recipients(user: User = Depends(_auth_user)):
+    ensure_campaigns_mode_is_storage()
     recs = set()
     try:
         raw_campaigns = storage.list_campaigns(company_id=getattr(user, "company_id", None))
@@ -1367,6 +1407,7 @@ async def list_all_recipients(user: User = Depends(_auth_user)):
 
 @read_router.get("/search_tags", response_model=list[str])
 async def search_tags(q: str = Query("", min_length=0), user: User = Depends(_auth_user)):
+    ensure_campaigns_mode_is_storage()
     found = set()
     qs = (q or "").strip().lower()
     try:
@@ -1408,6 +1449,7 @@ async def validate_campaign(campaign: Campaign = Body(...)):
 
 @read_router.get("/export", response_model=list[Campaign])
 async def export_campaigns(user: User = Depends(_auth_user)):
+    ensure_campaigns_mode_is_storage()
     try:
         raw_campaigns = storage.list_campaigns(company_id=getattr(user, "company_id", None))
     except TypeError:
@@ -1422,6 +1464,7 @@ async def get_export_formats():
 
 @read_router.get("/export/{fmt}", response_model=Any)
 async def export_campaigns_fmt(fmt: CampaignExportFormat = Path(...), user: User = Depends(_auth_user)):
+    ensure_campaigns_mode_is_storage()
     try:
         raw_campaigns = storage.list_campaigns(company_id=getattr(user, "company_id", None))
     except TypeError:
@@ -1466,6 +1509,7 @@ async def export_campaigns_fmt(fmt: CampaignExportFormat = Path(...), user: User
     ],
 )
 async def import_campaigns_bulk(payload: list[Campaign] = Body(...), user: User = Depends(_auth_user)):
+    ensure_campaigns_mode_is_storage()
     imported = 0
     errors: list[dict[str, Any]] = []
     for idx, campaign in enumerate(payload):
@@ -1531,6 +1575,7 @@ async def import_campaigns_bulk(payload: list[Campaign] = Body(...), user: User 
     dependencies=[Depends(require_store_admin_company)],
 )
 async def save_campaign_draft(campaign: Campaign = Body(...), user: User = Depends(_auth_user)):
+    ensure_campaigns_mode_is_storage()
     owner = (campaign.owner or user.username or "").strip()
     if _title_exists(campaign.title, owner=owner, company_id=getattr(user, "company_id", None)):
         raise ConflictError("Campaign with this title already exists", "DUPLICATE_TITLE", http_status=409)
@@ -1575,6 +1620,7 @@ async def list_campaign_drafts(
     order: Literal["asc", "desc"] = Query("desc"),
     user: User = Depends(_auth_user),
 ):
+    ensure_campaigns_mode_is_storage()
     try:
         raw_campaigns = storage.list_campaigns(company_id=getattr(user, "company_id", None))
     except TypeError:
@@ -1594,6 +1640,7 @@ async def list_campaign_drafts(
 
 @read_router.get("/drafts/{campaign_id}", response_model=Campaign)
 async def get_campaign_draft(campaign_id: int = Path(..., ge=1), user: User = Depends(_auth_user)):
+    ensure_campaigns_mode_is_storage()
     data = storage.get_campaign(campaign_id)
     if not data or data.get("active", True):
         raise HTTPException(status_code=404, detail="Draft not found")
@@ -1630,6 +1677,7 @@ async def get_campaign(
     dependencies=[Depends(require_store_admin_company)],
 )
 async def update_campaign(campaign_id: int, campaign: Campaign = Body(...), user: User = Depends(_auth_user)):
+    ensure_campaigns_mode_is_storage()
     current = storage.get_campaign(campaign_id)
     if (not current) or (
         current.get("company_id") is not None and current.get("company_id") != getattr(user, "company_id", None)
@@ -1689,6 +1737,7 @@ async def update_campaign(campaign_id: int, campaign: Campaign = Body(...), user
     dependencies=[Depends(require_store_admin_company)],
 )
 async def delete_campaign(campaign_id: int, user: User = Depends(_auth_user)):
+    ensure_campaigns_mode_is_storage()
     data = storage.get_campaign(campaign_id)
     if (not data) or (
         data.get("company_id") is not None and data.get("company_id") != getattr(user, "company_id", None)
@@ -2290,6 +2339,7 @@ async def set_tags_for_campaign(campaign_id: int, req: SetTagsRequest, user: Use
     dependencies=[Depends(require_store_admin_company)],
 )
 async def archive_campaign(campaign_id: int, req: ArchiveRequest = Body(None), user: User = Depends(_auth_user)):
+    ensure_campaigns_mode_is_storage()
     data = storage.get_campaign(campaign_id)
     if not data:
         raise HTTPException(status_code=404, detail="Campaign not found")
@@ -2305,6 +2355,7 @@ async def archive_campaign(campaign_id: int, req: ArchiveRequest = Body(None), u
     dependencies=[Depends(require_store_admin_company)],
 )
 async def restore_campaign(campaign_id: int, req: RestoreRequest = Body(None), user: User = Depends(_auth_user)):
+    ensure_campaigns_mode_is_storage()
     data = storage.get_campaign(campaign_id)
     if not data:
         raise HTTPException(status_code=404, detail="Campaign not found")
@@ -2321,6 +2372,7 @@ async def restore_campaign(campaign_id: int, req: RestoreRequest = Body(None), u
     dependencies=[Depends(require_store_admin_company)],
 )
 async def bulk_archive_campaigns(req: BulkDeleteRequest, user: User = Depends(_auth_user)):
+    ensure_campaigns_mode_is_storage()
     archived = 0
     for cid in req.ids:
         data = storage.get_campaign(cid)
@@ -2341,6 +2393,7 @@ async def bulk_archive_campaigns(req: BulkDeleteRequest, user: User = Depends(_a
     dependencies=[Depends(require_store_admin_company)],
 )
 async def bulk_restore_campaigns(req: BulkDeleteRequest, user: User = Depends(_auth_user)):
+    ensure_campaigns_mode_is_storage()
     restored = 0
     for cid in req.ids:
         data = storage.get_campaign(cid)
@@ -2361,6 +2414,7 @@ async def bulk_restore_campaigns(req: BulkDeleteRequest, user: User = Depends(_a
     dependencies=[Depends(require_store_admin_company)],
 )
 async def bulk_delete_campaigns(req: BulkDeleteRequest, user: User = Depends(_auth_user)):
+    ensure_campaigns_mode_is_storage()
     deleted = 0
     for cid in req.ids:
         data = storage.get_campaign(cid)
