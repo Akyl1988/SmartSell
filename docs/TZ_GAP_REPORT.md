@@ -11,7 +11,7 @@ Legend: ✅ implemented, ⚠️ partially implemented, ❌ no evidence found
 ## Summary
 - Core auth, user management, products, billing/subscriptions, analytics, reports/exports, and Kaspi integration have concrete implementations.
 - Order management, warehouse management APIs, AI bot, and WhatsApp/Telegram messaging are not evidenced by code.
-- Several advanced requirements (dumping, preorders, audits) are partially supported at model/service level without full API proof.
+- Audits remain partially supported; repricing and preorders now have API coverage with feature gating and reports.
 
 ## Feature Checklist
 | Section | Requirement | Status | Evidence |
@@ -23,8 +23,8 @@ Legend: ✅ implemented, ⚠️ partially implemented, ❌ no evidence found
 | Products | Product CRUD (list/create/update/delete) | ✅ | [app/api/v1/products.py](app/api/v1/products.py#L219-L348) |
 | Products | Stock read/update | ✅ | [app/api/v1/products.py](app/api/v1/products.py#L375-L430) |
 | Products | Categories list/get | ✅ | [app/api/v1/products.py](app/api/v1/products.py#L737-L788) |
-| Products | Repricing/dumping logic | ⚠️ | [app/services/repricing_service.py](app/services/repricing_service.py#L1-L220) |
-| Products | Preorder/dumping fields | ⚠️ | [app/models/product.py](app/models/product.py#L360-L408) |
+| Products | Repricing/dumping logic | ✅ | [app/api/v1/pricing.py](app/api/v1/pricing.py#L22-L360), [app/api/v1/reports.py](app/api/v1/reports.py#L961-L1020) |
+| Products | Preorder/dumping fields | ✅ | [app/api/v1/preorders.py](app/api/v1/preorders.py#L1-L150), [app/services/preorders.py](app/services/preorders.py#L220-L390), [app/api/v1/reports.py](app/api/v1/reports.py#L837-L900) |
 | Orders | Order domain model | ⚠️ | [app/models/order.py](app/models/order.py#L1-L200) |
 | Orders | Order CRUD/management API | ❌ | No order router found under [app/api/v1/](app/api/v1/) (see Notes) |
 | Invoices | Invoice CRUD | ✅ | [app/api/v1/invoices.py](app/api/v1/invoices.py#L37-L210) |
@@ -36,6 +36,9 @@ Legend: ✅ implemented, ⚠️ partially implemented, ❌ no evidence found
 | Subscriptions | Plans + CRUD + cancel/renew | ✅ | [app/api/v1/subscriptions.py](app/api/v1/subscriptions.py#L251-L518) |
 | Analytics | Dashboard + sales/customers/products | ✅ | [app/api/v1/analytics.py](app/api/v1/analytics.py#L130-L420) |
 | Reports | Orders CSV | ✅ | [app/api/v1/reports.py](app/api/v1/reports.py#L459-L520) |
+| Reports | Preorders CSV | ✅ | [app/api/v1/reports.py](app/api/v1/reports.py#L837-L900) |
+| Reports | Inventory CSV | ✅ | [app/api/v1/reports.py](app/api/v1/reports.py#L903-L958) |
+| Reports | Repricing runs CSV | ✅ | [app/api/v1/reports.py](app/api/v1/reports.py#L961-L1020) |
 | Reports | Sales PDF | ✅ | [app/api/v1/reports.py](app/api/v1/reports.py#L799-L830) |
 | Exports | Orders/Sales/Products XLSX | ✅ | [app/api/v1/exports.py](app/api/v1/exports.py#L202-L276) |
 | Campaigns | Campaigns API scaffold + run endpoint | ⚠️ | [app/api/v1/campaigns.py](app/api/v1/campaigns.py#L765-L872) |
@@ -66,6 +69,7 @@ Legend: ✅ implemented, ⚠️ partially implemented, ❌ no evidence found
 	- reservation helpers on ProductStock + StockMovement.
 	- warehouse selection: main -> first active.
 	- no Product.stock_quantity fallback for reservations.
+	- preorders feature-gated; usage recorded on confirm.
 - Coverage:
 	- [tests/services/test_inventory_reservation_service.py](tests/services/test_inventory_reservation_service.py#L1-L210)
 	- [tests/app/api/test_preorders_inventory.py](tests/app/api/test_preorders_inventory.py#L1-L700)
@@ -81,9 +85,17 @@ Legend: ✅ implemented, ⚠️ partially implemented, ❌ no evidence found
 - Smoke:
 	- [scripts/smoke-campaigns-e2e.ps1](scripts/smoke-campaigns-e2e.ps1#L214-L238)
 
+### Reports / Exports status (MVP)
+- [x] CSV reports: wallet transactions, orders, order items, preorders (FEATURE_PREORDERS), inventory, repricing runs (FEATURE_REPRICING).
+- Evidence: [app/api/v1/reports.py](app/api/v1/reports.py#L300-L1020)
+- Optional follow-ups:
+	- [ ] preorder_items.csv (preorder item-level rows).
+	- [ ] stock_movements.csv (movement history export).
+	- [ ] repricing_diffs.csv (price change detail export).
+
 ## Notes and Gaps
 - Orders API: no router file found for order CRUD or status management under [app/api/v1/](app/api/v1/) (search for *order*.py returned none).
 - Warehouses/Inventory: strong model layer exists but no API endpoints evidenced.
-- Repricing/dumping and preorder capabilities exist in models/services, but API endpoints and workflows are not fully verified.
-- Reports cover CSV/PDF/XLSX for some datasets; additional report types from the TZ are not evidenced here.
+- Repricing and preorders have API endpoints, feature gating, and CSV reports; order CRUD remains unverified.
+- Reports cover CSV/PDF/XLSX for orders, wallet, preorders, inventory, and repricing runs; optional report types are not implemented.
 - AI bot and messenger integrations (WhatsApp/Telegram) are not present in the codebase.
