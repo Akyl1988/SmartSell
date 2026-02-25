@@ -259,9 +259,9 @@ export async function runRepricing(dryRun = false): Promise<RepricingRunTriggerR
   return data
 }
 
-export async function listRepricingRuns(params: RepricingRunsParams = {}): Promise<PaginatedResponse<RepricingRunResponse>> {
+export async function listRepricingRuns(params: RepricingRunsParams = {}): Promise<RepricingRunResponse[]> {
   const { data } = await apiClient.get<PaginatedResponse<RepricingRunResponse>>('/api/v1/repricing/runs', { params })
-  return data
+  return data.items
 }
 
 export async function getRepricingRun(runId: number): Promise<RepricingRunResponse> {
