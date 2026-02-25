@@ -238,7 +238,23 @@ $cleanupResp = Invoke-Api -Method "POST" -Url "$BaseUrl/api/v1/admin/tasks/campa
 if ($cleanupResp.StatusCode -eq 403 -or $cleanupResp.StatusCode -eq 404) {
   Write-Host "[WARN] Campaigns cleanup task not available for this token (403/404); deleting campaign"
   $deleteResp = Invoke-Api -Method "DELETE" -Url "$BaseUrl/api/v1/campaigns/$campaignId"
-  if ($deleteResp.StatusCode -ne 204 -and $deleteResp.StatusCode -ne 200 -and $deleteResp.StatusCode -ne 404) {
+  if ($deleteResp.StatusCode -eq 409) {
+    $detail = $null
+    try {
+      if ($deleteResp.Body -is [string]) {
+        $detail = (ConvertFrom-Json $deleteResp.Body).detail
+      } else {
+        $detail = $deleteResp.Body.detail
+      }
+    } catch {
+      $detail = $null
+    }
+    if ($detail -eq "campaigns_orm_mode_not_supported_for_this_endpoint") {
+      Write-Host "[WARN] Campaign delete skipped: ORM guard active"
+    } else {
+      $null = Assert-Ok -Resp $deleteResp -Action "Delete campaign"
+    }
+  } elseif ($deleteResp.StatusCode -ne 204 -and $deleteResp.StatusCode -ne 200 -and $deleteResp.StatusCode -ne 404) {
     $null = Assert-Ok -Resp $deleteResp -Action "Delete campaign"
   }
 } else {

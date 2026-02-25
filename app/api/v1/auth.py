@@ -62,6 +62,7 @@ from app.core.security import (
     denylist_key_for_token,
     get_password_hash,
     get_refresh_from_cookie,
+    mark_access_token_revoked,
     resolve_tenant_company_id,
     revoke_token,
     validate_csrf_token,
@@ -725,6 +726,7 @@ async def logout(
             token = header_val.split(" ", 1)[1].strip()
     if not token:
         token = request.cookies.get("access_token")
+    mark_access_token_revoked(token or "")
     client_info = get_client_info(request)
     payload = None
     user_id = 0
@@ -743,14 +745,17 @@ async def logout(
 
             key = denylist_key_for_token(token, payload)
             exp = payload.get("exp")
+            ttl_seconds = None
+            if exp is not None:
+                try:
+                    ttl_seconds = max(1, int(float(exp) - time.time()))
+                except Exception:
+                    ttl_seconds = None
             if key:
-                ttl_seconds = None
-                if exp is not None:
-                    try:
-                        ttl_seconds = max(1, int(float(exp) - time.time()))
-                    except Exception:
-                        ttl_seconds = None
                 revoke_token(key, ttl_seconds=ttl_seconds)
+            token_hash_key = denylist_key_for_token(token, None)
+            if token_hash_key and token_hash_key != key:
+                revoke_token(token_hash_key, ttl_seconds=ttl_seconds)
         except Exception:
             token_invalid = True
             token = None

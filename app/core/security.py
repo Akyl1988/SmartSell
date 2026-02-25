@@ -681,6 +681,20 @@ def _build_denylist_backend() -> DenylistBackend:
 
 _DENYLIST: DenylistBackend = _build_denylist_backend()
 
+# --- In-memory access token revoke fallback ---
+REVOKED_ACCESS_TOKENS: set[str] = set()
+
+
+def mark_access_token_revoked(token: str) -> None:
+    """Mark a raw access token string as revoked (in-memory fallback)."""
+    if token:
+        REVOKED_ACCESS_TOKENS.add(token)
+
+
+def is_access_token_revoked(token: str) -> bool:
+    """Check if a raw access token string has been revoked (in-memory fallback)."""
+    return bool(token) and token in REVOKED_ACCESS_TOKENS
+
 
 def is_token_revoked(jti: str) -> bool:
     try:

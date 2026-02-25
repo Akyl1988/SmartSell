@@ -5,7 +5,12 @@ from sqlalchemy import select
 
 from app.core.exceptions import NotFoundError, SmartSellValidationError
 from app.models.warehouse import MovementType, ProductStock, StockMovement, Warehouse
-from app.services.inventory_reservations import fulfill_reservation, release_and_log, reserve_and_log
+from app.services.inventory_reservations import (
+    fulfill_reservation,
+    release_and_log,
+    reserve_and_log,
+    reserve_stock_for_preorder,
+)
 
 pytestmark = pytest.mark.asyncio
 
@@ -177,3 +182,59 @@ async def test_double_reserve_insufficient(async_db_session, factory):
             reference_id=701,
         )
     assert exc.value.code == "INSUFFICIENT_STOCK"
+
+
+async def test_reserve_stock_for_preorder_happy_path(async_db_session, factory):
+    company = await factory["create_company"]()
+    product = await factory["create_product"](company=company, stock_quantity=5)
+    warehouse = await _create_main_warehouse(async_db_session, company)
+    stock = ProductStock(product_id=product.id, warehouse_id=warehouse.id, quantity=5, reserved_quantity=0)
+    async_db_session.add(stock)
+    await async_db_session.commit()
+
+    result = await reserve_stock_for_preorder(
+        db=async_db_session,
+        company_id=company.id,
+        product_id=product.id,
+        quantity=2,
+        preorder_id=900,
+    )
+    assert result.ok is True
+    assert result.reserved == 2
+    assert result.available == 3
+
+
+async def test_reserve_stock_for_preorder_missing_warehouse(async_db_session, factory):
+    company = await factory["create_company"]()
+    product = await factory["create_product"](company=company, stock_quantity=5)
+
+    result = await reserve_stock_for_preorder(
+        db=async_db_session,
+        company_id=company.id,
+        product_id=product.id,
+        quantity=1,
+        preorder_id=901,
+    )
+    assert result.ok is False
+    assert result.error_code == "WAREHOUSE_NOT_CONFIGURED"
+
+
+async def test_reserve_stock_for_preorder_insufficient(async_db_session, factory):
+    company = await factory["create_company"]()
+    product = await factory["create_product"](company=company, stock_quantity=2)
+    warehouse = await _create_main_warehouse(async_db_session, company)
+    stock = ProductStock(product_id=product.id, warehouse_id=warehouse.id, quantity=1, reserved_quantity=0)
+    async_db_session.add(stock)
+    await async_db_session.commit()
+
+    result = await reserve_stock_for_preorder(
+        db=async_db_session,
+        company_id=company.id,
+        product_id=product.id,
+        quantity=2,
+        preorder_id=902,
+    )
+    assert result.ok is False
+    assert result.error_code == "INSUFFICIENT_STOCK"
+
+

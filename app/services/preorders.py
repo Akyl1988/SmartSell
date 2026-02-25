@@ -6,7 +6,7 @@ from datetime import UTC, datetime
 from decimal import Decimal
 from uuid import uuid4
 
-from sqlalchemy import case, func, or_, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -16,7 +16,12 @@ from app.models.preorder import Preorder, PreorderItem, PreorderStatus
 from app.models.product import Product
 from app.models.warehouse import MovementType, ProductStock, StockMovement, Warehouse
 from app.schemas.preorders import PreorderCreateIn, PreorderListFilters, PreorderUpdateIn
-from app.services.inventory_reservations import fulfill_reservation, release_and_log, reserve_and_log
+from app.services.inventory_reservations import (
+    ReservationResult,
+    fulfill_preorder_reservation,
+    release_stock_for_preorder,
+    reserve_stock_for_preorder,
+)
 
 
 def _parse_dt(value: str | None, field: str) -> datetime | None:
@@ -172,6 +177,18 @@ def _transition(preorder: Preorder, target: PreorderStatus) -> None:
     raise SmartSellValidationError("Invalid preorder status transition", "INVALID_PREORDER_STATUS", http_status=409)
 
 
+def _raise_reservation_error(result: ReservationResult) -> None:
+    if result.error_code == "WAREHOUSE_NOT_CONFIGURED":
+        raise SmartSellValidationError(
+            "Warehouse is not configured",
+            "WAREHOUSE_NOT_CONFIGURED",
+            http_status=422,
+        )
+    if result.error_code == "INSUFFICIENT_STOCK":
+        raise SmartSellValidationError("Insufficient stock", "INSUFFICIENT_STOCK", http_status=422)
+    raise SmartSellValidationError("Reservation failed", "RESERVATION_FAILED", http_status=422)
+
+
 async def _movement_exists(
     db: AsyncSession,
     *,
@@ -196,30 +213,6 @@ async def _movement_exists(
         .limit(1)
     )
     return result.scalar_one_or_none() is not None
-
-
-async def _resolve_reservation_warehouse_id(
-    db: AsyncSession,
-    *,
-    company_id: int,
-    preorder_id: int,
-    product_id: int,
-) -> int | None:
-    result = await db.execute(
-        select(ProductStock.warehouse_id)
-        .join(StockMovement, StockMovement.stock_id == ProductStock.id)
-        .join(Warehouse, Warehouse.id == ProductStock.warehouse_id)
-        .where(
-            StockMovement.reference_type == "preorder",
-            StockMovement.reference_id == preorder_id,
-            StockMovement.product_id == product_id,
-            StockMovement.movement_type == MovementType.RESERVE.value,
-            Warehouse.company_id == company_id,
-        )
-        .order_by(StockMovement.id.desc())
-        .limit(1)
-    )
-    return result.scalar_one_or_none()
 
 
 async def confirm_preorder(db: AsyncSession, *, company_id: int, preorder_id: int) -> Preorder:
@@ -259,15 +252,15 @@ async def confirm_preorder(db: AsyncSession, *, company_id: int, preorder_id: in
             )
             if exists:
                 continue
-            await reserve_and_log(
-                db,
-                tenant_id=company_id,
+            result = await reserve_stock_for_preorder(
+                db=db,
+                company_id=company_id,
                 product_id=item.product_id,
-                qty=int(item.qty),
-                reference_type="preorder",
-                reference_id=preorder.id,
-                warehouse_id=None,
+                quantity=int(item.qty),
+                preorder_id=preorder.id,
             )
+            if not result.ok:
+                _raise_reservation_error(result)
 
         _transition(preorder, PreorderStatus.CONFIRMED)
 
@@ -297,89 +290,13 @@ async def cancel_preorder(db: AsyncSession, *, company_id: int, preorder_id: int
             for item in preorder.items or []:
                 if not item.product_id:
                     continue
-                reserved_delta = (
-                    await db.execute(
-                        select(
-                            func.coalesce(
-                                func.sum(
-                                    case(
-                                        (
-                                            StockMovement.movement_type == MovementType.RESERVE.value,
-                                            StockMovement.quantity,
-                                        ),
-                                        (
-                                            StockMovement.movement_type == MovementType.RELEASE.value,
-                                            -StockMovement.quantity,
-                                        ),
-                                        (
-                                            StockMovement.movement_type == MovementType.FULFILL.value,
-                                            StockMovement.quantity,
-                                        ),
-                                        else_=0,
-                                    )
-                                ),
-                                0,
-                            )
-                        ).where(
-                            StockMovement.reference_type == "preorder",
-                            StockMovement.reference_id == preorder.id,
-                            StockMovement.product_id == item.product_id,
-                        )
-                    )
-                ).scalar_one()
-                to_release = max(0, int(reserved_delta or 0))
-                if to_release <= 0:
-                    continue
-
-                reserved_total = (
-                    await db.execute(
-                        select(func.coalesce(func.sum(ProductStock.reserved_quantity), 0))
-                        .join(Warehouse, Warehouse.id == ProductStock.warehouse_id)
-                        .where(ProductStock.product_id == item.product_id)
-                        .where(Warehouse.company_id == company_id)
-                    )
-                ).scalar_one()
-                release_target = min(to_release, int(reserved_total or 0))
-                if release_target <= 0:
-                    raise SmartSellValidationError(
-                        "Reservation inconsistent",
-                        "RESERVATION_INCONSISTENT",
-                        http_status=409,
-                    )
-
-                remaining = release_target
-                stocks = (
-                    (
-                        await db.execute(
-                            select(ProductStock)
-                            .join(Warehouse, Warehouse.id == ProductStock.warehouse_id)
-                            .where(ProductStock.product_id == item.product_id)
-                            .where(Warehouse.company_id == company_id)
-                            .where(ProductStock.reserved_quantity > 0)
-                            .with_for_update()
-                            .order_by(ProductStock.reserved_quantity.desc(), ProductStock.id.asc())
-                        )
-                    )
-                    .scalars()
-                    .all()
+                await release_stock_for_preorder(
+                    db=db,
+                    company_id=company_id,
+                    product_id=item.product_id,
+                    quantity=int(item.qty),
+                    preorder_id=preorder.id,
                 )
-                for stock in stocks:
-                    if remaining <= 0:
-                        break
-                    available = int(stock.reserved_quantity or 0)
-                    if available <= 0:
-                        continue
-                    release_qty = min(remaining, available)
-                    await release_and_log(
-                        db,
-                        tenant_id=company_id,
-                        product_id=item.product_id,
-                        qty=release_qty,
-                        reference_type="preorder",
-                        reference_id=preorder.id,
-                        warehouse_id=stock.warehouse_id,
-                    )
-                    remaining -= release_qty
 
         _transition(preorder, PreorderStatus.CANCELLED)
 
@@ -436,12 +353,6 @@ async def fulfill_preorder(
         for item in preorder.items:
             if not item.product_id:
                 continue
-            warehouse_id = await _resolve_reservation_warehouse_id(
-                db,
-                company_id=company_id,
-                preorder_id=preorder.id,
-                product_id=item.product_id,
-            )
             fulfill_exists = await _movement_exists(
                 db,
                 company_id=company_id,
@@ -452,14 +363,12 @@ async def fulfill_preorder(
             )
             if fulfill_exists:
                 continue
-            await fulfill_reservation(
-                db,
-                tenant_id=company_id,
+            await fulfill_preorder_reservation(
+                db=db,
+                company_id=company_id,
                 product_id=item.product_id,
-                qty=int(item.qty),
-                reference_type="preorder",
-                reference_id=preorder.id,
-                warehouse_id=warehouse_id,
+                quantity=int(item.qty),
+                preorder_id=preorder.id,
             )
 
         if existing_order_id is not None:
