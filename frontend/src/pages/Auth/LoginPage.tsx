@@ -6,7 +6,6 @@ export default function LoginPage() {
   const navigate = useNavigate()
   const [identifier, setIdentifier] = useState('')
   const [password, setPassword] = useState('')
-  const [otpCode, setOtpCode] = useState('')
   const [error, setError] = useState<string | null>(null)
   const [loading, setLoading] = useState(false)
 
@@ -19,7 +18,6 @@ export default function LoginPage() {
       const tokens = await login({
         identifier,
         password: password || null,
-        otp_code: otpCode || null,
       })
       localStorage.setItem('access_token', tokens.access_token)
       localStorage.setItem('refresh_token', tokens.refresh_token)
@@ -50,14 +48,6 @@ export default function LoginPage() {
             onChange={(event) => setPassword(event.target.value)}
             placeholder="Password"
             type="password"
-          />
-        </label>
-        <label>
-          OTP code (optional)
-          <input
-            value={otpCode}
-            onChange={(event) => setOtpCode(event.target.value)}
-            placeholder="OTP code"
           />
         </label>
         <button type="submit" disabled={loading}>
