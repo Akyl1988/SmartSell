@@ -29,6 +29,21 @@ export type MeResponse = {
   is_superuser?: boolean | null
 }
 
+export type OtpRequestPayload = {
+  phone: string
+  purpose?: string
+}
+
+export type OtpRequestResponse = {
+  status: string
+  ttl?: number
+}
+
+export async function requestOtp(payload: OtpRequestPayload): Promise<OtpRequestResponse> {
+  const { data } = await apiClient.post<OtpRequestResponse>('/api/v1/auth/request-otp', payload)
+  return data
+}
+
 export async function login(payload: LoginPayload): Promise<TokenResponse> {
   const { data } = await apiClient.post<TokenResponse>('/api/v1/auth/login', payload)
   return data
