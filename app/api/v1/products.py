@@ -16,7 +16,7 @@ from datetime import datetime, timedelta
 from enum import Enum
 from typing import Any
 
-from fastapi import APIRouter, Depends, Path, Query
+from fastapi import APIRouter, Depends, File, Path, Query, UploadFile
 from pydantic import BaseModel, Field, ValidationInfo, field_validator
 from sqlalchemy import func, or_, select, update
 from sqlalchemy.exc import IntegrityError
@@ -33,7 +33,9 @@ from app.core.dependencies import (
     require_store_admin_company,
 )
 from app.core.exceptions import ConflictError, NotFoundError, SmartSellValidationError
-from app.core.logging import audit_logger
+from app.core.logging import audit_logger, get_logger
+
+logger = get_logger(__name__)
 from app.core.rbac import is_platform_admin
 from app.core.security import resolve_tenant_company_id
 from app.models.product import Category, Product
@@ -950,3 +952,62 @@ async def repricing_tick(
 
 router.include_router(read_router)
 router.include_router(admin_router)
+
+
+# ---------------------------------------------------------------------------
+# Image upload endpoint (Cloudinary)
+# POST /products/{product_id}/image
+# ---------------------------------------------------------------------------
+
+class ImageUploadResponse(BaseModel):
+    image_url: str
+    image_public_id: str | None = None
+
+
+@admin_router.post(
+    "/{product_id}/image",
+    response_model=ImageUploadResponse,
+    summary="Загрузить фото товара в Cloudinary",
+)
+async def upload_product_image(
+    product_id: int = Path(..., ge=1),
+    file: UploadFile = File(...),
+    current_user: User = Depends(get_current_verified_user),
+    db: AsyncSession = Depends(get_async_db),
+):
+    """Загружает изображение товара в Cloudinary и сохраняет ссылку."""
+    product = await _get_product_or_404(db, product_id, current_user)
+
+    try:
+        from app.services.cloudinary_service import CloudinaryService
+
+        service = CloudinaryService()
+        result = await service.upload_image(file, folder=f"smartsell/products/{product.company_id}")
+    except Exception as exc:
+        logger.error("Image upload failed for product %d: %s", product_id, exc)
+        raise ConflictError("Image upload failed", "IMAGE_UPLOAD_FAILED") from exc
+
+    if not result:
+        raise ConflictError("Image upload returned empty result", "IMAGE_UPLOAD_FAILED")
+
+    image_url: str = result.get("secure_url") or result.get("url", "")
+    if not image_url:
+        raise ConflictError("Image upload did not return a valid URL", "IMAGE_UPLOAD_FAILED")
+    image_public_id: str | None = result.get("public_id")
+
+    await db.execute(
+        update(Product)
+        .where(Product.id == product_id)
+        .values(image_url=image_url, image_public_id=image_public_id)
+    )
+    await db.commit()
+
+    audit_logger.log_data_change(
+        user_id=current_user.id,
+        action="image_uploaded",
+        resource_type="product",
+        resource_id=str(product_id),
+        changes={"image_url": image_url},
+    )
+
+    return ImageUploadResponse(image_url=image_url, image_public_id=image_public_id)
