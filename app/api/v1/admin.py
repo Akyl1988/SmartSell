@@ -1,13 +1,15 @@
 from __future__ import annotations
 
 import json
+import os
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
+from typing import Any
 
 import sqlalchemy as sa
 from fastapi import APIRouter, Body, Depends, Query, Request
-from pydantic import BaseModel, ConfigDict, Field
-from sqlalchemy import select
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field
+from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -18,9 +20,10 @@ from app.core.db import get_async_db
 from app.core.dependencies import require_platform_admin
 from app.core.exceptions import AuthorizationError, ConflictError, NotFoundError, _ensure_request_id
 from app.core.logging import audit_logger
+from app.core.redis_client import get_redis
 from app.core.subscriptions.catalog import get_plan_by_code
 from app.core.subscriptions.plan_catalog import get_plan as get_plan_legacy
-from app.core.subscriptions.plan_catalog import normalize_plan_id
+from app.core.subscriptions.plan_catalog import get_plan_display_name, normalize_plan_id
 from app.models.billing import Subscription, WalletBalance, WalletTransaction
 from app.models.campaign import (
     Campaign,
@@ -31,6 +34,7 @@ from app.models.campaign import (
     MessageStatus,
 )
 from app.models.company import Company
+from app.models.invitation import InvitationToken
 from app.models.kaspi_trial_grant import KaspiTrialGrant
 from app.models.marketplace import KaspiStoreToken
 from app.models.subscription_override import SubscriptionOverride
@@ -47,6 +51,7 @@ from app.services.campaign_runner import (
 )
 from app.services.repricing import run_reprcing_for_company
 from app.services.subscriptions import activate_plan, renew_if_due
+from app.utils.tokens import generate_token, hash_token
 from app.worker.campaign_processing import process_campaign_queue_once
 
 router = APIRouter(
@@ -106,6 +111,113 @@ class SubscriptionKaspiTrialIn(BaseModel):
     merchant_uid: str = Field(..., min_length=1, max_length=128)
     plan: str = Field(default="pro", min_length=2, max_length=32)
     trial_days: int = Field(default=15, ge=1, le=15)
+
+
+class KaspiTrialGrantRequest(BaseModel):
+    companyId: int = Field(..., ge=1)
+    merchant_uid: str = Field(..., min_length=1, max_length=128)
+    plan: str = Field(default="pro", min_length=2, max_length=32)
+    trial_days: int = Field(default=15, ge=1, le=15)
+
+
+class KaspiTrialGrantOut(BaseModel):
+    grant_id: int
+    subscription_id: int
+    plan: str
+    active_until: datetime | None
+
+
+class AdminInviteIn(BaseModel):
+    companyId: int = Field(..., ge=1, validation_alias=AliasChoices("company_id", "companyId"))
+    phone: str = Field(..., min_length=6, max_length=20)
+    grace_days: int = Field(default=7, ge=1, le=60)
+    initial_plan: str = Field(default="trial_pro")
+
+
+class AdminInviteOut(BaseModel):
+    invite_url: str
+    otp_grace_until: datetime | None
+    company_id: int
+
+
+class PlatformSummaryOut(BaseModel):
+    companies_total: int
+    companies_active: int
+    stores_with_kaspi_connected: int
+    subscriptions: dict[str, Any]
+    wallet: dict[str, Any]
+    health: dict[str, Any]
+
+
+class CompanyAdminOut(BaseModel):
+    phone: str | None
+    role: str
+    is_active: bool
+
+
+class CompanyListItem(BaseModel):
+    id: int
+    name: str
+    bin_iin: str | None
+    created_at: datetime
+    is_active: bool
+    kaspi_store_id: str | None
+    current_plan: str | None
+    plan_expires_at: datetime | None
+
+
+class CompaniesPageOut(BaseModel):
+    items: list[CompanyListItem]
+    page: int
+    size: int
+    total: int
+
+
+class CompanyCreateIn(BaseModel):
+    name: str = Field(..., min_length=1, max_length=255)
+    bin_iin: str | None = Field(default=None, min_length=6, max_length=32)
+
+
+class CompanyDetailOut(BaseModel):
+    id: int
+    name: str
+    bin_iin: str | None
+    created_at: datetime
+    is_active: bool
+    kaspi_store_id: str | None
+    current_plan: str | None
+    plan_expires_at: datetime | None
+    admins: list[CompanyAdminOut]
+
+
+class SubscriptionStoreOut(BaseModel):
+    company_id: int
+    company_name: str
+    plan: str
+    status: str
+    current_period_start: datetime | None
+    current_period_end: datetime | None
+    wallet_balance: Decimal
+
+
+class SubscriptionSetPlanIn(BaseModel):
+    plan: str = Field(..., min_length=2, max_length=32)
+    reason: str = Field(..., min_length=3, max_length=500)
+
+
+class SubscriptionExtendIn(BaseModel):
+    days: int = Field(..., ge=1, le=365)
+    reason: str = Field(..., min_length=3, max_length=500)
+
+
+class OtpGraceIn(BaseModel):
+    minutes: int = Field(..., ge=1, le=43200, description="OTP grace period in minutes (max 30 days)")
+
+
+class OtpStatusOut(BaseModel):
+    user_id: int
+    otp_grace_until: datetime | None = None
+    otp_setup_required: bool
 
 
 @router.post(
@@ -655,6 +767,25 @@ def _utc_now() -> datetime:
     return datetime.now(UTC)
 
 
+def _frontend_base_url() -> str:
+    return str(getattr(settings, "FRONTEND_URL", "http://localhost:3000") or "").rstrip("/")
+
+
+def _normalize_phone(value: str) -> str:
+    return "".join(ch for ch in (value or "") if ch.isdigit())
+
+
+def _normalize_initial_plan(value: str | None) -> str:
+    raw = (value or "trial_pro").strip().lower()
+    if raw == "trial_pro":
+        return "trial_pro"
+    if raw == "free":
+        return "start"
+    if raw == "pro":
+        return "pro"
+    return raw
+
+
 def _ceil_to_midnight_utc(dt: datetime) -> datetime:
     if dt.tzinfo is None:
         dt = dt.replace(tzinfo=UTC)
@@ -715,6 +846,67 @@ async def _grant_trial_subscription(
     return sub
 
 
+async def _grant_kaspi_trial(
+    db: AsyncSession,
+    *,
+    company: Company,
+    merchant_uid: str,
+    plan_code: str,
+    trial_days: int,
+) -> tuple[KaspiTrialGrant, Subscription]:
+    merchant_uid = merchant_uid.strip()
+    if not merchant_uid:
+        raise AuthorizationError("merchant_uid_required", code="merchant_uid_required", http_status=400)
+
+    token_exists = (
+        await db.execute(
+            select(sa.literal(True))
+            .select_from(KaspiStoreToken)
+            .where(sa.func.lower(KaspiStoreToken.store_name) == sa.func.lower(sa.literal(merchant_uid)))
+        )
+    ).scalar_one_or_none()
+
+    linked_company = (company.kaspi_store_id or "").strip() == merchant_uid
+    if not linked_company and not token_exists:
+        raise AuthorizationError(
+            "merchant_uid_not_linked",
+            code="merchant_uid_not_linked",
+            http_status=400,
+        )
+
+    now = _utc_now()
+    trial_ends_at = now + timedelta(days=trial_days)
+    grant = KaspiTrialGrant(
+        provider="kaspi",
+        merchant_uid=merchant_uid,
+        company_id=company.id,
+        trial_ends_at=trial_ends_at,
+        status="active",
+        granted_at=now,
+    )
+    db.add(grant)
+    try:
+        await db.flush()
+    except IntegrityError:
+        await db.rollback()
+        raise AuthorizationError(
+            "trial_already_used_for_merchant_uid",
+            code="trial_already_used_for_merchant_uid",
+            http_status=409,
+            extra={"merchant_uid": merchant_uid},
+        )
+
+    sub = await _grant_trial_subscription(
+        db,
+        company_id=company.id,
+        plan_code=plan_code,
+        trial_days=trial_days,
+        now=now,
+    )
+    grant.subscription_id = sub.id
+    return grant, sub
+
+
 async def _resolve_company(
     *,
     db: AsyncSession,
@@ -726,6 +918,467 @@ async def _resolve_company(
     if not company:
         raise NotFoundError("company_not_found", code="company_not_found", http_status=404)
     return company
+
+
+async def _subscription_summary(db: AsyncSession) -> dict[str, Any]:
+    stmt = (
+        select(
+            func.count(Subscription.id),
+            func.sum(sa.case((Subscription.status == "trialing", 1), else_=0)),
+            func.sum(sa.case((Subscription.plan == "pro", 1), else_=0)),
+            func.sum(sa.case((Subscription.plan.in_(["start", "basic"]), 1), else_=0)),
+        )
+        .where(Subscription.deleted_at.is_(None))
+        .select_from(Subscription)
+    )
+    row = (await db.execute(stmt)).one()
+    total, trial_count, pro_count, free_count = (int(row[0] or 0), int(row[1] or 0), int(row[2] or 0), int(row[3] or 0))
+    return {
+        "total": total,
+        "by_plan": {
+            "free": free_count,
+            "trial": trial_count,
+            "pro": pro_count,
+        },
+    }
+
+
+async def _company_plan_info(db: AsyncSession, company: Company) -> tuple[str | None, datetime | None]:
+    stmt = (
+        select(Subscription)
+        .where(Subscription.company_id == company.id, Subscription.deleted_at.is_(None))
+        .order_by(Subscription.id.desc())
+        .limit(1)
+    )
+    sub = (await db.execute(stmt)).scalar_one_or_none()
+    if sub:
+        plan_name = get_plan_display_name(sub.plan, default=sub.plan or "start")
+        if (sub.status or "").lower() == "trialing":
+            plan_name = f"Trial {plan_name}"
+        plan_expires = sub.period_end or sub.expires_at
+        return plan_name, plan_expires
+    plan_name = get_plan_display_name(company.subscription_plan, default=company.subscription_plan)
+    return plan_name, company.subscription_expires_at
+
+
+@router.post(
+    "/invites",
+    response_model=AdminInviteOut,
+    summary="Invite store admin with OTP grace (platform admin)",
+)
+async def create_admin_invite(
+    payload: AdminInviteIn,
+    admin: User = Depends(require_platform_admin),
+    db: AsyncSession = Depends(get_async_db),
+) -> AdminInviteOut:
+    company = await _resolve_company(db=db, company_id=payload.companyId)
+    phone = _normalize_phone(payload.phone)
+    if not phone:
+        raise AuthorizationError("invalid_phone", code="invalid_phone", http_status=400)
+
+    variants = [phone, f"+{phone}"]
+    res = await db.execute(select(User).where(User.phone.in_(variants)))
+    user = res.scalars().first()
+    if not user:
+        user = User(company_id=company.id, phone=phone, role="admin", is_active=True, is_verified=False)
+        db.add(user)
+    else:
+        user.company_id = company.id
+        user.phone = phone
+        user.role = "admin"
+        user.is_active = True
+
+    now = datetime.now(UTC).replace(tzinfo=None)
+    user.otp_grace_until = now + timedelta(days=payload.grace_days)
+    user.otp_setup_required = False
+
+    initial_plan = _normalize_initial_plan(payload.initial_plan)
+    if initial_plan == "trial_pro":
+        await _grant_trial_subscription(db, company_id=company.id, plan_code="pro", trial_days=15)
+    elif initial_plan == "pro":
+        await activate_plan(db, company_id=company.id, plan_code="pro")
+    elif initial_plan == "start":
+        stmt = select(Subscription).where(Subscription.company_id == company.id, Subscription.deleted_at.is_(None))
+        sub = (await db.execute(stmt)).scalar_one_or_none()
+        if sub is None:
+            sub = Subscription(
+                company_id=company.id,
+                plan="start",
+                status="active",
+                billing_cycle="monthly",
+                price=Decimal("0"),
+                currency="KZT",
+                started_at=now,
+                period_start=now,
+                period_end=None,
+                next_billing_date=None,
+            )
+            db.add(sub)
+
+    token = generate_token()
+    token_hash = hash_token(token, secret=getattr(settings, "INVITE_TOKEN_SECRET", None))
+    invite = InvitationToken.build(
+        company_id=company.id,
+        role="admin",
+        phone=phone,
+        token_hash=token_hash,
+        ttl_hours=72,
+        created_by_user_id=admin.id,
+    )
+    db.add(invite)
+    await db.commit()
+
+    invite_url = f"{_frontend_base_url()}/invite?token={token}"
+    return AdminInviteOut(invite_url=invite_url, otp_grace_until=user.otp_grace_until, company_id=company.id)
+
+
+@router.get(
+    "/platform/summary",
+    response_model=PlatformSummaryOut,
+    summary="Platform summary (platform admin)",
+)
+async def platform_summary(
+    admin: User = Depends(require_platform_admin),
+    db: AsyncSession = Depends(get_async_db),
+) -> PlatformSummaryOut:
+    _ = admin
+    companies_total = (await db.execute(select(func.count()).select_from(Company))).scalar_one() or 0
+    companies_active = (
+        await db.execute(select(func.count()).select_from(Company).where(Company.is_active.is_(True)))
+    ).scalar_one() or 0
+
+    store_token_exists = sa.exists(
+        select(sa.literal(True))
+        .select_from(KaspiStoreToken)
+        .where(sa.func.lower(KaspiStoreToken.store_name) == sa.func.lower(Company.kaspi_store_id))
+    )
+    stores_with_kaspi_connected = (
+        await db.execute(
+            select(func.count())
+            .select_from(Company)
+            .where(Company.kaspi_store_id.is_not(None))
+            .where(store_token_exists)
+        )
+    ).scalar_one() or 0
+
+    subscriptions = await _subscription_summary(db)
+
+    wallet_row = (
+        await db.execute(
+            select(func.sum(WalletBalance.balance), func.count(WalletBalance.id)).select_from(WalletBalance)
+        )
+    ).one()
+    total_balance = wallet_row[0] or Decimal("0")
+    active_wallets = int(wallet_row[1] or 0)
+
+    db_ok = True
+    try:
+        await db.execute(select(sa.literal(True)))
+    except Exception:
+        db_ok = False
+
+    redis_ok = False
+    redis_client = get_redis()
+    if redis_client is not None:
+        try:
+            redis_ok = bool(await redis_client.ping())
+        except Exception:
+            redis_ok = False
+
+    worker_ok = os.getenv("SMARTSELL_BACKGROUND_TASKS", "0").strip().lower() in {"1", "true", "yes", "on"}
+
+    return PlatformSummaryOut(
+        companies_total=int(companies_total),
+        companies_active=int(companies_active),
+        stores_with_kaspi_connected=int(stores_with_kaspi_connected),
+        subscriptions=subscriptions,
+        wallet={"total_balance": total_balance, "active_wallets": active_wallets},
+        health={"db_ok": db_ok, "redis_ok": redis_ok, "worker_ok": worker_ok},
+    )
+
+
+@router.get(
+    "/companies",
+    response_model=CompaniesPageOut,
+    summary="List companies (platform admin)",
+)
+async def list_companies(
+    page: int = Query(1, ge=1),
+    size: int = Query(20, ge=1, le=100),
+    q: str | None = Query(None),
+    admin: User = Depends(require_platform_admin),
+    db: AsyncSession = Depends(get_async_db),
+) -> CompaniesPageOut:
+    _ = admin
+    stmt = select(Company)
+    count_stmt = select(func.count()).select_from(Company)
+    if q:
+        like = f"%{q.strip()}%"
+        clause = sa.or_(Company.name.ilike(like), Company.bin_iin.ilike(like))
+        stmt = stmt.where(clause)
+        count_stmt = count_stmt.where(clause)
+
+    total = (await db.execute(count_stmt)).scalar_one() or 0
+    offset = (page - 1) * size
+    rows = (await db.execute(stmt.order_by(Company.created_at.desc()).offset(offset).limit(size))).scalars().all()
+
+    items: list[CompanyListItem] = []
+    for company in rows:
+        plan_name, plan_expires = await _company_plan_info(db, company)
+        items.append(
+            CompanyListItem(
+                id=company.id,
+                name=company.name,
+                bin_iin=company.bin_iin,
+                created_at=company.created_at,
+                is_active=bool(company.is_active),
+                kaspi_store_id=company.kaspi_store_id,
+                current_plan=plan_name,
+                plan_expires_at=plan_expires,
+            )
+        )
+
+    return CompaniesPageOut(items=items, page=page, size=size, total=int(total))
+
+
+@router.get(
+    "/companies/{company_id}",
+    response_model=CompanyDetailOut,
+    summary="Company details (platform admin)",
+)
+async def get_company_detail(
+    company_id: int,
+    admin: User = Depends(require_platform_admin),
+    db: AsyncSession = Depends(get_async_db),
+) -> CompanyDetailOut:
+    _ = admin
+    company = await _resolve_company(db=db, company_id=company_id)
+    plan_name, plan_expires = await _company_plan_info(db, company)
+
+    admin_roles = {"admin", "manager"}
+    users = (
+        (
+            await db.execute(
+                select(User).where(User.company_id == company.id, User.role.in_(admin_roles)).order_by(User.id.desc())
+            )
+        )
+        .scalars()
+        .all()
+    )
+    admins = [CompanyAdminOut(phone=u.phone, role=u.role, is_active=bool(u.is_active)) for u in users]
+
+    return CompanyDetailOut(
+        id=company.id,
+        name=company.name,
+        bin_iin=company.bin_iin,
+        created_at=company.created_at,
+        is_active=bool(company.is_active),
+        kaspi_store_id=company.kaspi_store_id,
+        current_plan=plan_name,
+        plan_expires_at=plan_expires,
+        admins=admins,
+    )
+
+
+@router.post(
+    "/companies",
+    response_model=CompanyListItem,
+    summary="Create company (platform admin)",
+)
+async def create_company(
+    payload: CompanyCreateIn,
+    admin: User = Depends(require_platform_admin),
+    db: AsyncSession = Depends(get_async_db),
+) -> CompanyListItem:
+    _ = admin
+    company = Company(name=payload.name.strip(), bin_iin=(payload.bin_iin or None))
+    db.add(company)
+    await db.commit()
+    await db.refresh(company)
+    plan_name, plan_expires = await _company_plan_info(db, company)
+    return CompanyListItem(
+        id=company.id,
+        name=company.name,
+        bin_iin=company.bin_iin,
+        created_at=company.created_at,
+        is_active=bool(company.is_active),
+        kaspi_store_id=company.kaspi_store_id,
+        current_plan=plan_name,
+        plan_expires_at=plan_expires,
+    )
+
+
+@router.get(
+    "/subscriptions/stores",
+    response_model=list[SubscriptionStoreOut],
+    summary="List subscriptions by store (platform admin)",
+)
+async def list_subscriptions_by_store(
+    admin: User = Depends(require_platform_admin),
+    db: AsyncSession = Depends(get_async_db),
+) -> list[SubscriptionStoreOut]:
+    _ = admin
+    now = datetime.now(UTC)
+    stmt = (
+        select(Subscription, Company, WalletBalance)
+        .join(Company, Company.id == Subscription.company_id)
+        .outerjoin(WalletBalance, WalletBalance.company_id == Company.id)
+        .where(Subscription.deleted_at.is_(None))
+    )
+    rows = (await db.execute(stmt)).all()
+    results: list[SubscriptionStoreOut] = []
+    for sub, company, wallet in rows:
+        status_raw = (sub.status or "").lower()
+        if status_raw == "trialing":
+            status = "trial"
+        elif status_raw == "active":
+            status = "active"
+        elif sub.period_end and sub.period_end >= now:
+            status = "active"
+        else:
+            status = "expired"
+        results.append(
+            SubscriptionStoreOut(
+                company_id=company.id,
+                company_name=company.name,
+                plan=sub.plan,
+                status=status,
+                current_period_start=sub.period_start,
+                current_period_end=sub.period_end,
+                wallet_balance=(wallet.balance if wallet else Decimal("0")),
+            )
+        )
+    return results
+
+
+@router.post(
+    "/subscriptions/{company_id}/set-plan",
+    response_model=SubscriptionAdminOut,
+    summary="Set subscription plan (platform admin)",
+)
+async def set_subscription_plan(
+    company_id: int,
+    payload: SubscriptionSetPlanIn,
+    admin: User = Depends(require_platform_admin),
+    db: AsyncSession = Depends(get_async_db),
+) -> SubscriptionAdminOut:
+    _ = admin
+    company = await _resolve_company(db=db, company_id=company_id)
+    plan_code = normalize_plan_id(payload.plan, default=payload.plan) or payload.plan
+    if plan_code == "free":
+        plan_code = "start"
+    sub = await activate_plan(db, company_id=company.id, plan_code=plan_code)
+    await db.commit()
+    await db.refresh(sub)
+
+    audit_logger.log_system_event(
+        level="info",
+        event="subscription_plan_set",
+        message="Subscription plan set by platform admin",
+        meta={"company_id": company.id, "plan": sub.plan, "reason": payload.reason},
+    )
+
+    return SubscriptionAdminOut.model_validate(sub)
+
+
+@router.post(
+    "/subscriptions/{company_id}/extend",
+    response_model=SubscriptionAdminOut,
+    summary="Extend subscription (platform admin)",
+)
+async def extend_subscription(
+    company_id: int,
+    payload: SubscriptionExtendIn,
+    admin: User = Depends(require_platform_admin),
+    db: AsyncSession = Depends(get_async_db),
+) -> SubscriptionAdminOut:
+    _ = admin
+    _ = await _resolve_company(db=db, company_id=company_id)
+    stmt = (
+        select(Subscription)
+        .where(Subscription.company_id == company_id, Subscription.deleted_at.is_(None))
+        .order_by(Subscription.id.desc())
+        .limit(1)
+    )
+    sub = (await db.execute(stmt)).scalar_one_or_none()
+    if not sub:
+        raise NotFoundError("subscription_not_found", code="subscription_not_found", http_status=404)
+
+    base_end = sub.period_end or datetime.now(UTC)
+    new_end = base_end + timedelta(days=payload.days)
+    sub.period_end = new_end
+    sub.next_billing_date = new_end
+    if sub.expires_at:
+        sub.expires_at = sub.expires_at + timedelta(days=payload.days)
+
+    await db.commit()
+    await db.refresh(sub)
+
+    audit_logger.log_system_event(
+        level="info",
+        event="subscription_extended",
+        message="Subscription extended by platform admin",
+        meta={"company_id": company_id, "days": payload.days, "reason": payload.reason},
+    )
+
+    return SubscriptionAdminOut.model_validate(sub)
+
+
+@router.get(
+    "/users/{user_id}/otp/status",
+    response_model=OtpStatusOut,
+    summary="Get OTP status for user (platform admin)",
+)
+async def get_user_otp_status(
+    user_id: int,
+    admin: User = Depends(require_platform_admin),
+    db: AsyncSession = Depends(get_async_db),
+) -> OtpStatusOut:
+    _ = admin
+    user = await db.get(User, user_id)
+    if not user:
+        raise NotFoundError("user_not_found", code="user_not_found", http_status=404)
+    return OtpStatusOut(
+        user_id=user.id, otp_grace_until=user.otp_grace_until, otp_setup_required=bool(user.otp_setup_required)
+    )
+
+
+@router.post(
+    "/users/{user_id}/otp/grace",
+    response_model=OtpStatusOut,
+    summary="Set OTP grace period for user (platform admin)",
+)
+async def set_user_otp_grace(
+    user_id: int,
+    payload: OtpGraceIn,
+    admin: User = Depends(require_platform_admin),
+    db: AsyncSession = Depends(get_async_db),
+) -> OtpStatusOut:
+    _ = admin
+    user = await db.get(User, user_id)
+    if not user:
+        raise NotFoundError("user_not_found", code="user_not_found", http_status=404)
+
+    now = datetime.now(UTC).replace(tzinfo=None)
+    user.otp_grace_until = now + timedelta(minutes=payload.minutes)
+    user.otp_setup_required = False
+    await db.commit()
+    await db.refresh(user)
+
+    audit_logger.log_system_event(
+        level="info",
+        event="otp_grace_set",
+        message="OTP grace updated by platform admin",
+        meta={
+            "user_id": user.id,
+            "otp_grace_until": user.otp_grace_until.isoformat() if user.otp_grace_until else None,
+        },
+    )
+    return OtpStatusOut(
+        user_id=user.id,
+        otp_grace_until=user.otp_grace_until,
+        otp_setup_required=bool(user.otp_setup_required),
+    )
 
 
 @router.post(
@@ -921,71 +1574,30 @@ async def activate_subscription_admin(
 
 @router.post(
     "/subscriptions/trial/kaspi",
-    response_model=SubscriptionAdminOut,
+    response_model=KaspiTrialGrantOut,
     summary="Grant Kaspi trial subscription (platform admin)",
 )
 async def grant_kaspi_trial_subscription(
-    payload: SubscriptionKaspiTrialIn,
+    payload: KaspiTrialGrantRequest,
     admin: User = Depends(require_platform_admin),
     db: AsyncSession = Depends(get_async_db),
-) -> SubscriptionAdminOut:
+) -> KaspiTrialGrantOut:
     _ = admin
+
     company = await db.get(Company, payload.companyId)
     if not company:
         raise NotFoundError("company_not_found", code="company_not_found", http_status=404)
 
-    merchant_uid = payload.merchant_uid.strip()
-    if not merchant_uid:
-        raise AuthorizationError("merchant_uid_required", code="merchant_uid_required", http_status=400)
-
-    token_exists = (
-        await db.execute(
-            select(sa.literal(True))
-            .select_from(KaspiStoreToken)
-            .where(sa.func.lower(KaspiStoreToken.store_name) == sa.func.lower(sa.literal(merchant_uid)))
-        )
-    ).scalar_one_or_none()
-
-    linked_company = (company.kaspi_store_id or "").strip() == merchant_uid
-    if not linked_company and not token_exists:
-        raise AuthorizationError(
-            "merchant_uid_not_linked",
-            code="merchant_uid_not_linked",
-            http_status=400,
-        )
-
-    now = _utc_now()
-    trial_ends_at = now + timedelta(days=payload.trial_days)
-    grant = KaspiTrialGrant(
-        provider="kaspi",
-        merchant_uid=merchant_uid,
-        company_id=payload.companyId,
-        trial_ends_at=trial_ends_at,
-        status="active",
-        granted_at=now,
-    )
-    db.add(grant)
-    try:
-        await db.flush()
-    except IntegrityError:
-        await db.rollback()
-        raise AuthorizationError(
-            "trial_already_used_for_merchant_uid",
-            code="trial_already_used_for_merchant_uid",
-            http_status=409,
-            extra={"merchant_uid": merchant_uid},
-        )
-
-    sub = await _grant_trial_subscription(
+    grant, sub = await _grant_kaspi_trial(
         db,
-        company_id=payload.companyId,
+        company=company,
+        merchant_uid=payload.merchant_uid,
         plan_code=payload.plan,
         trial_days=payload.trial_days,
-        now=now,
     )
-    grant.subscription_id = sub.id
 
     await db.commit()
+    await db.refresh(grant)
     await db.refresh(sub)
 
     audit_logger.log_system_event(
@@ -993,15 +1605,20 @@ async def grant_kaspi_trial_subscription(
         event="subscription_trial_granted",
         message="Kaspi subscription trial granted",
         meta={
-            "company_id": payload.companyId,
+            "company_id": company.id,
             "plan": sub.plan,
-            "merchant_uid": merchant_uid,
+            "merchant_uid": payload.merchant_uid,
             "period_end": sub.period_end.isoformat() if sub.period_end else None,
             "grace_until": sub.grace_until.isoformat() if sub.grace_until else None,
         },
     )
 
-    return SubscriptionAdminOut.model_validate(sub)
+    return KaspiTrialGrantOut(
+        grant_id=grant.id,
+        subscription_id=sub.id,
+        plan=sub.plan,
+        active_until=sub.period_end,
+    )
 
 
 @router.get(

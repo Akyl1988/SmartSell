@@ -25,6 +25,8 @@ export type MeResponse = {
   full_name?: string | null
   company_name?: string | null
   plan?: string | null
+  role?: string | null
+  is_superuser?: boolean | null
 }
 
 export async function login(payload: LoginPayload): Promise<TokenResponse> {

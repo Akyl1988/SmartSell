@@ -229,6 +229,8 @@ class User(
     last_login_at = Column(DateTime, nullable=True)
     failed_login_attempts = Column(Integer, nullable=False, default=0, server_default=text("0"))
     locked_until = Column(DateTime, nullable=True)
+    otp_grace_until = Column(DateTime, nullable=True, index=True)
+    otp_setup_required = Column(Boolean, nullable=False, default=False, server_default=text("false"))
 
     # Compatibility shims: store first/last name in full_name while exposing friendly properties.
     @property

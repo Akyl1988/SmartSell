@@ -56,6 +56,15 @@ const navLinkActiveStyle: React.CSSProperties = {
   fontWeight: 600,
 }
 
+const navSectionTitleStyle: React.CSSProperties = {
+  fontSize: 12,
+  fontWeight: 600,
+  textTransform: 'uppercase',
+  letterSpacing: '0.04em',
+  color: '#64748b',
+  marginTop: 12,
+}
+
 const mainStyle: React.CSSProperties = {
   flex: 1,
   padding: '20px',
@@ -107,6 +116,11 @@ export default function App() {
   const companyLabel = useMemo(() => {
     if (!profile) return 'Guest'
     return profile.company_name || profile.full_name || profile.phone || 'Account'
+  }, [profile])
+
+  const isPlatformAdmin = useMemo(() => {
+    const role = profile?.role ?? ''
+    return role === 'platform_admin' || profile?.is_superuser === true
   }, [profile])
 
   async function handleLogout() {
@@ -233,6 +247,61 @@ export default function App() {
                   Settings
                 </NavLink>
               </li>
+              {isPlatformAdmin && (
+                <li style={navSectionTitleStyle}>Управление платформой</li>
+              )}
+              {isPlatformAdmin && (
+                <li>
+                  <NavLink
+                    to="/owner"
+                    style={({ isActive }) => ({
+                      ...navLinkStyle,
+                      ...(isActive ? navLinkActiveStyle : null),
+                    })}
+                  >
+                    Обзор платформы
+                  </NavLink>
+                </li>
+              )}
+              {isPlatformAdmin && (
+                <li>
+                  <NavLink
+                    to="/owner/companies"
+                    style={({ isActive }) => ({
+                      ...navLinkStyle,
+                      ...(isActive ? navLinkActiveStyle : null),
+                    })}
+                  >
+                    Магазины
+                  </NavLink>
+                </li>
+              )}
+              {isPlatformAdmin && (
+                <li>
+                  <NavLink
+                    to="/owner/subscriptions"
+                    style={({ isActive }) => ({
+                      ...navLinkStyle,
+                      ...(isActive ? navLinkActiveStyle : null),
+                    })}
+                  >
+                    Подписки
+                  </NavLink>
+                </li>
+              )}
+              {isPlatformAdmin && (
+                <li>
+                  <NavLink
+                    to="/owner/ops"
+                    style={({ isActive }) => ({
+                      ...navLinkStyle,
+                      ...(isActive ? navLinkActiveStyle : null),
+                    })}
+                  >
+                    Операции
+                  </NavLink>
+                </li>
+              )}
             </ul>
           </aside>
         )}

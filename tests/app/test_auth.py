@@ -2,7 +2,7 @@
 Tests for authentication functionality (legacy /api/auth/* alias supported).
 """
 
-from datetime import timedelta
+from datetime import datetime, timedelta
 
 import pytest
 from httpx import AsyncClient
@@ -174,6 +174,7 @@ class TestAuth:
             phone="+77001234567",
             hashed_password=get_password_hash(STRONG_PW),
             role="admin",
+            otp_grace_until=datetime.utcnow() + timedelta(days=1),
         )
         async_db_session.add(user)
         await async_db_session.commit()
@@ -190,6 +191,54 @@ class TestAuth:
         assert "refresh_token" in data
 
     @pytest.mark.asyncio
+    async def test_login_with_password_in_prod_allows_grace(
+        self, async_client: AsyncClient, async_db_session: AsyncSession, monkeypatch
+    ):
+        monkeypatch.setenv("ENVIRONMENT", "production")
+        company = Company(name="Grace Co")
+        async_db_session.add(company)
+        await async_db_session.flush()
+
+        user = User(
+            company_id=company.id,
+            phone="+77001239999",
+            hashed_password=get_password_hash(STRONG_PW),
+            role="admin",
+            otp_grace_until=datetime.utcnow() + timedelta(days=1),
+        )
+        async_db_session.add(user)
+        await async_db_session.commit()
+
+        login_data = {"identifier": "+77001239999", "password": STRONG_PW}
+        response = await async_client.post("/api/auth/login", json=login_data)
+        assert response.status_code == 200, response.text
+
+    @pytest.mark.asyncio
+    async def test_login_with_password_in_prod_requires_otp_without_grace(
+        self, async_client: AsyncClient, async_db_session: AsyncSession, monkeypatch
+    ):
+        monkeypatch.setenv("ENVIRONMENT", "production")
+        company = Company(name="No Grace Co")
+        async_db_session.add(company)
+        await async_db_session.flush()
+
+        user = User(
+            company_id=company.id,
+            phone="+77001238888",
+            hashed_password=get_password_hash(STRONG_PW),
+            role="admin",
+            otp_grace_until=datetime.utcnow() - timedelta(days=1),
+        )
+        async_db_session.add(user)
+        await async_db_session.commit()
+
+        login_data = {"identifier": "+77001238888", "password": STRONG_PW}
+        response = await async_client.post("/api/auth/login", json=login_data)
+        assert response.status_code == 403, response.text
+        body = response.json()
+        assert body.get("detail") == "otp_required"
+
+    @pytest.mark.asyncio
     async def test_login_invalid_credentials(self, async_client: AsyncClient, async_db_session: AsyncSession):
         """Test login with invalid credentials"""
 
@@ -203,6 +252,7 @@ class TestAuth:
             phone="+77001234567",
             hashed_password=get_password_hash(STRONG_PW),
             role="admin",
+            otp_grace_until=datetime.utcnow() + timedelta(days=1),
         )
         async_db_session.add(user)
         await async_db_session.commit()
@@ -255,6 +305,7 @@ class TestAuth:
             email="user@example.com",
             hashed_password=get_password_hash(STRONG_PW),
             role="admin",
+            otp_grace_until=datetime.utcnow() + timedelta(days=1),
         )
         async_db_session.add(user)
         await async_db_session.commit()

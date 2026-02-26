@@ -115,6 +115,7 @@ OTP_MAX_ATTEMPTS: int = int(_conf("OTP_MAX_ATTEMPTS", 3))
 OTP_RESEND_COOLDOWN_SEC: int = int(_conf("OTP_RESEND_COOLDOWN_SEC", 60))
 LOGIN_MAX_FAILS: int = int(_conf("LOGIN_MAX_FAILS", 5))
 LOGIN_LOCK_MINUTES: int = int(_conf("LOGIN_LOCK_MINUTES", 15))
+ADMIN_ROLES = {"admin", "platform_admin", "platform_manager"}
 PROJECT_NAME: str = str(_conf("PROJECT_NAME", "SmartSell"))
 DEBUG_MODE: bool = bool(_conf("DEBUG", False))
 DEBUG_OTP_CODE: str | None = getattr(settings, "DEBUG_OTP_CODE", None)
@@ -139,6 +140,13 @@ def _utcnow() -> datetime:
 
 def _utcnow_naive() -> datetime:
     return datetime.now(UTC).replace(tzinfo=None)
+
+
+def _has_active_otp_grace(user: User | None) -> bool:
+    if not user:
+        return False
+    grace = getattr(user, "otp_grace_until", None)
+    return bool(grace and grace > _utcnow_naive())
 
 
 def _normalize_phone(v: str | None) -> str:
@@ -546,6 +554,14 @@ async def login(login_data: UserLogin, request: Request, db: AsyncSession = Depe
         )
         raise AuthenticationError("Account is temporarily locked", "ACCOUNT_LOCKED")
 
+    if _is_production():
+        is_admin_role = bool(user and (user.role or "").strip().lower() in ADMIN_ROLES)
+        grace_active = _has_active_otp_grace(user)
+        otp_required = (is_admin_role and not grace_active) or bool(getattr(user, "otp_setup_required", False))
+
+        if otp_required and not via_otp:
+            raise AuthorizationError("otp_required", "otp_required", http_status=403)
+
     if via_otp:
         if is_email:
             raise AuthenticationError("Invalid OTP code", "INVALID_OTP")
@@ -555,6 +571,7 @@ async def login(login_data: UserLogin, request: Request, db: AsyncSession = Depe
         verified = await verify_otp_code(db, phone, otp_code, "login")
         if not verified:
             raise AuthenticationError("Invalid OTP code", "INVALID_OTP")
+        user.otp_setup_required = False
     else:
         password = login_data.password or ""
         if not user or not verify_password(password, user.hashed_password):
@@ -1024,9 +1041,12 @@ async def verify_otp(otp_verify: OTPVerify, db: AsyncSession = Depends(get_async
                 user = await db.get(User, attempt.user_id)
         if user:
             user.is_verified = True
+            user.otp_setup_required = False
         updated_users = 0
         if variants:
-            res_update = await db.execute(update(User).where(User.phone.in_(variants)).values(is_verified=True))
+            res_update = await db.execute(
+                update(User).where(User.phone.in_(variants)).values(is_verified=True, otp_setup_required=False)
+            )
             updated_users = res_update.rowcount or 0
         await db.commit()
         audit_logger.log_system_event(
@@ -1157,6 +1177,8 @@ async def accept_invitation(payload: InvitationAccept, db: AsyncSession = Depend
         )
         db.add(user)
         invite.used_at = _utcnow_naive()
+        if (invite.role or "").strip().lower() in ADMIN_ROLES:
+            user.otp_setup_required = True
 
     await db.refresh(user)
 

@@ -8,6 +8,11 @@ import WalletPage from '../pages/Wallet/WalletPage'
 import SubscriptionsPage from '../pages/Subscriptions/SubscriptionsPage'
 import ReportsPage from '../pages/Reports/ReportsPage'
 import SettingsPage from '../pages/Settings/SettingsPage'
+import OwnerCompaniesPage from '../pages/Owner/OwnerCompaniesPage'
+import OwnerCompanyDetailPage from '../pages/Owner/OwnerCompanyDetailPage'
+import OwnerDashboardPage from '../pages/Owner/OwnerDashboardPage'
+import OwnerOpsPage from '../pages/Owner/OwnerOpsPage'
+import OwnerSubscriptionsPage from '../pages/Owner/OwnerSubscriptionsPage'
 
 export function AppRoutes() {
   return (
@@ -23,6 +28,11 @@ export function AppRoutes() {
         <Route path="/subscriptions" element={<SubscriptionsPage />} />
         <Route path="/reports" element={<ReportsPage />} />
         <Route path="/settings" element={<SettingsPage />} />
+        <Route path="/owner" element={<OwnerDashboardPage />} />
+        <Route path="/owner/companies" element={<OwnerCompaniesPage />} />
+        <Route path="/owner/companies/:id" element={<OwnerCompanyDetailPage />} />
+        <Route path="/owner/subscriptions" element={<OwnerSubscriptionsPage />} />
+        <Route path="/owner/ops" element={<OwnerOpsPage />} />
       </Route>
       <Route path="*" element={<NotFound />} />
     </Routes>
