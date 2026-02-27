@@ -134,3 +134,9 @@ Platform admin only.
 - Integration events: GET /api/v1/integrations/events?kind=kaspi&limit=100
 - Logs: filter for company_id or request_id; use X-Request-ID in client requests to trace.
 - Admin overview: GET /api/v1/admin/companies and /api/v1/admin/companies/{company_id}
+
+## Dev-песочница
+- Для dev можно быстро создать вторую/третью тестовую компанию и store_admin:
+  - scripts/dev-create-sandbox-tenant.ps1
+- Пример запуска:
+  - pwsh -NoProfile -File ./scripts/dev-create-sandbox-tenant.ps1 -BaseUrl http://127.0.0.1:8000
