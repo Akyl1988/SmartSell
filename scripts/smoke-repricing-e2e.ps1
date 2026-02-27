@@ -139,7 +139,8 @@ $rulePayload = @{
   name = "Smoke Rule $runId"
   enabled = $true
   is_active = $true
-  scope_type = "all"
+  scope_type = "product"
+  scope_value = $productId
   step = 1
   rounding_mode = "nearest"
 }
@@ -164,7 +165,7 @@ if (-not $ruleId) {
   throw "Missing repricing rule id"
 }
 
-$runResp = Invoke-Api -Method "POST" -Url "$BaseUrl/api/v1/repricing/run" -TimeoutSec 60
+$runResp = Invoke-Api -Method "POST" -Url "$BaseUrl/api/v1/repricing/run?dry_run=true" -TimeoutSec 60
 $runBody = Assert-Ok -Resp $runResp -Action "Trigger repricing run"
 $runIdValue = Get-PropValue -Obj $runBody -Name "run_id"
 
@@ -186,7 +187,7 @@ if (-not $runIdResolved) {
   throw "Missing repricing run id"
 }
 
-$applyResp = Invoke-Api -Method "POST" -Url "$BaseUrl/api/v1/repricing/runs/$runIdResolved/apply" -TimeoutSec 60
+$applyResp = Invoke-Api -Method "POST" -Url "$BaseUrl/api/v1/repricing/runs/$runIdResolved/apply?dry_run=true" -TimeoutSec 60
 $null = Assert-Ok -Resp $applyResp -Action "Apply repricing run"
 
 Write-Host "OK: repricing e2e complete"

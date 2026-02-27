@@ -1,79 +1,16 @@
-import { useEffect, useMemo, useState } from 'react'
-import {
-  SubscriptionStoreRow,
-  extendSubscription,
-  getSubscriptionStores,
-  setSubscriptionPlan,
-} from '../../api/admin'
+import { FormEvent, useCallback, useEffect, useMemo, useState } from 'react'
+import { SubscriptionStoreRow } from '../../api/admin'
 import { getHttpErrorInfo } from '../../api/client'
-
-const pageStyle: React.CSSProperties = {
-  background: '#f3f4f6',
-  minHeight: '100%',
-  padding: '24px',
-}
-
-const panelStyle: React.CSSProperties = {
-  background: '#ffffff',
-  borderRadius: 8,
-  padding: 16,
-  boxShadow: '0 1px 2px rgba(15, 23, 42, 0.08)',
-}
-
-const tableStyle: React.CSSProperties = {
-  width: '100%',
-  borderCollapse: 'collapse',
-  marginTop: 12,
-}
-
-const thStyle: React.CSSProperties = {
-  textAlign: 'left',
-  fontSize: 12,
-  color: '#64748b',
-  padding: '10px 8px',
-  borderBottom: '1px solid #e2e8f0',
-}
-
-const tdStyle: React.CSSProperties = {
-  padding: '10px 8px',
-  borderBottom: '1px solid #e2e8f0',
-  fontSize: 14,
-}
-
-const actionButtonStyle: React.CSSProperties = {
-  background: '#2563eb',
-  color: '#ffffff',
-  border: 'none',
-  borderRadius: 6,
-  padding: '6px 10px',
-  marginRight: 8,
-}
-
-const modalOverlayStyle: React.CSSProperties = {
-  position: 'fixed',
-  inset: 0,
-  background: 'rgba(15, 23, 42, 0.35)',
-  display: 'flex',
-  alignItems: 'center',
-  justifyContent: 'center',
-  zIndex: 30,
-}
-
-const modalStyle: React.CSSProperties = {
-  background: '#ffffff',
-  borderRadius: 10,
-  padding: 20,
-  width: 'min(460px, 92vw)',
-  boxShadow: '0 20px 60px rgba(15, 23, 42, 0.2)',
-}
-
-const inputStyle: React.CSSProperties = {
-  width: '100%',
-  padding: '8px 10px',
-  borderRadius: 6,
-  border: '1px solid #cbd5f5',
-  marginBottom: 12,
-}
+import Button from '../../components/ui/Button'
+import Card from '../../components/ui/Card'
+import EmptyState from '../../components/ui/EmptyState'
+import ErrorState from '../../components/ui/ErrorState'
+import Loader from '../../components/ui/Loader'
+import { Table, TableBody, TableCell, TableHead, TableHeaderCell, TableRow } from '../../components/ui/Table'
+import { useToast } from '../../components/ui/Toast'
+import { useAdmin } from '../../hooks/useAdmin'
+import formStyles from '../../styles/forms.module.css'
+import pageStyles from '../../styles/page.module.css'
 
 type PlanModalState = {
   companyId: number
@@ -86,6 +23,8 @@ type ExtendModalState = {
 }
 
 export default function OwnerSubscriptionsPage() {
+  const { getSubscriptionStores, setSubscriptionPlan, extendSubscription } = useAdmin()
+  const { push } = useToast()
   const [rows, setRows] = useState<SubscriptionStoreRow[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
@@ -102,12 +41,12 @@ export default function OwnerSubscriptionsPage() {
     return [...rows].sort((a, b) => a.company_name.localeCompare(b.company_name))
   }, [rows])
 
-  function loadSubscriptions() {
+  const loadSubscriptions = useCallback(() => {
     setLoading(true)
+    setError(null)
     getSubscriptionStores()
       .then((data) => {
         setRows(data)
-        setError(null)
       })
       .catch((err) => {
         const info = getHttpErrorInfo(err)
@@ -115,13 +54,13 @@ export default function OwnerSubscriptionsPage() {
         setError(`Failed to load subscriptions${statusPart}: ${info.message}`)
       })
       .finally(() => setLoading(false))
-  }
+  }, [getSubscriptionStores])
 
   useEffect(() => {
     loadSubscriptions()
-  }, [])
+  }, [loadSubscriptions])
 
-  async function submitPlanChange(event: React.FormEvent<HTMLFormElement>) {
+  async function submitPlanChange(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
     if (!planModal) return
     setActionLoading(true)
@@ -131,17 +70,19 @@ export default function OwnerSubscriptionsPage() {
       setPlanModal(null)
       setPlan('start')
       setPlanReason('')
+      push('Plan updated.', 'success')
       loadSubscriptions()
     } catch (err) {
       const info = getHttpErrorInfo(err)
       const statusPart = info.status ? ` (status ${info.status})` : ''
       setActionError(`Failed to set plan${statusPart}: ${info.message}`)
+      push('Failed to update plan.', 'danger')
     } finally {
       setActionLoading(false)
     }
   }
 
-  async function submitExtend(event: React.FormEvent<HTMLFormElement>) {
+  async function submitExtend(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
     if (!extendModal) return
     setActionLoading(true)
@@ -154,97 +95,112 @@ export default function OwnerSubscriptionsPage() {
       setExtendModal(null)
       setExtendDays(7)
       setExtendReason('')
+      push('Subscription extended.', 'success')
       loadSubscriptions()
     } catch (err) {
       const info = getHttpErrorInfo(err)
       const statusPart = info.status ? ` (status ${info.status})` : ''
       setActionError(`Failed to extend subscription${statusPart}: ${info.message}`)
+      push('Failed to extend subscription.', 'danger')
     } finally {
       setActionLoading(false)
     }
   }
 
   return (
-    <section style={pageStyle}>
-      <div style={{ marginBottom: 16 }}>
-        <h1 style={{ marginBottom: 6 }}>Подписки</h1>
-        <p style={{ color: '#64748b' }}>Управление подписками по магазинам.</p>
+    <section className={pageStyles.page}>
+      <div className={pageStyles.pageHeader}>
+        <div>
+          <h1 className={pageStyles.pageTitle}>Subscriptions</h1>
+          <p className={pageStyles.pageDescription}>Manage plans and subscription periods per company.</p>
+        </div>
       </div>
 
-      <div style={panelStyle}>
-        {loading && <p>Загрузка...</p>}
-        {error && <p style={{ color: '#b91c1c' }}>{error}</p>}
-
-        {!loading && !error && (
-          <table style={tableStyle}>
-            <thead>
-              <tr>
-                <th style={thStyle}>Магазин</th>
-                <th style={thStyle}>План</th>
-                <th style={thStyle}>Статус</th>
-                <th style={thStyle}>Период</th>
-                <th style={thStyle}>Баланс</th>
-                <th style={thStyle}>Действия</th>
-              </tr>
-            </thead>
-            <tbody>
-              {sortedRows.map((row) => (
-                <tr key={row.company_id}>
-                  <td style={tdStyle}>{row.company_name}</td>
-                  <td style={tdStyle}>{row.plan}</td>
-                  <td style={tdStyle}>{row.status}</td>
-                  <td style={tdStyle}>
-                    {row.current_period_start ?? '—'} → {row.current_period_end ?? '—'}
-                  </td>
-                  <td style={tdStyle}>{row.wallet_balance}</td>
-                  <td style={tdStyle}>
-                    <button
-                      type="button"
-                      style={actionButtonStyle}
-                      onClick={() => setPlanModal({ companyId: row.company_id, companyName: row.company_name })}
-                    >
-                      Сменить план
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => setExtendModal({ companyId: row.company_id, companyName: row.company_name })}
-                    >
-                      Продлить
-                    </button>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+      <Card>
+        {loading && <Loader label="Loading subscriptions..." />}
+        {error && <ErrorState message={error} onRetry={loadSubscriptions} />}
+        {!loading && !error && sortedRows.length === 0 && (
+          <EmptyState title="No subscriptions" description="No subscription data is available yet." />
         )}
-      </div>
+
+        {!loading && !error && sortedRows.length > 0 && (
+          <div className={pageStyles.tableWrap}>
+            <Table>
+              <TableHead>
+                <TableRow>
+                  <TableHeaderCell>Company</TableHeaderCell>
+                  <TableHeaderCell>Plan</TableHeaderCell>
+                  <TableHeaderCell>Status</TableHeaderCell>
+                  <TableHeaderCell>Period</TableHeaderCell>
+                  <TableHeaderCell>Balance</TableHeaderCell>
+                  <TableHeaderCell>Actions</TableHeaderCell>
+                </TableRow>
+              </TableHead>
+              <TableBody>
+                {sortedRows.map((row) => (
+                  <TableRow key={row.company_id}>
+                    <TableCell>{row.company_name}</TableCell>
+                    <TableCell>{row.plan}</TableCell>
+                    <TableCell>{row.status}</TableCell>
+                    <TableCell>
+                      {row.current_period_start ?? '—'} → {row.current_period_end ?? '—'}
+                    </TableCell>
+                    <TableCell>{row.wallet_balance}</TableCell>
+                    <TableCell>
+                      <div className={pageStyles.inline}>
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          onClick={() => setPlanModal({ companyId: row.company_id, companyName: row.company_name })}
+                        >
+                          Change plan
+                        </Button>
+                        <Button
+                          size="sm"
+                          onClick={() => setExtendModal({ companyId: row.company_id, companyName: row.company_name })}
+                        >
+                          Extend
+                        </Button>
+                      </div>
+                    </TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+          </div>
+        )}
+      </Card>
 
       {planModal && (
-        <div style={modalOverlayStyle}>
-          <div style={modalStyle}>
-            <h2 style={{ marginTop: 0 }}>Сменить план: {planModal.companyName}</h2>
-            <form onSubmit={submitPlanChange}>
-              <label style={{ fontSize: 12, color: '#64748b' }}>План</label>
-              <select style={inputStyle} value={plan} onChange={(e) => setPlan(e.target.value)}>
-                <option value="start">Start</option>
-                <option value="pro">Pro</option>
-                <option value="business">Business</option>
-              </select>
-              <label style={{ fontSize: 12, color: '#64748b' }}>Причина</label>
-              <input
-                style={inputStyle}
-                value={planReason}
-                onChange={(e) => setPlanReason(e.target.value)}
-                placeholder="Например: ручная активация"
-              />
-              {actionError && <p style={{ color: '#b91c1c' }}>{actionError}</p>}
-              <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
-                <button type="button" onClick={() => setPlanModal(null)}>
-                  Отмена
-                </button>
-                <button type="submit" style={actionButtonStyle} disabled={actionLoading}>
-                  {actionLoading ? 'Сохранение...' : 'Сохранить'}
-                </button>
+        <div className={formStyles.modalOverlay}>
+          <div className={formStyles.modal}>
+            <h2>Change plan: {planModal.companyName}</h2>
+            <form onSubmit={submitPlanChange} className={formStyles.formGrid}>
+              <div className={formStyles.formRow}>
+                <label className={formStyles.label}>Plan</label>
+                <select className={formStyles.select} value={plan} onChange={(e) => setPlan(e.target.value)}>
+                  <option value="start">Start</option>
+                  <option value="pro">Pro</option>
+                  <option value="business">Business</option>
+                </select>
+              </div>
+              <div className={formStyles.formRow}>
+                <label className={formStyles.label}>Reason</label>
+                <input
+                  className={formStyles.input}
+                  value={planReason}
+                  onChange={(e) => setPlanReason(e.target.value)}
+                  placeholder="Manual activation"
+                />
+              </div>
+              {actionError && <ErrorState message={actionError} />}
+              <div className={formStyles.modalActions}>
+                <Button type="button" variant="ghost" onClick={() => setPlanModal(null)}>
+                  Cancel
+                </Button>
+                <Button type="submit" disabled={actionLoading}>
+                  {actionLoading ? 'Saving...' : 'Save'}
+                </Button>
               </div>
             </form>
           </div>
@@ -252,34 +208,38 @@ export default function OwnerSubscriptionsPage() {
       )}
 
       {extendModal && (
-        <div style={modalOverlayStyle}>
-          <div style={modalStyle}>
-            <h2 style={{ marginTop: 0 }}>Продлить: {extendModal.companyName}</h2>
-            <form onSubmit={submitExtend}>
-              <label style={{ fontSize: 12, color: '#64748b' }}>Дней</label>
-              <input
-                type="number"
-                style={inputStyle}
-                value={extendDays}
-                onChange={(e) => setExtendDays(Number(e.target.value || 0))}
-                min={1}
-                max={365}
-              />
-              <label style={{ fontSize: 12, color: '#64748b' }}>Причина</label>
-              <input
-                style={inputStyle}
-                value={extendReason}
-                onChange={(e) => setExtendReason(e.target.value)}
-                placeholder="Например: продление по запросу"
-              />
-              {actionError && <p style={{ color: '#b91c1c' }}>{actionError}</p>}
-              <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
-                <button type="button" onClick={() => setExtendModal(null)}>
-                  Отмена
-                </button>
-                <button type="submit" style={actionButtonStyle} disabled={actionLoading}>
-                  {actionLoading ? 'Сохранение...' : 'Продлить'}
-                </button>
+        <div className={formStyles.modalOverlay}>
+          <div className={formStyles.modal}>
+            <h2>Extend: {extendModal.companyName}</h2>
+            <form onSubmit={submitExtend} className={formStyles.formGrid}>
+              <div className={formStyles.formRow}>
+                <label className={formStyles.label}>Days</label>
+                <input
+                  className={formStyles.input}
+                  type="number"
+                  value={extendDays}
+                  onChange={(e) => setExtendDays(Number(e.target.value || 0))}
+                  min={1}
+                  max={365}
+                />
+              </div>
+              <div className={formStyles.formRow}>
+                <label className={formStyles.label}>Reason</label>
+                <input
+                  className={formStyles.input}
+                  value={extendReason}
+                  onChange={(e) => setExtendReason(e.target.value)}
+                  placeholder="Extension by request"
+                />
+              </div>
+              {actionError && <ErrorState message={actionError} />}
+              <div className={formStyles.modalActions}>
+                <Button type="button" variant="ghost" onClick={() => setExtendModal(null)}>
+                  Cancel
+                </Button>
+                <Button type="submit" disabled={actionLoading}>
+                  {actionLoading ? 'Saving...' : 'Extend'}
+                </Button>
               </div>
             </form>
           </div>

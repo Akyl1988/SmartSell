@@ -1,34 +1,83 @@
-// --- frontend/src/pages/KaspiPage.tsx ---
-import React, { useState } from "react";
+import { useState } from 'react'
+import { apiClient, getHttpErrorInfo } from '../api/client'
+import Button from '../components/ui/Button'
+import Card from '../components/ui/Card'
+import ErrorState from '../components/ui/ErrorState'
+import StatusBadge from '../components/ui/StatusBadge'
+import pageStyles from '../styles/page.module.css'
 
-const API = "http://127.0.0.1:8000/api/v1/kaspi";
+type KaspiMethod = 'GET' | 'POST'
+
+const KASPI_BASE = '/api/v1/kaspi'
 
 export default function KaspiPage() {
-  const [log, setLog] = useState<string>("");
+  const [log, setLog] = useState<string>('')
+  const [busyAction, setBusyAction] = useState<string | null>(null)
+  const [error, setError] = useState<string | null>(null)
 
-  async function call(method: "GET"|"POST", path: string) {
-    setLog((prev) => prev + `\n> ${method} ${path}`);
-    const res = await fetch(`${API}${path}`, { method });
-    const txt = await res.text();
-    setLog((prev) => prev + `\n${txt}\n`);
+  async function call(method: KaspiMethod, path: string) {
+    const actionKey = `${method} ${path}`
+    setBusyAction(actionKey)
+    setError(null)
+    setLog((prev) => `${prev}\n> ${actionKey}`)
+    try {
+      const { data } = await apiClient.request<string>({
+        url: `${KASPI_BASE}${path}`,
+        method,
+        responseType: 'text',
+      })
+      setLog((prev) => `${prev}\n${data}\n`)
+    } catch (err) {
+      const info = getHttpErrorInfo(err)
+      const statusPart = info.status ? ` (status ${info.status})` : ''
+      setError(`Kaspi request failed${statusPart}: ${info.message}`)
+    } finally {
+      setBusyAction(null)
+    }
   }
 
   return (
-    <div style={{maxWidth: 900, margin: "24px auto", fontFamily: "Inter, system-ui, Arial"}}>
-      <h1>Kaspi: управление фидом</h1>
-      <p>Эти кнопки бьют в наш бэкенд FastAPI, который под капотом запускает тот же адаптер.</p>
-
-      <div style={{display:"grid", gap:12, gridTemplateColumns:"repeat(auto-fit, minmax(240px, 1fr))", margin:"16px 0"}}>
-        <button onClick={() => call("GET", "/_debug/ping")}>Пинг модуля</button>
-        <button onClick={() => call("GET", `/health/MyKaspiShop`)}>Проверка health</button>
-        <button onClick={() => call("POST", `/feed/generate`)}>Сгенерировать фид (локально)</button>
-        <button onClick={() => call("POST", `/feed/upload`)}>Загрузить фид в Kaspi</button>
-        <button onClick={() => call("GET", `/import/status`)}>Статус импорта</button>
+    <section className={pageStyles.page}>
+      <div className={pageStyles.pageHeader}>
+        <div>
+          <h1 className={pageStyles.pageTitle}>Kaspi feed control</h1>
+          <p className={pageStyles.pageDescription}>Trigger Kaspi feed generation and monitor response logs.</p>
+        </div>
       </div>
 
-      <pre style={{whiteSpace:"pre-wrap", background:"#111", color:"#ddd", padding:12, borderRadius:8, minHeight:180}}>
-        {log || "Логи появятся здесь…"}
-      </pre>
-    </div>
-  );
+      <Card>
+        <div className={pageStyles.cardGrid}>
+          <Button
+            variant="ghost"
+            onClick={() => call('GET', '/_debug/ping')}
+            disabled={busyAction !== null}
+          >
+            Ping module
+          </Button>
+          <Button
+            variant="ghost"
+            onClick={() => call('GET', '/health/MyKaspiShop')}
+            disabled={busyAction !== null}
+          >
+            Health check
+          </Button>
+          <Button onClick={() => call('POST', '/feed/generate')} disabled={busyAction !== null}>
+            Generate feed
+          </Button>
+          <Button variant="ghost" onClick={() => call('POST', '/feed/upload')} disabled={busyAction !== null}>
+            Upload feed
+          </Button>
+          <Button variant="ghost" onClick={() => call('GET', '/import/status')} disabled={busyAction !== null}>
+            Import status
+          </Button>
+        </div>
+        {busyAction && <StatusBadge tone="info" label={`Running: ${busyAction}`} />}
+        {error && <ErrorState message={error} />}
+      </Card>
+
+      <Card title="Logs">
+        <pre className={pageStyles.codeBlock}>{log || 'Logs will appear here...'}</pre>
+      </Card>
+    </section>
+  )
 }

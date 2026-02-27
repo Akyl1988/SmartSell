@@ -70,9 +70,11 @@ export type PreorderListParams = {
   per_page?: number
 }
 
-export async function listPreorders(): Promise<Preorder[]> {
-  const { data } = await apiClient.get<PaginatedResponse<Preorder>>('/api/v1/preorders')
-  return data.items
+export async function listPreorders(
+  params: PreorderListParams = {}
+): Promise<PaginatedResponse<Preorder>> {
+  const { data } = await apiClient.get<PaginatedResponse<Preorder>>('/api/v1/preorders', { params })
+  return data
 }
 
 export async function getPreorderById(preorderId: number): Promise<Preorder> {

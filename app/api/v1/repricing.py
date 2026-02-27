@@ -150,9 +150,11 @@ async def delete_rule(
 async def run_repricing(
     request: Request,
     dry_run: bool = Query(False),
+    use_routing: bool = Query(False),
     current_user: User = Depends(get_current_verified_user),
     db: AsyncSession = Depends(get_async_db),
 ):
+    _ = use_routing
     company_id = resolve_tenant_company_id(current_user, not_found_detail="Company not set")
     request_id = request.headers.get("X-Request-ID") or request.headers.get("X-Correlation-ID")
     run = await run_reprcing_for_company(
@@ -170,9 +172,11 @@ async def run_repricing(
 @store_router.get("/runs", response_model=RepricingRunListResponse)
 async def list_runs(
     pagination: Pagination = Depends(get_pagination),
+    use_routing: bool = Query(False),
     current_user: User = Depends(get_current_verified_user),
     db: AsyncSession = Depends(get_async_db),
 ):
+    _ = use_routing
     company_id = resolve_tenant_company_id(current_user, not_found_detail="Company not set")
     stmt = select(RepricingRun).where(RepricingRun.company_id == company_id)
 
@@ -190,9 +194,11 @@ async def list_runs(
 @store_router.get("/runs/{run_id}", response_model=RepricingRunResponse)
 async def get_run(
     run_id: int = Path(..., ge=1),
+    use_routing: bool = Query(False),
     current_user: User = Depends(get_current_verified_user),
     db: AsyncSession = Depends(get_async_db),
 ):
+    _ = use_routing
     company_id = resolve_tenant_company_id(current_user, not_found_detail="Company not set")
     result = await db.execute(
         select(RepricingRun)
@@ -213,9 +219,11 @@ async def get_run(
 async def apply_run(
     run_id: int = Path(..., ge=1),
     dry_run: bool = Query(False),
+    use_routing: bool = Query(False),
     current_user: User = Depends(get_current_verified_user),
     db: AsyncSession = Depends(get_async_db),
 ):
+    _ = use_routing
     company_id = resolve_tenant_company_id(current_user, not_found_detail="Company not set")
     run = await apply_repricing_run_to_kaspi(db, run_id=run_id, company_id=company_id, dry_run=dry_run)
     result = await db.execute(

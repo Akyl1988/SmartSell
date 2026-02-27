@@ -1,150 +1,143 @@
-import { useEffect, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
+import { CompanyListItem, PlatformSummary } from '../../api/admin'
 import { getHttpErrorInfo } from '../../api/client'
-import { getPlatformSummary, PlatformSummary } from '../../api/admin'
-
-const pageStyle: React.CSSProperties = {
-  background: '#f3f4f6',
-  minHeight: '100%',
-  padding: '24px',
-}
-
-const headerStyle: React.CSSProperties = {
-  background: 'linear-gradient(135deg, #1d4ed8, #4f46e5)',
-  color: '#ffffff',
-  borderRadius: 12,
-  padding: '20px 24px',
-  marginBottom: 20,
-  boxShadow: '0 10px 30px rgba(15, 23, 42, 0.15)',
-}
-
-const gridStyle: React.CSSProperties = {
-  display: 'grid',
-  gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))',
-  gap: 16,
-}
-
-const cardStyle: React.CSSProperties = {
-  background: '#ffffff',
-  borderRadius: 8,
-  padding: 16,
-  boxShadow: '0 1px 2px rgba(15, 23, 42, 0.08)',
-}
-
-const labelStyle: React.CSSProperties = {
-  fontSize: 12,
-  textTransform: 'uppercase',
-  letterSpacing: '0.04em',
-  color: '#64748b',
-  marginBottom: 8,
-}
-
-const valueStyle: React.CSSProperties = {
-  fontSize: 22,
-  fontWeight: 700,
-  color: '#0f172a',
-}
-
-const statusRowStyle: React.CSSProperties = {
-  display: 'flex',
-  gap: 12,
-  flexWrap: 'wrap',
-  marginTop: 12,
-}
-
-const statusPillStyle = (ok: boolean): React.CSSProperties => ({
-  display: 'inline-flex',
-  alignItems: 'center',
-  gap: 8,
-  padding: '6px 10px',
-  borderRadius: 999,
-  background: ok ? 'rgba(37, 99, 235, 0.12)' : 'rgba(239, 68, 68, 0.12)',
-  color: ok ? '#1d4ed8' : '#b91c1c',
-  fontSize: 12,
-  fontWeight: 600,
-})
-
-const statusDotStyle = (ok: boolean): React.CSSProperties => ({
-  width: 8,
-  height: 8,
-  borderRadius: '50%',
-  background: ok ? '#2563eb' : '#ef4444',
-  boxShadow: ok ? '0 0 0 4px rgba(37, 99, 235, 0.12)' : '0 0 0 4px rgba(239, 68, 68, 0.12)',
-})
+import Button from '../../components/ui/Button'
+import Card from '../../components/ui/Card'
+import EmptyState from '../../components/ui/EmptyState'
+import ErrorState from '../../components/ui/ErrorState'
+import Loader from '../../components/ui/Loader'
+import StatusBadge from '../../components/ui/StatusBadge'
+import { useAdmin } from '../../hooks/useAdmin'
+import pageStyles from '../../styles/page.module.css'
 
 export default function OwnerDashboardPage() {
+  const { getPlatformSummary, getCompanies } = useAdmin()
   const [summary, setSummary] = useState<PlatformSummary | null>(null)
+  const [recentKaspiTrials, setRecentKaspiTrials] = useState<CompanyListItem[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
 
-  useEffect(() => {
+  const loadDashboard = useCallback(async () => {
     setLoading(true)
-    getPlatformSummary()
-      .then((data) => {
-        setSummary(data)
-        setError(null)
+    setError(null)
+    try {
+      const [platform, companies] = await Promise.all([getPlatformSummary(), getCompanies({ page: 1, size: 20 })])
+      setSummary(platform)
+      const trials = companies.items.filter((company) => {
+        const plan = (company.current_plan ?? '').toLowerCase()
+        return company.kaspi_store_id && plan.includes('trial')
       })
-      .catch((err) => {
-        const info = getHttpErrorInfo(err)
-        const statusPart = info.status ? ` (status ${info.status})` : ''
-        setError(`Failed to load platform summary${statusPart}: ${info.message}`)
-      })
-      .finally(() => setLoading(false))
-  }, [])
+      setRecentKaspiTrials(trials.slice(0, 5))
+    } catch (err) {
+      const info = getHttpErrorInfo(err)
+      const statusPart = info.status ? ` (status ${info.status})` : ''
+      setError(`Failed to load platform summary${statusPart}: ${info.message}`)
+    } finally {
+      setLoading(false)
+    }
+  }, [getCompanies, getPlatformSummary])
+
+  useEffect(() => {
+    loadDashboard()
+  }, [loadDashboard])
+
+  const healthBadges = useMemo(() => {
+    if (!summary) return []
+    return [
+      { label: 'DB', ok: summary.health.db_ok },
+      { label: 'Redis', ok: summary.health.redis_ok },
+      { label: 'Worker', ok: summary.health.worker_ok },
+    ]
+  }, [summary])
 
   return (
-    <section style={pageStyle}>
-      <div style={headerStyle}>
-        <h1 style={{ margin: 0, fontSize: 24 }}>Обзор платформы</h1>
-        <p style={{ margin: '6px 0 0', color: 'rgba(255,255,255,0.85)' }}>
-          Ключевые метрики по компаниям, подпискам и инфраструктуре.
-        </p>
+    <section className={pageStyles.page}>
+      <div className={pageStyles.pageHeader}>
+        <div>
+          <h1 className={pageStyles.pageTitle}>Platform overview</h1>
+          <p className={pageStyles.pageDescription}>Key metrics across companies, subscriptions, and infrastructure.</p>
+        </div>
+        <div className={pageStyles.pageActions}>
+          <Button variant="ghost" onClick={loadDashboard} disabled={loading}>
+            Refresh
+          </Button>
+        </div>
       </div>
 
-      {loading && <p>Загрузка...</p>}
-      {error && <p style={{ color: '#b91c1c' }}>{error}</p>}
+      {loading && <Loader label="Loading platform summary..." />}
+      {error && <ErrorState message={error} onRetry={loadDashboard} />}
+
+      {!loading && !error && !summary && (
+        <EmptyState title="No data" description="Platform summary is not available yet." />
+      )}
 
       {!loading && !error && summary && (
-        <div style={gridStyle}>
-          <div style={cardStyle}>
-            <div style={labelStyle}>Компании</div>
-            <div style={valueStyle}>{summary.companies_total}</div>
-            <div style={{ color: '#64748b', marginTop: 4 }}>
-              Активных: {summary.companies_active}
-            </div>
+        <div className={pageStyles.section}>
+          <div className={pageStyles.cardGrid}>
+            <Card title="Companies">
+              <div className={pageStyles.stack}>
+                <div className={pageStyles.muted}>Total companies</div>
+                <div>{summary.companies_total}</div>
+                <div className={pageStyles.muted}>Active: {summary.companies_active}</div>
+              </div>
+            </Card>
+            <Card title="Subscriptions">
+              <div className={pageStyles.stack}>
+                <div className={pageStyles.muted}>Total</div>
+                <div>{summary.subscriptions.total}</div>
+                <div className={pageStyles.muted}>
+                  Free: {summary.subscriptions.by_plan.free} · Trial: {summary.subscriptions.by_plan.trial} · Pro:{' '}
+                  {summary.subscriptions.by_plan.pro}
+                </div>
+              </div>
+            </Card>
+            <Card title="Wallet balance">
+              <div className={pageStyles.stack}>
+                <div className={pageStyles.muted}>Total balance</div>
+                <div>{summary.wallet.total_balance}</div>
+                <div className={pageStyles.muted}>Active wallets: {summary.wallet.active_wallets}</div>
+              </div>
+            </Card>
+            <Card title="Kaspi connections">
+              <div className={pageStyles.stack}>
+                <div className={pageStyles.muted}>Connected stores</div>
+                <div>{summary.stores_with_kaspi_connected}</div>
+              </div>
+            </Card>
+            <Card title="Health">
+              <div className={pageStyles.inline}>
+                {healthBadges.map((badge) => (
+                  <StatusBadge
+                    key={badge.label}
+                    tone={badge.ok ? 'success' : 'danger'}
+                    label={badge.label}
+                  />
+                ))}
+              </div>
+            </Card>
           </div>
-          <div style={cardStyle}>
-            <div style={labelStyle}>Подписки</div>
-            <div style={valueStyle}>{summary.subscriptions.total}</div>
-            <div style={{ color: '#64748b', marginTop: 4 }}>
-              Free: {summary.subscriptions.by_plan.free} · Trial: {summary.subscriptions.by_plan.trial} · Pro:{' '}
-              {summary.subscriptions.by_plan.pro}
-            </div>
-          </div>
-          <div style={cardStyle}>
-            <div style={labelStyle}>Баланс кошельков</div>
-            <div style={valueStyle}>{summary.wallet.total_balance}</div>
-            <div style={{ color: '#64748b', marginTop: 4 }}>
-              Активных кошельков: {summary.wallet.active_wallets}
-            </div>
-          </div>
-          <div style={cardStyle}>
-            <div style={labelStyle}>Kaspi связки</div>
-            <div style={valueStyle}>{summary.stores_with_kaspi_connected}</div>
-            <div style={{ color: '#64748b', marginTop: 4 }}>магазинов подключено</div>
-          </div>
-          <div style={cardStyle}>
-            <div style={labelStyle}>Health</div>
-            <div style={statusRowStyle}>
-              <span style={statusPillStyle(summary.health.db_ok)}>
-                <span style={statusDotStyle(summary.health.db_ok)} /> DB
-              </span>
-              <span style={statusPillStyle(summary.health.redis_ok)}>
-                <span style={statusDotStyle(summary.health.redis_ok)} /> Redis
-              </span>
-              <span style={statusPillStyle(summary.health.worker_ok)}>
-                <span style={statusDotStyle(summary.health.worker_ok)} /> Worker
-              </span>
-            </div>
+
+          <div className={pageStyles.gridTwo}>
+            <Card title="Recent Kaspi trials" description="Latest trial activations detected in active companies.">
+              {recentKaspiTrials.length === 0 ? (
+                <EmptyState title="No trials" description="No recent Kaspi trials found in the last companies list." />
+              ) : (
+                <div className={pageStyles.stack}>
+                  {recentKaspiTrials.map((company) => (
+                    <div key={company.id}>
+                      <div>{company.name}</div>
+                      <div className={pageStyles.muted}>Kaspi ID: {company.kaspi_store_id ?? '—'}</div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </Card>
+            <Card title="Repricing activity" description="Recent platform-wide repricing runs.">
+              <EmptyState
+                title="No repricing data"
+                description="Repricing run history is not exposed by the admin API yet."
+              />
+            </Card>
           </div>
         </div>
       )}

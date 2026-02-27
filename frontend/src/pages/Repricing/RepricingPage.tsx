@@ -1,25 +1,50 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { getHttpErrorInfo } from '../../api/client'
-import { listRepricingRuns, RepricingRunResponse, runRepricing } from '../../api/pricing'
+import {
+  applyRepricingRun,
+  getRepricingRun,
+  listRepricingRuns,
+  RepricingRunResponse,
+  runRepricing,
+} from '../../api/pricing'
 import { useFeatureGate } from '../../hooks/useFeatureGate'
+import { useToast } from '../../components/ui/Toast'
+import Button from '../../components/ui/Button'
+import Card from '../../components/ui/Card'
+import EmptyState from '../../components/ui/EmptyState'
+import ErrorState from '../../components/ui/ErrorState'
+import Loader from '../../components/ui/Loader'
+import StatusBadge from '../../components/ui/StatusBadge'
+import { Table, TableBody, TableCell, TableHead, TableHeaderCell, TableRow } from '../../components/ui/Table'
+import pageStyles from '../../styles/page.module.css'
 
-type StatusFilter = 'all' | 'running' | 'succeeded' | 'failed' | 'pending'
+const REFRESH_INTERVAL_MS = 4000
+
+type DetailTab = 'updated' | 'skipped'
+type RunItemRow = NonNullable<RepricingRunResponse['items']>[number]
 
 export default function RepricingPage() {
   const { hasRepricing, paymentRequired } = useFeatureGate()
-  const [runs, setRuns] = useState<RepricingRunResponse[]>([])
+  const { push } = useToast()
+  const [lastRun, setLastRun] = useState<RepricingRunResponse | null>(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  const [actionError, setActionError] = useState<string | null>(null)
-  const [statusFilter, setStatusFilter] = useState<StatusFilter>('all')
   const [runBusy, setRunBusy] = useState(false)
+  const [applyBusy, setApplyBusy] = useState(false)
+  const [detailTab, setDetailTab] = useState<DetailTab>('updated')
 
-  const loadRuns = useCallback(async () => {
+  const loadLastRun = useCallback(async () => {
     setLoading(true)
     setError(null)
     try {
-      const data = await listRepricingRuns({ page: 1, per_page: 50 })
-      setRuns(data)
+      const runs = await listRepricingRuns({ page: 1, per_page: 5 })
+      if (runs.length === 0) {
+        setLastRun(null)
+        return
+      }
+      const latest = runs[0]
+      const fullRun = await getRepricingRun(latest.id)
+      setLastRun(fullRun)
     } catch (err) {
       const info = getHttpErrorInfo(err)
       const statusPart = info.status ? ` (status ${info.status})` : ''
@@ -31,179 +56,189 @@ export default function RepricingPage() {
 
   useEffect(() => {
     if (!hasRepricing || paymentRequired) return
-    loadRuns()
-  }, [hasRepricing, paymentRequired, loadRuns])
+    loadLastRun()
+  }, [hasRepricing, paymentRequired, loadLastRun])
+
+  const isRunning = useMemo(() => {
+    const status = lastRun?.status ?? ''
+    return status.toLowerCase().includes('running') || status.toLowerCase().includes('processing')
+  }, [lastRun])
+
+  useEffect(() => {
+    if (!isRunning || !lastRun) return
+    const timer = setInterval(async () => {
+      try {
+        const updated = await getRepricingRun(lastRun.id)
+        setLastRun(updated)
+      } catch {
+        // silent refresh fail
+      }
+    }, REFRESH_INTERVAL_MS)
+    return () => clearInterval(timer)
+  }, [isRunning, lastRun])
 
   if (!hasRepricing || paymentRequired) {
     return (
-      <section>
-        <h1>Repricing</h1>
-        <p>Upgrade to Pro to use this feature.</p>
+      <section className={pageStyles.page}>
+        <div className={pageStyles.pageHeader}>
+          <div>
+            <h1 className={pageStyles.pageTitle}>Repricing</h1>
+            <p className={pageStyles.pageDescription}>Upgrade to Pro to use this feature.</p>
+          </div>
+        </div>
       </section>
     )
   }
 
-  const filteredRuns = useMemo(() => {
-    if (statusFilter === 'all') return runs
-    const normalized = statusFilter
-    return runs.filter((run) => normalizeStatus(run.status) === normalized)
-  }, [runs, statusFilter])
-
-  function normalizeStatus(status: string) {
-    const value = status.trim().toLowerCase()
-    if (value.includes('running') || value.includes('processing')) return 'running'
-    if (value.includes('fail') || value.includes('error')) return 'failed'
-    if (value.includes('success') || value.includes('done') || value.includes('completed')) return 'succeeded'
-    return 'pending'
-  }
-
-  function formatStatusLabel(status: string) {
-    const normalized = normalizeStatus(status)
-    if (normalized === 'running') return 'Running'
-    if (normalized === 'failed') return 'Failed'
-    if (normalized === 'succeeded') return 'Succeeded'
-    return 'Pending'
-  }
-
-  function formatTimestampForFile(date: Date) {
-    const year = date.getFullYear()
-    const month = String(date.getMonth() + 1).padStart(2, '0')
-    const day = String(date.getDate()).padStart(2, '0')
-    const hour = String(date.getHours()).padStart(2, '0')
-    const minute = String(date.getMinutes()).padStart(2, '0')
-    return `${year}${month}${day}-${hour}${minute}`
-  }
-
-  function escapeCsvValue(value: string | number | null | undefined) {
-    if (value === null || value === undefined) return ''
-    const stringValue = String(value)
-    if (/[",\n\r]/.test(stringValue)) {
-      return `"${stringValue.replace(/"/g, '""')}"`
-    }
-    return stringValue
-  }
-
-  function exportRunsToCsv(data: RepricingRunResponse[]) {
-    const header = ['id', 'status', 'created_at', 'started_at', 'finished_at', 'last_error']
-    const rows = data.map((run) => [
-      run.id,
-      run.status,
-      run.created_at,
-      run.started_at ?? '',
-      run.finished_at ?? '',
-      run.last_error ?? '',
-    ])
-
-    const csvLines = [header, ...rows]
-      .map((row) => row.map((value) => escapeCsvValue(value)).join(','))
-      .join('\n')
-
-    const blob = new Blob([csvLines], { type: 'text/csv;charset=utf-8' })
-    const url = URL.createObjectURL(blob)
-    const timestamp = formatTimestampForFile(new Date())
-    const link = document.createElement('a')
-    link.href = url
-    link.download = `repricing-runs-${timestamp}.csv`
-    document.body.appendChild(link)
-    link.click()
-    document.body.removeChild(link)
-    URL.revokeObjectURL(url)
-  }
+  const runItems = (lastRun?.items ?? []) as RunItemRow[]
+  const updatedRows = runItems.filter((item) => item.status === 'changed' || item.status === 'dry_run')
+  const skippedRows = runItems.filter((item) => item.status === 'skipped')
+  const updatedCount = updatedRows.length || lastRun?.changed || 0
+  const skippedCount = skippedRows.length
+  const statsRows = detailTab === 'updated' ? updatedRows : skippedRows
 
   async function onRun() {
+    if (runBusy || isRunning) return
     setRunBusy(true)
-    setActionError(null)
     try {
-      await runRepricing(false)
-      await loadRuns()
+      const response = await runRepricing(false)
+      const fullRun = await getRepricingRun(response.run_id)
+      setLastRun(fullRun)
     } catch (err) {
       const info = getHttpErrorInfo(err)
       const statusPart = info.status ? ` (status ${info.status})` : ''
-      setActionError(`Failed to run repricing${statusPart}: ${info.message}`)
+      push(`Failed to run repricing${statusPart}: ${info.message}`, 'danger')
     } finally {
       setRunBusy(false)
     }
   }
 
+  async function onApply() {
+    if (!lastRun || applyBusy) return
+    setApplyBusy(true)
+    try {
+      const response = await applyRepricingRun(lastRun.id, false)
+      setLastRun(response)
+    } catch (err) {
+      const info = getHttpErrorInfo(err)
+      const statusPart = info.status ? ` (status ${info.status})` : ''
+      push(`Failed to apply repricing${statusPart}: ${info.message}`, 'danger')
+    } finally {
+      setApplyBusy(false)
+    }
+  }
+
   return (
-    <section>
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap' }}>
-        <h1>Repricing</h1>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
-          <select value={statusFilter} onChange={(event) => setStatusFilter(event.target.value as StatusFilter)}>
-            <option value="all">All statuses</option>
-            <option value="pending">Pending</option>
-            <option value="running">Running</option>
-            <option value="succeeded">Succeeded</option>
-            <option value="failed">Failed</option>
-          </select>
-          <button
-            onClick={() => {
-              try {
-                setActionError(null)
-                exportRunsToCsv(filteredRuns)
-              } catch (err) {
-                const info = getHttpErrorInfo(err)
-                console.error('Failed to export repricing runs', err)
-                setActionError(`Failed to export repricing runs: ${info.message}`)
-              }
-            }}
-            disabled={loading || filteredRuns.length === 0 || error !== null}
-          >
-            Export CSV
-          </button>
-          <button
-            onClick={() => {
-              setActionError(null)
-              loadRuns()
-            }}
-            disabled={loading}
-          >
+    <section className={pageStyles.page}>
+      <div className={pageStyles.pageHeader}>
+        <div>
+          <h1 className={pageStyles.pageTitle}>Repricing</h1>
+          <p className={pageStyles.pageDescription}>Run automated repricing and review results.</p>
+        </div>
+        <div className={pageStyles.pageActions}>
+          <Button variant="ghost" onClick={loadLastRun} disabled={loading}>
             Refresh
-          </button>
-          <button onClick={onRun} disabled={runBusy || loading}>
-            {runBusy ? 'Running...' : 'Run repricing'}
-          </button>
+          </Button>
+          <Button onClick={onRun} disabled={runBusy || isRunning || loading}>
+            {runBusy || isRunning ? 'Running...' : 'Run repricing'}
+          </Button>
+          <Button variant="ghost" onClick={onApply} disabled={applyBusy || loading || !lastRun || isRunning}>
+            {applyBusy ? 'Applying...' : 'Apply changes'}
+          </Button>
         </div>
       </div>
-      {loading && <p>Loading repricing runs...</p>}
-      {error && <p style={{ color: '#b91c1c' }}>{error}</p>}
-      {!loading && !error && filteredRuns.length === 0 && <p>No repricing runs yet.</p>}
-      {!loading && !error && filteredRuns.length > 0 && (
-        <div style={{ overflowX: 'auto' }}>
-          <table style={{ width: '100%', borderCollapse: 'collapse' }}>
-            <thead>
-              <tr>
-                <th style={{ textAlign: 'left', padding: '8px 6px', borderBottom: '1px solid #e5e7eb' }}>ID</th>
-                <th style={{ textAlign: 'left', padding: '8px 6px', borderBottom: '1px solid #e5e7eb' }}>Status</th>
-                <th style={{ textAlign: 'left', padding: '8px 6px', borderBottom: '1px solid #e5e7eb' }}>Created at</th>
-                <th style={{ textAlign: 'left', padding: '8px 6px', borderBottom: '1px solid #e5e7eb' }}>Started at</th>
-                <th style={{ textAlign: 'left', padding: '8px 6px', borderBottom: '1px solid #e5e7eb' }}>Finished at</th>
-                <th style={{ textAlign: 'left', padding: '8px 6px', borderBottom: '1px solid #e5e7eb' }}>Last error</th>
-              </tr>
-            </thead>
-            <tbody>
-              {filteredRuns.map((run) => (
-                <tr key={run.id}>
-                  <td style={{ padding: '8px 6px', borderBottom: '1px solid #f1f5f9' }}>#{run.id}</td>
-                  <td style={{ padding: '8px 6px', borderBottom: '1px solid #f1f5f9' }}>{formatStatusLabel(run.status)}</td>
-                  <td style={{ padding: '8px 6px', borderBottom: '1px solid #f1f5f9' }}>
-                    {new Date(run.created_at).toLocaleString()}
-                  </td>
-                  <td style={{ padding: '8px 6px', borderBottom: '1px solid #f1f5f9' }}>
-                    {run.started_at ? new Date(run.started_at).toLocaleString() : '—'}
-                  </td>
-                  <td style={{ padding: '8px 6px', borderBottom: '1px solid #f1f5f9' }}>
-                    {run.finished_at ? new Date(run.finished_at).toLocaleString() : '—'}
-                  </td>
-                  <td style={{ padding: '8px 6px', borderBottom: '1px solid #f1f5f9' }}>{run.last_error || '—'}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      )}
-      {actionError && <p style={{ color: '#b91c1c', marginTop: 12 }}>{actionError}</p>}
+
+      <Card>
+        {loading && <Loader label="Loading repricing runs..." />}
+        {error && <ErrorState message={error} onRetry={loadLastRun} />}
+        {!loading && !error && !lastRun && (
+          <EmptyState title="No repricing runs" description="Click “Run repricing” to create your first run." />
+        )}
+
+        {lastRun && (
+          <div className={pageStyles.section}>
+            <div className={pageStyles.cardGrid}>
+              <Card title="Last run" description={`Run #${lastRun.id}`}>
+                <div className={pageStyles.stack}>
+                  <StatusBadge tone={isRunning ? 'warning' : 'info'} label={isRunning ? 'In progress' : lastRun.status} />
+                  <div>
+                    <div className={pageStyles.muted}>Started</div>
+                    <div>{lastRun.started_at ? new Date(lastRun.started_at).toLocaleString() : '—'}</div>
+                  </div>
+                  <div>
+                    <div className={pageStyles.muted}>Finished</div>
+                    <div>{lastRun.finished_at ? new Date(lastRun.finished_at).toLocaleString() : '—'}</div>
+                  </div>
+                </div>
+              </Card>
+              <Card title="Updated">
+                <div className={pageStyles.stack}>
+                  <div className={pageStyles.muted}>Updated count</div>
+                  <div>{updatedCount}</div>
+                </div>
+              </Card>
+              <Card title="Skipped">
+                <div className={pageStyles.stack}>
+                  <div className={pageStyles.muted}>Skipped count</div>
+                  <div>{skippedCount}</div>
+                </div>
+              </Card>
+            </div>
+
+            {lastRun.last_error && <ErrorState message={`Last error: ${lastRun.last_error}`} />}
+
+            <div className={pageStyles.pillRow}>
+              <Button
+                variant={detailTab === 'updated' ? 'primary' : 'ghost'}
+                size="sm"
+                onClick={() => setDetailTab('updated')}
+              >
+                Updated ({updatedCount})
+              </Button>
+              <Button
+                variant={detailTab === 'skipped' ? 'primary' : 'ghost'}
+                size="sm"
+                onClick={() => setDetailTab('skipped')}
+              >
+                Skipped ({skippedCount})
+              </Button>
+            </div>
+
+            <div className={pageStyles.tableWrap}>
+              <Table>
+                <TableHead>
+                  <TableRow>
+                    <TableHeaderCell>Product ID</TableHeaderCell>
+                    <TableHeaderCell>Old price</TableHeaderCell>
+                    <TableHeaderCell>New price</TableHeaderCell>
+                    <TableHeaderCell>Reason</TableHeaderCell>
+                  </TableRow>
+                </TableHead>
+                <TableBody>
+                  {statsRows.length === 0 && (
+                    <TableRow>
+                        <TableCell colSpan={4}>
+                        <EmptyState
+                          title={`No ${detailTab} items`}
+                          description="This run did not produce any entries for this view."
+                        />
+                      </TableCell>
+                    </TableRow>
+                  )}
+                    {statsRows.map((row) => (
+                      <TableRow key={`${detailTab}-${row.product_id ?? row.id}`}>
+                        <TableCell>#{row.product_id ?? '—'}</TableCell>
+                        <TableCell>{row.old_price ?? '—'}</TableCell>
+                        <TableCell>{row.new_price ?? '—'}</TableCell>
+                        <TableCell>{row.reason ?? '—'}</TableCell>
+                      </TableRow>
+                    ))}
+                </TableBody>
+              </Table>
+            </div>
+          </div>
+        )}
+      </Card>
     </section>
   )
 }

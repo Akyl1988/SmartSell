@@ -110,6 +110,46 @@ export type SubscriptionAdminOut = {
   billing_anchor_day?: number | null
 }
 
+export type KaspiTrialGrantRequest = {
+  companyId: number
+  merchant_uid: string
+  plan?: string
+  trial_days?: number
+}
+
+export type KaspiTrialGrantOut = {
+  grant_id: number
+  subscription_id: number
+  plan: string
+  active_until: string | null
+}
+
+export type CampaignRunRequest = {
+  companyId: number
+  limit?: number
+  dry_run?: boolean
+}
+
+export type CampaignRunResponse = {
+  queued: number
+  skipped: number
+  processed: number
+  campaign_ids: number[]
+}
+
+export type CampaignCleanupResponse = {
+  done_deleted: number
+  failed_deleted: number
+  total_deleted: number
+  request_id?: string
+}
+
+export type RepricingTaskResponse = {
+  run_id: number
+  status: string
+  request_id?: string
+}
+
 export async function getPlatformSummary(): Promise<PlatformSummary> {
   const { data } = await apiClient.get<PlatformSummary>('/api/v1/admin/platform/summary')
   return data
@@ -168,5 +208,33 @@ export async function runSubscriptionRenew(): Promise<{ ok: boolean; processed: 
   const { data } = await apiClient.post<{ ok: boolean; processed: number; request_id?: string }>(
     '/api/v1/admin/tasks/subscriptions/renew/run'
   )
+  return data
+}
+
+export async function grantKaspiTrial(payload: KaspiTrialGrantRequest): Promise<KaspiTrialGrantOut> {
+  const { data } = await apiClient.post<KaspiTrialGrantOut>('/api/v1/admin/subscriptions/trial/kaspi', payload)
+  return data
+}
+
+export async function runCampaignsTask(payload: CampaignRunRequest): Promise<CampaignRunResponse> {
+  const { data } = await apiClient.post<CampaignRunResponse>('/api/v1/admin/tasks/campaigns/run', payload)
+  return data
+}
+
+export async function runCampaignsCleanup(params: {
+  done_days?: number
+  failed_days?: number
+  limit: number
+}): Promise<CampaignCleanupResponse> {
+  const { data } = await apiClient.post<CampaignCleanupResponse>('/api/v1/admin/tasks/campaigns/cleanup/run', null, {
+    params,
+  })
+  return data
+}
+
+export async function runRepricingTask(companyId: number, dryRun = false): Promise<RepricingTaskResponse> {
+  const { data } = await apiClient.post<RepricingTaskResponse>('/api/v1/admin/tasks/repricing/run', null, {
+    params: { company_id: companyId, dry_run: dryRun },
+  })
   return data
 }

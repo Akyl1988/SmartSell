@@ -7,6 +7,7 @@ from decimal import ROUND_CEILING, ROUND_FLOOR, ROUND_HALF_UP, Decimal
 from typing import Any
 
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -17,6 +18,15 @@ from app.models.repricing import RepricingRule, RepricingRun, RepricingRunItem
 
 _ALLOWED_SCOPE_TYPES = {"all", "product", "category", "brand"}
 _ALLOWED_ROUNDING = {"nearest", "floor", "ceil"}
+_CONSTRAINT_REASON_MAP = {
+    "ck_prod_price_nonneg": "negative_price",
+    "ck_prod_price_ge_min": "below_min_price",
+    "ck_prod_price_le_max": "above_max_price",
+    "ck_prod_price_ge_cost_when_not_dumping": "below_cost_price",
+    "ck_prod_sale_le_price": "below_sale_price",
+    "ck_prod_sale_ge_min": "below_min_price",
+    "ck_prod_preorder_deposit_le_price": "below_preorder_deposit",
+}
 
 
 def _as_decimal(value: Any) -> Decimal | None:
@@ -60,6 +70,61 @@ def _clamp(value: Decimal, min_price: Decimal | None, max_price: Decimal | None)
     if max_price is not None and out > max_price:
         out = max_price
     return out
+
+
+def _json_decimal(value: Decimal | None) -> str | None:
+    if value is None:
+        return None
+    return format(value, "f")
+
+
+def _constraint_reason_from_error(exc: Exception) -> str:
+    text = str(getattr(exc, "orig", exc))
+    for key, reason in _CONSTRAINT_REASON_MAP.items():
+        if key in text:
+            return reason
+    return "db_constraint"
+
+
+def _price_details(product: Product, new_price: Decimal | None) -> dict[str, Any]:
+    return {
+        "computed_price": _json_decimal(new_price),
+        "min_price": _json_decimal(_as_decimal(getattr(product, "min_price", None))),
+        "max_price": _json_decimal(_as_decimal(getattr(product, "max_price", None))),
+        "cost_price": _json_decimal(_as_decimal(getattr(product, "cost_price", None))),
+        "sale_price": _json_decimal(_as_decimal(getattr(product, "sale_price", None))),
+        "preorder_deposit": _json_decimal(_as_decimal(getattr(product, "preorder_deposit", None))),
+    }
+
+
+def _validate_price_update(product: Product, new_price: Decimal) -> tuple[bool, str, dict[str, Any]]:
+    details = _price_details(product, new_price)
+
+    if new_price < 0:
+        return False, "negative_price", details
+
+    min_price = _as_decimal(getattr(product, "min_price", None))
+    if min_price is not None and new_price < min_price:
+        return False, "below_min_price", details
+
+    max_price = _as_decimal(getattr(product, "max_price", None))
+    if max_price is not None and new_price > max_price:
+        return False, "above_max_price", details
+
+    cost_price = _as_decimal(getattr(product, "cost_price", None))
+    enable_dumping = bool(getattr(product, "enable_price_dumping", False))
+    if not enable_dumping and cost_price is not None and new_price < cost_price:
+        return False, "below_cost_price", details
+
+    sale_price = _as_decimal(getattr(product, "sale_price", None))
+    if sale_price is not None and new_price < sale_price:
+        return False, "below_sale_price", details
+
+    preorder_deposit = _as_decimal(getattr(product, "preorder_deposit", None))
+    if preorder_deposit is not None and new_price < preorder_deposit:
+        return False, "below_preorder_deposit", details
+
+    return True, "ok", details
 
 
 def validate_rule(rule: RepricingRule) -> None:
@@ -176,6 +241,7 @@ async def run_reprcing_for_company(
     triggered_by_user_id: int | None = None,
     dry_run: bool = False,
     request_id: str | None = None,
+    rule_id: int | None = None,
 ) -> RepricingRun:
     now = datetime.utcnow()
     run = RepricingRun(
@@ -185,30 +251,33 @@ async def run_reprcing_for_company(
         triggered_by_user_id=triggered_by_user_id,
         request_id=request_id,
     )
+    if rule_id is not None:
+        run.rule_id = rule_id
     db.add(run)
     await db.flush()
 
-    rules = (
-        (
-            await db.execute(
-                select(RepricingRule)
-                .where(
-                    RepricingRule.company_id == company_id,
-                    RepricingRule.enabled.is_(True),
-                    RepricingRule.is_active.is_(True),
-                )
-                .order_by(RepricingRule.id.asc())
-            )
+    rules_stmt = (
+        select(RepricingRule)
+        .where(
+            RepricingRule.company_id == company_id,
+            RepricingRule.enabled.is_(True),
+            RepricingRule.is_active.is_(True),
         )
-        .scalars()
-        .all()
+        .order_by(RepricingRule.id.asc())
     )
+    if rule_id is not None:
+        rules_stmt = rules_stmt.where(RepricingRule.id == rule_id)
+
+    rules = (await db.execute(rules_stmt)).scalars().all()
 
     processed = 0
     changed = 0
+    skipped = 0
     failed = 0
     last_error = None
     processed_products: set[int] = set()
+    updated_items: list[dict[str, Any]] = []
+    skipped_items: list[dict[str, Any]] = []
 
     for rule in rules:
         validate_rule(rule)
@@ -227,55 +296,123 @@ async def run_reprcing_for_company(
             processed_products.add(product.id)
             processed += 1
 
-            try:
-                old_price = _as_decimal(getattr(product, "price", None))
-                new_price = compute_new_price(old_price, rule)
+            old_price = _as_decimal(getattr(product, "price", None))
+            new_price = compute_new_price(old_price, rule)
 
-                if new_price is None:
-                    item = _build_run_item(
-                        run_id=run.id,
-                        product=product,
-                        old_price=old_price,
-                        new_price=None,
-                        reason="no_change",
-                        status="skipped",
-                    )
-                    db.add(item)
-                    continue
+            if new_price is None:
+                item = _build_run_item(
+                    run_id=run.id,
+                    product=product,
+                    old_price=old_price,
+                    new_price=None,
+                    reason="no_change",
+                    status="skipped",
+                )
+                db.add(item)
+                skipped += 1
+                skipped_items.append(
+                    {
+                        "product_id": product.id,
+                        "reason": "no_change",
+                        **_price_details(product, None),
+                    }
+                )
+                continue
 
-                if not dry_run:
-                    product.set_price_guarded(new_price, update_timestamps=True, respect_bounds=True)
-
-                reason = "dry_run" if dry_run else "repriced"
-                status = "changed"
+            ok, skip_reason, details = _validate_price_update(product, new_price)
+            if not ok:
                 item = _build_run_item(
                     run_id=run.id,
                     product=product,
                     old_price=old_price,
                     new_price=new_price,
-                    reason=reason,
-                    status=status,
+                    reason=skip_reason,
+                    status="skipped",
                 )
                 db.add(item)
-                changed += 1
+                skipped += 1
+                skipped_items.append(
+                    {
+                        "product_id": product.id,
+                        "reason": skip_reason,
+                        **details,
+                    }
+                )
+                continue
+
+            try:
+                async with db.begin_nested():
+                    if not dry_run:
+                        product.set_price_guarded(new_price, update_timestamps=True, respect_bounds=True)
+
+                    reason = "dry_run" if dry_run else "repriced"
+                    status = "changed"
+                    item = _build_run_item(
+                        run_id=run.id,
+                        product=product,
+                        old_price=old_price,
+                        new_price=new_price,
+                        reason=reason,
+                        status=status,
+                    )
+                    db.add(item)
+                    await db.flush()
+            except IntegrityError as exc:
+                skip_reason = _constraint_reason_from_error(exc)
+                last_error = last_error or str(exc)
+                item = _build_run_item(
+                    run_id=run.id,
+                    product=product,
+                    old_price=old_price,
+                    new_price=new_price,
+                    reason=skip_reason,
+                    status="skipped",
+                    error=str(exc),
+                )
+                db.add(item)
+                skipped += 1
+                skipped_items.append(
+                    {
+                        "product_id": product.id,
+                        "reason": skip_reason,
+                        **details,
+                    }
+                )
+                continue
             except Exception as exc:
                 failed += 1
                 last_error = str(exc)
                 item = _build_run_item(
                     run_id=run.id,
                     product=product,
-                    old_price=_as_decimal(getattr(product, "price", None)),
+                    old_price=old_price,
                     new_price=None,
                     reason="error",
                     status="failed",
                     error=str(exc),
                 )
                 db.add(item)
+                continue
+
+            changed += 1
+            updated_items.append(
+                {
+                    "product_id": product.id,
+                    "old_price": _json_decimal(old_price),
+                    "new_price": _json_decimal(new_price),
+                    "reason": "dry_run" if dry_run else "repriced",
+                }
+            )
 
     run.processed = processed
     run.changed = changed
     run.failed = failed
     run.last_error = last_error
+    run.stats = {
+        "updated": updated_items,
+        "skipped": skipped_items,
+        "skipped_count": skipped,
+    }
     run.finished_at = datetime.utcnow()
     run.status = "failed" if failed else "done"
 

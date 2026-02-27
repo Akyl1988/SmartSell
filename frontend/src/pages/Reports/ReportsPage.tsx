@@ -6,6 +6,11 @@ import {
   downloadRepricingRunsReport,
   downloadWalletTransactionsReport,
 } from '../../api/reports'
+import Button from '../../components/ui/Button'
+import Card from '../../components/ui/Card'
+import ErrorState from '../../components/ui/ErrorState'
+import { useToast } from '../../components/ui/Toast'
+import pageStyles from '../../styles/page.module.css'
 
 function saveBlob(blob: Blob, filename: string) {
   const url = URL.createObjectURL(blob)
@@ -17,6 +22,7 @@ function saveBlob(blob: Blob, filename: string) {
 }
 
 export default function ReportsPage() {
+  const { push } = useToast()
   const [actionError, setActionError] = useState<string | null>(null)
 
   async function onDownloadPreorders() {
@@ -24,10 +30,12 @@ export default function ReportsPage() {
       setActionError(null)
       const blob = await downloadPreordersReport({ limit: 500 })
       saveBlob(blob, 'preorders.csv')
+      push('Preorders report downloaded.', 'success')
     } catch (err) {
       const info = getHttpErrorInfo(err)
       const statusPart = info.status ? ` (status ${info.status})` : ''
       setActionError(`Failed to download preorders report${statusPart}: ${info.message}`)
+      push('Failed to download preorders report.', 'danger')
     }
   }
 
@@ -36,10 +44,12 @@ export default function ReportsPage() {
       setActionError(null)
       const blob = await downloadInventoryReport({ limit: 500 })
       saveBlob(blob, 'inventory.csv')
+      push('Inventory report downloaded.', 'success')
     } catch (err) {
       const info = getHttpErrorInfo(err)
       const statusPart = info.status ? ` (status ${info.status})` : ''
       setActionError(`Failed to download inventory report${statusPart}: ${info.message}`)
+      push('Failed to download inventory report.', 'danger')
     }
   }
 
@@ -48,10 +58,12 @@ export default function ReportsPage() {
       setActionError(null)
       const blob = await downloadRepricingRunsReport({ limit: 500 })
       saveBlob(blob, 'repricing_runs.csv')
+      push('Repricing runs report downloaded.', 'success')
     } catch (err) {
       const info = getHttpErrorInfo(err)
       const statusPart = info.status ? ` (status ${info.status})` : ''
       setActionError(`Failed to download repricing runs report${statusPart}: ${info.message}`)
+      push('Failed to download repricing runs report.', 'danger')
     }
   }
 
@@ -60,23 +72,39 @@ export default function ReportsPage() {
       setActionError(null)
       const blob = await downloadWalletTransactionsReport({ limit: 500 })
       saveBlob(blob, 'wallet_transactions.csv')
+      push('Wallet transactions report downloaded.', 'success')
     } catch (err) {
       const info = getHttpErrorInfo(err)
       const statusPart = info.status ? ` (status ${info.status})` : ''
       setActionError(`Failed to download wallet transactions report${statusPart}: ${info.message}`)
+      push('Failed to download wallet transactions report.', 'danger')
     }
   }
 
   return (
-    <section>
-      <h1>Reports</h1>
-      <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap' }}>
-        <button onClick={onDownloadPreorders}>Download Preorders CSV</button>
-        <button onClick={onDownloadInventory}>Download Inventory CSV</button>
-        <button onClick={onDownloadRepricingRuns}>Download Repricing Runs CSV</button>
-        <button onClick={onDownloadWalletTransactions}>Download Wallet Transactions CSV</button>
+    <section className={pageStyles.page}>
+      <div className={pageStyles.pageHeader}>
+        <div>
+          <h1 className={pageStyles.pageTitle}>Reports</h1>
+          <p className={pageStyles.pageDescription}>Export operational data as CSV reports.</p>
+        </div>
       </div>
-      {actionError && <p style={{ color: '#b91c1c', marginTop: 12 }}>{actionError}</p>}
+
+      <Card>
+        <div className={pageStyles.inline}>
+          <Button onClick={onDownloadPreorders}>Preorders CSV</Button>
+          <Button variant="ghost" onClick={onDownloadInventory}>
+            Inventory CSV
+          </Button>
+          <Button variant="ghost" onClick={onDownloadRepricingRuns}>
+            Repricing runs CSV
+          </Button>
+          <Button variant="ghost" onClick={onDownloadWalletTransactions}>
+            Wallet transactions CSV
+          </Button>
+        </div>
+        {actionError && <ErrorState message={actionError} />}
+      </Card>
     </section>
   )
 }

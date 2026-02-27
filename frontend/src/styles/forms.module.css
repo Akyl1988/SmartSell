@@ -1,0 +1,63 @@
+.input {
+  width: 100%;
+  padding: 8px 12px;
+  border-radius: 10px;
+  border: 1px solid var(--color-border);
+  background: var(--color-surface);
+  color: var(--color-text);
+}
+
+.select {
+  width: 100%;
+  padding: 8px 12px;
+  border-radius: 10px;
+  border: 1px solid var(--color-border);
+  background: var(--color-surface);
+  color: var(--color-text);
+}
+
+.label {
+  font-size: 12px;
+  color: var(--color-muted);
+  margin-bottom: var(--space-1);
+}
+
+.formRow {
+  display: grid;
+  gap: var(--space-2);
+}
+
+.formGrid {
+  display: grid;
+  gap: var(--space-3);
+}
+
+.modalOverlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(15, 23, 42, 0.45);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 40;
+}
+
+.modal {
+  background: var(--color-surface);
+  border-radius: var(--radius-md);
+  padding: var(--space-5);
+  width: min(520px, 94vw);
+  box-shadow: var(--shadow-md);
+}
+
+.modalActions {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--space-2);
+  margin-top: var(--space-4);
+}
+
+.fieldHint {
+  font-size: 12px;
+  color: var(--color-muted);
+}

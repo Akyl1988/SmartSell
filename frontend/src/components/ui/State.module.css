@@ -1,0 +1,17 @@
+.state {
+  padding: var(--space-4);
+  border-radius: var(--radius-md);
+  background: var(--color-surface);
+  border: 1px dashed var(--color-border);
+  color: var(--color-muted);
+  display: grid;
+  gap: var(--space-2);
+}
+
+.state strong {
+  color: var(--color-text);
+}
+
+.state p {
+  margin: 0;
+}

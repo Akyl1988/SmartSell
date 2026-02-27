@@ -1,42 +1,26 @@
-import { useEffect, useState } from 'react'
+import { FormEvent, useCallback, useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { CompanyListItem, getCompanies } from '../../api/admin'
+import { CompanyListItem, KaspiTrialGrantOut } from '../../api/admin'
 import { getHttpErrorInfo } from '../../api/client'
+import Button from '../../components/ui/Button'
+import Card from '../../components/ui/Card'
+import EmptyState from '../../components/ui/EmptyState'
+import ErrorState from '../../components/ui/ErrorState'
+import Loader from '../../components/ui/Loader'
+import StatusBadge from '../../components/ui/StatusBadge'
+import { Table, TableBody, TableCell, TableHead, TableHeaderCell, TableRow } from '../../components/ui/Table'
+import { useToast } from '../../components/ui/Toast'
+import { useAdmin } from '../../hooks/useAdmin'
+import formStyles from '../../styles/forms.module.css'
+import pageStyles from '../../styles/page.module.css'
 
-const pageStyle: React.CSSProperties = {
-  background: '#f3f4f6',
-  minHeight: '100%',
-  padding: '24px',
-}
-
-const panelStyle: React.CSSProperties = {
-  background: '#ffffff',
-  borderRadius: 8,
-  padding: 16,
-  boxShadow: '0 1px 2px rgba(15, 23, 42, 0.08)',
-}
-
-const tableStyle: React.CSSProperties = {
-  width: '100%',
-  borderCollapse: 'collapse',
-  marginTop: 12,
-}
-
-const thStyle: React.CSSProperties = {
-  textAlign: 'left',
-  fontSize: 12,
-  color: '#64748b',
-  padding: '10px 8px',
-  borderBottom: '1px solid #e2e8f0',
-}
-
-const tdStyle: React.CSSProperties = {
-  padding: '10px 8px',
-  borderBottom: '1px solid #e2e8f0',
-  fontSize: 14,
+type TrialModalState = {
+  company: CompanyListItem
 }
 
 export default function OwnerCompaniesPage() {
+  const { getCompanies, grantKaspiTrial } = useAdmin()
+  const { push } = useToast()
   const navigate = useNavigate()
   const [items, setItems] = useState<CompanyListItem[]>([])
   const [page, setPage] = useState(1)
@@ -44,106 +28,234 @@ export default function OwnerCompaniesPage() {
   const [query, setQuery] = useState('')
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
+  const [trialModal, setTrialModal] = useState<TrialModalState | null>(null)
+  const [merchantUid, setMerchantUid] = useState('')
+  const [trialDays, setTrialDays] = useState(15)
+  const [trialPlan, setTrialPlan] = useState('pro')
+  const [trialLoading, setTrialLoading] = useState(false)
+  const [trialError, setTrialError] = useState<string | null>(null)
+  const [trialResult, setTrialResult] = useState<KaspiTrialGrantOut | null>(null)
 
-  function loadCompanies(nextPage: number, nextQuery: string) {
-    setLoading(true)
-    getCompanies({ page: nextPage, size, q: nextQuery })
-      .then((data) => {
+  const loadCompanies = useCallback(
+    async (nextPage: number, nextQuery: string) => {
+      setLoading(true)
+      setError(null)
+      try {
+        const data = await getCompanies({ page: nextPage, size, q: nextQuery })
         setItems(data.items)
-        setError(null)
-      })
-      .catch((err) => {
+      } catch (err) {
         const info = getHttpErrorInfo(err)
         const statusPart = info.status ? ` (status ${info.status})` : ''
         setError(`Failed to load companies${statusPart}: ${info.message}`)
-      })
-      .finally(() => setLoading(false))
-  }
+      } finally {
+        setLoading(false)
+      }
+    },
+    [getCompanies, size]
+  )
 
   useEffect(() => {
     loadCompanies(page, query)
-  }, [page])
+  }, [loadCompanies, page, query])
 
-  function onSearchSubmit(event: React.FormEvent<HTMLFormElement>) {
+  function onSearchSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
     setPage(1)
     loadCompanies(1, query)
   }
 
-  function handleRowClick(companyId: number) {
-    navigate(`/owner/companies/${companyId}`)
+  function openTrialModal(company: CompanyListItem) {
+    setTrialModal({ company })
+    setMerchantUid(company.kaspi_store_id ?? '')
+    setTrialDays(15)
+    setTrialPlan('pro')
+    setTrialError(null)
+    setTrialResult(null)
+  }
+
+  async function submitKaspiTrial(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    if (!trialModal) return
+    setTrialLoading(true)
+    setTrialError(null)
+    try {
+      const result = await grantKaspiTrial({
+        companyId: trialModal.company.id,
+        merchant_uid: merchantUid,
+        plan: trialPlan,
+        trial_days: trialDays,
+      })
+      setTrialResult(result)
+      push('Kaspi trial granted.', 'success')
+      loadCompanies(page, query)
+    } catch (err) {
+      const info = getHttpErrorInfo(err)
+      const statusPart = info.status ? ` (status ${info.status})` : ''
+      setTrialError(`Failed to grant Kaspi trial${statusPart}: ${info.message}`)
+      push('Failed to grant Kaspi trial.', 'danger')
+    } finally {
+      setTrialLoading(false)
+    }
   }
 
   return (
-    <section style={pageStyle}>
-      <div style={{ marginBottom: 16 }}>
-        <h1 style={{ marginBottom: 6 }}>Магазины</h1>
-        <p style={{ color: '#64748b' }}>Список компаний и текущие планы.</p>
+    <section className={pageStyles.page}>
+      <div className={pageStyles.pageHeader}>
+        <div>
+          <h1 className={pageStyles.pageTitle}>Companies</h1>
+          <p className={pageStyles.pageDescription}>Browse companies, plans, and Kaspi availability.</p>
+        </div>
       </div>
 
-      <div style={panelStyle}>
-        <form onSubmit={onSearchSubmit} style={{ display: 'flex', gap: 12, flexWrap: 'wrap' }}>
-          <input
-            type="text"
-            value={query}
-            onChange={(event) => setQuery(event.target.value)}
-            placeholder="Поиск по имени или BIN/IIN"
-            style={{ flex: '1 1 240px', padding: '8px 10px', borderRadius: 6, border: '1px solid #cbd5f5' }}
-          />
-          <button type="submit" style={{ background: '#2563eb', color: '#fff', border: 'none', borderRadius: 6 }}>
-            Найти
-          </button>
-          <div style={{ marginLeft: 'auto', display: 'flex', gap: 8, alignItems: 'center' }}>
-            <button
+      <Card>
+        <form onSubmit={onSearchSubmit} className={pageStyles.toolbar}>
+          <div className={[formStyles.formRow, pageStyles.toolbarGrow].join(' ')}>
+            <label className={formStyles.label}>Search</label>
+            <input
+              className={formStyles.input}
+              type="text"
+              value={query}
+              onChange={(event) => setQuery(event.target.value)}
+              placeholder="Search by name or BIN/IIN"
+            />
+          </div>
+          <Button type="submit" variant="primary">
+            Search
+          </Button>
+          <div className={[pageStyles.inline, pageStyles.toolbarSpacer].join(' ')}>
+            <Button
               type="button"
+              variant="ghost"
+              size="sm"
               onClick={() => setPage((prev) => Math.max(1, prev - 1))}
-              disabled={page <= 1}
+              disabled={page <= 1 || loading}
             >
-              Назад
-            </button>
-            <span style={{ fontSize: 12, color: '#64748b' }}>Стр. {page}</span>
-            <button type="button" onClick={() => setPage((prev) => prev + 1)}>
-              Далее
-            </button>
+              Prev
+            </Button>
+            <span className={pageStyles.muted}>Page {page}</span>
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              onClick={() => setPage((prev) => prev + 1)}
+              disabled={loading}
+            >
+              Next
+            </Button>
           </div>
         </form>
 
-        {loading && <p style={{ marginTop: 16 }}>Загрузка...</p>}
-        {error && <p style={{ marginTop: 16, color: '#b91c1c' }}>{error}</p>}
+        {loading && <Loader label="Loading companies..." />}
+        {error && <ErrorState message={error} onRetry={() => loadCompanies(page, query)} />}
 
-        {!loading && !error && (
-          <table style={tableStyle}>
-            <thead>
-              <tr>
-                <th style={thStyle}>ID</th>
-                <th style={thStyle}>Название</th>
-                <th style={thStyle}>BIN/IIN</th>
-                <th style={thStyle}>Kaspi Store ID</th>
-                <th style={thStyle}>План</th>
-                <th style={thStyle}>Статус</th>
-                <th style={thStyle}>План до</th>
-              </tr>
-            </thead>
-            <tbody>
-              {items.map((company) => (
-                <tr
-                  key={company.id}
-                  onClick={() => handleRowClick(company.id)}
-                  style={{ cursor: 'pointer' }}
-                >
-                  <td style={tdStyle}>{company.id}</td>
-                  <td style={tdStyle}>{company.name}</td>
-                  <td style={tdStyle}>{company.bin_iin ?? '—'}</td>
-                  <td style={tdStyle}>{company.kaspi_store_id ?? '—'}</td>
-                  <td style={tdStyle}>{company.current_plan ?? '—'}</td>
-                  <td style={tdStyle}>{company.is_active ? 'Активна' : 'Неактивна'}</td>
-                  <td style={tdStyle}>{company.plan_expires_at ?? '—'}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+        {!loading && !error && items.length === 0 && (
+          <EmptyState title="No companies" description="No companies matched your search." />
         )}
-      </div>
+
+        {!loading && !error && items.length > 0 && (
+          <div className={pageStyles.tableWrap}>
+            <Table>
+              <TableHead>
+                <TableRow>
+                  <TableHeaderCell>ID</TableHeaderCell>
+                  <TableHeaderCell>Name</TableHeaderCell>
+                  <TableHeaderCell>BIN/IIN</TableHeaderCell>
+                  <TableHeaderCell>Kaspi Store ID</TableHeaderCell>
+                  <TableHeaderCell>Plan</TableHeaderCell>
+                  <TableHeaderCell>Status</TableHeaderCell>
+                  <TableHeaderCell>Plan ends</TableHeaderCell>
+                  <TableHeaderCell>Actions</TableHeaderCell>
+                </TableRow>
+              </TableHead>
+              <TableBody>
+                {items.map((company) => (
+                  <TableRow key={company.id}>
+                    <TableCell>#{company.id}</TableCell>
+                    <TableCell>{company.name}</TableCell>
+                    <TableCell>{company.bin_iin ?? '—'}</TableCell>
+                    <TableCell>{company.kaspi_store_id ?? '—'}</TableCell>
+                    <TableCell>{company.current_plan ?? '—'}</TableCell>
+                    <TableCell>
+                      <StatusBadge
+                        tone={company.is_active ? 'success' : 'danger'}
+                        label={company.is_active ? 'Active' : 'Inactive'}
+                      />
+                    </TableCell>
+                    <TableCell>{company.plan_expires_at ?? '—'}</TableCell>
+                    <TableCell>
+                      <div className={pageStyles.inline}>
+                        <Button size="sm" variant="ghost" onClick={() => openTrialModal(company)}>
+                          Grant trial
+                        </Button>
+                        <Button size="sm" variant="primary" onClick={() => navigate(`/owner/companies/${company.id}`)}>
+                          Open
+                        </Button>
+                      </div>
+                    </TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+          </div>
+        )}
+      </Card>
+
+      {trialModal && (
+        <div className={formStyles.modalOverlay}>
+          <div className={formStyles.modal}>
+            <h2>Kaspi trial: {trialModal.company.name}</h2>
+            <form onSubmit={submitKaspiTrial} className={formStyles.formGrid}>
+              <div className={formStyles.formRow}>
+                <label className={formStyles.label}>Merchant UID</label>
+                <input
+                  className={formStyles.input}
+                  value={merchantUid}
+                  onChange={(event) => setMerchantUid(event.target.value)}
+                  placeholder="kaspi-merchant-uid"
+                  required
+                />
+              </div>
+              <div className={formStyles.formRow}>
+                <label className={formStyles.label}>Plan</label>
+                <select
+                  className={formStyles.select}
+                  value={trialPlan}
+                  onChange={(event) => setTrialPlan(event.target.value)}
+                >
+                  <option value="pro">Pro</option>
+                  <option value="start">Start</option>
+                </select>
+              </div>
+              <div className={formStyles.formRow}>
+                <label className={formStyles.label}>Trial days</label>
+                <input
+                  className={formStyles.input}
+                  type="number"
+                  value={trialDays}
+                  onChange={(event) => setTrialDays(Number(event.target.value || 1))}
+                  min={1}
+                  max={15}
+                />
+              </div>
+              {trialError && <ErrorState message={trialError} />}
+              {trialResult && (
+                <StatusBadge
+                  tone="success"
+                  label={`Granted until ${trialResult.active_until ?? '—'}`}
+                />
+              )}
+              <div className={formStyles.modalActions}>
+                <Button type="button" variant="ghost" onClick={() => setTrialModal(null)}>
+                  Close
+                </Button>
+                <Button type="submit" disabled={trialLoading}>
+                  {trialLoading ? 'Granting...' : 'Grant'}
+                </Button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
     </section>
   )
 }
