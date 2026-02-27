@@ -17,6 +17,7 @@
 - [ ] Consolidate httpx version (runtime vs dev) to avoid drift.
 - [x] Owner store whitelist bypass exists for subscription gating (option A).
 - [x] SMTP in TESTING/CI fixed to port 587 (ignores `.env` overrides); add `SMTP_PORT_TEST` to override safely if needed.
+- [ ] Multi-tenant ops validation completed for 2-3 companies (preorders, repricing, reports isolation).
 
 ## P2
 - [ ] Implement missing ТЗ features (TipTop Pay, analytics, AI bot, full Kaspi workflows) and align frontend.

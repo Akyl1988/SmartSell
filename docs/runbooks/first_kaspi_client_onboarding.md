@@ -9,6 +9,10 @@
    5) CSV reports download correctly (preorders, inventory, repricing runs, wallet transactions, orders, order items)
 - Read-only policy (mandatory for first real clients): no repricing apply and no destructive Kaspi price/stock changes unless explicitly approved.
 
+## Baseline
+- Branch: main
+- Tag: v0.2.2-owner-ui-stable
+
 ## 2. Prerequisites
 - SmartSell is running end-to-end:
   1) Backend API
@@ -17,12 +21,12 @@
   4) Frontend
 - Admin or platform-admin account is available (required for subscription overrides, wallet topups, and global operations).
 - Production safety guards are satisfied (tests enforce these):
-  1) SECRET_KEY and dedicated token secrets set (see tests: invite_token_secret_required_in_prod, reset_token_secret_required_in_prod, token_secret_required_in_prod)
-  2) CSRF secret is set (test: csrf_secret_required_in_prod)
-  3) OTP secret is set (test: otp_secret_required_in_prod)
-  4) PGCRYPTO_KEY is set (test: pgcrypto_key_required_in_prod)
-  5) KID key material and denylist backend configured for prod (tests: kid_key_material_required_in_prod, denylist_backend_required_in_prod)
-   6) KASPI_STUB is disabled in production-like environments
+   1) SECRET_KEY and dedicated token secrets set (see tests/test_invite_reset_tokens_require_dedicated_secrets_in_prod.py)
+   2) CSRF secret is set (tests/test_csrf_secret_required_in_prod.py)
+   3) OTP secret is set (tests/test_otp_secret_required_in_prod.py)
+   4) PGCRYPTO_KEY is set (tests/test_pgcrypto_key_required_in_prod.py)
+   5) If JWT_ACTIVE_KID is set, JWT_KEYS_<kid>_PRIVATE and JWT_KEYS_<kid>_PUBLIC are provided (tests/app/test_security_kid.py)
+   6) KASPI_STUB is disabled in production-like environments (tests/test_kaspi_stub_prod.py)
 - Explicit rule: KASPI_STUB must NEVER be enabled in any production-like environment.
 - Reference deployment checks:
    1) docs/DEPLOYMENT.md (required env vars, kaspi onboarding, health checks)
@@ -48,37 +52,50 @@
    - GET /api/v1/auth/me
    - Confirm company_id, company_name, and role from /me.
 3) Store the credentials securely and confirm the admin can sign in to the UI.
+4) UI waypoint (Owner):
+   - Owner -> Companies: confirm the company record and invite link if needed.
 
 ## 5. Connecting Kaspi
 1) Connect the tenant to Kaspi:
    - POST /api/v1/kaspi/connect (company_name, store_name, token, verify=true).
    - Reference: docs/KASPI_FEED.md (connect section).
 2) Verify connectivity:
-   - GET /api/v1/kaspi/token/selftest
+   - GET /api/v1/kaspi/health/{store}
    - GET /api/v1/kaspi/status
-   - Optional: GET /api/v1/kaspi/_debug/probe (non-prod only)
-3) Ensure KASPI_STUB is disabled for production-like runs (must never be enabled).
-4) Check integration events for errors:
+   - Optional: GET /api/v1/kaspi/_debug/ping (non-prod only)
+3) UI waypoint:
+   - Kaspi feed control page (UI) is a debug panel for ping/health and feed actions.
+   - Use the API endpoints above for production validation.
+4) Ensure KASPI_STUB is disabled for production-like runs (must never be enabled).
+5) Check integration events for errors:
    - GET /api/v1/integrations/events?kind=kaspi&limit=100
 
 ## 6. Initial full synchronization
 1) Orders sync (manual trigger):
-   - POST /api/v1/kaspi/sync/now
-   - Use scripts/smoke-kaspi-sync-now.ps1 for a working flow.
+   - POST /api/v1/kaspi/orders/sync (script resolves path via openapi.json)
+   - Use scripts/smoke-kaspi-sync-now.ps1 (platform admin + KASPI_MERCHANT_UID).
 2) Catalog / products sync (Kaspi constraints):
    - Use the goods import and offers feed pipelines described in docs/KASPI_SYNC_RUNNER.md and docs/KASPI_FEED.md.
-   - Typical sequence:
-     1) POST /api/v1/kaspi/offers/rebuild (or /api/v1/kaspi/offers/import)
-     2) POST /api/v1/kaspi/products/import/start
-     3) POST /api/v1/kaspi/products/import/upload?i=<import_code>
-     4) GET /api/v1/kaspi/products/import?i=<kaspi_import_code>
-     5) GET /api/v1/kaspi/products/import/result?i=<kaspi_import_code>
+   - Typical goods import sequence:
+     1) POST /api/v1/kaspi/goods/import (payload or product_ids)
+     2) GET /api/v1/kaspi/goods/import/status?importCode=<code>
+     3) GET /api/v1/kaspi/goods/import/<code>/result
+   - File upload path (if using Excel/CSV export):
+     1) POST /api/v1/kaspi/goods/import/upload (multipart file)
+     2) GET /api/v1/kaspi/goods/import/status?importCode=<code>
+     3) GET /api/v1/kaspi/goods/import/<code>/result
 3) If using the public price list flow:
    - POST /api/v1/kaspi/offers/feed/upload to obtain a public URL
    - Configure the URL in the Kaspi seller cabinet
-4) Expected duration:
+4) If using internal feed export + upload:
+   - POST /api/v1/kaspi/feeds/products/generate -> capture export_id
+   - POST /api/v1/kaspi/feeds/{export_id}/upload?merchantUid=<merchant_uid>
+   - Optional: GET /api/v1/kaspi/feeds/{export_id}/payload (inspect XML)
+5) Quick XML feed check:
+   - GET /api/v1/kaspi/feed (current company XML feed)
+6) Expected duration:
    - Initial runs can take minutes; watch logs for kaspi_import and sync status.
-5) Verification:
+7) Verification:
    - Confirm API responses are 2xx and status fields move to success/done
    - Use existing tests as behavior references:
      - tests/test_kaspi_orders_sync_runner.py
@@ -94,6 +111,9 @@
 3) Preorders page:
    - If no real preorders exist, create a safe test preorder via POST /api/v1/preorders.
    - Use scripts/smoke-preorders-e2e.ps1 for the end-to-end flow (product, stock, preorder, confirm, cancel, fulfill).
+   - Expected statuses: new, confirmed, fulfilled, cancelled.
+   - To enable preorders for a product:
+     - PUT /api/v1/products/{product_id} with is_preorder_enabled, preorder_lead_days, preorder_deposit, preorder_note.
 4) Safety note:
    - Do not touch real production orders unless explicitly approved by the client.
    - If in read-only mode, avoid confirm/cancel/fulfill on real orders.
@@ -113,6 +133,7 @@
    - Confirm status, timestamps, and last_error fields
 4) Export runs as CSV:
    - Reports page: Download Repricing Runs CSV
+   - API: GET /api/v1/reports/repricing_runs.csv
 5) Read-only note:
    - Do not apply prices to Kaspi unless explicitly approved.
    - Avoid POST /api/v1/repricing/runs/{run_id}/apply in read-only onboarding.
@@ -129,7 +150,7 @@
    - /api/v1/reports/wallet/transactions.csv
    - /api/v1/reports/orders.csv
    - /api/v1/reports/order_items.csv
-   - Use scripts/smoke-reports-all.ps1 or scripts/smoke-reports-wallet-transactions.ps1 as references.
+   - Use scripts/smoke-reports-wallet-transactions.ps1 as the primary smoke for the first client.
 3) Quick validation on CSVs:
    - Tenant isolation (only the client data)
    - Non-empty data where expected
@@ -145,10 +166,12 @@
 
 ## Quick commands
 ```powershell
-pwsh -NoProfile -File .\scripts\smoke-auth.ps1
-pwsh -NoProfile -File .\scripts\smoke-kaspi-sync-now.ps1
-pwsh -NoProfile -File .\scripts\smoke-preorders-e2e.ps1
-pwsh -NoProfile -File .\scripts\smoke-repricing-e2e.ps1
-pwsh -NoProfile -File .\scripts\smoke-reports-wallet-transactions.ps1
-pwsh -NoProfile -File .\scripts\smoke-reports-all.ps1
+pwsh -NoProfile -File ./scripts/smoke-auth.ps1 -BaseUrl https://api.example.com -Identifier store_admin@example.com -Password 'replace-me'
+pwsh -NoProfile -File ./scripts/smoke-kaspi-sync-now.ps1 -BaseUrl https://api.example.com -MerchantUid <merchant_uid>
+pwsh -NoProfile -File ./scripts/smoke-preorders-e2e.ps1 -BaseUrl https://api.example.com
+pwsh -NoProfile -File ./scripts/smoke-repricing-e2e.ps1 -BaseUrl https://api.example.com
+pwsh -NoProfile -File ./scripts/smoke-reports-wallet-transactions.ps1 -BaseUrl https://api.example.com
 ```
+
+## Next companies
+- For N-th company onboarding, follow docs/runbooks/add_new_company.md.
