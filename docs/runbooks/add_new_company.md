@@ -141,6 +141,13 @@ Platform admin only.
 - Требуемые env:
   - ADMIN_IDENTIFIER / ADMIN_PASSWORD (platform admin)
   - SANDBOX_STORE2_PASSWORD (пароль для нового store_admin)
+- Если нет platform_admin, сначала выдайте роль в dev:
+  - python ./scripts/dev-bootstrap-platform-admin.py --identifier <phone_or_email>
+  - Опционально: --superuser
+- Проверка доступа:
+  - POST /api/v1/auth/login (identifier/password)
+  - GET /api/v1/auth/me
+  - GET /api/v1/admin/companies (должно быть 200)
 - Что делает скрипт:
   - логинится под platform admin
   - создаёт company и invite
