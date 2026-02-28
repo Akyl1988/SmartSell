@@ -148,10 +148,12 @@ Platform admin only.
   - POST /api/v1/auth/login (identifier/password)
   - GET /api/v1/auth/me
   - GET /api/v1/admin/companies (должно быть 200)
+- Пароль для store_admin должен соответствовать политике (>=8 символов, минимум одна буква).
 - Что делает скрипт:
   - логинится под platform admin
-  - создаёт company и invite
-  - принимает invite и проверяет /api/v1/auth/me
+  - создаёт company или переиспользует по BIN/IIN
+  - создаёт invite
+  - принимает invite и проверяет /api/v1/auth/me (при 4xx/5xx выводит status+body)
   - upsert записи sandbox-store-2 в scripts/smoke-tenants.json
 - Пример запуска:
   - pwsh -NoProfile -File ./scripts/dev-create-sandbox-tenant.ps1 -BaseUrl http://127.0.0.1:8000
@@ -167,4 +169,4 @@ Platform admin only.
 ```
 - Мульти-тенант smoke:
   - pwsh -NoProfile -File ./scripts/smoke-multi-tenant-e2e.ps1 -BaseUrl http://127.0.0.1:8000
-  - Зелёный результат: GLOBAL: OK и auth/preorders/repricing/reports = OK минимум для одного tenant.
+  - Зелёный результат: GLOBAL: OK (all tenants passed) или GLOBAL: OK (some tenants failed).

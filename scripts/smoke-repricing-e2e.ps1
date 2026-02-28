@@ -43,8 +43,22 @@ function Assert-Ok {
 function Get-RespItems {
   param([object]$Body)
   if (-not $Body) { return @() }
+  if ($Body -is [System.Collections.IEnumerable] -and -not ($Body -is [string])) {
+    return @($Body)
+  }
   if ($Body.PSObject.Properties["items"]) { return @($Body.items) }
+  if ($Body.PSObject.Properties["results"]) { return @($Body.results) }
+  if ($Body.PSObject.Properties["rules"]) { return @($Body.rules) }
   if ($Body.PSObject.Properties["data"]) { return @($Body.data) }
+  if ($Body.PSObject.Properties["data"] -and $Body.data -and $Body.data.PSObject.Properties["items"]) {
+    return @($Body.data.items)
+  }
+  if ($Body.PSObject.Properties["data"] -and $Body.data -and $Body.data.PSObject.Properties["results"]) {
+    return @($Body.data.results)
+  }
+  if ($Body.PSObject.Properties["data"] -and $Body.data -and $Body.data.PSObject.Properties["rules"]) {
+    return @($Body.data.rules)
+  }
   return @()
 }
 
@@ -53,6 +67,24 @@ function Get-Id {
   if (-not $Obj) { return $null }
   $prop = $Obj.PSObject.Properties["id"]
   if ($prop) { return $prop.Value }
+  $dataProp = $Obj.PSObject.Properties["data"]
+  if ($dataProp -and $dataProp.Value) {
+    $nested = $dataProp.Value
+    $nestedId = $nested.PSObject.Properties["id"]
+    if ($nestedId) { return $nestedId.Value }
+  }
+  $ruleProp = $Obj.PSObject.Properties["rule"]
+  if ($ruleProp -and $ruleProp.Value) {
+    $nested = $ruleProp.Value
+    $nestedId = $nested.PSObject.Properties["id"]
+    if ($nestedId) { return $nestedId.Value }
+  }
+  $itemProp = $Obj.PSObject.Properties["item"]
+  if ($itemProp -and $itemProp.Value) {
+    $nested = $itemProp.Value
+    $nestedId = $nested.PSObject.Properties["id"]
+    if ($nestedId) { return $nestedId.Value }
+  }
   return $null
 }
 
@@ -77,6 +109,20 @@ function Debug-MissingId {
   $jsonText = $null
   try { $jsonText = $Obj | ConvertTo-Json -Depth 10 } catch { $jsonText = "<unserializable>" }
   Write-Host ("[DEBUG] Missing id for {0}. type={1} json={2}" -f $Label, $typeName, $jsonText)
+}
+
+function Debug-Resp {
+  param(
+    [string]$Label,
+    [object]$Resp
+  )
+  if (-not $Resp) {
+    Write-Host ("[DEBUG] {0}: no response" -f $Label)
+    return
+  }
+  $bodyText = $null
+  try { $bodyText = $Resp.Body | ConvertTo-Json -Depth 12 } catch { $bodyText = $Resp.Body }
+  Write-Host ("[DEBUG] {0}: status={1} body={2}" -f $Label, $Resp.StatusCode, $bodyText)
 }
 
 function Invoke-Api {
@@ -140,14 +186,15 @@ $rulePayload = @{
   enabled = $true
   is_active = $true
   scope_type = "product"
-  scope_value = $productId
+  scope_value = [string]$productId
   step = 1
   rounding_mode = "nearest"
 }
 
 $ruleResp = Invoke-Api -Method "POST" -Url "$BaseUrl/api/v1/repricing/rules" -Body $rulePayload
 $ruleId = $null
-if ($ruleResp.StatusCode -eq 201) {
+$rulesListResp = $null
+if ($ruleResp.StatusCode -eq 201 -or $ruleResp.StatusCode -eq 200) {
   $ruleBody = Assert-Ok -Resp $ruleResp -Action "Create repricing rule"
   $ruleId = Get-Id -Obj $ruleBody
 } elseif ($ruleResp.StatusCode -eq 409 -or $ruleResp.StatusCode -eq 422) {
@@ -162,6 +209,10 @@ if ($ruleResp.StatusCode -eq 201) {
 }
 
 if (-not $ruleId) {
+  Debug-Resp -Label "Create repricing rule" -Resp $ruleResp
+  if ($rulesListResp) {
+    Debug-Resp -Label "List repricing rules" -Resp $rulesListResp
+  }
   throw "Missing repricing rule id"
 }
 
