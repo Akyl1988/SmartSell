@@ -138,5 +138,26 @@ Platform admin only.
 ## Dev-песочница
 - Для dev можно быстро создать вторую/третью тестовую компанию и store_admin:
   - scripts/dev-create-sandbox-tenant.ps1
+- Требуемые env:
+  - ADMIN_IDENTIFIER / ADMIN_PASSWORD (platform admin)
+  - SANDBOX_STORE2_PASSWORD (пароль для нового store_admin)
+- Что делает скрипт:
+  - логинится под platform admin
+  - создаёт company и invite
+  - принимает invite и проверяет /api/v1/auth/me
+  - upsert записи sandbox-store-2 в scripts/smoke-tenants.json
 - Пример запуска:
   - pwsh -NoProfile -File ./scripts/dev-create-sandbox-tenant.ps1 -BaseUrl http://127.0.0.1:8000
+- Пример содержимого scripts/smoke-tenants.json:
+```json
+[
+  {
+    "label": "sandbox-store-2",
+    "identifier": "77001234567",
+    "passwordEnv": "SANDBOX_STORE2_PASSWORD"
+  }
+]
+```
+- Мульти-тенант smoke:
+  - pwsh -NoProfile -File ./scripts/smoke-multi-tenant-e2e.ps1 -BaseUrl http://127.0.0.1:8000
+  - Зелёный результат: GLOBAL: OK и auth/preorders/repricing/reports = OK минимум для одного tenant.
