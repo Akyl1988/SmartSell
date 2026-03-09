@@ -1,7 +1,7 @@
 # SmartSell API Lifecycle Policy (MVP)
 
 Version: 2026-03-09
-Status: Policy + minimal metadata support
+Status: Policy + endpoint-level lifecycle metadata registry
 
 ## 1) Versioning model
 
@@ -27,3 +27,13 @@ Status: Policy + minimal metadata support
 ## 5) Operator responsibility
 
 - Platform admin is responsible for notifying clients about deprecation/sunset windows.
+
+## 6) Implemented lifecycle registry evidence (2026-03-09)
+
+- Lifecycle headers are emitted centrally via `app/core/api_lifecycle.py` and applied in middleware (`app/main.py`).
+- A minimal endpoint-level registry is implemented for deprecated compatibility routes using method+path matching.
+- Current registered deprecated endpoint rollout:
+	- `POST /api/v1/kaspi/feed/uploads/{upload_id}/refresh-status`
+	- Headers: `Deprecation: true`, `Sunset: Tue, 30 Jun 2026 00:00:00 GMT`, `X-SmartSell-API-Version: v1`
+- Test evidence:
+	- `pytest tests/app/api/test_api_lifecycle_headers.py -q` -> `2 passed`

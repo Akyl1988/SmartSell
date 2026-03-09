@@ -1367,7 +1367,10 @@ def _create_app() -> FastAPI:
         request: Request, call_next: Callable[[Request], Awaitable[Response]]
     ) -> Response:
         response = await call_next(request)
-        for header_name, header_value in get_deprecation_headers().items():
+        for header_name, header_value in get_deprecation_headers(
+            request_method=request.method,
+            request_path=request.url.path,
+        ).items():
             response.headers.setdefault(header_name, header_value)
         response.headers.setdefault("X-Content-Type-Options", "nosniff")
         response.headers.setdefault("X-Frame-Options", "DENY")
