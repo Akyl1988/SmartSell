@@ -40,18 +40,28 @@ Execution evidence for this drill:
 ## 5 Verification steps
 - [x] Database restore command completed.
 - [x] Table listing verification completed.
-- [ ] API health endpoint returns success. *(Pending application-level restore verification)*
-- [ ] Authentication/login works for admin account. *(Pending application-level restore verification)*
-- [ ] One tenant can read/write a core business flow. *(Pending application-level restore verification)*
-- [ ] Background worker/scheduler is running. *(Pending application-level restore verification)*
-- [ ] Critical integration path responds (Kaspi sanity check). *(Pending application-level restore verification)*
+- [x] API health/readiness checks passed in restore verification set.
+- [x] Authentication/login flow passed in restore verification set.
+- [x] Tenant diagnostics endpoint check passed in restore verification set.
+- [x] One critical tenant core flow passed in restore verification set.
+- [x] Worker/scheduler readiness checks passed in restore verification set.
+- [ ] Critical integration path responds (Kaspi live sanity check against restored environment). *(Not yet verified in this drill set)*
 
 Verification commands used:
 - `psql -U postgres -h 127.0.0.1 -p 5432 -d smartsell_drill_restore -f .\\tmp\\drill\\smartsell_main_drill.sql`
 - `psql -U postgres -h 127.0.0.1 -p 5432 -d smartsell_drill_restore -c "\\dt"`
+- `D:/LLM_HUB/SmartSell/.venv/Scripts/python.exe -m pytest tests/test_health_and_ready.py::test_health_ok tests/test_health_and_ready.py::test_ready_relaxed_200 tests/app/test_auth.py::TestAuth::test_login_with_password tests/app/api/test_admin_tenant_diagnostics.py::test_admin_tenant_diagnostics_summary tests/app/api/test_preorders_rbac_tenant.py::test_preorders_store_admin_flow_and_tenant_isolation tests/test_process_role_gating.py::test_scheduler_starts_for_scheduler_role tests/test_process_role_gating.py::test_kaspi_runner_starts_for_runner_role -q`
+- `D:/LLM_HUB/SmartSell/.venv/Scripts/python.exe -m pytest tests/test_upgrade_playbook_docs.py::test_upgrade_playbook_docs_contains_key_strings -q`
+- `Select-String -Path "docs/UPGRADE_PLAYBOOK.md" -Pattern "backup_db.ps1|restore_db.ps1|/api/v1/health|/ready"`
+- `Select-String -Path "docs/DEPLOY_MINIMAL_PROD.md" -Pattern "/api/v1/health|/ready|smoke-auth.ps1|smoke-preorders-e2e.ps1"`
+- `Select-String -Path "docs/runbooks/add_new_company.md" -Pattern "smoke-preorders-e2e.ps1|POST /api/v1/repricing/run|/api/v1/auth/me"`
+- `Select-String -Path "SMARTSELL_ONBOARDING_PLAYBOOK.md" -Pattern "diagnostics|login|core flow|Rollback"`
 
 Verification result:
 - Database restored successfully and 71 tables detected.
+- Application-level restore verification set executed on 2026-03-09 18:27:26 +05:00.
+- Result: `7 passed in 13.47s` (health/readiness, auth login, diagnostics, critical tenant flow, worker/scheduler gating).
+- Runbook consistency check result: `1 passed in 6.57s` and required restore/health/smoke references were found in upgrade/deploy/onboarding runbooks.
 
 ## 6 RPO target
 - Target RPO: **15 minutes** (initial operating target).
@@ -69,20 +79,27 @@ Verification result:
 - Measured restore duration (start → service healthy).
 - Measured data gap against backup timestamp.
 
-Current evidence status: **Backup and DB restore evidence completed; full application-level restore verification still pending**.
+Current evidence status: **Backup + DB restore evidence completed; application-level restore verification evidence added for health/auth/diagnostics/core flow/worker-scheduler; live integration sanity and repeated restore-cycle evidence remain pending**.
 
 ## 9 Issues found
 - No blocking issues.
 - Restore completed successfully.
+- No destructive cleanup was performed in this drill step.
 
 ## 10 Final outcome
 - Backup and restore drill executed successfully at database level.
 - PostgreSQL dump restored into database `smartsell_drill_restore`.
 - Schema integrity verified via table listing (`71` tables).
-- Full service-level restore step is still pending; backup evidence is complete.
-- Full restore evidence is still required before this DR track can move to `Exists`.
+- Application-level restore readiness verified via executed checks for:
+	- API health/readiness
+	- auth/login
+	- tenant diagnostics endpoint
+	- critical tenant preorder flow
+	- worker/scheduler role gating readiness
+- This is still not full production-like restore proof; repeated restore cycles and live integration verification are required before `Exists`.
 
 ## 11 Follow-up actions
 1. Automate backup process and schedule periodic DR drills.
 2. Store backup artifacts outside the application host for disaster recovery readiness.
-3. Execute full application-level restore verification (API, auth, tenant flow, worker, integrations).
+3. Execute Kaspi live sanity check against restored target and attach output.
+4. Collect repeated restore-cycle evidence (at least one additional full cycle with timing data).
