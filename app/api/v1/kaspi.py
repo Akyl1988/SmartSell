@@ -60,6 +60,12 @@ from app.api.v1.kaspi_autosync_routes import (
     register_kaspi_autosync_routes,
 )
 from app.api.v1.kaspi_debug_routes import register_kaspi_debug_routes
+from app.api.v1.kaspi_feed_routes import (
+    register_kaspi_feed_routes_phase_one,
+    register_kaspi_feed_routes_phase_two,
+)
+from app.api.v1.kaspi_public_routes import register_kaspi_public_routes
+from app.api.v1.kaspi_status_routes import register_kaspi_status_routes
 from app.api.v1.kaspi_utils import (
     build_kaspi_orders_params as _build_kaspi_orders_params,
 )
@@ -6432,11 +6438,6 @@ class KaspiFeedListOut(BaseModel):
 # ============================= FEED EXPORTS (MVP) =============================
 
 
-@router.post(
-    "/feed/exports",
-    summary="Generate Kaspi offers feed export",
-    response_model=KaspiFeedExportOut,
-)
 async def kaspi_feed_export_create(
     merchant_uid: str | None = Query(None, alias="merchantUid"),
     store_id: str | None = Query(None, alias="storeId"),
@@ -6501,11 +6502,6 @@ async def kaspi_feed_export_create(
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="feed_export_failed")
 
 
-@router.get(
-    "/feed/exports",
-    summary="List Kaspi feed exports",
-    response_model=list[KaspiFeedExportOut],
-)
 async def kaspi_feed_exports_list(
     limit: int = 50,
     offset: int = 0,
@@ -6725,11 +6721,6 @@ async def _create_offers_feed_upload(
     return job, False
 
 
-@router.post(
-    "/offers/feed/upload",
-    summary="Upload Kaspi offers feed (XML)",
-    response_model=KaspiOffersFeedUploadOut,
-)
 async def kaspi_offers_feed_upload(
     request: Request,
     body: KaspiOffersFeedUploadIn,
@@ -6778,11 +6769,6 @@ async def kaspi_offers_feed_upload(
     )
 
 
-@router.post(
-    "/feed/uploads",
-    summary="Upload Kaspi offers feed",
-    response_model=KaspiFeedUploadRecordOut,
-)
 async def kaspi_feed_upload_create(
     request: Request,
     body: KaspiFeedUploadIn,
@@ -7041,11 +7027,6 @@ async def kaspi_feed_upload_create(
     return _feed_upload_to_out(job)
 
 
-@router.get(
-    "/feed/uploads",
-    summary="List Kaspi feed uploads",
-    response_model=list[KaspiFeedUploadRecordOut],
-)
 async def kaspi_feed_uploads_list(
     limit: int = 50,
     offset: int = 0,
@@ -7068,11 +7049,6 @@ async def kaspi_feed_uploads_list(
     return [_feed_upload_to_out(record) for record in uploads]
 
 
-@router.get(
-    "/feed/uploads/{upload_id}",
-    summary="Get Kaspi feed upload",
-    response_model=KaspiFeedUploadRecordOut,
-)
 async def kaspi_feed_upload_get(
     upload_id: UUID,
     current_user: User = Depends(require_store_admin_then_feature(FEATURE_KASPI_FEED_UPLOADS)),
@@ -7097,11 +7073,6 @@ async def kaspi_feed_upload_get(
     return _feed_upload_to_out(record)
 
 
-@router.post(
-    "/feed/uploads/{upload_id}/refresh",
-    summary="Refresh Kaspi feed upload status",
-    response_model=KaspiFeedUploadRecordOut,
-)
 async def kaspi_feed_upload_refresh(
     request: Request,
     upload_id: UUID,
@@ -7216,11 +7187,6 @@ async def kaspi_feed_upload_refresh(
     return _feed_upload_to_out(record)
 
 
-@router.post(
-    "/feed/uploads/{upload_id}/refresh-status",
-    summary="Refresh Kaspi feed upload status (deprecated)",
-    response_model=KaspiFeedUploadRecordOut,
-)
 async def kaspi_feed_upload_refresh_compat(
     request: Request,
     upload_id: UUID,
@@ -7235,11 +7201,6 @@ async def kaspi_feed_upload_refresh_compat(
     )
 
 
-@router.post(
-    "/feed/uploads/{upload_id}/publish",
-    summary="Publish Kaspi feed upload",
-    response_model=KaspiFeedUploadRecordOut,
-)
 async def kaspi_feed_upload_publish(
     request: Request,
     upload_id: UUID,
@@ -7375,11 +7336,6 @@ async def kaspi_feed_upload_publish(
     return _feed_upload_to_out(record)
 
 
-@router.get(
-    "/feed/exports/{export_id}",
-    summary="Get Kaspi feed export details",
-    response_model=KaspiFeedExportOut,
-)
 async def kaspi_feed_export_detail(
     export_id: int,
     current_user: User = Depends(get_current_user),
@@ -7405,11 +7361,6 @@ async def kaspi_feed_export_detail(
     return _feed_export_to_out(export)
 
 
-@router.get(
-    "/feed/exports/{export_id}/download",
-    summary="Download Kaspi feed export XML",
-    response_class=Response,
-)
 async def kaspi_feed_export_download(
     export_id: int,
     current_user: User = Depends(get_current_user),
@@ -7449,14 +7400,28 @@ async def kaspi_feed_export_download(
     )
 
 
+register_kaspi_feed_routes_phase_one(
+    router,
+    kaspi_feed_export_create=kaspi_feed_export_create,
+    kaspi_feed_exports_list=kaspi_feed_exports_list,
+    kaspi_offers_feed_upload=kaspi_offers_feed_upload,
+    kaspi_feed_upload_create=kaspi_feed_upload_create,
+    kaspi_feed_uploads_list=kaspi_feed_uploads_list,
+    kaspi_feed_upload_get=kaspi_feed_upload_get,
+    kaspi_feed_upload_refresh=kaspi_feed_upload_refresh,
+    kaspi_feed_upload_refresh_compat=kaspi_feed_upload_refresh_compat,
+    kaspi_feed_upload_publish=kaspi_feed_upload_publish,
+    kaspi_feed_export_detail=kaspi_feed_export_detail,
+    kaspi_feed_export_download=kaspi_feed_export_download,
+    kaspi_feed_export_out_model=KaspiFeedExportOut,
+    kaspi_offers_feed_upload_out_model=KaspiOffersFeedUploadOut,
+    kaspi_feed_upload_record_out_model=KaspiFeedUploadRecordOut,
+)
+
+
 # ============================= PUBLIC FEED TOKENS =============================
 
 
-@router.post(
-    "/feed/public-tokens",
-    summary="Create public feed token",
-    response_model=KaspiFeedPublicTokenOut,
-)
 async def kaspi_feed_public_token_create(
     payload: KaspiFeedPublicTokenIn,
     current_user: User = Depends(get_current_user),
@@ -7511,11 +7476,6 @@ async def kaspi_feed_public_token_create(
     )
 
 
-@router.get(
-    "/feed/public-tokens",
-    summary="List public feed tokens",
-    response_model=KaspiFeedPublicTokenListOut,
-)
 async def kaspi_feed_public_tokens_list(
     current_user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_async_db),
@@ -7545,11 +7505,6 @@ async def kaspi_feed_public_tokens_list(
     )
 
 
-@router.post(
-    "/feed/public-tokens/{token_id}/revoke",
-    summary="Revoke public feed token",
-    response_model=KaspiFeedPublicTokenOut,
-)
 async def kaspi_feed_public_token_revoke(
     token_id: int,
     current_user: User = Depends(get_current_user),
@@ -7588,12 +7543,6 @@ async def kaspi_feed_public_token_revoke(
     )
 
 
-@public_router.get(
-    "/public/kaspi/price-list/{token}.xml",
-    summary="Public Kaspi price list feed",
-    response_class=Response,
-    include_in_schema=False,
-)
 async def kaspi_public_price_list(
     request: Request,
     token: str,
@@ -7641,11 +7590,6 @@ async def kaspi_public_price_list(
     )
 
 
-@router.get(
-    "/feed/public/offers.xml",
-    summary="Public Kaspi offers feed",
-    response_class=Response,
-)
 async def kaspi_public_offers_feed(
     request: Request,
     token: str | None = None,
@@ -7698,6 +7642,19 @@ async def kaspi_public_offers_feed(
     )
 
 
+register_kaspi_public_routes(
+    router,
+    public_router,
+    kaspi_feed_public_token_create=kaspi_feed_public_token_create,
+    kaspi_feed_public_tokens_list=kaspi_feed_public_tokens_list,
+    kaspi_feed_public_token_revoke=kaspi_feed_public_token_revoke,
+    kaspi_public_price_list=kaspi_public_price_list,
+    kaspi_public_offers_feed=kaspi_public_offers_feed,
+    kaspi_feed_public_token_out_model=KaspiFeedPublicTokenOut,
+    kaspi_feed_public_token_list_out_model=KaspiFeedPublicTokenListOut,
+)
+
+
 class KaspiStatusFeedOut(BaseModel):
     """Status summary for the latest products feed."""
 
@@ -7747,11 +7704,6 @@ class KaspiStatusOut(BaseModel):
     health: KaspiHealthStatusOut
 
 
-@router.post(
-    "/feeds/products/generate",
-    summary="Сгенерировать фид продуктов для Kaspi",
-    response_model=KaspiFeedGenerateOut,
-)
 async def kaspi_feed_generate_products(
     current_user: User = Depends(_auth_user),
     session: AsyncSession = Depends(get_async_db),
@@ -7775,11 +7727,6 @@ async def kaspi_feed_generate_products(
         )
 
 
-@router.post(
-    "/feeds/{export_id}/upload",
-    summary="Загрузить фид на Kaspi",
-    response_model=KaspiFeedUploadRecordOut,
-)
 async def kaspi_feed_upload(
     export_id: int,
     request: Request,
@@ -7873,11 +7820,6 @@ async def kaspi_feed_upload(
     )
 
 
-@router.get(
-    "/feeds",
-    summary="Получить список фидов",
-    response_model=KaspiFeedListOut,
-)
 async def kaspi_feeds_list(
     kind: str | None = None,
     limit: int = 50,
@@ -7951,11 +7893,6 @@ async def kaspi_feeds_list(
         )
 
 
-@router.get(
-    "/feeds/{export_id}",
-    summary="Получить метаданные фида",
-    response_model=KaspiFeedExportOut,
-)
 async def kaspi_feed_get(
     export_id: int,
     current_user: User = Depends(_auth_user),
@@ -8010,11 +7947,6 @@ async def kaspi_feed_get(
         )
 
 
-@router.get(
-    "/feeds/{export_id}/payload",
-    summary="Получить XML фида",
-    response_class=Response,
-)
 async def kaspi_feed_get_payload(
     export_id: int,
     current_user: User = Depends(_auth_user),
@@ -8059,14 +7991,23 @@ async def kaspi_feed_get_payload(
         )
 
 
+register_kaspi_feed_routes_phase_two(
+    router,
+    kaspi_feed_generate_products=kaspi_feed_generate_products,
+    kaspi_feed_upload=kaspi_feed_upload,
+    kaspi_feeds_list=kaspi_feeds_list,
+    kaspi_feed_get=kaspi_feed_get,
+    kaspi_feed_get_payload=kaspi_feed_get_payload,
+    kaspi_feed_generate_out_model=KaspiFeedGenerateOut,
+    kaspi_feed_upload_record_out_model=KaspiFeedUploadRecordOut,
+    kaspi_feed_list_out_model=KaspiFeedListOut,
+    kaspi_feed_export_out_model=KaspiFeedExportOut,
+)
+
+
 # ============================= STATUS (операционная панель) =============================
 
 
-@router.get(
-    "/status",
-    summary="Статус интеграции Kaspi по компании",
-    response_model=KaspiStatusOut,
-)
 async def kaspi_status(
     current_user: User = Depends(_auth_user),
     session: AsyncSession = Depends(get_async_db),
@@ -8200,3 +8141,10 @@ async def kaspi_status(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to load Kaspi status",
         )
+
+
+register_kaspi_status_routes(
+    router,
+    kaspi_status=kaspi_status,
+    kaspi_status_out_model=KaspiStatusOut,
+)
