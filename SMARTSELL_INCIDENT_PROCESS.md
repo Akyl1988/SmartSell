@@ -326,3 +326,51 @@ Evidence links:
 ### 13.7 Corrective / preventive follow-up
 1. Reuse the same billing triage template for future state-change communications.
 2. Escalate severity to Sev-2 only when diagnostics indicate real degradation (grace/suspended or hard failure signal).
+
+## 14. Operator incident evidence cycle #4 (2026-03-09, tenant 1, scenario C: diagnostics + support triage runtime verification)
+
+### Incident summary
+- Incident ID: `INC-SIM-2026-03-09-04`
+- Type: operator support incident simulation using existing platform-admin support APIs.
+- Runtime markers:
+	- `INCIDENT_SIMULATION_START auth_http=200 company_id=1`
+	- `INCIDENT_SIMULATION_COMPLETE auth_http=200 diagnostics_http=200 triage_http=200`
+
+### Affected tenant
+- `company_id=1` (`Dev Company`)
+
+### Detection signal
+- Operator-initiated support review for tenant operational health and triage readiness.
+- Supporting marker:
+	- `INCIDENT_SIMULATION_START auth_http=200 company_id=1`
+
+### Operator diagnostics
+- Endpoint:
+	- `GET /api/v1/admin/tenants/1/diagnostics` -> `TENANT_DIAGNOSTICS_HTTP=200`
+- Collected outputs:
+	- `connected=true`
+	- `last_success=02/21/2026 04:24:20`
+	- `export_status=pending`
+	- `request_id=e74c1c44-7a53-4f35-b8a5-6729fdee3880`
+
+### Support triage result
+- Endpoint:
+	- `POST /api/v1/admin/tenants/1/support-triage-preview` -> `SUPPORT_TRIAGE_HTTP=200`
+- Collected outputs:
+	- `severity=SEV-3`
+	- `area=kaspi`
+	- `status=preview`
+	- `normalized=true`
+
+### Customer communication note
+- Current status: Investigating (low-impact support review).
+- What is affected: integration freshness/export state is under operator validation.
+- What is not affected: no hard failure was surfaced by this cycle.
+- Next update: after operator follow-up on export progression and sync freshness.
+
+### Closure note
+- Cycle closed with complete runtime evidence and successful API responses across the required support path.
+- Final markers confirmed:
+	- `TENANT_DIAGNOSTICS_HTTP=200`
+	- `SUPPORT_TRIAGE_HTTP=200`
+	- `INCIDENT_SIMULATION_COMPLETE auth_http=200 diagnostics_http=200 triage_http=200`
