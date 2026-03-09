@@ -55,6 +55,39 @@ from sqlalchemy import bindparam, literal_column, select, text
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.api.v1.kaspi_utils import (
+    build_kaspi_orders_params as _build_kaspi_orders_params,
+)
+from app.api.v1.kaspi_utils import (
+    ci_diag_enabled as _ci_diag_enabled,
+)
+from app.api.v1.kaspi_utils import (
+    classify_httpx_error as _classify_httpx_error,
+)
+from app.api.v1.kaspi_utils import (
+    extract_httpx_root_cause as _extract_httpx_root_cause,
+)
+from app.api.v1.kaspi_utils import (
+    extract_import_code as _extract_import_code,
+)
+from app.api.v1.kaspi_utils import (
+    extract_schema_required_fields as _extract_schema_required_fields,
+)
+from app.api.v1.kaspi_utils import (
+    extract_schema_types as _extract_schema_types,
+)
+from app.api.v1.kaspi_utils import (
+    is_dev_environment as _is_dev_environment,
+)
+from app.api.v1.kaspi_utils import (
+    kaspi_stub_enabled as _kaspi_stub_enabled,
+)
+from app.api.v1.kaspi_utils import (
+    mask_secret as _mask_secret,
+)
+from app.api.v1.kaspi_utils import (
+    probe_response_snippet as _probe_response_snippet,
+)
 from app.core.config import settings
 from app.core.db import get_async_db  # noqa — для совместимости импорт-алиас
 from app.core.dependencies import enforce_rate_limit, require_store_admin_company
@@ -96,6 +129,15 @@ from app.schemas.kaspi import (
     KaspiTokenIn,
     KaspiTokenOut,
     OrdersQuery,
+)
+from app.schemas.kaspi_local_legacy import (
+    AvailabilityBulkIn,
+    AvailabilitySyncIn,
+    KaspiMcSessionIn,
+    KaspiMcSessionListOut,
+    KaspiMcSessionOut,
+    KaspiMcSyncOut,
+    KaspiTokenMaskedOut,
 )
 from app.services.integration_events import record_integration_event
 from app.services.kaspi_feed_upload_service import (
@@ -140,20 +182,6 @@ FAST_PROBE_TIMEOUT = 5.0
 SYNC_NOW_TIMEOUT_SEC = 25.0
 
 
-def _is_dev_environment() -> bool:
-    env_name = str(getattr(settings, "ENVIRONMENT", "") or "").lower()
-    debug_flag = bool(getattr(settings, "DEBUG", False))
-    if debug_flag:
-        return True
-    if env_name in {"local", "development", "dev", "test", "testing", "pytest"}:
-        return True
-    return bool(os.environ.get("PYTEST_CURRENT_TEST"))
-
-
-def _ci_diag_enabled() -> bool:
-    return os.environ.get("CI_DIAG", "").strip() == "1"
-
-
 try:  # pragma: no cover - py<3.11 compatibility
     _ = ExceptionGroup  # type: ignore[name-defined]
     _HAS_EXCEPTION_GROUP = True
@@ -193,18 +221,6 @@ def _exception_group_info(exc: BaseException) -> dict[str, Any]:
     return info
 
 
-def normalize_name(name: str) -> str:
-    return name.strip().lower()
-
-
-def _mask_secret(value: str | None, *, head: int = 6, tail: int = 4) -> str | None:
-    if not value:
-        return None
-    if len(value) <= head + tail:
-        return value
-    return f"{value[:head]}...{value[-tail:]}"
-
-
 def _kaspi_user_agent() -> str:
     return (
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) " "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120 Safari/537.36"
@@ -221,69 +237,6 @@ def _build_kaspi_httpx_client() -> httpx.AsyncClient:
         "User-Agent": _kaspi_user_agent(),
     }
     return httpx.AsyncClient(timeout=timeout, limits=limits, headers=headers, http2=False)
-
-
-def _build_kaspi_orders_params(
-    *,
-    ge_ms: int,
-    le_ms: int,
-    state: str | None = None,
-    page_number: int = 0,
-    page_size: int = 1,
-) -> dict[str, int | str]:
-    params: dict[str, int | str] = {
-        "page[number]": int(page_number),
-        "page[size]": int(page_size),
-        "filter[orders][creationDate][$ge]": int(ge_ms),
-        "filter[orders][creationDate][$le]": int(le_ms),
-    }
-    effective_state = (state or "NEW").strip()
-    if effective_state:
-        params["filter[orders][state]"] = effective_state
-    return params
-
-
-def _kaspi_stub_enabled() -> bool:
-    raw = os.environ.get("SMARTSELL_KASPI_STUB", "")
-    if not raw:
-        return False
-    return raw.strip().lower() in {"1", "true", "yes", "on", "enable", "enabled"}
-
-
-def _probe_response_snippet(value: str | None, limit: int = 200) -> str:
-    if not value:
-        return ""
-    text_value = value.strip()
-    if len(text_value) <= limit:
-        return text_value
-    return f"{text_value[:limit]}..."
-
-
-def _extract_httpx_root_cause(exc: Exception) -> tuple[str | None, str | None]:
-    cause = getattr(exc, "__cause__", None) or getattr(exc, "__context__", None)
-    if not cause:
-        return None, None
-    return type(cause).__name__, str(cause)
-
-
-def _classify_httpx_error(exc: Exception, root_cause_type: str | None, root_cause_message: str | None) -> str:
-    if isinstance(exc, httpx.TimeoutException):
-        return "timeout"
-    if isinstance(exc, httpx.ConnectTimeout):
-        return "connect_timeout"
-    if isinstance(exc, httpx.ReadTimeout):
-        return "read_timeout"
-    if isinstance(exc, httpx.WriteTimeout):
-        return "write_timeout"
-    if isinstance(exc, httpx.ConnectError):
-        return "connect_error"
-    cause_type = (root_cause_type or "").lower()
-    cause_msg = (root_cause_message or "").lower()
-    if "ssl" in cause_type or "tls" in cause_type or "ssl" in cause_msg or "tls" in cause_msg:
-        return "tls_error"
-    if "dns" in cause_type or "gaierror" in cause_type or "name or service" in cause_msg:
-        return "dns_error"
-    return "request_error"
 
 
 def _log_kaspi_probe_response(
@@ -550,10 +503,6 @@ async def _upsert_kaspi_offers(
     return {"fetched": len(offers), "inserted": inserted, "updated": updated}
 
 
-def _extract_import_code(payload: dict) -> str | None:
-    return payload.get("importCode") or payload.get("import_code") or payload.get("code") or payload.get("id")
-
-
 async def _create_import_run(
     session: AsyncSession,
     *,
@@ -611,58 +560,6 @@ async def _find_recent_import_run_by_hash(
         .limit(1)
     )
     return result.scalars().first()
-
-
-def _normalize_goods_payload(payload: list[dict[str, Any]] | dict[str, Any]) -> list[dict[str, Any]]:
-    if isinstance(payload, list):
-        return payload
-    if isinstance(payload, dict):
-        data = payload.get("data")
-        if isinstance(data, list):
-            return data
-        return [payload]
-    raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="payload_required")
-
-
-def _extract_schema_required_fields(schema: dict[str, Any]) -> list[str]:
-    required = schema.get("required")
-    if isinstance(required, list):
-        return [str(item) for item in required if item]
-    fields = schema.get("fields")
-    if isinstance(fields, list):
-        required_fields: list[str] = []
-        for entry in fields:
-            if not isinstance(entry, dict):
-                continue
-            if entry.get("required") is True and entry.get("name"):
-                required_fields.append(str(entry["name"]))
-        return required_fields
-    return []
-
-
-def _extract_schema_types(schema: dict[str, Any]) -> dict[str, str]:
-    properties = schema.get("properties")
-    if isinstance(properties, dict):
-        types: dict[str, str] = {}
-        for key, value in properties.items():
-            if not isinstance(value, dict):
-                continue
-            field_type = value.get("type")
-            if field_type:
-                types[str(key)] = str(field_type)
-        return types
-    fields = schema.get("fields")
-    if isinstance(fields, list):
-        types = {}
-        for entry in fields:
-            if not isinstance(entry, dict):
-                continue
-            name = entry.get("name")
-            field_type = entry.get("type")
-            if name and field_type:
-                types[str(name)] = str(field_type)
-        return types
-    return {}
 
 
 def _validate_payload_against_schema(
@@ -1192,54 +1089,6 @@ def _feed_export_to_out(export: KaspiFeedExport) -> KaspiFeedExportOut:
 
 
 # ------------------------------- Локальные схемы (deprecated - use app/schemas/kaspi.py) ------
-
-
-class AvailabilitySyncIn(BaseModel):
-    product_id: int = Field(..., ge=1, description="ID продукта в нашей БД")
-
-
-class AvailabilityBulkIn(BaseModel):
-    limit: int = Field(500, ge=1, le=5000, description="Максимум товаров за одну операцию")
-
-
-class KaspiMcSessionIn(BaseModel):
-    merchant_uid: str = Field(..., min_length=3, max_length=128)
-    cookies: str = Field(..., min_length=3)
-
-
-class KaspiMcSessionOut(BaseModel):
-    merchant_uid: str
-    is_active: bool
-    created_at: datetime
-    updated_at: datetime
-    last_used_at: datetime | None = None
-    last_error: str | None = None
-    cookies_masked: str | None = None
-
-
-class KaspiMcSessionListOut(BaseModel):
-    items: list[KaspiMcSessionOut]
-
-
-class KaspiMcSyncOut(BaseModel):
-    rows_total: int
-    rows_ok: int
-    rows_failed: int
-    errors: list[dict[str, Any]] = []
-
-
-class KaspiTokenMaskedOut(BaseModel):
-    """Ответ для карточки токена без раскрытия секрета."""
-
-    id: str
-    store_name: str
-    token_hex_masked: str
-    created_at: Any
-    updated_at: Any
-    last_selftest_at: datetime | None = None
-    last_selftest_status: str | None = None
-    last_selftest_error_code: str | None = None
-    last_selftest_error_message: str | None = None
 
 
 async def _record_kaspi_event(
