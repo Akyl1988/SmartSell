@@ -1,4 +1,5 @@
 import axios, { AxiosError, InternalAxiosRequestConfig } from 'axios'
+import { bootstrapTokenStore, clearSessionTokens, getAccessToken, getRefreshToken, setSessionTokens } from '../auth/tokenStore'
 
 const baseURL = import.meta.env.VITE_API_URL || 'http://localhost:8000'
 
@@ -21,10 +22,7 @@ type RetryConfig = InternalAxiosRequestConfig & {
 
 let refreshInFlight: Promise<string | null> | null = null
 
-function clearStoredTokens(): void {
-  localStorage.removeItem('access_token')
-  localStorage.removeItem('refresh_token')
-}
+bootstrapTokenStore()
 
 function extractErrorSignal(error: AxiosError): { status?: number; detail?: string; code?: string } {
   const status = error.response?.status
@@ -54,13 +52,17 @@ function shouldAttemptRefresh(error: AxiosError, config: RetryConfig | undefined
   }
 
   const signal = (detail || code || '').toLowerCase()
-  return signal === 'token_expired'
+  if (signal === 'invalid_credentials') {
+    return false
+  }
+
+  return Boolean(getRefreshToken())
 }
 
 async function refreshAccessTokenSingleFlight(): Promise<string | null> {
   if (!refreshInFlight) {
     refreshInFlight = (async () => {
-      const refreshToken = localStorage.getItem('refresh_token')
+      const refreshToken = getRefreshToken()
       if (!refreshToken) {
         return null
       }
@@ -71,8 +73,7 @@ async function refreshAccessTokenSingleFlight(): Promise<string | null> {
         if (!tokens.access_token || !tokens.refresh_token) {
           return null
         }
-        localStorage.setItem('access_token', tokens.access_token)
-        localStorage.setItem('refresh_token', tokens.refresh_token)
+        setSessionTokens(tokens.access_token, tokens.refresh_token)
         return tokens.access_token
       } catch {
         return null
@@ -86,12 +87,22 @@ async function refreshAccessTokenSingleFlight(): Promise<string | null> {
 }
 
 apiClient.interceptors.request.use((config) => {
-  const token = localStorage.getItem('access_token')
-  if (token) {
-    config.headers.Authorization = `Bearer ${token}`
-  }
-  return config
+  return (async () => {
+    if (!config.skipAuthRefresh && refreshInFlight) {
+      await refreshInFlight.catch(() => null)
+    }
+
+    const token = getAccessToken()
+    if (token) {
+      config.headers.Authorization = `Bearer ${token}`
+    }
+    return config
+  })()
 })
+
+function dispatchUnauthorized(reason: string): void {
+  window.dispatchEvent(new CustomEvent('auth:unauthorized', { detail: { reason } }))
+}
 
 apiClient.interceptors.response.use(
   (response) => response,
@@ -107,14 +118,15 @@ apiClient.interceptors.response.use(
         return apiClient.request(config)
       }
 
-      clearStoredTokens()
-      window.dispatchEvent(new CustomEvent('auth:unauthorized'))
+      clearSessionTokens()
+      dispatchUnauthorized('session_expired')
       return Promise.reject(error)
     }
 
     const status = error.response?.status
     if (status === 401) {
-      window.dispatchEvent(new CustomEvent('auth:unauthorized'))
+      clearSessionTokens()
+      dispatchUnauthorized('unauthorized')
     }
     if (status === 402) {
       window.dispatchEvent(new CustomEvent('auth:payment_required'))
