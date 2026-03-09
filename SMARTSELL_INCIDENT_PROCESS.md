@@ -148,3 +148,82 @@ Evidence links (logs/request IDs/PRs):
 - Process is used consistently for all Sev 1/Sev 2 incidents.
 - At least two incidents include complete timeline + customer updates + closure notes.
 - At least one postmortem completed with corrective actions tracked.
+
+## 11. Operator incident evidence cycle (2026-03-09, tenant 1)
+
+This section records one real operator incident-style handling path using existing support/diagnostics APIs only (no DB access, no workflow redesign).
+
+### 11.1 Incident intake (input)
+- Trigger: support review of tenant Kaspi integration state.
+- Tenant: `company_id=1`.
+- Endpoint evidence:
+	- `GET /api/v1/admin/tenants/1/diagnostics` -> `HTTP 200`
+	- `POST /api/v1/admin/tenants/1/support-triage-preview` -> `HTTP 200`
+- Submitted triage payload:
+	- `severity=SEV-3`
+	- `area=kaspi`
+	- `issue_summary="Kaspi support incident simulation: export remains pending while no recent failure is exposed; verify sync freshness and feed pipeline state."`
+	- `latest_request_id=ef168bbb-44c1-4395-8b46-337c1b3273ac`
+
+### 11.2 Diagnostics lookup snapshot
+- `kaspi.connected=true`
+- `kaspi.last_successful_sync_at=2026-02-21T04:24:20.557748`
+- `kaspi.last_failed_sync_at=null`
+- `kaspi.last_error_summary=null`
+- `kaspi.last_export_status=pending`
+- `kaspi.last_import_status=null`
+- `support.last_request_id=ef168bbb-44c1-4395-8b46-337c1b3273ac`
+
+### 11.3 Triage classification output (existing workflow)
+- Triage endpoint returned:
+	- `severity=SEV-3`
+	- `area=kaspi`
+	- `status=preview`
+	- `normalized=true`
+	- `automation_supported=false`
+	- `diagnostics_endpoint=/api/v1/admin/tenants/1/diagnostics`
+- Recommended next steps from preview:
+	- `confirm_tenant`
+	- `classify_area`
+	- `fetch_diagnostics`
+	- `determine_impact`
+	- `choose_next_action`
+	- `collect_evidence`
+	- `mark_status`
+
+### 11.4 Operator next action recommendation
+- Treat as **SEV-3 kaspi integration triage** (degraded/needs follow-up, no active failure signal).
+- Execute controlled Kaspi feed/export pipeline verification and sync freshness check.
+- Track by `latest_request_id` and attach follow-up outcome to incident timeline.
+
+### 11.5 Incident note (postmortem-style record)
+```text
+Postmortem ID: PM-INC-SIM-2026-03-09-01
+Incident ID: INC-SIM-2026-03-09-01
+Date: 2026-03-09
+Owner: Founder/Ops
+
+Summary:
+Operator executed full support incident-style path for tenant 1 using diagnostics + support-triage-preview endpoints.
+
+Impact:
+No active outage detected; potential Kaspi feed/sync freshness concern for one tenant support case.
+
+Timeline (UTC):
+- Detection: support review opened from tenant integration visibility check.
+- Triage: diagnostics fetched (HTTP 200), severity/area classified as SEV-3/kaspi via triage preview (HTTP 200).
+- Mitigation: immediate recommendation prepared (verify feed/export pipeline and sync freshness).
+- Resolution: simulation cycle completed with evidence recorded.
+
+Root cause:
+Not a confirmed platform failure; this record validates operator process execution path.
+
+Corrective / preventive follow-up:
+1) Re-run same operator cycle on additional real support cases.
+2) Accumulate complete multi-incident timelines before promoting Incident process to Exists.
+
+Evidence links:
+- /api/v1/admin/tenants/1/diagnostics
+- /api/v1/admin/tenants/1/support-triage-preview
+- SMARTSELL_TENANT_DIAGNOSTICS_SUMMARY.md
+```
