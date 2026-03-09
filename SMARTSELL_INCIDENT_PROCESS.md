@@ -227,3 +227,102 @@ Evidence links:
 - /api/v1/admin/tenants/1/support-triage-preview
 - SMARTSELL_TENANT_DIAGNOSTICS_SUMMARY.md
 ```
+
+## 12. Operator incident evidence cycle #2 (2026-03-09, tenant 1, scenario A: kaspi stale/export pending)
+
+### 12.1 Intake
+- Tenant/company: `company_id=1` (`Dev Company`)
+- Incident input:
+	- `severity=SEV-3`
+	- `area=kaspi`
+	- `issue_summary="Kaspi support review: export status is 'pending' while last sync success is '02/21/2026 04:24:20' and no hard failure is reported."`
+	- `latest_request_id=ef168bbb-44c1-4395-8b46-337c1b3273ac`
+
+### 12.2 Diagnostics snapshot
+- Endpoint call:
+	- `GET /api/v1/admin/tenants/1/diagnostics` -> `CYCLEA_DIAGNOSTICS_HTTP=200`
+- Raw diagnostics highlights:
+	- `kaspi.connected=true`
+	- `kaspi.last_successful_sync_at=2026-02-21T04:24:20.557748`
+	- `kaspi.last_failed_sync_at=null`
+	- `kaspi.last_error_summary=null`
+	- `kaspi.last_export_status=pending`
+	- `support.last_request_id=ef168bbb-44c1-4395-8b46-337c1b3273ac`
+
+### 12.3 Triage classification output
+- Endpoint call:
+	- `POST /api/v1/admin/tenants/1/support-triage-preview` -> `CYCLEA_TRIAGE_HTTP=200`
+- Raw triage output:
+	- `severity=SEV-3`
+	- `area=kaspi`
+	- `status=preview`
+	- `normalized=true`
+	- `diagnostics_endpoint=/api/v1/admin/tenants/1/diagnostics`
+	- `recommended_next_steps=[confirm_tenant, classify_area, fetch_diagnostics, determine_impact, choose_next_action, collect_evidence, mark_status]`
+
+### 12.4 Operator next action
+- Continue as support degradation review (no hard failure signal).
+- Verify export pipeline progression from `pending` and confirm sync freshness window for tenant communication.
+
+### 12.5 Customer update note
+- Current status: Investigating (low-impact support review).
+- What is affected: Kaspi integration requires operator verification due to pending export state.
+- What is not affected: No hard sync failure is currently reported in diagnostics.
+- Next update: after export pipeline follow-up and freshness check.
+
+### 12.6 Closure note
+- Cycle closed as triage-evidence complete: diagnostics and triage contract both returned `200` and produced actionable next steps.
+- No active outage declared for this cycle.
+
+### 12.7 Corrective / preventive follow-up
+1. Track recurring `last_export_status=pending` duration in repeated support checks.
+2. Keep request-id correlation (`support.last_request_id`) in every follow-up note.
+
+## 13. Operator incident evidence cycle #3 (2026-03-09, tenant 1, scenario B: billing/lifecycle clarification)
+
+### 13.1 Intake
+- Tenant/company: `company_id=1` (`Dev Company`)
+- Incident input:
+	- `severity=SEV-3`
+	- `area=billing`
+	- `issue_summary="Billing/lifecycle support review: subscription_state 'active', billing.state 'active', grace_until '', and last_payment_status '' require operator clarification for tenant communication."`
+	- `latest_request_id=ef168bbb-44c1-4395-8b46-337c1b3273ac`
+
+### 13.2 Diagnostics snapshot
+- Endpoint call:
+	- `GET /api/v1/admin/tenants/1/diagnostics` -> `CYCLEB_DIAGNOSTICS_HTTP=200`
+- Raw diagnostics highlights:
+	- `subscription_state=active`
+	- `billing.state=active`
+	- `billing.grace_until=null`
+	- `billing.last_payment_status=null`
+	- `lifecycle_state=ACTIVE`
+	- `support.last_request_id=ef168bbb-44c1-4395-8b46-337c1b3273ac`
+
+### 13.3 Triage classification output
+- Endpoint call:
+	- `POST /api/v1/admin/tenants/1/support-triage-preview` -> `CYCLEB_TRIAGE_HTTP=200`
+- Raw triage output:
+	- `severity=SEV-3`
+	- `area=billing`
+	- `status=preview`
+	- `normalized=true`
+	- `diagnostics_endpoint=/api/v1/admin/tenants/1/diagnostics`
+	- `recommended_next_steps=[confirm_tenant, classify_area, fetch_diagnostics, determine_impact, choose_next_action, collect_evidence, mark_status]`
+
+### 13.4 Operator next action
+- Treat as billing communication-clarification case (not an active payment failure incident).
+- Provide tenant-facing explanation of current active state and what signals would indicate grace/suspension transition.
+
+### 13.5 Customer update note
+- Current status: Clarified.
+- What is affected: no active billing lock indicated at this time.
+- What is not affected: tenant remains in active lifecycle/billing state.
+- Next update: only if billing state changes (grace/suspension trigger) or customer reports impact.
+
+### 13.6 Closure note
+- Cycle closed as informational billing review with complete evidence trail (`diagnostics=200`, `triage=200`) and documented operator decision.
+
+### 13.7 Corrective / preventive follow-up
+1. Reuse the same billing triage template for future state-change communications.
+2. Escalate severity to Sev-2 only when diagnostics indicate real degradation (grace/suspended or hard failure signal).
