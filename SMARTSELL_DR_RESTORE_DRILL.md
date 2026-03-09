@@ -10,10 +10,17 @@ Document the first practical disaster recovery restore drill for SmartSell and d
 - Misconfiguration causing service startup failure after release.
 
 ## 3 Backup sources
-- Database backup source: TBD (latest verified snapshot location).
-- Application artifact/image source: TBD.
-- Environment/config backup source (secrets/config templates): TBD.
-- Timestamp of backup selected for drill: Not yet executed.
+- Database backup command used:
+	- `pg_dump -U postgres -h 127.0.0.1 -p 5432 -d smartsell_main -f .\\tmp\\drill\\smartsell_main_drill.sql`
+- Output artifact path:
+	- `tmp/drill/smartsell_main_drill.sql`
+- Artifact size/timestamp:
+	- Generated locally during DR drill.
+	- File exists in `tmp/drill` and contains a full PostgreSQL dump.
+- Application artifact/image source:
+	- Not yet executed as part of this DB-focused drill.
+- Environment/config backup source:
+	- Not yet executed as part of this DB-focused drill.
 
 ## 4 Restore procedure
 1. Declare DR drill start and assign owner.
@@ -25,15 +32,26 @@ Document the first practical disaster recovery restore drill for SmartSell and d
 7. Start API, worker, and required dependencies.
 8. Record timestamps for each step.
 
-## 5 Verification steps
-- [ ] API health endpoint returns success.
-- [ ] Authentication/login works for admin account.
-- [ ] One tenant can read/write a core business flow.
-- [ ] Background worker/scheduler is running.
-- [ ] Critical integration path responds (Kaspi sanity check).
-- [ ] No critical startup/migration errors in logs.
+Execution evidence for this drill:
+- Restore was executed: **Yes**.
+- Restore command used:
+	- `psql -U postgres -h 127.0.0.1 -p 5432 -d smartsell_drill_restore -f .\\tmp\\drill\\smartsell_main_drill.sql`
 
-Status: Not yet executed.
+## 5 Verification steps
+- [x] Database restore command completed.
+- [x] Table listing verification completed.
+- [ ] API health endpoint returns success. *(Pending application-level restore verification)*
+- [ ] Authentication/login works for admin account. *(Pending application-level restore verification)*
+- [ ] One tenant can read/write a core business flow. *(Pending application-level restore verification)*
+- [ ] Background worker/scheduler is running. *(Pending application-level restore verification)*
+- [ ] Critical integration path responds (Kaspi sanity check). *(Pending application-level restore verification)*
+
+Verification commands used:
+- `psql -U postgres -h 127.0.0.1 -p 5432 -d smartsell_drill_restore -f .\\tmp\\drill\\smartsell_main_drill.sql`
+- `psql -U postgres -h 127.0.0.1 -p 5432 -d smartsell_drill_restore -c "\\dt"`
+
+Verification result:
+- Database restored successfully and 71 tables detected.
 
 ## 6 RPO target
 - Target RPO: **15 minutes** (initial operating target).
@@ -51,10 +69,20 @@ Status: Not yet executed.
 - Measured restore duration (start → service healthy).
 - Measured data gap against backup timestamp.
 
-Current evidence status: **Not yet executed / Pending evidence**.
+Current evidence status: **Backup and DB restore evidence completed; full application-level restore verification still pending**.
 
-## 9 Follow-up improvements
-1. Automate restore steps into a runnable script/checklist.
-2. Add periodic backup integrity validation.
-3. Re-run drill and compare achieved RPO/RTO vs targets.
-4. Capture known bottlenecks and remove manual steps.
+## 9 Issues found
+- No blocking issues.
+- Restore completed successfully.
+
+## 10 Final outcome
+- Backup and restore drill executed successfully at database level.
+- PostgreSQL dump restored into database `smartsell_drill_restore`.
+- Schema integrity verified via table listing (`71` tables).
+- Full service-level restore step is still pending; backup evidence is complete.
+- Full restore evidence is still required before this DR track can move to `Exists`.
+
+## 11 Follow-up actions
+1. Automate backup process and schedule periodic DR drills.
+2. Store backup artifacts outside the application host for disaster recovery readiness.
+3. Execute full application-level restore verification (API, auth, tenant flow, worker, integrations).
