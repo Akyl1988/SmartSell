@@ -90,3 +90,86 @@ Record operational dry-run evidence for `SMARTSELL_RELEASE_CHECKLIST.md` using r
 1. Repeat dry-run for at least one additional cycle and archive evidence pack.
 2. Add one production-like rehearsal with explicit API/worker restart log excerpts.
 3. Keep rollback rehearsal evidence linked to each release record.
+
+## 9. Release cycle #2 (repeatability evidence)
+
+### 9.1 Release date
+- 2026-03-09 18:33:06 +05:00
+
+### 9.2 Environment
+- Workspace: `D:\LLM_HUB\SmartSell`
+- OS: Windows
+- Python: `3.11.9` (`.venv`)
+- Branch: `feat/incident-followups`
+- Commit: `414d68c`
+
+### 9.3 Steps executed
+
+#### 9.3.1 Release-style preparation evidence
+- Command block:
+	- `git rev-parse --abbrev-ref HEAD`
+	- `git rev-parse --short HEAD`
+	- `git status -sb`
+	- `Get-Date -Format "yyyy-MM-dd HH:mm:ss K"`
+	- `D:/LLM_HUB/SmartSell/.venv/Scripts/python.exe --version`
+- Observed:
+	- Branch: `feat/incident-followups`
+	- Commit: `414d68c`
+	- Python: `3.11.9`
+	- Working tree includes untracked `docs/plans/`.
+
+#### 9.3.2 Migration verification
+- Command:
+	- `D:/LLM_HUB/SmartSell/.venv/Scripts/python.exe -m pytest tests/test_migration_upgrade.py::test_alembic_upgrade_head_runs -q`
+- Observed output:
+	- `1 passed in 6.93s`
+
+#### 9.3.3 Smoke verification
+- Command:
+	- `D:/LLM_HUB/SmartSell/.venv/Scripts/python.exe -m pytest tests/test_health_and_ready.py::test_health_ok tests/test_health_and_ready.py::test_ready_relaxed_200 tests/app/test_auth.py::TestAuth::test_login_with_password tests/app/api/test_admin_tenant_diagnostics.py::test_admin_tenant_diagnostics_summary tests/app/api/test_preorders_rbac_tenant.py::test_preorders_store_admin_flow_and_tenant_isolation tests/test_process_role_gating.py::test_scheduler_starts_for_scheduler_role tests/test_process_role_gating.py::test_kaspi_runner_starts_for_runner_role -q`
+- Observed output:
+	- `7 passed in 12.70s`
+
+#### 9.3.4 Diagnostics verification
+- Covered by:
+	- `tests/app/api/test_admin_tenant_diagnostics.py::test_admin_tenant_diagnostics_summary`
+- Result:
+	- PASS (included in `7 passed in 12.70s`)
+
+#### 9.3.5 One critical tenant flow
+- Covered by:
+	- `tests/app/api/test_preorders_rbac_tenant.py::test_preorders_store_admin_flow_and_tenant_isolation`
+- Result:
+	- PASS (included in `7 passed in 12.70s`)
+
+#### 9.3.6 Rollback readiness verification
+- Command block:
+	- `D:/LLM_HUB/SmartSell/.venv/Scripts/python.exe -m pytest tests/test_upgrade_playbook_docs.py::test_upgrade_playbook_docs_contains_key_strings -q`
+	- `Test-Path "tmp/drill/smartsell_main_drill.sql"`
+	- `Select-String -Path "SMARTSELL_RELEASE_CHECKLIST.md" -Pattern "Rollback procedure"`
+	- `Select-String -Path "docs/UPGRADE_PLAYBOOK.md" -Pattern "Rollback|restore_db.ps1|backup_db.ps1|/api/v1/health|/ready"`
+	- `Select-String -Path "SMARTSELL_DR_RESTORE_DRILL.md" -Pattern "smartsell_drill_restore|tmp/drill/smartsell_main_drill.sql"`
+- Observed output:
+	- `1 passed in 6.44s`
+	- `True` for `tmp/drill/smartsell_main_drill.sql`
+	- Rollback procedure and restore/health references are present and consistent across checklist/runbooks.
+
+#### 9.3.7 Onboarding-style verification reference
+- Command:
+	- `D:/LLM_HUB/SmartSell/.venv/Scripts/python.exe -m pytest tests/app/test_auth.py::TestAuth::test_login_with_password tests/app/api/test_admin_tenant_diagnostics.py::test_admin_tenant_diagnostics_summary tests/app/api/test_preorders_rbac_tenant.py::test_preorders_store_admin_flow_and_tenant_isolation -q`
+- Observed output:
+	- `3 passed in 10.74s`
+
+### 9.4 Confirmations (Cycle #2)
+- migrations verified: **Yes**.
+- API smoke verification passed: **Yes**.
+- diagnostics endpoint verification passed: **Yes**.
+- one critical tenant flow verification passed: **Yes**.
+- worker/scheduler readiness verification passed: **Yes**.
+- rollback readiness documentation consistency verified: **Yes**.
+- onboarding-style compact verification executed: **Yes**.
+
+### 9.5 Outcome (Cycle #2)
+- Outcome: PASS.
+- Repeatability status: second compact operational cycle evidence collected and archived in this document.
+- Remaining gap before `Exists`: production-like release evidence with explicit deploy/restart logs and repeated cycles beyond test-environment rehearsal.

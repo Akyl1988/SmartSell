@@ -48,3 +48,40 @@ Step mapping to playbook:
 1. Add a dedicated "integration connectivity evidence" step output template (Kaspi/non-Kaspi).
 2. Add a single consolidated onboarding evidence form so operators can attach command/test outputs consistently.
 3. Add explicit "billing state snapshot capture" command/API step to reduce manual interpretation.
+
+## 9. Onboarding dry run cycle #2 (repeatability)
+
+## 9.1 Purpose
+Record a second compact onboarding-style rehearsal using the same documented flow to strengthen repeatability evidence.
+
+## 9.2 Execution metadata
+- Date/time: 2026-03-09 18:33:06 +05:00
+- Workspace: `D:\LLM_HUB\SmartSell`
+- Branch: `feat/incident-followups`
+- Commit: `414d68c`
+
+## 9.3 Steps executed
+Command:
+
+`pytest tests/app/test_auth.py::TestAuth::test_login_with_password tests/app/api/test_admin_tenant_diagnostics.py::test_admin_tenant_diagnostics_summary tests/app/api/test_preorders_rbac_tenant.py::test_preorders_store_admin_flow_and_tenant_isolation -q`
+
+Observed result:
+- `3 passed in 10.74s`
+
+Step mapping to onboarding playbook:
+1. Admin access verification (`test_login_with_password`).
+2. Tenant diagnostics verification (`test_admin_tenant_diagnostics_summary`).
+3. First core flow and tenant isolation verification (`test_preorders_store_admin_flow_and_tenant_isolation`).
+
+## 9.4 Validation summary
+- [x] Admin access verified.
+- [x] Tenant diagnostics endpoint validated.
+- [x] First core flow verification repeated successfully.
+- [x] Tenant isolation check repeated successfully.
+- [ ] Live integration connectivity check in restored/production-like environment (still not covered in this compact rehearsal).
+- [ ] Real customer onboarding sign-off package (still operator/manual outside automated rehearsal).
+
+## 9.5 Outcome
+- Cycle #2 onboarding rehearsal: PASS.
+- Repeatability improved at simulated/test level (two dry-run cycles recorded).
+- `Exists` still requires repeated real-tenant onboardings with full evidence packs and owner sign-off.
