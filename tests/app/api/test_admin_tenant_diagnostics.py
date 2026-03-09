@@ -85,6 +85,15 @@ async def test_admin_tenant_diagnostics_summary(async_client, async_db_session, 
     assert payload.get("lifecycle_state") == "ACTIVE"
     assert payload.get("lifecycle_reason") == "subscription_active"
     assert payload.get("lifecycle_source")
+    assert payload.get("retention_policy_version")
+    retention_limits = payload.get("retention_limits")
+    assert isinstance(retention_limits, dict)
+    assert retention_limits.get("orders_days")
+    assert retention_limits.get("campaigns_days")
+    assert retention_limits.get("logs_days")
+    assert retention_limits.get("events_days")
+    assert retention_limits.get("reports_days")
+    assert retention_limits.get("diagnostics_snapshots_days")
     assert payload.get("billing", {}).get("state") == "active"
     assert payload.get("billing", {}).get("last_payment_status") == "captured"
     assert payload.get("kaspi", {}).get("connected") is True

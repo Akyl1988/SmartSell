@@ -46,6 +46,8 @@ class TenantDiagnosticsSummaryOut(BaseSchema):
     lifecycle_state: str | None = None
     lifecycle_reason: str | None = None
     lifecycle_source: str | None = None
+    retention_policy_version: str | None = None
+    retention_limits: dict[str, int] | None = None
     billing: TenantDiagnosticsBilling
     kaspi: TenantDiagnosticsKaspi
     repricing: TenantDiagnosticsRepricing

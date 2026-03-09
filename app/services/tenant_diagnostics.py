@@ -7,6 +7,7 @@ from sqlalchemy.exc import OperationalError, ProgrammingError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.customer_lifecycle import resolve_customer_lifecycle
+from app.core.data_retention import RETENTION_POLICY_VERSION, get_retention_limits
 from app.core.exceptions import NotFoundError
 from app.core.subscriptions.features import FEATURE_PREORDERS, FEATURE_REPRICING
 from app.core.subscriptions.plan_catalog import get_plan_features, normalize_plan_id
@@ -211,6 +212,8 @@ async def get_tenant_diagnostics_summary(
         lifecycle_state=lifecycle.state.value,
         lifecycle_reason=lifecycle.reason,
         lifecycle_source=lifecycle.source,
+        retention_policy_version=RETENTION_POLICY_VERSION,
+        retention_limits=get_retention_limits(),
         billing=TenantDiagnosticsBilling(
             state=billing_state,
             grace_until=grace_until,
