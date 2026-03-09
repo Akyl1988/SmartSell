@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import datetime
 
 from sqlalchemy import desc, select
+from sqlalchemy.exc import OperationalError, ProgrammingError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.exceptions import NotFoundError
@@ -13,6 +14,9 @@ from app.models.audit_log import AuditLog
 from app.models.billing import BillingPayment
 from app.models.company import Company
 from app.models.integration_event import IntegrationEvent
+from app.models.kaspi_feed_export import KaspiFeedExport
+from app.models.kaspi_feed_upload import KaspiFeedUpload
+from app.models.kaspi_goods_import import KaspiGoodsImport
 from app.models.kaspi_mc_session import KaspiMcSession
 from app.models.kaspi_order_sync_state import KaspiOrderSyncState
 from app.models.repricing import RepricingRule, RepricingRun
@@ -62,6 +66,23 @@ def _pick_latest_request_id(
     return None
 
 
+def _session_health(session_row: KaspiMcSession | None) -> str | None:
+    if session_row is None:
+        return None
+    if not bool(session_row.is_active):
+        return "inactive"
+    if (session_row.last_error or "").strip():
+        return "degraded"
+    return "healthy"
+
+
+async def _safe_scalar_one_or_none(db: AsyncSession, stmt):
+    try:
+        return (await db.execute(stmt)).scalar_one_or_none()
+    except (OperationalError, ProgrammingError):
+        return None
+
+
 async def get_tenant_diagnostics_summary(
     db: AsyncSession,
     *,
@@ -96,13 +117,37 @@ async def get_tenant_diagnostics_summary(
         await db.execute(select(KaspiOrderSyncState).where(KaspiOrderSyncState.company_id == company_id).limit(1))
     ).scalar_one_or_none()
 
-    kaspi_session_exists = (
-        await db.execute(
-            select(KaspiMcSession.id)
-            .where(KaspiMcSession.company_id == company_id, KaspiMcSession.is_active.is_(True))
-            .limit(1)
-        )
-    ).scalar_one_or_none()
+    kaspi_session = await _safe_scalar_one_or_none(
+        db,
+        select(KaspiMcSession)
+        .where(KaspiMcSession.company_id == company_id)
+        .order_by(desc(KaspiMcSession.updated_at))
+        .limit(1),
+    )
+    kaspi_session_exists = bool(kaspi_session and kaspi_session.is_active)
+
+    import_run = await _safe_scalar_one_or_none(
+        db,
+        select(KaspiGoodsImport)
+        .where(KaspiGoodsImport.company_id == company_id)
+        .order_by(desc(KaspiGoodsImport.updated_at))
+        .limit(1),
+    )
+
+    export_upload = await _safe_scalar_one_or_none(
+        db,
+        select(KaspiFeedUpload)
+        .where(KaspiFeedUpload.company_id == company_id)
+        .order_by(desc(KaspiFeedUpload.updated_at))
+        .limit(1),
+    )
+    export_generated = await _safe_scalar_one_or_none(
+        db,
+        select(KaspiFeedExport)
+        .where(KaspiFeedExport.company_id == company_id)
+        .order_by(desc(KaspiFeedExport.updated_at))
+        .limit(1),
+    )
 
     kaspi_connected = bool(company.kaspi_store_id) or kaspi_session_exists is not None
     last_error_summary = None
@@ -171,6 +216,9 @@ async def get_tenant_diagnostics_summary(
             last_successful_sync_at=sync_state.last_synced_at if sync_state else None,
             last_failed_sync_at=sync_state.last_error_at if sync_state else None,
             last_error_summary=last_error_summary,
+            token_or_session_health=_session_health(kaspi_session),
+            last_import_status=getattr(import_run, "status", None),
+            last_export_status=(getattr(export_upload, "status", None) or getattr(export_generated, "status", None)),
         ),
         repricing=TenantDiagnosticsRepricing(
             enabled=repricing_enabled,

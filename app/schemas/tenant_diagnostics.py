@@ -16,6 +16,9 @@ class TenantDiagnosticsKaspi(BaseSchema):
     last_successful_sync_at: datetime | None = None
     last_failed_sync_at: datetime | None = None
     last_error_summary: str | None = None
+    token_or_session_health: str | None = None
+    last_import_status: str | None = None
+    last_export_status: str | None = None
 
 
 class TenantDiagnosticsRepricing(BaseSchema):
