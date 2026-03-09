@@ -81,3 +81,49 @@ Notes:
 	- suspension/reactivation decision log,
 	- override record (if used).
 - Support/admin surface clearly shows current billing state and grace/suspension context.
+
+## 11. Operational evidence cycle (2026-03-09)
+
+This section records one repository-grounded operator cycle using existing endpoints/scripts only (no DB access).
+
+### 11.1 Targeted transition validation (narrow tests)
+- Command:
+	- `pytest tests/services/test_billing_state_machine.py::test_active_to_grace_resolution tests/services/test_billing_state_machine.py::test_grace_to_suspended_resolution -q`
+- Output:
+	- `2 passed in 7.18s`
+	- `BILLING_STATE_MACHINE_TARGET_EXIT=0`
+- Meaning:
+	- `active -> grace` resolution and `grace -> suspended` resolution are validated in current state machine implementation.
+
+### 11.2 Grace access-policy validation (narrow tests)
+- Command:
+	- `pytest tests/test_billing_wallet_topup.py::test_past_due_within_grace_allows_access tests/test_billing_wallet_topup.py::test_after_grace_access_denied -q`
+- Output:
+	- `2 passed in 7.79s`
+	- `BILLING_GRACE_ACCESS_TESTS_EXIT=0`
+- Meaning:
+	- Access is allowed during grace window and denied after grace expiry (`blocked` behavior).
+
+### 11.3 Real operator recovery cycle (tenant 1)
+- Initial runtime probe (guarded endpoint):
+	- `GET /api/v1/products?page=1&per_page=1` -> `402`
+	- `code=SUBSCRIPTION_REQUIRED`
+- Starting subscription snapshot:
+	- `START_SUB_STATUS=active`
+	- `START_SUB_PLAN=Pro`
+	- `START_SUB_ID=7`
+- Transition trigger:
+	- `POST /api/v1/subscriptions/7/cancel` -> `POST_TRIGGER_STATUS=canceled`
+	- blocked probe remains `402 SUBSCRIPTION_REQUIRED`
+- Recovery actions (existing admin flow):
+	1. `POST /api/v1/admin/wallet/topup` (`companyId=1`) -> `TOPUP_HTTP=200`, `TOPUP_BALANCE=2000.00`
+	2. `POST /api/v1/admin/subscriptions/activate` first attempt -> `409 DUPLICATE_VALUE` (active duplicate exists)
+	3. `POST /api/v1/subscriptions/7/cancel` (idempotent recovery prep) -> `CANCEL_STATUS=canceled`
+	4. `POST /api/v1/admin/subscriptions/activate` retry -> `ACTIVATE2_HTTP=200`, `ACTIVATE2_STATUS=active`, `ACTIVATE2_SUB_ID=9`
+- Resulting reactivated access check:
+	- `GET /api/v1/products?page=1&per_page=1` -> `POST_ACTIVATE_PROBE_HTTP=200`
+
+### 11.4 Evidence conclusion
+- One complete operator path is now evidenced:
+	- blocked billing state signal (`402 SUBSCRIPTION_REQUIRED`) -> wallet/subscription remediation -> active state with restored guarded access (`200`).
+- This is strong Partial evidence, but not enough for `Exists` per Section 10 (still missing repeated real failure cases + communication timeline packs).
