@@ -444,6 +444,52 @@ function Get-SmokeErrorCode {
   return $null
 }
 
+function Test-SmokeTenantProductCreatePreflight {
+  param(
+    [string]$BaseUrl,
+    [string]$AccessToken = $null,
+    [int]$TimeoutSec = 20
+  )
+
+  if (-not $BaseUrl) { throw "BaseUrl is required" }
+
+  $resp = Invoke-SmartsellApi -Method "GET" -Url "$BaseUrl/api/v1/products?page=1&per_page=1" -TimeoutSec $TimeoutSec -AccessToken $AccessToken
+  if (-not $resp) {
+    throw "SMOKE_PRECHECK_SUBSCRIPTION_CALL_FAILED: empty response from products probe"
+  }
+
+  if ($resp.StatusCode -ge 200 -and $resp.StatusCode -lt 300) {
+    return [PSCustomObject]@{
+      status = "eligible"
+      period_end = ""
+      grace_until = ""
+    }
+  }
+
+  $detail = $null
+  if ($resp.Body -and $resp.Body.PSObject.Properties["detail"]) { $detail = $resp.Body.detail }
+  $detailCode = $null
+  if ($detail -and $detail.PSObject.Properties["code"]) { $detailCode = [string]$detail.code }
+
+  if ($resp.StatusCode -eq 402 -and $detailCode -eq "SUBSCRIPTION_REQUIRED") {
+    $subscription = $null
+    if ($detail.PSObject.Properties["subscription"]) { $subscription = $detail.subscription }
+    $subStatus = ""
+    $periodEndRaw = ""
+    $graceUntilRaw = ""
+    if ($subscription) {
+      if ($subscription.PSObject.Properties["status"]) { $subStatus = [string]$subscription.status }
+      if ($subscription.PSObject.Properties["period_end"]) { $periodEndRaw = [string]$subscription.period_end }
+      if ($subscription.PSObject.Properties["grace_until"]) { $graceUntilRaw = [string]$subscription.grace_until }
+    }
+    throw "SMOKE_PRECHECK_SUBSCRIPTION_BLOCK: status=$subStatus period_end=$periodEndRaw grace_until=$graceUntilRaw (HTTP_402/SUBSCRIPTION_REQUIRED). Remediation: run scripts/smoke-billing-trial.ps1 or activate/topup tenant, then rerun smoke."
+  }
+
+  $bodyText = $null
+  try { $bodyText = $resp.Body | ConvertTo-Json -Depth 10 } catch { $bodyText = $resp.Body }
+  throw "SMOKE_PRECHECK_SUBSCRIPTION_CALL_FAILED: status=$($resp.StatusCode) body=$bodyText"
+}
+
 function Ensure-SmartsellAuth {
   param(
     [string]$BaseUrl,

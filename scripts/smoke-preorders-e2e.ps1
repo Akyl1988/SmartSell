@@ -1,5 +1,6 @@
 param(
-  [string]$BaseUrl = $env:SMARTSELL_BASE_URL
+  [string]$BaseUrl = $env:SMARTSELL_BASE_URL,
+  [switch]$SkipTenantPreflight
 )
 
 $ErrorActionPreference = "Stop"
@@ -23,6 +24,11 @@ $authHeaders = Get-SmokeAuthHeader -BaseUrl $BaseUrl
 $accessToken = $null
 if ($authHeaders -and $authHeaders.Authorization) {
   $accessToken = ([string]$authHeaders.Authorization).Replace("Bearer ", "").Trim()
+}
+
+if (-not $SkipTenantPreflight) {
+  $preflight = Test-SmokeTenantProductCreatePreflight -BaseUrl $BaseUrl -AccessToken $accessToken
+  Write-Host ("[INFO] Subscription preflight OK: status={0} period_end={1} grace_until={2}" -f $preflight.status, $preflight.period_end, $preflight.grace_until)
 }
 
 function Assert-Ok {

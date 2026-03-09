@@ -281,3 +281,135 @@ Record operational dry-run evidence for `SMARTSELL_RELEASE_CHECKLIST.md` using r
 ### 12.4 Known limitation
 - Live integration sanity check still returns unauthorized in local context:
 	- `kaspi_status_error: Response status code does not indicate success: 401 (Unauthorized).`
+
+## 13. Final release-gate rehearsal (2026-03-09)
+
+### 13.1 Metadata
+- Start timestamp: `2026-03-09 20:11:54 +05:00`
+- Continuation start: `2026-03-09 20:12:15 +05:00`
+- Finish timestamp: `2026-03-09 20:12:28 +05:00`
+- Branch: `feat/incident-followups`
+- Commit: `3622a57`
+- Python: `3.11.9`
+
+### 13.2 Runtime endpoint verification
+- `GET /api/v1/health` -> `200`
+- `GET /ready` -> `200`
+- `GET /api/v1/wallet/health` -> `200`
+
+### 13.3 Smoke scripts
+- `scripts/smoke-auth.ps1` -> `SMOKE_AUTH_EXIT=0`
+- `scripts/smoke-preorders-e2e.ps1` -> failed with:
+	- `Create product failed: status=402`
+	- `"code": "SUBSCRIPTION_REQUIRED"`
+	- `"code": "HTTP_402"`
+- `scripts/smoke-orders-lifecycle.ps1` -> failed with:
+	- `Create product failed: status=402`
+	- `"code": "SUBSCRIPTION_REQUIRED"`
+	- `"code": "HTTP_402"`
+
+### 13.4 Minimal Kaspi sanity (authenticated)
+- Runtime authenticated check used valid Bearer JWT in tenant context.
+- Observed output:
+	- `KASPI_RUNTIME_USER_ID=1`
+	- `KASPI_RUNTIME_USER_ROLE=admin`
+	- `KASPI_RUNTIME_USER_COMPANY_ID=1`
+	- `KASPI_STATUS_HTTP=200`
+	- `KASPI_RUNTIME_EXIT=0`
+
+### 13.5 Worker role gating verification
+- `pytest tests/test_process_role_gating.py -q`
+- Output: `8 passed in 9.30s`
+- Exit: `ROLE_GATING_EXIT=0`
+
+### 13.6 Observation window
+- Continuation window duration: `12.57` seconds (`RELEASE_GATE_CONT_DURATION_SECONDS=12.57`).
+- No runtime endpoint errors were observed during the rehearsal window (`health/ready/wallet/kaspi status` checks succeeded).
+- Release gate outcome is still **FAIL** due to business precondition failure in smoke scripts (`SUBSCRIPTION_REQUIRED`, HTTP 402).
+
+### 13.7 Final gate decision
+- `Release checklist and smoke gate` is **not promoted to Exists** in this cycle.
+- Exact missing prerequisite:
+	- tenant must satisfy subscription/wallet activation precondition required for product-creating smoke flows.
+
+## 14. Release-gate blocker fix validation (2026-03-09)
+
+### 14.1 Implemented operational fix
+- Added tenant preflight check for product-creating smoke flows (no billing guard bypass):
+	- `scripts/smoke-preorders-e2e.ps1`
+	- `scripts/smoke-orders-lifecycle.ps1`
+	- shared helper in `scripts/_smoke-lib.ps1`: `Test-SmokeTenantProductCreatePreflight`
+- Preflight uses read-only protected probe:
+	- `GET /api/v1/products?page=1&per_page=1`
+- Behavior:
+	- if subscription is valid -> smoke continues;
+	- if `HTTP 402 / SUBSCRIPTION_REQUIRED` -> smoke fails immediately with explicit remediation before product creation.
+
+### 14.2 Focused validation
+- `pytest tests/test_smoke_subscription_preflight_scripts.py -q`
+	- `3 passed in 7.57s`
+
+### 14.3 Runtime verification (current tenant state)
+- `scripts/smoke-preorders-e2e.ps1` observed output:
+	- `SMOKE_PRECHECK_SUBSCRIPTION_BLOCK: status=trialing period_end=03/03/2026 20:54:18 grace_until=03/07/2026 05:00:00 (HTTP_402/SUBSCRIPTION_REQUIRED).`
+- `scripts/smoke-orders-lifecycle.ps1` observed output:
+	- `SMOKE_PRECHECK_SUBSCRIPTION_BLOCK: status=trialing period_end=03/03/2026 20:54:18 grace_until=03/07/2026 05:00:00 (HTTP_402/SUBSCRIPTION_REQUIRED).`
+
+### 14.4 Outcome
+- Root cause is fixed operationally (hidden subscription-state failure removed).
+- Gate remains blocked by real business prerequisite only:
+	- prepare tenant subscription/wallet (e.g., `scripts/smoke-billing-trial.ps1`) before release smoke run.
+
+## 15. Prepared tenant release-gate rehearsal (2026-03-09)
+
+### 15.1 Rehearsal metadata
+- Start timestamp: `2026-03-09 20:38:06 +05:00`
+- Finish timestamp: `2026-03-09 20:38:20 +05:00`
+- Duration: `13.9` seconds
+- Branch: `feat/incident-followups`
+- Commit: `3622a57`
+- Python: `3.11.9`
+
+### 15.2 Tenant preparation (source of truth)
+- Preparation script:
+	- `scripts/smoke-tenant-prepare.ps1 -BaseUrl http://127.0.0.1:8000`
+- Observed output:
+	- `TENANT_COMPANY_ID=1`
+	- `PREVIOUS_SUBSCRIPTION_STATE=status:active;plan:Pro;id:7;period_end:;grace_until:`
+	- `ACTION_TAKEN=none`
+	- `RESULTING_SUBSCRIPTION_STATE=status:active;plan:Pro;id:7;period_end:;grace_until:`
+	- `SMOKE_ALLOWED=True`
+	- `TENANT_PREPARE_EXIT=0`
+
+### 15.3 Runtime endpoint verification
+- `GET /api/v1/health` -> `200`
+- `GET /ready` -> `200`
+- `GET /api/v1/wallet/health` -> `200`
+
+### 15.4 Smoke execution
+- `scripts/smoke-auth.ps1` -> `SMOKE_AUTH_EXIT=0`
+- `scripts/smoke-preorders-e2e.ps1`:
+	- preflight: `[INFO] Subscription preflight OK: status=eligible`
+	- completion: `OK: preorder e2e complete`
+	- exit: `SMOKE_PREORDERS_EXIT=0`
+- `scripts/smoke-orders-lifecycle.ps1`:
+	- preflight: `[INFO] Subscription preflight OK: status=eligible`
+	- completion: `OK: order lifecycle smoke complete`
+	- exit: `SMOKE_ORDERS_LIFECYCLE_EXIT=0`
+
+### 15.5 Minimal Kaspi sanity (authenticated)
+- Observed output:
+	- `KASPI_RUNTIME_USER_ID=1`
+	- `KASPI_RUNTIME_USER_ROLE=admin`
+	- `KASPI_RUNTIME_USER_COMPANY_ID=1`
+	- `KASPI_STATUS_HTTP=200`
+
+### 15.6 Worker role gating
+- `pytest tests/test_process_role_gating.py -q`
+- Output: `8 passed in 9.72s`
+- Exit: `ROLE_GATING_EXIT=0`
+
+### 15.7 Final outcome
+- Release-gate rehearsal on prepared tenant: **PASS**.
+- Product-creating smoke flows pass end-to-end with preflight preserved.
+- Billing/subscription enforcement remains active; no guard bypass applied.
