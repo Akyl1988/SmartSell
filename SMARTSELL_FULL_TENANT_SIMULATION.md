@@ -90,3 +90,7 @@ Operational simulation executed on 2026-03-09 using existing runtime flows only 
 - `GET /api/v1/reports/wallet/transactions.csv` -> `200`
 
 Conclusion: full operational tenant lifecycle is validated on existing runtime path from auth and billing-gated readiness checks through catalog/inventory, orders sync, order/preorder lifecycles, and reports export.
+
+Onboarding evidence mapping note:
+- this simulation can serve as one complete simulated onboarding evidence pack input when reviewed together with `SMARTSELL_ONBOARDING_PLAYBOOK.md` and `SMARTSELL_ONBOARDING_DRY_RUN.md`;
+- it does not represent a real tenant onboarding sign-off record.

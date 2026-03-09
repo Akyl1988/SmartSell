@@ -85,3 +85,13 @@ Step mapping to onboarding playbook:
 - Cycle #2 onboarding rehearsal: PASS.
 - Repeatability improved at simulated/test level (two dry-run cycles recorded).
 - `Exists` still requires repeated real-tenant onboardings with full evidence packs and owner sign-off.
+
+## 10. Consolidated simulated onboarding evidence status (2026-03-09)
+
+This dry-run record plus `SMARTSELL_FULL_TENANT_SIMULATION.md` now provide a single consolidated simulated onboarding evidence base:
+- checklist execution path is reproducible in repeated dry runs;
+- owner/checklist/rollback structure is defined in `SMARTSELL_ONBOARDING_PLAYBOOK.md`;
+- one full operational tenant simulation pack exists with runtime markers and endpoint/smoke outcomes.
+
+Current honest gap to `Exists` remains unchanged:
+- no repeated real-tenant onboardings with complete owner sign-off evidence packs yet (per Section 11 of `SMARTSELL_ONBOARDING_PLAYBOOK.md`).
