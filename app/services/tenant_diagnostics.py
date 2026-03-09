@@ -6,6 +6,7 @@ from sqlalchemy import desc, select
 from sqlalchemy.exc import OperationalError, ProgrammingError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.customer_lifecycle import resolve_customer_lifecycle
 from app.core.exceptions import NotFoundError
 from app.core.subscriptions.features import FEATURE_PREORDERS, FEATURE_REPRICING
 from app.core.subscriptions.plan_catalog import get_plan_features, normalize_plan_id
@@ -96,6 +97,7 @@ async def get_tenant_diagnostics_summary(
     plan = (subscription.plan if subscription else None) or company.subscription_plan
     subscription_state = subscription.effective_status if subscription else None
     billing_state = _map_billing_state(subscription_state)
+    lifecycle = resolve_customer_lifecycle(company=company, subscription=subscription)
 
     grace_until = None
     if subscription is not None:
@@ -206,6 +208,9 @@ async def get_tenant_diagnostics_summary(
         company_name=company.name,
         plan=plan,
         subscription_state=subscription_state,
+        lifecycle_state=lifecycle.state.value,
+        lifecycle_reason=lifecycle.reason,
+        lifecycle_source=lifecycle.source,
         billing=TenantDiagnosticsBilling(
             state=billing_state,
             grace_until=grace_until,

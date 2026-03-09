@@ -82,6 +82,9 @@ async def test_admin_tenant_diagnostics_summary(async_client, async_db_session, 
     assert payload.get("company_id") == company.id
     assert payload.get("company_name") == company.name
     assert payload.get("subscription_state") == "active"
+    assert payload.get("lifecycle_state") == "ACTIVE"
+    assert payload.get("lifecycle_reason") == "subscription_active"
+    assert payload.get("lifecycle_source")
     assert payload.get("billing", {}).get("state") == "active"
     assert payload.get("billing", {}).get("last_payment_status") == "captured"
     assert payload.get("kaspi", {}).get("connected") is True

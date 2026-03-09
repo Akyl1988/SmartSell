@@ -43,6 +43,9 @@ class TenantDiagnosticsSummaryOut(BaseSchema):
     company_name: str
     plan: str | None = None
     subscription_state: str | None = None
+    lifecycle_state: str | None = None
+    lifecycle_reason: str | None = None
+    lifecycle_source: str | None = None
     billing: TenantDiagnosticsBilling
     kaspi: TenantDiagnosticsKaspi
     repricing: TenantDiagnosticsRepricing
