@@ -39,3 +39,53 @@
 ## 8. Operator sign-off
 - Operator: `Founder`
 - Status: `rehearsal successful`
+
+## 9. Runtime ownership operator cycle #2 (2026-03-09 22:31 +05)
+
+### 9.1 Metadata
+- timestamp: `2026-03-09 22:31:04 +05:00`
+- branch: `feat/incident-followups`
+- commit: `4eed667`
+- python version: `3.11.9`
+
+### 9.2 Runtime startup commands (executed)
+- API/web role:
+  - `$env:PROCESS_ROLE='web'; $env:ENABLE_SCHEDULER='0'; $env:ENABLE_KASPI_SYNC_RUNNER='0'; .\.venv\Scripts\python.exe -m uvicorn app.main:app --host 127.0.0.1 --port 8010`
+- Scheduler role:
+  - `$env:PROCESS_ROLE='scheduler'; $env:ENABLE_SCHEDULER='1'; $env:ENABLE_KASPI_SYNC_RUNNER='0'; $env:KASPI_AUTOSYNC_ENABLED='true'; .\.venv\Scripts\python.exe -m uvicorn app.main:app --host 127.0.0.1 --port 8011`
+- Runner role:
+  - `$env:PROCESS_ROLE='runner'; $env:ENABLE_SCHEDULER='0'; $env:ENABLE_KASPI_SYNC_RUNNER='1'; .\.venv\Scripts\python.exe -m uvicorn app.main:app --host 127.0.0.1 --port 8012`
+
+### 9.3 Health/readiness results
+- `http://127.0.0.1:8010/api/v1/health` -> `200`
+- `http://127.0.0.1:8010/ready` -> `200`
+- `http://127.0.0.1:8011/api/v1/health` -> `200`
+- `http://127.0.0.1:8011/ready` -> `200`
+- `http://127.0.0.1:8012/api/v1/health` -> `200`
+- `http://127.0.0.1:8012/ready` -> `200`
+
+### 9.4 Ownership boundary verification
+- Role-gating tests:
+  - `tests/test_process_role_gating.py` focused set -> `4 passed in 8.21s`
+- Startup-hook tests:
+  - `tests/test_core_startup_hook_guards.py` focused set -> `2 passed in 6.86s`
+
+### 9.5 Observation window
+- window start: `2026-03-09 22:32:31 +05:00`
+- window finish: `2026-03-09 22:42:32 +05:00`
+- duration: `10,02` minutes
+- status: `incident-free`
+- note:
+  - scheduler logs show periodic scheduler worker ticks.
+  - web role logs for the same window show health/readiness access logs and no scheduler tick lines.
+
+### 9.6 Rollback decision
+- rollback required? `no`
+- reason:
+  - role processes stayed healthy during the full window;
+  - ownership boundary checks passed;
+  - no runtime incident observed.
+
+### 9.7 Operator sign-off
+- operator: `Founder`
+- outcome: `accepted`

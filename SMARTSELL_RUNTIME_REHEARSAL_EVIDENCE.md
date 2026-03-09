@@ -115,3 +115,61 @@ Observed output:
 
 Status:
 - Live integration sanity is not confirmed in this rehearsal pack.
+
+## 8. Operator-style runtime ownership rehearsal pack #2 (2026-03-09)
+
+### 8.1 Rehearsal metadata
+- Timestamp: `2026-03-09 22:31:04 +05:00`
+- Branch: `feat/incident-followups`
+- Commit: `4eed667`
+- Python: `3.11.9`
+
+### 8.2 Explicit role-start commands (executed)
+- Web role (request-serving only):
+	- `$env:PROCESS_ROLE='web'; $env:ENABLE_SCHEDULER='0'; $env:ENABLE_KASPI_SYNC_RUNNER='0'; .\.venv\Scripts\python.exe -m uvicorn app.main:app --host 127.0.0.1 --port 8010`
+- Scheduler role (background scheduling):
+	- `$env:PROCESS_ROLE='scheduler'; $env:ENABLE_SCHEDULER='1'; $env:ENABLE_KASPI_SYNC_RUNNER='0'; $env:KASPI_AUTOSYNC_ENABLED='true'; .\.venv\Scripts\python.exe -m uvicorn app.main:app --host 127.0.0.1 --port 8011`
+- Runner role (background runner loop):
+	- `$env:PROCESS_ROLE='runner'; $env:ENABLE_SCHEDULER='0'; $env:ENABLE_KASPI_SYNC_RUNNER='1'; .\.venv\Scripts\python.exe -m uvicorn app.main:app --host 127.0.0.1 --port 8012`
+
+### 8.3 Health/readiness verification by role
+- `ROLE_PORT_8010_HEALTH_HTTP=200`
+- `ROLE_PORT_8010_READY_HTTP=200`
+- `ROLE_PORT_8011_HEALTH_HTTP=200`
+- `ROLE_PORT_8011_READY_HTTP=200`
+- `ROLE_PORT_8012_HEALTH_HTTP=200`
+- `ROLE_PORT_8012_READY_HTTP=200`
+
+### 8.4 Role-gating verification (focused)
+- Command:
+	- `.\.venv\Scripts\python.exe -m pytest tests/test_process_role_gating.py::test_scheduler_starts_for_scheduler_role tests/test_process_role_gating.py::test_scheduler_skipped_for_web_role tests/test_process_role_gating.py::test_kaspi_runner_starts_for_runner_role tests/test_process_role_gating.py::test_kaspi_runner_skipped_for_scheduler_role -q`
+- Observed output:
+	- `4 passed in 8.21s`
+
+### 8.5 Startup-hook boundary verification (focused)
+- Command:
+	- `D:/LLM_HUB/SmartSell/.venv/Scripts/python.exe -m pytest tests/test_core_startup_hook_guards.py::test_startup_skipped_for_non_web_role tests/test_core_startup_hook_guards.py::test_startup_web_role_respects_migration_flag -q`
+- Observed output:
+	- `2 passed in 6.86s`
+
+### 8.6 Incident-free observation window
+- `RUNTIME_OBS_WINDOW_START=2026-03-09 22:32:31 +05:00`
+- `RUNTIME_OBS_WINDOW_FINISH=2026-03-09 22:42:32 +05:00`
+- `RUNTIME_OBS_WINDOW_MINUTES=10,02`
+- End-of-window probes:
+	- `OBS_END_ROLE_PORT_8010_HEALTH_HTTP=200`
+	- `OBS_END_ROLE_PORT_8010_READY_HTTP=200`
+	- `OBS_END_ROLE_PORT_8011_HEALTH_HTTP=200`
+	- `OBS_END_ROLE_PORT_8011_READY_HTTP=200`
+	- `OBS_END_ROLE_PORT_8012_HEALTH_HTTP=200`
+	- `OBS_END_ROLE_PORT_8012_READY_HTTP=200`
+
+### 8.7 Role ownership observation notes
+- Scheduler process output contains periodic scheduler activity (`app.worker.scheduler_worker` and APScheduler job execution).
+- Web role output for the same window contains request access logs for health/readiness probes and no scheduler tick lines.
+- This run provides explicit evidence that background scheduling activity is isolated to scheduler role in the operator rehearsal.
+
+### 8.8 Rollback decision and operator outcome
+- Rollback required: `no`
+- Reason: all role endpoints remained healthy, focused role-gating and startup-hook checks passed, and no runtime incident was observed during the defined window.
+- Operator sign-off: `accepted`
