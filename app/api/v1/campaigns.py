@@ -22,6 +22,7 @@ from app.core.dependencies import require_active_subscription, require_company_a
 from app.core.entitlements import require_entitlement
 from app.core.exceptions import ConflictError, NotFoundError, _ensure_request_id
 from app.core.features import FEATURE_CAMPAIGNS
+from app.core.quotas import QUOTA_CAMPAIGNS, check_quota
 from app.core.rbac import is_platform_admin, is_store_admin, is_store_manager
 from app.core.security import get_current_user
 from app.models.campaign import Campaign as DbCampaign
@@ -965,11 +966,12 @@ async def create_campaign(
     backend = _get_campaigns_storage_backend()
     # owner, учитываем при уникальности
     owner = (campaign.owner or user.username or "").strip()
+    company_id = getattr(user, "company_id", None)
+    if company_id is None:
+        raise NotFoundError("campaign_not_found", code="campaign_not_found", http_status=404)
 
     if backend == "orm":
-        company_id = getattr(user, "company_id", None)
-        if company_id is None:
-            raise NotFoundError("campaign_not_found", code="campaign_not_found", http_status=404)
+        await check_quota(db, company_id=company_id, quota_key=QUOTA_CAMPAIGNS)
 
         title_stmt = (
             select(DbCampaign.id)
@@ -1042,6 +1044,15 @@ async def create_campaign(
         payload["tags"] = _normalize_tags(campaign.tags)
         payload["owner"] = owner
         return Campaign(**payload)
+
+    in_memory_usage = len(
+        [
+            row
+            for row in storage.list_campaigns()
+            if int(row.get("company_id") or 0) == int(company_id) and not bool(row.get("archived"))
+        ]
+    )
+    await check_quota(db, company_id=company_id, quota_key=QUOTA_CAMPAIGNS, current_usage=in_memory_usage)
 
     if _title_exists(campaign.title, owner=owner, company_id=getattr(user, "company_id", None)):
         raise ConflictError("Campaign with this title already exists", "DUPLICATE_TITLE", http_status=409)

@@ -20,6 +20,7 @@ from app.core.dependencies import (
 from app.core.entitlements import require_entitlement
 from app.core.exceptions import NotFoundError, SmartSellValidationError
 from app.core.features import FEATURE_REPRICING
+from app.core.quotas import QUOTA_REPRICING_RULES, check_quota
 from app.core.security import resolve_tenant_company_id
 from app.models.product import Product
 from app.models.repricing import RepricingDiff, RepricingRule, RepricingRun, repricing_run_stats
@@ -175,6 +176,7 @@ async def create_rule(
     db: AsyncSession = Depends(get_async_db),
 ):
     company_id = resolve_tenant_company_id(current_user, not_found_detail="Company not set")
+    await check_quota(db, company_id=company_id, quota_key=QUOTA_REPRICING_RULES)
     _validate_rule_bounds(payload.min_price, payload.max_price)
     rule = RepricingRule(company_id=company_id, **payload.model_dump())
     db.add(rule)
