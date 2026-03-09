@@ -374,3 +374,21 @@ Evidence links:
 	- `TENANT_DIAGNOSTICS_HTTP=200`
 	- `SUPPORT_TRIAGE_HTTP=200`
 	- `INCIDENT_SIMULATION_COMPLETE auth_http=200 diagnostics_http=200 triage_http=200`
+
+## 15. Consolidated Incident process criteria assessment (2026-03-09)
+
+Evidence currently demonstrated by cycles #1-#4:
+- Severity rubric is present and applied in incident records.
+- Owner rule is present and used (`Founder/Ops` in records).
+- Internal/customer templates are present and reflected in incident notes.
+- Multiple operator incident cycles are documented with:
+	- diagnostics usage (`GET /api/v1/admin/tenants/{company_id}/diagnostics`),
+	- triage usage (`POST /api/v1/admin/tenants/{company_id}/support-triage-preview`),
+	- customer communication notes,
+	- closure notes,
+	- corrective/preventive follow-up.
+
+Honest gap before `Exists` (Section 10):
+- current evidence is simulation-style and predominantly Sev-3;
+- still missing confirmed consistency on repeated customer-originated real Sev-1/Sev-2 incidents (including communication cadence);
+- still missing at least one completed postmortem tracked on a real Sev-1/Sev-2 incident.
