@@ -390,5 +390,5 @@ Evidence currently demonstrated by cycles #1-#4:
 
 Honest gap before `Exists` (Section 10):
 - current evidence is simulation-style and predominantly Sev-3;
-- still missing confirmed consistency on repeated customer-originated real Sev-1/Sev-2 incidents (including communication cadence);
-- still missing at least one completed postmortem tracked on a real Sev-1/Sev-2 incident.
+- still missing two customer-originated real Sev-1/Sev-2 incident records with documented communication cadence;
+- still missing one completed postmortem linked to a real Sev-1/Sev-2 incident and tracked corrective actions.
