@@ -45,3 +45,48 @@ Observed output:
 - Some operational checks remain partially manual (integration verification and evidence packaging).
 - Frontend auth hardening improved, but additional runtime race/UX coverage should continue.
 - DR/release readiness still depends on repeated real execution evidence, not single simulation.
+
+## 9. Full operational tenant simulation evidence.
+
+Operational simulation executed on 2026-03-09 using existing runtime flows only (no app code changes, no new endpoints).
+
+### 9.1 Runtime path executed
+1. Store user authentication via existing script:
+	- `pwsh -NoProfile -File .\scripts\smoke-auth.ps1 -BaseUrl http://127.0.0.1:8000`
+2. Subscription state check:
+	- `GET /api/v1/subscriptions/current`
+3. Kaspi integration check:
+	- `GET /api/v1/kaspi/status`
+4. Product catalog check:
+	- `GET /api/v1/products?page=1&per_page=1`
+5. Inventory check:
+	- `GET /api/v1/inventory/stocks`
+6. Orders sync:
+	- `POST /api/v1/kaspi/orders/sync`
+7. Order lifecycle smoke:
+	- `pwsh -NoProfile -File .\scripts\smoke-orders-lifecycle.ps1 -BaseUrl http://127.0.0.1:8000`
+8. Preorder smoke:
+	- `pwsh -NoProfile -File .\scripts\smoke-preorders-e2e.ps1 -BaseUrl http://127.0.0.1:8000`
+9. Reports export verification:
+	- `GET /api/v1/reports/wallet/transactions.csv`
+
+### 9.2 Evidence markers and observed outputs
+- `TENANT_SIMULATION_START subscription_http=200 subscription_status=active`
+- `TENANT_SIMULATION_PRODUCTS http=200`
+- `TENANT_SIMULATION_ORDERS_SYNC http=200`
+- `TENANT_SIMULATION_ORDER_LIFECYCLE exit_code=0`
+- `TENANT_SIMULATION_PREORDERS exit_code=0`
+- `TENANT_SIMULATION_REPORTS http=200`
+- `TENANT_SIMULATION_COMPLETE subscription=200 kaspi=200 products=200 inventory=200 orders_sync=200 order_lifecycle_exit=0 preorders_exit=0 reports=200`
+
+### 9.3 Runtime status summary
+- `GET /api/v1/subscriptions/current` -> `200` (`status=active`)
+- `GET /api/v1/kaspi/status` -> `200`
+- `GET /api/v1/products?page=1&per_page=1` -> `200`
+- `GET /api/v1/inventory/stocks` -> `200`
+- `POST /api/v1/kaspi/orders/sync` -> `200`
+- `scripts/smoke-orders-lifecycle.ps1` -> `exit_code=0`
+- `scripts/smoke-preorders-e2e.ps1` -> `exit_code=0`
+- `GET /api/v1/reports/wallet/transactions.csv` -> `200`
+
+Conclusion: full operational tenant lifecycle is validated on existing runtime path from auth and billing-gated readiness checks through catalog/inventory, orders sync, order/preorder lifecycles, and reports export.
