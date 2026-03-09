@@ -11,12 +11,35 @@ from enum import Enum
 from typing import Any, Literal
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Path, Query, Request, status
-from pydantic import BaseModel, Field, ValidationError, field_validator
+from pydantic import ValidationError
 from sqlalchemy import func, select
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
+from app.api.v1.campaigns_helpers import _normalize_tags, _now_iso, _parse_dt
+from app.api.v1.campaigns_schemas import (
+    AddTagRequest,
+    ArchiveRequest,
+    BulkDeleteRequest,
+    BulkMessageAddRequest,
+    BulkStatusUpdateRequest,
+    BulkUpsertMessageRequest,
+    Campaign,
+    CampaignExportFormat,
+    CampaignListResponse,
+    CampaignStats,
+    ChannelType,
+    Message,
+    MessageStatus,
+    PageMeta,
+    RestoreRequest,
+    ScheduleRequest,
+    SetTagsRequest,
+    UpdateMessageStatusRequest,
+    UpsertMessageRequest,
+)
+from app.api.v1.campaigns_storage import InMemoryStorage
 from app.core.db import get_async_db
 from app.core.dependencies import require_active_subscription, require_company_access, require_store_admin_company
 from app.core.entitlements import require_entitlement
@@ -45,40 +68,6 @@ if not logger.handlers:
 
 
 # ------------------------------------------------------------------------------
-# ВСПОМОГАТЕЛЬНОЕ ВРЕМЯ
-# ------------------------------------------------------------------------------
-def _utcnow() -> datetime:
-    return datetime.now(UTC)
-
-
-def _now_iso() -> str:
-    return _utcnow().replace(microsecond=0).isoformat().replace("+00:00", "Z")
-
-
-def _parse_dt(value: str) -> datetime:
-    v = value.strip()
-    if v.endswith("Z"):
-        v = v[:-1] + "+00:00"
-    dt = datetime.fromisoformat(v)
-    if dt.tzinfo is None:
-        dt = dt.replace(tzinfo=UTC)
-    return dt.astimezone(UTC)
-
-
-def _normalize_tags(tags: list[str] | None) -> list[str]:
-    norm: list[str] = []
-    seen = set()
-    for t in tags or []:
-        tt = (t or "").strip().lower()
-        if not tt:
-            continue
-        if tt not in seen:
-            seen.add(tt)
-            norm.append(tt)
-    return norm
-
-
-# ------------------------------------------------------------------------------
 # АУДИТ (in-memory, с обрезкой)
 # ------------------------------------------------------------------------------
 _AUDIT: list[dict[str, Any]] = []
@@ -91,171 +80,6 @@ def _audit(action: str, meta: dict[str, Any] | None = None) -> None:
     if len(_AUDIT) > AUDIT_MAX_RECORDS:
         del _AUDIT[: len(_AUDIT) - AUDIT_MAX_RECORDS]
     logger.info("audit: %s", rec)
-
-
-# ------------------------------------------------------------------------------
-# IN-MEMORY STORAGE (дефолт; может быть заменён на SQL ниже)
-# ------------------------------------------------------------------------------
-class InMemoryStorage:
-    """
-    Простое и потокобезопасное in-memory хранилище для кампаний и сообщений.
-    Интерфейс спроектирован так, чтобы легко заменить реализацией на SQL.
-    """
-
-    def __init__(self) -> None:
-        self._db: dict[str, dict[int, Any]] = {"campaigns": {}, "messages": {}}
-        self._seq: dict[str, int] = {"campaigns": 0, "messages": 0}
-        self._lock = threading.RLock()
-        self._seed_once()
-
-    # ---- генерация ID
-    def next_id(self, kind: str) -> int:
-        with self._lock:
-            self._seq[kind] = (self._seq.get(kind, 0) or 0) + 1
-            return self._seq[kind]
-
-    # ---- кампании
-    def get_campaign(self, cid: int) -> dict[str, Any] | None:
-        with self._lock:
-            c = self._db["campaigns"].get(cid)
-            return dict(c) if c else None
-
-    def save_campaign(self, data: dict[str, Any]) -> None:
-        with self._lock:
-            data = dict(data)
-            cid = int(data["id"])
-            data["tags"] = _normalize_tags(data.get("tags"))
-            # Сообщения в кампании — список «сырых» dict (для простоты сериализации)
-            msgs = []
-            for m in data.get("messages") or []:
-                if isinstance(m, dict):
-                    msgs.append(dict(m))
-                else:
-                    msgs.append(dict(getattr(m, "__dict__", {})))
-            data["messages"] = msgs
-            self._db["campaigns"][cid] = data
-
-    def delete_campaign(self, cid: int) -> None:
-        with self._lock:
-            data = self._db["campaigns"].pop(cid, None)
-            if not data:
-                return
-            for m in data.get("messages") or []:
-                mid = int(m.get("id")) if isinstance(m, dict) else int(getattr(m, "id", 0))
-                self._db["messages"].pop(mid, None)
-
-    def list_campaigns(self) -> list[dict[str, Any]]:
-        with self._lock:
-            return [dict(v) for v in self._db["campaigns"].values()]
-
-    def title_exists(
-        self,
-        title: str,
-        exclude_id: int | None = None,
-        owner: str | None = None,
-        company_id: int | None = None,
-    ) -> bool:
-        """
-        Проверка уникальности title среди НЕархивных кампаний.
-        Опционально — в разрезе владельца (owner).
-        """
-        t = (title or "").strip().lower()
-        own = (owner or "").strip().lower() if owner else None
-        filter_company_id = int(company_id) if company_id is not None else None
-        with self._lock:
-            for cid, data in self._db["campaigns"].items():
-                if exclude_id is not None and cid == exclude_id:
-                    continue
-                if data.get("archived"):
-                    # архив не блокирует создание новой кампании с тем же title
-                    continue
-                if own is not None and (data.get("owner") or "").strip().lower() != own:
-                    continue
-                if filter_company_id is not None:
-                    try:
-                        row_cid = int(data.get("company_id")) if data.get("company_id") is not None else None
-                    except Exception:
-                        row_cid = None
-                    if row_cid != filter_company_id:
-                        continue
-                other = (data.get("title") or "").strip().lower()
-                if t == other:
-                    return True
-        return False
-
-    # ---- сообщения
-    def get_message(self, mid: int) -> dict[str, Any] | None:
-        with self._lock:
-            m = self._db["messages"].get(mid)
-            return dict(m) if m else None
-
-    def list_messages(self) -> list[dict[str, Any]]:
-        with self._lock:
-            return [dict(v) for v in self._db["messages"].values()]
-
-    def save_message(self, mid: int, payload: dict[str, Any]) -> None:
-        with self._lock:
-            self._db["messages"][mid] = dict(payload)
-
-    def delete_message(self, mid: int) -> None:
-        with self._lock:
-            self._db["messages"].pop(mid, None)
-
-    # ---- сиды (для тестов/демо)
-    def _ensure_seed_campaign(self, campaign_id: int, title: str, active: bool = True) -> None:
-        if campaign_id not in self._db["campaigns"]:
-            self._db["campaigns"][campaign_id] = {
-                "id": campaign_id,
-                "title": title,
-                "description": f"{title} campaign for tests",
-                "active": active,
-                "archived": False,
-                "tags": ["test"],
-                "messages": [],
-                "created_at": _now_iso(),
-                "updated_at": _now_iso(),
-                "owner": "demo",
-                "schedule": None,
-            }
-
-    def _seed_once(self) -> None:
-        # по умолчанию при pytest/CI сид не включаем, чтобы не ловить коллизии title
-        running_pytest = "PYTEST_CURRENT_TEST" in os.environ
-        seed_enabled = os.getenv("SMARTSELL_SEED_CAMPAIGNS")
-        do_seed = (seed_enabled == "1") or (seed_enabled is None and not running_pytest)
-        if do_seed and not self._db["campaigns"]:
-            self._db["campaigns"][1] = {
-                "id": 1,
-                "title": "Demo",
-                "description": "Demo campaign",
-                "active": True,
-                "archived": False,
-                "tags": ["test"],
-                "messages": [],
-                "created_at": _now_iso(),
-                "updated_at": _now_iso(),
-                "owner": "demo",
-                "schedule": None,
-            }
-            self._db["campaigns"][999] = {
-                "id": 999,
-                "title": "Draft",
-                "description": "Draft campaign",
-                "active": False,
-                "archived": False,
-                "tags": ["draft"],
-                "messages": [],
-                "created_at": _now_iso(),
-                "updated_at": _now_iso(),
-                "owner": "demo",
-                "schedule": None,
-            }
-            self._ensure_seed_campaign(1001, "Seeded")
-            self._ensure_seed_campaign(1002, "Seeded 2")
-            self._ensure_seed_campaign(1003, "Seeded 3")
-
-        current_max = max(self._db["campaigns"].keys()) if self._db["campaigns"] else 0
-        self._seq["campaigns"] = max(self._seq.get("campaigns", 0), current_max, 1003)
 
 
 # ------------------------------------------------------------------------------
@@ -540,228 +364,6 @@ def enqueue_send_campaign(campaign_id: int) -> dict[str, Any]:
     out = _send_campaign_job(campaign_id)
     out.update({"queued": False, "backend": "inline"})
     return out
-
-
-# ------------------------------------------------------------------------------
-# СХЕМЫ / МОДЕЛИ
-# ------------------------------------------------------------------------------
-class MessageStatus(str, Enum):
-    pending = "pending"
-    sent = "sent"
-    delivered = "delivered"
-    failed = "failed"
-    read = "read"
-    scheduled = "scheduled"
-    cancelled = "cancelled"
-
-
-class ChannelType(str, Enum):
-    email = "email"
-    whatsapp = "whatsapp"
-    telegram = "telegram"
-    sms = "sms"
-    push = "push"
-
-
-class Message(BaseModel):
-    id: int | None = None
-    recipient: str = Field(..., min_length=1, max_length=255, description="Recipient (email/phone/username)")
-    content: str = Field(..., min_length=1, max_length=2000)
-    status: MessageStatus = MessageStatus.pending
-    channel: ChannelType = ChannelType.email
-    scheduled_for: str | None = None  # ISO datetime (UTC)
-    error: str | None = None
-
-    @field_validator("recipient")
-    def _validate_recipient(cls, v: str) -> str:
-        vv = (v or "").strip()
-        if not vv:
-            raise ValueError("recipient must be non-empty")
-        return vv
-
-    @field_validator("content")
-    def _validate_content(cls, v: str) -> str:
-        vv = (v or "").strip()
-        if not vv:
-            raise ValueError("content must be non-empty")
-        return vv
-
-    @field_validator("scheduled_for", mode="before")
-    def _validate_scheduled_for(cls, v: str | None) -> str | None:
-        if v is None:
-            return None
-        vv = (v or "").strip()
-        if not vv:
-            return None
-        try:
-            _parse_dt(vv)
-        except Exception:
-            raise ValueError("scheduled_for must be ISO 8601, e.g. 2025-12-31T23:59:59Z")
-        return vv
-
-
-class Campaign(BaseModel):
-    id: int | None = None
-    title: str = Field(..., min_length=1, max_length=255)
-    description: str | None = Field(None, max_length=2000)
-    active: bool = True
-    archived: bool = False
-    company_id: int | None = None
-    tags: list[str] = Field(default_factory=list)
-    messages: list[Message] = Field(default_factory=list)
-    created_at: str | None = None
-    updated_at: str | None = None
-    schedule: str | None = None  # ISO datetime (UTC)
-    owner: str | None = Field(None, max_length=100)
-    processing_status: str | None = None
-    queued_at: str | None = None
-    started_at: str | None = None
-    finished_at: str | None = None
-    failed_at: str | None = None
-    next_attempt_at: str | None = None
-    last_error: str | None = None
-    attempts: int | None = None
-    request_id: str | None = None
-
-    @field_validator("tags", mode="before")
-    def _ensure_tags(cls, v):
-        if v is None:
-            return []
-        if isinstance(v, str):
-            v = [v]
-        cleaned: list[str] = []
-        seen = set()
-        for raw in v or []:
-            tag = (raw or "").strip().lower()
-            if not tag:
-                continue
-            if len(tag) > 50:
-                raise ValueError("tag must be <= 50 characters")
-            if tag in seen:
-                continue
-            seen.add(tag)
-            cleaned.append(tag)
-        return cleaned
-
-    @field_validator("title")
-    def _validate_title(cls, v: str) -> str:
-        vv = (v or "").strip()
-        if not vv:
-            raise ValueError("title must be non-empty")
-        return vv
-
-    @field_validator("description", mode="before")
-    def _normalize_description(cls, v: str | None) -> str | None:
-        if v is None:
-            return None
-        vv = (v or "").strip()
-        return vv or None
-
-    @field_validator("owner", mode="before")
-    def _normalize_owner(cls, v: str | None) -> str | None:
-        if v is None:
-            return None
-        vv = (v or "").strip()
-        return vv or None
-
-    @field_validator("schedule", mode="before")
-    def _validate_schedule(cls, v: str | None) -> str | None:
-        if v is None:
-            return None
-        vv = (v or "").strip()
-        if not vv:
-            return None
-        try:
-            _parse_dt(vv)
-        except Exception:
-            raise ValueError("schedule must be ISO 8601, e.g. 2025-12-31T23:59:59Z")
-        return vv
-
-
-class CampaignStats(BaseModel):
-    total_messages: int
-    pending: int
-    sent: int
-    delivered: int
-    failed: int
-    read: int
-    scheduled: int
-    cancelled: int
-
-
-class ScheduleRequest(BaseModel):
-    schedule_time: str = Field(..., description="Scheduled time (ISO 8601, UTC or with TZ)")
-
-    @field_validator("schedule_time")
-    def validate_schedule_time(cls, v: str) -> str:
-        try:
-            dt = _parse_dt(v)
-        except Exception:
-            raise ValueError("schedule_time must be ISO 8601, e.g. 2025-12-31T23:59:59Z")
-        if dt <= _utcnow():
-            raise ValueError("schedule_time must be in the future")
-        return v
-
-
-class AddTagRequest(BaseModel):
-    tag: str = Field(..., min_length=1, max_length=50, description="New tag")
-
-
-class SetTagsRequest(BaseModel):
-    tags: list[str] = Field(default_factory=list)
-
-
-class PageMeta(BaseModel):
-    page: int
-    size: int
-    total: int
-
-
-class CampaignListResponse(BaseModel):
-    items: list[Campaign]
-    meta: PageMeta
-
-
-class ArchiveRequest(BaseModel):
-    reason: str | None = Field(None, description="Archive reason")
-
-
-class RestoreRequest(BaseModel):
-    reason: str | None = Field(None, description="Restore reason")
-
-
-class BulkDeleteRequest(BaseModel):
-    ids: list[int] = Field(default_factory=list)
-
-
-class UpsertMessageRequest(BaseModel):
-    recipient: str = Field(..., min_length=1)
-    content: str = Field(..., min_length=1, max_length=2000)
-    status: MessageStatus = MessageStatus.pending
-    channel: ChannelType = ChannelType.email
-
-
-class UpdateMessageStatusRequest(BaseModel):
-    status: MessageStatus
-    error: str | None = None
-
-
-class BulkStatusUpdateRequest(BaseModel):
-    status: MessageStatus
-    ids: list[int] = Field(default_factory=list)
-
-
-class CampaignExportFormat(str, Enum):
-    json = "json"
-    csv = "csv"
-
-
-class BulkMessageAddRequest(BaseModel):
-    messages: list[UpsertMessageRequest]
-
-
-class BulkUpsertMessageRequest(BaseModel):
-    items: list[UpsertMessageRequest] = Field(default_factory=list)
 
 
 # ------------------------------------------------------------------------------
