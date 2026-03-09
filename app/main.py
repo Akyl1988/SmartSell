@@ -31,14 +31,18 @@ from app.core.config import run_startup_side_effects, settings, should_disable_s
 from app.core.exceptions import register_exception_handlers
 from app.main_helpers import (
     env_int,
-    env_last_deploy_time,
     env_truthy,
     has_path_prefix,
     is_postgres_url,
     parse_trusted_hosts,
-    redact_dict,
 )
 from app.main_middleware_helpers import apply_security_and_lifecycle_headers
+from app.main_payload_helpers import (
+    build_dbinfo_payload,
+    build_debug_headers_payload,
+    build_env_info_payload,
+    build_info_payload,
+)
 
 try:
     from starlette.middleware.sessions import SessionMiddleware
@@ -1413,15 +1417,7 @@ def _create_app() -> FastAPI:
     # Base info helpers & endpoints
     # ----------------------------------------------------------------------------------
     def _build_info() -> dict[str, Any]:
-        return {
-            "version": settings.VERSION,
-            "git_sha": os.getenv("GIT_SHA", ""),
-            "build_time": os.getenv("BUILD_TIME", ""),
-            "build_number": os.getenv("BUILD_NUMBER", ""),
-            "environment": settings.ENVIRONMENT,
-            "last_deploy_at": env_last_deploy_time(),
-            "app_name": settings.APP_NAME,
-        }
+        return build_info_payload(settings)
 
     @app.get("/")
     async def root() -> dict[str, Any]:
@@ -1719,18 +1715,7 @@ def _create_app() -> FastAPI:
         """
         Безопасная сводка по БД без раскрытия паролей.
         """
-        safe_url = getattr(settings, "DATABASE_URL_SAFE", None) or getattr(settings, "DATABASE_URL", "")  # type: ignore
-
-        try:
-            drv = (getattr(settings, "sqlalchemy_urls", {}) or {}).get("driver") or "postgresql"
-        except Exception:
-            drv = "postgresql"
-
-        return {
-            "driver": drv,
-            "url": safe_url,
-            "status": "ok",
-        }
+        return build_dbinfo_payload(settings)
 
     # ----------------------------------------------------------------------------------
     # 🔧 Диагностика
@@ -1757,27 +1742,13 @@ def _create_app() -> FastAPI:
         allow = bool(settings.DEBUG) or env_truthy(os.getenv("ALLOW_ENV_ENDPOINT", "0"))
         if not allow:
             raise HTTPException(status_code=404, detail="not_found")
-        env = redact_dict(dict(os.environ))
-        safe_settings = redact_dict(
-            {
-                "APP_NAME": settings.APP_NAME,
-                "ENVIRONMENT": settings.ENVIRONMENT,
-                "VERSION": settings.VERSION,
-                "DEBUG": bool(settings.DEBUG),
-                "DATABASE_URL": getattr(settings, "DATABASE_URL", None),
-                "REDIS_URL": getattr(settings, "REDIS_URL", None),
-                "SMTP_HOST": getattr(settings, "SMTP_HOST", None),
-                "SMTP_PORT": getattr(settings, "SMTP_PORT", None),
-            }
-        )
-        return {"env": env, "settings": safe_settings}
+        return build_env_info_payload(settings)
 
     @app.get("/debug/headers")
     async def debug_headers(request: Request) -> dict[str, Any]:
         if not settings.DEBUG:
             raise HTTPException(status_code=404, detail="not_found")
-        headers = {k: v for k, v in request.headers.items()}
-        return {"method": request.method, "url": str(request.url), "headers": headers}
+        return build_debug_headers_payload(request)
 
     # /metrics
     if STARLETTE_EXPORTER_AVAILABLE:
