@@ -7,6 +7,6 @@
 | Billing state machine | P0 | Partial | Founder/Product+Backend | 2-3 days |  | Subscription states and transitions defined | Policy decisions pending |
 | Billing failure/grace/suspension policy | P0 | Partial | Founder/Product+Backend | 2-3 days |  | Subscription state machine written and supportable | Policy decisions pending |
 | DR baseline and restore drill | P0 | Partial | Founder/Ops | 2-4 days |  | Restore drill completed; RPO/RTO documented | No completed drill evidence |
-| Incident process | P0 | Missing | Founder/Ops | 1-2 days |  | Severity rubric, owner rule, templates exist | No process |
+| Incident process | P0 | Partial | Founder/Ops | 1-2 days | SMARTSELL_INCIDENT_PROCESS.md | Severity rubric, owner rule, templates exist | No process |
 | Kaspi support visibility | P0 | Partial | Founder/Backend | 3-5 days |  | Last success/failure visible; errors understandable | Integration complexity |
 | Release checklist and smoke gate | P0 | Partial | Founder/Ops | 1-2 days |  | Release checklist documented and used | No single enforced gate |
