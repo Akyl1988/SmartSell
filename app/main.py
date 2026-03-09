@@ -27,7 +27,6 @@ from starlette.staticfiles import StaticFiles
 
 from app.api.routes import mount_v1
 from app.core import config as core_config
-from app.core.api_lifecycle import get_deprecation_headers
 from app.core.config import run_startup_side_effects, settings, should_disable_startup_hooks, validate_prod_secrets
 from app.core.exceptions import register_exception_handlers
 from app.main_helpers import (
@@ -39,6 +38,7 @@ from app.main_helpers import (
     parse_trusted_hosts,
     redact_dict,
 )
+from app.main_middleware_helpers import apply_security_and_lifecycle_headers
 
 try:
     from starlette.middleware.sessions import SessionMiddleware
@@ -1289,22 +1289,14 @@ def _create_app() -> FastAPI:
         request: Request, call_next: Callable[[Request], Awaitable[Response]]
     ) -> Response:
         response = await call_next(request)
-        for header_name, header_value in get_deprecation_headers(
+        apply_security_and_lifecycle_headers(
+            response,
             request_method=request.method,
             request_path=request.url.path,
-        ).items():
-            response.headers.setdefault(header_name, header_value)
-        response.headers.setdefault("X-Content-Type-Options", "nosniff")
-        response.headers.setdefault("X-Frame-Options", "DENY")
-        response.headers.setdefault("X-XSS-Protection", "0")
-        response.headers.setdefault("Referrer-Policy", "strict-origin-when-cross-origin")
-        # HSTS: только если включен FORCE_HTTPS
-        if env_truthy(os.getenv("FORCE_HTTPS", "0")):
-            response.headers.setdefault("Strict-Transport-Security", "max-age=31536000; includeSubDomains; preload")
-        if csp_enabled:
-            response.headers.setdefault("Content-Security-Policy", csp_value)
-        # user-friendly Server header
-        response.headers.setdefault("Server", "SmartSell")
+            csp_enabled=csp_enabled,
+            csp_value=csp_value,
+            force_https=env_truthy(os.getenv("FORCE_HTTPS", "0")),
+        )
         return response
 
     if STARLETTE_EXPORTER_AVAILABLE:
