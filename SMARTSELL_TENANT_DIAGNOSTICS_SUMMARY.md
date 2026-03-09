@@ -94,6 +94,22 @@ Tenant Diagnostics Summary is the minimum support-facing view that explains the 
 - Existing diagnostics output is sufficient for first-line Kaspi support triage without direct DB access.
 - Operators can answer core integration questions from one endpoint response and decide next troubleshooting step.
 
+## Consolidated runtime usage evidence (2026-03-09)
+
+Diagnostics summary usage is now evidenced repeatedly together with support triage preview in operator incident cycles documented in `SMARTSELL_INCIDENT_PROCESS.md`:
+- Cycle #1: `GET /api/v1/admin/tenants/1/diagnostics` -> `200`, `POST /api/v1/admin/tenants/1/support-triage-preview` -> `200`
+- Cycle #2: `CYCLEA_DIAGNOSTICS_HTTP=200`, `CYCLEA_TRIAGE_HTTP=200`
+- Cycle #3: `CYCLEB_DIAGNOSTICS_HTTP=200`, `CYCLEB_TRIAGE_HTTP=200`
+- Cycle #4: `TENANT_DIAGNOSTICS_HTTP=200`, `SUPPORT_TRIAGE_HTTP=200`
+
+What this confirms:
+- endpoint contract is operational in repeated runtime checks;
+- support can repeatedly retrieve integration/billing/request-context signals from diagnostics and classify next actions via triage preview;
+- diagnostics + triage flow is reusable without DB access.
+
+Honest remaining gap to `Exists` for this row:
+- repeated evidence is currently simulation-style/operator-run; still missing repeated customer-originated real support cases explicitly recorded end-to-end.
+
 ## Minimum diagnostics fields
 
 ### Tenant identity
