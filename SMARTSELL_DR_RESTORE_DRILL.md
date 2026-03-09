@@ -150,3 +150,45 @@ Current evidence status: **Backup + DB restore evidence completed; application-l
 	- `KASPI_STATUS_ERROR=Response status code does not indicate success: 401 (Unauthorized).`
 - Status:
 	- Live Kaspi sanity **not confirmed** in this cycle.
+
+## 14 Full restore-oriented cycle #5 with measured timing (2026-03-09)
+
+### 14.1 Metadata
+- Branch: `feat/incident-followups`
+- Commit: `e6a2172`
+- Python: `3.11.9`
+
+### 14.2 Timing
+- Start timestamp: `2026-03-09 19:30:37 +05:00`
+- Finish timestamp: `2026-03-09 19:30:51 +05:00`
+- Measured duration: `14.33` seconds
+
+### 14.3 Restore sequence (executed)
+- `psql -U postgres -h 127.0.0.1 -p 5432 -d smartsell_drill_restore -f .\\tmp\\drill\\smartsell_main_drill.sql` -> `RESTORE_EXIT=0`
+- Restore output log: `tmp/drill/dr_cycle5_restore.log`
+- Initial table listing run in cycle block:
+	- `psql -U postgres -h 127.0.0.1 -p 5432 -d smartsell_drill_restore -c "\\dt"` -> `DT_EXIT=1`
+	- Table-list log: `tmp/drill/dr_cycle5_dt.log`
+- Direct re-run of table listing command:
+	- `psql -U postgres -h 127.0.0.1 -p 5432 -d smartsell_drill_restore -c '\\dt'`
+	- Observed output: `List of relations ... (71 rows)`
+
+### 14.4 Post-restore runtime verification
+- `/api/v1/health` -> `200`
+- `/ready` -> `200`
+- `/api/v1/wallet/health` -> `200`
+
+### 14.5 Compact application-level verification
+- Command:
+	- `pytest tests/app/test_auth.py::TestAuth::test_login_with_password tests/app/api/test_admin_tenant_diagnostics.py::test_admin_tenant_diagnostics_summary tests/app/api/test_preorders_rbac_tenant.py::test_preorders_store_admin_flow_and_tenant_isolation tests/test_process_role_gating.py::test_scheduler_starts_for_scheduler_role tests/test_process_role_gating.py::test_kaspi_runner_starts_for_runner_role -q`
+- Observed output:
+	- `5 passed in 11.60s`
+	- `POST_RESTORE_TEST_EXIT=0`
+
+### 14.6 Live integration sanity attempt
+- Command:
+	- `Invoke-WebRequest -UseBasicParsing http://127.0.0.1:8000/api/v1/kaspi/status -TimeoutSec 10`
+- Observed output:
+	- `KASPI_STATUS_ERROR=Response status code does not indicate success: 401 (Unauthorized).`
+- Status:
+	- Live Kaspi sanity is **still unconfirmed** in this cycle.
