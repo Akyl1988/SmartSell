@@ -25,7 +25,6 @@ from app.schemas.tenant_diagnostics import (
     TenantDiagnosticsSupport,
 )
 
-
 _BILLING_STATE_MAP = {
     "trial": "trial",
     "active": "active",
@@ -94,9 +93,7 @@ async def get_tenant_diagnostics_summary(
         payment = (await db.execute(stmt)).scalar_one_or_none()
 
     sync_state = (
-        await db.execute(
-            select(KaspiOrderSyncState).where(KaspiOrderSyncState.company_id == company_id).limit(1)
-        )
+        await db.execute(select(KaspiOrderSyncState).where(KaspiOrderSyncState.company_id == company_id).limit(1))
     ).scalar_one_or_none()
 
     kaspi_session_exists = (
