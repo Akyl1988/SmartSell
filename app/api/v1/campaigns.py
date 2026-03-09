@@ -19,7 +19,9 @@ from sqlalchemy.orm import selectinload
 
 from app.core.db import get_async_db
 from app.core.dependencies import require_active_subscription, require_company_access, require_store_admin_company
+from app.core.entitlements import require_entitlement
 from app.core.exceptions import ConflictError, NotFoundError, _ensure_request_id
+from app.core.features import FEATURE_CAMPAIGNS
 from app.core.rbac import is_platform_admin, is_store_admin, is_store_manager
 from app.core.security import get_current_user
 from app.models.campaign import Campaign as DbCampaign
@@ -932,13 +934,18 @@ def _restore_campaign(campaign_id: int, reason: str | None = None, user: User | 
 # ------------------------------------------------------------------------------
 router = APIRouter(prefix="/api/v1/campaigns", tags=["campaigns"])
 read_router = APIRouter(
-    dependencies=[Depends(require_company_access), Depends(require_active_subscription)],
+    dependencies=[
+        Depends(require_company_access),
+        Depends(require_active_subscription),
+        Depends(require_entitlement(FEATURE_CAMPAIGNS)),
+    ],
 )
 admin_router = APIRouter(
     dependencies=[
         Depends(require_company_access),
         Depends(require_store_admin_company),
         Depends(require_active_subscription),
+        Depends(require_entitlement(FEATURE_CAMPAIGNS)),
     ],
 )
 
@@ -1166,6 +1173,7 @@ async def queue_campaign_run_store(
         if user_company_id is None:
             raise NotFoundError("campaign_not_found", code="campaign_not_found", http_status=404)
         await require_active_subscription(request=request, current_user=user, db=db)
+        await require_entitlement(FEATURE_CAMPAIGNS)(request=request, current_user=user, db=db)
 
     stmt = select(DbCampaign).where(DbCampaign.id == campaign_id)
     if not is_platform:

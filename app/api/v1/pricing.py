@@ -17,9 +17,10 @@ from app.core.dependencies import (
     require_company_access,
     require_store_roles,
 )
+from app.core.entitlements import require_entitlement
 from app.core.exceptions import NotFoundError, SmartSellValidationError
+from app.core.features import FEATURE_REPRICING
 from app.core.security import resolve_tenant_company_id
-from app.core.subscriptions import FEATURE_REPRICING, require_feature
 from app.models.product import Product
 from app.models.repricing import RepricingDiff, RepricingRule, RepricingRun, repricing_run_stats
 from app.models.user import User
@@ -53,7 +54,7 @@ read_router = APIRouter(
         Depends(require_company_access),
         Depends(require_store_roles("admin", "manager", "employee")),
         Depends(_require_company_context),
-        Depends(require_feature(FEATURE_REPRICING)),
+        Depends(require_entitlement(FEATURE_REPRICING)),
     ],
 )
 admin_router = APIRouter(
@@ -64,7 +65,7 @@ admin_router = APIRouter(
         Depends(require_company_access),
         Depends(_require_company_context),
         Depends(require_store_roles("admin", "manager")),
-        Depends(require_feature(FEATURE_REPRICING)),
+        Depends(require_entitlement(FEATURE_REPRICING)),
     ],
 )
 

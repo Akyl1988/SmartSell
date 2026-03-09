@@ -47,10 +47,10 @@ async def test_plan_feature_toggle_affects_pricing_access(
     assert disable_feature.status_code == 200, disable_feature.text
 
     denied = await async_client.get("/api/v1/pricing/rules", headers=company_a_admin_headers)
-    assert denied.status_code == 402, denied.text
+    assert denied.status_code == 403, denied.text
     detail = denied.json().get("detail")
     assert isinstance(detail, dict)
-    assert detail.get("code") == "SUBSCRIPTION_REQUIRED"
+    assert detail.get("code") == "FEATURE_NOT_AVAILABLE"
 
     enable_feature = await async_client.put(
         "/api/v1/admin/plan-features/basic/repricing",
