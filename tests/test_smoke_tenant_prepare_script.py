@@ -1,6 +1,5 @@
 from pathlib import Path
 
-
 ROOT = Path(__file__).resolve().parents[1]
 
 
@@ -9,8 +8,8 @@ def test_smoke_tenant_prepare_uses_existing_subscription_paths() -> None:
     assert "/api/v1/subscriptions/current" in content
     assert "/api/v1/subscriptions/$($previousState.id)/renew" in content
     assert "/api/v1/subscriptions/$($resultingState.id)" in content
-    assert "plan = \"Start\"" in content
-    assert "plan = \"pro\"" in content
+    assert 'plan = "Start"' in content
+    assert 'plan = "pro"' in content
     assert "Test-SmokeTenantProductCreatePreflight" in content
 
 
