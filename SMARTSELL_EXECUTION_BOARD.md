@@ -1,7 +1,7 @@
 | Area | Priority | Status | Owner | ETA | Evidence Reference | Exit Criteria | Blockers |
 |---|---|---|---|---|---|---|---|
 | Runtime ownership split | P0 | Partial | Founder/Backend | 3-5 days | SMARTSELL_RUNTIME_OWNERSHIP.md | API request-only; background work only in worker/scheduler roles | Lifecycle coupling |
-| Frontend auth/session hardening | P0 | Partial | Founder/Frontend | 2-4 days |  | Hardened session/token strategy; revoke/logout tested | Current frontend storage model |
+| Frontend auth/session hardening | P0 | Partial | Founder/Frontend | 2-4 days | frontend/src/api/client.ts<br>npm --prefix frontend run build | Hardened session/token strategy; revoke/logout tested | Current frontend storage model |
 | Standard onboarding playbook | P0 | Partial | Founder/Ops | 2-3 days | SMARTSELL_ONBOARDING_PLAYBOOK.md<br>SMARTSELL_ONBOARDING_DRY_RUN.md | One checklist, one owner, one rollback path, one evidence pack | No standardized activation flow |
 | Tenant diagnostics summary | P0 | Partial | Founder/Backend | 3-5 days | SMARTSELL_TENANT_DIAGNOSTICS_SUMMARY.md<br>GET /api/v1/admin/tenants/{company_id}/diagnostics<br>tests/app/api/test_admin_tenant_diagnostics.py | Tenant support surface shows sync/error/request/integration health | Data scattered |
 | Billing state machine | P0 | Partial | Founder/Product+Backend | 2-3 days | SMARTSELL_BILLING_STATE_MACHINE.md<br>app/core/billing/state_machine.py<br>tests/services/test_billing_state_machine.py | Subscription states and transitions defined | Policy decisions pending |
