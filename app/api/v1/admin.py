@@ -40,6 +40,7 @@ from app.models.marketplace import KaspiStoreToken
 from app.models.subscription_override import SubscriptionOverride
 from app.models.user import User
 from app.schemas.campaign import AdminCampaignResponse
+from app.schemas.tenant_diagnostics import TenantDiagnosticsSummaryOut
 from app.services.campaign_cleanup import campaign_cleanup_run
 from app.services.campaign_pipeline import campaign_pipeline_tick
 from app.services.campaign_runner import (
@@ -51,6 +52,7 @@ from app.services.campaign_runner import (
 )
 from app.services.repricing import run_reprcing_for_company
 from app.services.subscriptions import activate_plan, renew_if_due
+from app.services.tenant_diagnostics import get_tenant_diagnostics_summary
 from app.utils.tokens import generate_token, hash_token
 from app.worker.campaign_processing import process_campaign_queue_once
 
@@ -1178,6 +1180,20 @@ async def get_company_detail(
         plan_expires_at=plan_expires,
         admins=admins,
     )
+
+
+@router.get(
+    "/tenants/{company_id}/diagnostics",
+    response_model=TenantDiagnosticsSummaryOut,
+    summary="Tenant diagnostics summary (platform admin)",
+)
+async def get_tenant_diagnostics_summary_endpoint(
+    company_id: int,
+    admin: User = Depends(require_platform_admin),
+    db: AsyncSession = Depends(get_async_db),
+) -> TenantDiagnosticsSummaryOut:
+    _ = admin
+    return await get_tenant_diagnostics_summary(db, company_id=company_id)
 
 
 @router.post(
