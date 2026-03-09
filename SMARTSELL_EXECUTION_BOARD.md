@@ -1,6 +1,6 @@
 | Area | Priority | Status | Owner | ETA | Evidence Reference | Exit Criteria | Blockers |
 |---|---|---|---|---|---|---|---|
-| Runtime ownership split | P0 | Partial | Founder/Backend | 3-5 days |  | API request-only; background work only in worker/scheduler roles | Lifecycle coupling |
+| Runtime ownership split | P0 | Partial | Founder/Backend | 3-5 days | SMARTSELL_RUNTIME_OWNERSHIP.md | API request-only; background work only in worker/scheduler roles | Lifecycle coupling |
 | Frontend auth/session hardening | P0 | Partial | Founder/Frontend | 2-4 days |  | Hardened session/token strategy; revoke/logout tested | Current frontend storage model |
 | Standard onboarding playbook | P0 | Partial | Founder/Ops | 2-3 days |  | One checklist, one owner, one rollback path, one evidence pack | No standardized activation flow |
 | Tenant diagnostics summary | P0 | Partial | Founder/Backend | 3-5 days | SMARTSELL_TENANT_DIAGNOSTICS_SUMMARY.md<br>GET /api/v1/admin/tenants/{company_id}/diagnostics<br>tests/app/api/test_admin_tenant_diagnostics.py | Tenant support surface shows sync/error/request/integration health | Data scattered |
