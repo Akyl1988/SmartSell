@@ -223,3 +223,50 @@ Second independent operator cycle was executed using the same existing flows (`s
 ### 13.8 Corrective / preventive follow-up
 1. Continue capturing the same pack format for future real billing incidents to build repeated evidence baseline.
 2. Attach customer communication timestamps per incident to satisfy `Exists` evidence requirement in Section 10.
+
+## Operator billing incident pack #2
+
+### Incident summary
+- Incident ID: `BILLING-INC-2026-03-09-02`
+- Category: billing guard / suspension recovery
+- Summary: previously active tenant access moved to blocked billing guard state after subscription cancel, then was fully restored via operator remediation using existing admin billing flow.
+
+### Affected tenant
+- `company_id=1` (`Dev Company`)
+
+### Detection signal
+- `CYCLE_BLOCK_HTTP=402`
+- `CYCLE_BLOCK_CODE=SUBSCRIPTION_REQUIRED`
+
+### Impact
+- Guarded product API access was unavailable for the tenant while billing guard was active.
+- Tenant scope: single affected tenant (`company_id=1`).
+
+### Timeline
+- subscription cancel:
+	- `CYCLE_CANCEL_HTTP=200`
+- guard block 402:
+	- `CYCLE_BLOCK_HTTP=402`
+	- `CYCLE_BLOCK_CODE=SUBSCRIPTION_REQUIRED`
+- operator remediation:
+	- existing admin recovery path selected (wallet + subscription activation)
+- wallet topup:
+	- `CYCLE_TOPUP_HTTP=200`
+- subscription activation:
+	- `CYCLE_ACTIVATE_HTTP=200`
+- guard recovery 200:
+	- `CYCLE_FINAL_HTTP=200`
+
+### Customer update note
+- We observed a temporary billing-related access block to guarded operations for your tenant.
+- Our operator completed billing remediation (wallet topup + subscription activation) through the standard admin path.
+- Access has been restored and verified by guarded endpoint recovery (`200`).
+
+### Closure note
+- Incident is closed after verified recovery of guarded endpoint access.
+- Evidence anchor set: `CYCLE_START_STATUS=active` -> `CYCLE_BLOCK_HTTP=402` -> `CYCLE_FINAL_HTTP=200`.
+
+### Corrective / preventive actions
+1. Keep recording operator-grade incident packs for each billing block/recovery event.
+2. Attach explicit customer communication timestamps in each pack to maintain `Exists`-level evidence quality.
+3. Keep lifecycle evidence in sync across this policy and `SMARTSELL_BILLING_STATE_MACHINE.md`.
