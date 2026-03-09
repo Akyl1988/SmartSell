@@ -27,6 +27,7 @@ from starlette.staticfiles import StaticFiles
 
 from app.api.routes import mount_v1
 from app.core import config as core_config
+from app.core.api_lifecycle import get_deprecation_headers
 from app.core.config import run_startup_side_effects, settings, should_disable_startup_hooks, validate_prod_secrets
 from app.core.exceptions import register_exception_handlers
 
@@ -1365,6 +1366,8 @@ def _create_app() -> FastAPI:
         request: Request, call_next: Callable[[Request], Awaitable[Response]]
     ) -> Response:
         response = await call_next(request)
+        for header_name, header_value in get_deprecation_headers().items():
+            response.headers.setdefault(header_name, header_value)
         response.headers.setdefault("X-Content-Type-Options", "nosniff")
         response.headers.setdefault("X-Frame-Options", "DENY")
         response.headers.setdefault("X-XSS-Protection", "0")
