@@ -255,3 +255,29 @@ Record operational dry-run evidence for `SMARTSELL_RELEASE_CHECKLIST.md` using r
 	- `KASPI_STATUS_ERROR=Response status code does not indicate success: 401 (Unauthorized).`
 - Conclusion:
 	- Live integration sanity remains unconfirmed in this rehearsal.
+
+## 12. Deploy/startup production-like rehearsal linkage
+
+### 12.1 Rehearsal metadata
+- Timestamp: `2026-03-09 19:04:25 +05:00`
+- Branch: `feat/incident-followups`
+- Commit: `ae8f15a`
+
+### 12.2 Runtime/deploy evidence summary
+- API role responsiveness:
+	- `/api/v1/health` -> `200`
+	- `/ready` -> `200`
+- Role separation checks:
+	- `tests/test_process_role_gating.py` focused set -> `4 passed in 7.62s`
+- Startup-hook boundary checks:
+	- `tests/test_core_startup_hook_guards.py` focused set -> `2 passed in 6.79s`
+- Release/deploy docs consistency:
+	- `tests/test_upgrade_playbook_docs.py::test_upgrade_playbook_docs_contains_key_strings` -> `1 passed in 6.64s`
+	- `Select-String` confirmed deployment/migration/health/smoke commands in `docs/DEPLOY_MINIMAL_PROD.md`
+
+### 12.3 Linked evidence
+- Runtime evidence pack: `SMARTSELL_RUNTIME_REHEARSAL_EVIDENCE.md` (Section 7)
+
+### 12.4 Known limitation
+- Live integration sanity check still returns unauthorized in local context:
+	- `kaspi_status_error: Response status code does not indicate success: 401 (Unauthorized).`

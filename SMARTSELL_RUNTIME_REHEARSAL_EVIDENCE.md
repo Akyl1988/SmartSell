@@ -61,3 +61,57 @@ Observed output:
 ### 6.4 Notes
 - This cycle strengthens runtime operational evidence by combining role readiness and live endpoint checks in a measured restore-oriented rehearsal.
 - Production deploy/startup logs are still required for `Exists` level.
+
+## 7. Production-like deploy/startup rehearsal pack (2026-03-09)
+
+### 7.1 Rehearsal metadata
+- Timestamp: `2026-03-09 19:04:25 +05:00`
+- Branch: `feat/incident-followups`
+- Commit: `ae8f15a`
+- Python: `3.11.9`
+
+### 7.2 API role evidence
+Commands:
+
+`Invoke-WebRequest -UseBasicParsing http://127.0.0.1:8000/api/v1/health`
+`Invoke-WebRequest -UseBasicParsing http://127.0.0.1:8000/ready`
+
+Observed output:
+- `/api/v1/health` -> `200`
+- `/ready` -> `200`
+
+### 7.3 Scheduler/runner separation evidence
+Command:
+
+`D:/LLM_HUB/SmartSell/.venv/Scripts/python.exe -m pytest tests/test_process_role_gating.py::test_scheduler_starts_for_scheduler_role tests/test_process_role_gating.py::test_scheduler_skipped_for_web_role tests/test_process_role_gating.py::test_kaspi_runner_starts_for_runner_role tests/test_process_role_gating.py::test_kaspi_runner_skipped_for_scheduler_role -q`
+
+Observed output:
+- `4 passed in 7.62s`
+
+### 7.4 Startup-hook boundary evidence
+Command:
+
+`D:/LLM_HUB/SmartSell/.venv/Scripts/python.exe -m pytest tests/test_core_startup_hook_guards.py::test_startup_skipped_for_non_web_role tests/test_core_startup_hook_guards.py::test_startup_web_role_respects_migration_flag -q`
+
+Observed output:
+- `2 passed in 6.79s`
+
+### 7.5 Deploy/runbook consistency evidence
+Command block:
+- `D:/LLM_HUB/SmartSell/.venv/Scripts/python.exe -m pytest tests/test_upgrade_playbook_docs.py::test_upgrade_playbook_docs_contains_key_strings -q`
+- `Select-String -Path "docs/DEPLOY_MINIMAL_PROD.md" -Pattern "docker compose -f docker-compose.prod.yml up -d --build|alembic upgrade head|/api/v1/health|/ready|smoke-auth.ps1|smoke-preorders-e2e.ps1"`
+
+Observed output:
+- `1 passed in 6.64s`
+- Deployment/migration/health/smoke command references found in `docs/DEPLOY_MINIMAL_PROD.md`.
+
+### 7.6 Live integration sanity attempt
+Command:
+
+`Invoke-WebRequest -UseBasicParsing http://127.0.0.1:8000/api/v1/kaspi/status -TimeoutSec 10`
+
+Observed output:
+- `kaspi_status_error: Response status code does not indicate success: 401 (Unauthorized).`
+
+Status:
+- Live integration sanity is not confirmed in this rehearsal pack.
