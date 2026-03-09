@@ -163,3 +163,63 @@ Second independent operator cycle was executed using the same existing flows (`s
 - This strengthens confidence that recovery flow is repeatable in operations.
 - Status remains **Partial** (honest):
 	- Section 10 `Exists` still requires complete incident communication timeline packs and decision logs across real billing incidents.
+
+## 13. Operator billing incident pack (from real cycle #2)
+
+### 13.1 Incident summary
+- Incident ID: `BILLING-INC-2026-03-09-01`
+- Category: billing / subscription guard recovery
+- Summary: tenant access to guarded endpoint became blocked after subscription transition, then was restored using existing wallet topup + admin subscription activation flow.
+
+### 13.2 Affected tenant
+- `company_id=1` (`Dev Company`)
+
+### 13.3 Detection signal
+- Guarded endpoint probe:
+	- `CYCLE2_BLOCKED_PROBE_HTTP=402`
+	- `CYCLE2_BLOCKED_PROBE_CODE=SUBSCRIPTION_REQUIRED`
+
+### 13.4 Impact
+- Business-critical guarded API access for tenant was blocked until billing remediation completed.
+- Scope: single tenant (`company_id=1`).
+
+### 13.5 Timeline (operational outputs)
+- Start snapshot:
+	- `CYCLE2_CURRENT_HTTP=200`
+	- `CYCLE2_START_STATUS=active`
+	- `CYCLE2_START_PLAN=Pro`
+	- `CYCLE2_START_SUB_ID=11`
+	- `CYCLE2_START_PROBE_HTTP=200`
+- Transition trigger:
+	- `CYCLE2_TRIGGER_ACTION=cancel_subscription`
+	- `CYCLE2_CANCEL_HTTP=200`
+	- `CYCLE2_POST_TRIGGER_STATUS=canceled`
+- Blocked state confirmation:
+	- `CYCLE2_BLOCKED_PROBE_HTTP=402`
+	- `CYCLE2_BLOCKED_PROBE_CODE=SUBSCRIPTION_REQUIRED`
+- Remediation:
+	- `CYCLE2_TOPUP_HTTP=200`
+	- `CYCLE2_TOPUP_TX_ID=4`
+	- `CYCLE2_TOPUP_BALANCE=6700.00`
+	- `CYCLE2_ACTIVATE_HTTP=200`
+	- `CYCLE2_RECOVERY_ACTION=admin_activate_subscription`
+	- `CYCLE2_RESULT_STATUS=active`
+	- `CYCLE2_RESULT_SUB_ID=12`
+	- `CYCLE2_RESULT_PERIOD_END=04/09/2026 16:26:42`
+- Final verification:
+	- `CYCLE2_FINAL_PROBE_HTTP=200`
+
+### 13.6 Customer update note (factual template instance)
+- Status: Resolved.
+- What was affected: temporary access block to guarded API operations due to billing/subscription guard state.
+- What was not affected: tenant identity/authentication endpoints remained reachable.
+- Action taken: wallet credited and subscription activated through existing admin remediation flow.
+- Current result: guarded access restored (`200`).
+
+### 13.7 Closure note
+- Closure condition met for this incident record: blocked signal reproduced and resolved with verified final guarded access recovery.
+- Closure evidence anchor: `CYCLE2_FINAL_PROBE_HTTP=200`.
+
+### 13.8 Corrective / preventive follow-up
+1. Continue capturing the same pack format for future real billing incidents to build repeated evidence baseline.
+2. Attach customer communication timestamps per incident to satisfy `Exists` evidence requirement in Section 10.
