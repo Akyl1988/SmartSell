@@ -173,3 +173,49 @@ Record operational dry-run evidence for `SMARTSELL_RELEASE_CHECKLIST.md` using r
 - Outcome: PASS.
 - Repeatability status: second compact operational cycle evidence collected and archived in this document.
 - Remaining gap before `Exists`: production-like release evidence with explicit deploy/restart logs and repeated cycles beyond test-environment rehearsal.
+
+## 10. Production-like operational rehearsal (runtime-command evidence)
+
+### 10.1 Rehearsal date
+- 2026-03-09 18:41:02 +05:00
+
+### 10.2 Environment
+- Workspace: `D:\LLM_HUB\SmartSell`
+- OS: Windows
+- Python: `3.11.9` (`.venv`)
+- Branch: `feat/incident-followups`
+- Commit: `e9699f0`
+
+### 10.3 Runtime ownership split evidence
+- Command:
+	- `D:/LLM_HUB/SmartSell/.venv/Scripts/python.exe -m pytest tests/test_process_role_gating.py::test_scheduler_starts_for_scheduler_role tests/test_process_role_gating.py::test_scheduler_skipped_for_web_role tests/test_process_role_gating.py::test_kaspi_runner_starts_for_runner_role tests/test_process_role_gating.py::test_kaspi_runner_skipped_for_scheduler_role -q`
+- Observed output:
+	- `4 passed in 8.08s`
+
+### 10.4 Release-style operational evidence
+- Migration verification:
+	- `D:/LLM_HUB/SmartSell/.venv/Scripts/python.exe -m pytest tests/test_migration_upgrade.py::test_alembic_upgrade_head_runs -q`
+	- Output: `1 passed in 6.58s`
+- Health/readiness runtime probes:
+	- `Invoke-WebRequest ... /api/v1/health` -> `200`
+	- `Invoke-WebRequest ... /ready` -> `200`
+	- `Invoke-WebRequest ... /api/v1/wallet/health` -> `200`
+- Compact smoke/diagnostics/critical flow verification:
+	- `D:/LLM_HUB/SmartSell/.venv/Scripts/python.exe -m pytest tests/test_health_and_ready.py::test_ready_relaxed_200 tests/app/test_auth.py::TestAuth::test_login_with_password tests/app/api/test_admin_tenant_diagnostics.py::test_admin_tenant_diagnostics_summary tests/app/api/test_preorders_rbac_tenant.py::test_preorders_store_admin_flow_and_tenant_isolation -q`
+	- Output: `4 passed in 11.43s`
+
+### 10.5 Rollback / restore readiness evidence
+- Command block:
+	- `D:/LLM_HUB/SmartSell/.venv/Scripts/python.exe -m pytest tests/test_upgrade_playbook_docs.py::test_upgrade_playbook_docs_contains_key_strings -q`
+	- `Test-Path "tmp/drill/smartsell_main_drill.sql"`
+	- `Select-String -Path "docs/UPGRADE_PLAYBOOK.md" -Pattern "backup_db.ps1|restore_db.ps1|/api/v1/health|/ready"`
+	- `Select-String -Path "docs/DEPLOY_MINIMAL_PROD.md" -Pattern "curl -fsS http://127.0.0.1:8000/api/v1/health|curl -fsS http://127.0.0.1:8000/ready|smoke-auth.ps1|smoke-preorders-e2e.ps1"`
+	- `Select-String -Path "SMARTSELL_DR_RESTORE_DRILL.md" -Pattern "smartsell_drill_restore|tmp/drill/smartsell_main_drill.sql|Application-level restore verification"`
+- Observed output:
+	- `1 passed in 6.38s`
+	- `True` for `tmp/drill/smartsell_main_drill.sql`
+	- Restore/rollback and health/smoke references found across release/deploy/DR artifacts.
+
+### 10.6 Linked evidence
+- Runtime rehearsal details: `SMARTSELL_RUNTIME_REHEARSAL_EVIDENCE.md`
+- DR drill baseline: `SMARTSELL_DR_RESTORE_DRILL.md`

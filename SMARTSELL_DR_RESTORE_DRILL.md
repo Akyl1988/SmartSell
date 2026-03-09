@@ -103,3 +103,13 @@ Current evidence status: **Backup + DB restore evidence completed; application-l
 2. Store backup artifacts outside the application host for disaster recovery readiness.
 3. Execute Kaspi live sanity check against restored target and attach output.
 4. Collect repeated restore-cycle evidence (at least one additional full cycle with timing data).
+
+## 12 Production-like rehearsal cross-check (2026-03-09)
+- Rehearsal reference:
+	- `SMARTSELL_RELEASE_DRY_RUN_EVIDENCE.md` (Section 10)
+	- `SMARTSELL_RUNTIME_REHEARSAL_EVIDENCE.md`
+- Executed rollback/readiness verification command block included:
+	- `tests/test_upgrade_playbook_docs.py::test_upgrade_playbook_docs_contains_key_strings` -> `1 passed in 6.38s`
+	- `Test-Path tmp/drill/smartsell_main_drill.sql` -> `True`
+	- `Select-String` consistency checks across `docs/UPGRADE_PLAYBOOK.md`, `docs/DEPLOY_MINIMAL_PROD.md`, and this DR drill doc.
+- This cross-check strengthens operational readiness evidence but does not replace a new full DB restore execution with measured RPO/RTO.
