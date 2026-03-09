@@ -5,6 +5,7 @@ TipTop Pay payment service integration.
 import hashlib
 import hmac
 from datetime import datetime
+from time import perf_counter
 from typing import Any
 
 import httpx
@@ -13,6 +14,43 @@ from app.core.config import settings
 from app.core.logging import get_logger
 
 logger = get_logger(__name__)
+
+
+def _tiptop_log_start(operation: str) -> float:
+    started_at = perf_counter()
+    logger.info(
+        "integration_call_start",
+        extra={
+            "provider": "tiptop",
+            "operation": operation,
+        },
+    )
+    return started_at
+
+
+def _tiptop_log_end(operation: str, started_at: float, status_code: int | None = None) -> None:
+    logger.info(
+        "integration_call_end",
+        extra={
+            "provider": "tiptop",
+            "operation": operation,
+            "status_code": status_code,
+            "duration_ms": int((perf_counter() - started_at) * 1000),
+        },
+    )
+
+
+def _tiptop_log_error(operation: str, started_at: float, exc: Exception, status_code: int | None = None) -> None:
+    logger.error(
+        "integration_call_error",
+        extra={
+            "provider": "tiptop",
+            "operation": operation,
+            "status_code": status_code,
+            "duration_ms": int((perf_counter() - started_at) * 1000),
+            "error_code": type(exc).__name__,
+        },
+    )
 
 
 class TipTopService:
@@ -51,35 +89,37 @@ class TipTopService:
         if idempotency_key:
             payload["idempotency_key"] = idempotency_key
 
+        started_at = _tiptop_log_start("create_payment")
         try:
             async with httpx.AsyncClient(timeout=30.0) as client:
                 response = await client.post(f"{self.base_url}/payments", headers=self.headers, json=payload)
                 response.raise_for_status()
 
                 data = response.json()
-                logger.info(f"TipTop payment created: {data.get('payment_id')}")
+                _tiptop_log_end("create_payment", started_at, response.status_code)
                 return data
 
         except httpx.HTTPError as e:
-            logger.error(f"TipTop create payment error: {e}")
-            if hasattr(e, "response") and e.response:
-                logger.error(f"Response: {e.response.text}")
+            status_code = getattr(getattr(e, "response", None), "status_code", None)
+            _tiptop_log_error("create_payment", started_at, e, status_code)
             raise Exception(f"Failed to create TipTop payment: {e}")
 
     async def get_payment_status(self, payment_id: str) -> dict[str, Any]:
         """Get payment status from TipTop Pay"""
 
+        started_at = _tiptop_log_start("get_payment_status")
         try:
             async with httpx.AsyncClient(timeout=30.0) as client:
                 response = await client.get(f"{self.base_url}/payments/{payment_id}", headers=self.headers)
                 response.raise_for_status()
 
                 data = response.json()
-                logger.info(f"TipTop payment {payment_id} status: {data.get('status')}")
+                _tiptop_log_end("get_payment_status", started_at, response.status_code)
                 return data
 
         except httpx.HTTPError as e:
-            logger.error(f"TipTop get payment status error: {e}")
+            status_code = getattr(getattr(e, "response", None), "status_code", None)
+            _tiptop_log_error("get_payment_status", started_at, e, status_code)
             raise Exception(f"Failed to get payment status: {e}")
 
     async def create_refund(self, payment_id: str, amount: float, reason: str = None) -> dict[str, Any]:
@@ -91,17 +131,19 @@ class TipTopService:
             "reason": reason or "Refund",
         }
 
+        started_at = _tiptop_log_start("create_refund")
         try:
             async with httpx.AsyncClient(timeout=30.0) as client:
                 response = await client.post(f"{self.base_url}/refunds", headers=self.headers, json=payload)
                 response.raise_for_status()
 
                 data = response.json()
-                logger.info(f"TipTop refund created: {data.get('refund_id')}")
+                _tiptop_log_end("create_refund", started_at, response.status_code)
                 return data
 
         except httpx.HTTPError as e:
-            logger.error(f"TipTop create refund error: {e}")
+            status_code = getattr(getattr(e, "response", None), "status_code", None)
+            _tiptop_log_error("create_refund", started_at, e, status_code)
             raise Exception(f"Failed to create refund: {e}")
 
     async def get_refund_status(self, refund_id: str) -> dict[str, Any]:

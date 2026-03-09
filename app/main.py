@@ -41,6 +41,7 @@ except Exception:  # pragma: no cover
 # LOGGER
 # ======================================================================================
 logger = logging.getLogger(__name__)
+request_observability_logger = logging.getLogger("app.request.observability")
 
 _request_id_var: ContextVar[str] = ContextVar("request_id", default="-")
 _hostname = socket.gethostname()
@@ -1432,6 +1433,44 @@ def _create_app() -> FastAPI:
             request: Request, call_next: Callable[[Request], Awaitable[Response]]
         ) -> Response:
             return await _profiled_call(request, call_next)
+
+    if not _test_env:
+
+        @app.middleware("http")
+        async def request_completion_logging_middleware(  # type: ignore[return-value]
+            request: Request, call_next: Callable[[Request], Awaitable[Response]]
+        ) -> Response:
+            started_at = time.perf_counter()
+            status_code = 500
+            try:
+                response = await call_next(request)
+                status_code = int(getattr(response, "status_code", 200) or 200)
+                return response
+            except Exception:
+                raise
+            finally:
+                duration_ms = int((time.perf_counter() - started_at) * 1000)
+                request_id = (
+                    getattr(request.state, "request_id", None)
+                    or request.headers.get("X-Request-ID")
+                    or request.headers.get("X-Correlation-ID")
+                )
+                company_id = (
+                    getattr(request.state, "company_id", None)
+                    or getattr(request.state, "tenant_id", None)
+                    or request.headers.get("X-Company-ID")
+                )
+                request_observability_logger.info(
+                    "request_completed",
+                    extra={
+                        "request_id": request_id,
+                        "company_id": company_id,
+                        "method": request.method,
+                        "path": request.url.path,
+                        "status_code": status_code,
+                        "duration_ms": duration_ms,
+                    },
+                )
 
     if settings.is_development:
         if not _test_env:
