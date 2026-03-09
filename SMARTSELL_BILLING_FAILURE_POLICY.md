@@ -127,3 +127,39 @@ This section records one repository-grounded operator cycle using existing endpo
 - One complete operator path is now evidenced:
 	- blocked billing state signal (`402 SUBSCRIPTION_REQUIRED`) -> wallet/subscription remediation -> active state with restored guarded access (`200`).
 - This is strong Partial evidence, but not enough for `Exists` per Section 10 (still missing repeated real failure cases + communication timeline packs).
+
+## 12. Operational evidence cycle #2 (2026-03-09)
+
+Second independent operator cycle was executed using the same existing flows (`subscriptions/current`, `subscriptions/{id}/cancel`, `admin/wallet/topup`, `admin/subscriptions/activate`).
+
+### 12.1 Raw operational outputs
+- Starting state:
+	- `CYCLE2_CURRENT_HTTP=200`
+	- `CYCLE2_START_STATUS=active`
+	- `CYCLE2_START_PLAN=Pro`
+	- `CYCLE2_START_SUB_ID=11`
+	- `CYCLE2_START_PROBE_HTTP=200`
+- Transition trigger and blocked signal:
+	- `CYCLE2_TRIGGER_ACTION=cancel_subscription`
+	- `CYCLE2_CANCEL_HTTP=200`
+	- `CYCLE2_POST_TRIGGER_STATUS=canceled`
+	- `CYCLE2_BLOCKED_PROBE_HTTP=402`
+	- `CYCLE2_BLOCKED_PROBE_CODE=SUBSCRIPTION_REQUIRED`
+- Remediation actions and reactivation:
+	- `CYCLE2_TOPUP_HTTP=200`
+	- `CYCLE2_TOPUP_TX_ID=4`
+	- `CYCLE2_TOPUP_BALANCE=6700.00`
+	- `CYCLE2_ACTIVATE_HTTP=200`
+	- `CYCLE2_RECOVERY_ACTION=admin_activate_subscription`
+	- `CYCLE2_RESULT_STATUS=active`
+	- `CYCLE2_RESULT_SUB_ID=12`
+	- `CYCLE2_RESULT_PERIOD_END=04/09/2026 16:26:42`
+- Final guarded access:
+	- `CYCLE2_FINAL_PROBE_HTTP=200`
+
+### 12.2 Comparison with cycle #1 and status decision
+- Cycle #1 and Cycle #2 both show the same factual operator path:
+	- subscription trigger to blocked state (`402 SUBSCRIPTION_REQUIRED`) -> wallet/subscription remediation -> reactivated guarded access (`200`).
+- This strengthens confidence that recovery flow is repeatable in operations.
+- Status remains **Partial** (honest):
+	- Section 10 `Exists` still requires complete incident communication timeline packs and decision logs across real billing incidents.
