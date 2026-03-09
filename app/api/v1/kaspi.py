@@ -59,11 +59,13 @@ from app.api.v1.kaspi_autosync_routes import (
     KaspiAutoSyncStatusOut,
     register_kaspi_autosync_routes,
 )
+from app.api.v1.kaspi_catalog_routes import register_kaspi_catalog_routes
 from app.api.v1.kaspi_debug_routes import register_kaspi_debug_routes
 from app.api.v1.kaspi_feed_routes import (
     register_kaspi_feed_routes_phase_one,
     register_kaspi_feed_routes_phase_two,
 )
+from app.api.v1.kaspi_goods_routes import register_kaspi_goods_routes
 from app.api.v1.kaspi_public_routes import register_kaspi_public_routes
 from app.api.v1.kaspi_status_routes import register_kaspi_status_routes
 from app.api.v1.kaspi_utils import (
@@ -2837,11 +2839,6 @@ class KaspiOfferListOut(BaseModel):
     offset: int
 
 
-@router.post(
-    "/offers/rebuild",
-    summary="Rebuild Kaspi offers from products",
-    response_model=KaspiOffersRebuildOut,
-)
 async def kaspi_offers_rebuild(
     request: Request,
     merchant_uid: str | None = Query(None, alias="merchantUid"),
@@ -2873,11 +2870,6 @@ async def kaspi_offers_rebuild(
     )
 
 
-@router.post(
-    "/offers/import",
-    summary="Import Kaspi offers from file",
-    response_model=KaspiOffersImportOut,
-)
 async def kaspi_offers_import(
     request: Request,
     file: UploadFile = File(...),
@@ -2943,11 +2935,6 @@ async def kaspi_offers_import(
     )
 
 
-@router.get(
-    "/offers/preview",
-    summary="Preview Kaspi offers payload",
-    response_model=KaspiOffersPreviewOut,
-)
 async def kaspi_offers_preview(
     merchant_uid: str | None = Query(None, alias="merchantUid"),
     limit: int = Query(5, ge=1, le=100),
@@ -2971,11 +2958,6 @@ async def kaspi_offers_preview(
     return KaspiOffersPreviewOut(items=payload[:limit], total=len(payload), payload_hash=payload_hash)
 
 
-@router.post(
-    "/products/sync",
-    summary="Синхронизировать каталог Kaspi в локальную БД",
-    response_model=KaspiCatalogPullUnsupportedOut,
-)
 async def kaspi_products_sync(
     request: Request,
     current_user: User = Depends(_auth_user),
@@ -3003,11 +2985,6 @@ async def kaspi_products_sync(
     return JSONResponse(status_code=status.HTTP_409_CONFLICT, content=payload)
 
 
-@router.post(
-    "/products/import/start",
-    summary="Start Kaspi products import run",
-    response_model=KaspiImportRunOut,
-)
 async def kaspi_products_import_start(
     request: Request,
     merchant_uid: str | None = Query(None, alias="merchantUid"),
@@ -3035,11 +3012,6 @@ async def kaspi_products_import_start(
     )
 
 
-@router.post(
-    "/products/import/upload",
-    summary="Upload offers payload to Kaspi",
-    response_model=KaspiImportRunOut,
-)
 async def kaspi_products_import_upload(
     request: Request,
     import_code: str = Query(..., alias="i"),
@@ -3264,11 +3236,6 @@ async def kaspi_products_import_upload(
     )
 
 
-@router.post(
-    "/products/import/poll",
-    summary="Poll Kaspi import status/result",
-    response_model=KaspiImportRunPollOut,
-)
 async def kaspi_products_import_poll(
     request: Request,
     import_code: str = Query(..., alias="i"),
@@ -3371,11 +3338,6 @@ async def kaspi_products_import_poll(
     )
 
 
-@router.get(
-    "/products/import",
-    summary="Kaspi products import status",
-    response_model=KaspiGoodsStatusOut,
-)
 async def kaspi_products_import_status(
     request: Request,
     import_code: str = Query(..., alias="i"),
@@ -3430,10 +3392,6 @@ async def kaspi_products_import_status(
     return KaspiGoodsStatusOut(import_code=import_code, status=str(status_value), payload=response)
 
 
-@router.get(
-    "/products/import/schema",
-    summary="Kaspi products import schema",
-)
 async def kaspi_products_import_schema(
     current_user: User = Depends(_auth_user),
     session: AsyncSession = Depends(get_async_db),
@@ -3451,11 +3409,6 @@ async def kaspi_products_import_schema(
         raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail="kaspi_upstream_error")
 
 
-@router.get(
-    "/products/import/result",
-    summary="Kaspi products import result",
-    response_model=KaspiGoodsResultOut,
-)
 async def kaspi_products_import_result(
     request: Request,
     import_code: str = Query(..., alias="i"),
@@ -3510,13 +3463,32 @@ async def kaspi_products_import_result(
     return KaspiGoodsResultOut(import_code=import_code, status=str(status_value), payload=response)
 
 
+register_kaspi_catalog_routes(
+    router,
+    kaspi_offers_rebuild=kaspi_offers_rebuild,
+    kaspi_offers_import=kaspi_offers_import,
+    kaspi_offers_preview=kaspi_offers_preview,
+    kaspi_products_sync=kaspi_products_sync,
+    kaspi_products_import_start=kaspi_products_import_start,
+    kaspi_products_import_upload=kaspi_products_import_upload,
+    kaspi_products_import_poll=kaspi_products_import_poll,
+    kaspi_products_import_status=kaspi_products_import_status,
+    kaspi_products_import_schema=kaspi_products_import_schema,
+    kaspi_products_import_result=kaspi_products_import_result,
+    kaspi_offers_rebuild_out_model=KaspiOffersRebuildOut,
+    kaspi_offers_import_out_model=KaspiOffersImportOut,
+    kaspi_offers_preview_out_model=KaspiOffersPreviewOut,
+    kaspi_catalog_pull_unsupported_out_model=KaspiCatalogPullUnsupportedOut,
+    kaspi_import_run_out_model=KaspiImportRunOut,
+    kaspi_import_run_poll_out_model=KaspiImportRunPollOut,
+    kaspi_goods_status_out_model=KaspiGoodsStatusOut,
+    kaspi_goods_result_out_model=KaspiGoodsResultOut,
+)
+
+
 # ============================= GOODS API ==============================
 
 
-@router.get(
-    "/goods/schema",
-    summary="Kaspi goods import schema",
-)
 async def kaspi_goods_schema(
     current_user: User = Depends(_auth_user),
     session: AsyncSession = Depends(get_async_db),
@@ -3530,10 +3502,6 @@ async def kaspi_goods_schema(
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="NOT_AUTHENTICATED") from exc
 
 
-@router.get(
-    "/goods/categories",
-    summary="Kaspi goods categories",
-)
 async def kaspi_goods_categories(
     current_user: User = Depends(_auth_user),
     session: AsyncSession = Depends(get_async_db),
@@ -3547,10 +3515,6 @@ async def kaspi_goods_categories(
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="NOT_AUTHENTICATED") from exc
 
 
-@router.get(
-    "/goods/attributes",
-    summary="Kaspi goods attributes for category",
-)
 async def kaspi_goods_attributes(
     category: str,
     current_user: User = Depends(_auth_user),
@@ -3565,10 +3529,6 @@ async def kaspi_goods_attributes(
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="NOT_AUTHENTICATED") from exc
 
 
-@router.get(
-    "/goods/attribute-values",
-    summary="Kaspi goods attribute values",
-)
 async def kaspi_goods_attribute_values(
     category: str,
     attribute: str,
@@ -3584,11 +3544,6 @@ async def kaspi_goods_attribute_values(
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="NOT_AUTHENTICATED") from exc
 
 
-@router.post(
-    "/goods/import/upload",
-    summary="Kaspi goods import upload (file)",
-    response_model=KaspiGoodsUploadOut,
-)
 async def kaspi_goods_import_upload(
     file: UploadFile = File(...),
     merchant_uid: str | None = Query(None, alias="merchantUid"),
@@ -3638,11 +3593,6 @@ async def kaspi_goods_import_upload(
     return KaspiGoodsUploadOut(import_code=str(import_code), status=str(status_value), payload=response)
 
 
-@router.get(
-    "/goods/import/status",
-    summary="Kaspi goods import status (by importCode)",
-    response_model=KaspiGoodsStatusOut,
-)
 async def kaspi_goods_import_status_by_code(
     import_code: str = Query(..., alias="importCode"),
     current_user: User = Depends(require_feature(FEATURE_KASPI_GOODS_IMPORTS)),
@@ -3678,11 +3628,6 @@ async def kaspi_goods_import_status_by_code(
     return KaspiGoodsStatusOut(import_code=import_code, status=str(status_value), payload=response)
 
 
-@router.post(
-    "/goods/import",
-    summary="Kaspi goods import",
-    response_model=KaspiGoodsImportOut,
-)
 async def kaspi_goods_import(
     body: KaspiGoodsImportIn,
     current_user: User = Depends(require_feature(FEATURE_KASPI_GOODS_IMPORTS)),
@@ -3732,11 +3677,6 @@ async def kaspi_goods_import(
     return KaspiGoodsImportOut(ok=True, import_code=str(import_code), status=str(status_value))
 
 
-@router.get(
-    "/goods/import/{code}",
-    summary="Kaspi goods import status",
-    response_model=KaspiGoodsStatusOut,
-)
 async def kaspi_goods_import_status(
     code: str,
     current_user: User = Depends(require_feature(FEATURE_KASPI_GOODS_IMPORTS)),
@@ -3766,11 +3706,6 @@ async def kaspi_goods_import_status(
     return KaspiGoodsStatusOut(import_code=code, status=str(status_value), payload=response)
 
 
-@router.get(
-    "/goods/import/{code}/result",
-    summary="Kaspi goods import result",
-    response_model=KaspiGoodsResultOut,
-)
 async def kaspi_goods_import_result(
     code: str,
     current_user: User = Depends(require_feature(FEATURE_KASPI_GOODS_IMPORTS)),
@@ -3800,11 +3735,6 @@ async def kaspi_goods_import_result(
     return KaspiGoodsResultOut(import_code=code, status=str(status_value), payload=response)
 
 
-@router.post(
-    "/goods/imports",
-    summary="Kaspi goods import (stored)",
-    response_model=KaspiGoodsImportRecordOut,
-)
 async def kaspi_goods_import_create(
     body: KaspiGoodsImportCreateIn,
     current_user: User = Depends(require_store_admin_then_feature(FEATURE_KASPI_GOODS_IMPORTS)),
@@ -3892,11 +3822,6 @@ async def kaspi_goods_import_create(
     return _goods_import_to_out(record)
 
 
-@router.get(
-    "/goods/imports",
-    summary="List Kaspi goods imports",
-    response_model=list[KaspiGoodsImportRecordOut],
-)
 async def kaspi_goods_import_list(
     limit: int = Query(50, ge=1, le=200),
     offset: int = Query(0, ge=0),
@@ -3916,11 +3841,6 @@ async def kaspi_goods_import_list(
     return [_goods_import_to_out(record) for record in records]
 
 
-@router.get(
-    "/goods/imports/{import_id}",
-    summary="Get Kaspi goods import",
-    response_model=KaspiGoodsImportRecordOut,
-)
 async def kaspi_goods_import_get(
     import_id: str,
     current_user: User = Depends(require_store_admin_then_feature(FEATURE_KASPI_GOODS_IMPORTS)),
@@ -3945,11 +3865,6 @@ async def kaspi_goods_import_get(
     return _goods_import_to_out(record)
 
 
-@router.post(
-    "/goods/imports/{import_id}/refresh",
-    summary="Refresh Kaspi goods import",
-    response_model=KaspiGoodsImportRecordOut,
-)
 async def kaspi_goods_import_refresh(
     import_id: str,
     request: Request,
@@ -4024,11 +3939,6 @@ async def kaspi_goods_import_refresh(
     return _goods_import_to_out(record)
 
 
-@router.post(
-    "/sync/now",
-    summary="Kaspi sync now",
-    response_model=KaspiSyncNowOut,
-)
 async def kaspi_sync_now(
     request: Request,
     body: KaspiSyncNowIn | None = Body(None),
@@ -4997,11 +4907,6 @@ async def kaspi_sync_now(
         )
 
 
-@router.get(
-    "/token/health",
-    summary="Kaspi token health",
-    response_model=KaspiTokenHealthOut,
-)
 async def kaspi_token_health(
     request: Request,
     current_user: User = Depends(_auth_user),
@@ -5131,11 +5036,6 @@ async def kaspi_token_health(
     )
 
 
-@router.get(
-    "/token/selftest",
-    summary="Kaspi token self-test",
-    response_model=KaspiTokenSelftestOut,
-)
 async def kaspi_token_selftest(
     request: Request,
     current_user: User = Depends(_auth_user),
@@ -5355,11 +5255,6 @@ async def kaspi_token_selftest(
     )
 
 
-@router.post(
-    "/catalog/import",
-    summary="Kaspi catalog import (CSV/XLSX/JSON)",
-    response_model=KaspiCatalogImportOut,
-)
 async def kaspi_catalog_import(
     file: UploadFile = File(...),
     merchant_uid: str | None = Query(None, alias="merchantUid"),
@@ -5559,6 +5454,37 @@ async def kaspi_catalog_import(
         top_errors=top_errors,
         dry_run=False,
     )
+
+
+register_kaspi_goods_routes(
+    router,
+    kaspi_goods_schema=kaspi_goods_schema,
+    kaspi_goods_categories=kaspi_goods_categories,
+    kaspi_goods_attributes=kaspi_goods_attributes,
+    kaspi_goods_attribute_values=kaspi_goods_attribute_values,
+    kaspi_goods_import_upload=kaspi_goods_import_upload,
+    kaspi_goods_import_status_by_code=kaspi_goods_import_status_by_code,
+    kaspi_goods_import=kaspi_goods_import,
+    kaspi_goods_import_status=kaspi_goods_import_status,
+    kaspi_goods_import_result=kaspi_goods_import_result,
+    kaspi_goods_import_create=kaspi_goods_import_create,
+    kaspi_goods_import_list=kaspi_goods_import_list,
+    kaspi_goods_import_get=kaspi_goods_import_get,
+    kaspi_goods_import_refresh=kaspi_goods_import_refresh,
+    kaspi_sync_now=kaspi_sync_now,
+    kaspi_token_health=kaspi_token_health,
+    kaspi_token_selftest=kaspi_token_selftest,
+    kaspi_catalog_import=kaspi_catalog_import,
+    kaspi_goods_upload_out_model=KaspiGoodsUploadOut,
+    kaspi_goods_status_out_model=KaspiGoodsStatusOut,
+    kaspi_goods_import_out_model=KaspiGoodsImportOut,
+    kaspi_goods_result_out_model=KaspiGoodsResultOut,
+    kaspi_goods_import_record_out_model=KaspiGoodsImportRecordOut,
+    kaspi_sync_now_out_model=KaspiSyncNowOut,
+    kaspi_token_health_out_model=KaspiTokenHealthOut,
+    kaspi_token_selftest_out_model=KaspiTokenSelftestOut,
+    kaspi_catalog_import_out_model=KaspiCatalogImportOut,
+)
 
 
 # ============================= MC SESSION + SYNC =============================
