@@ -18,6 +18,19 @@ This is **not** a verdict for hands-off scale.
   - full tenant simulation (`7 passed`) covering auth/login, diagnostics, billing-state behavior, core preorder flow, Kaspi-related validation, report export path, and logout/session sanity.
 - Frontend auth/session hardening has concrete implementation evidence for refresh-on-expiry retry behavior and successful frontend build.
 
+### Frontend auth/session hardening verification (2026-03-09)
+- Verified in code that session model no longer persists active session tokens in `localStorage`:
+  - `frontend/src/auth/tokenStore.ts` keeps access token in memory and refresh token in `sessionStorage`, while removing legacy `localStorage` keys.
+- Verified refresh retry is implemented as single-flight lock:
+  - `frontend/src/api/client.ts` uses shared `refreshInFlight` promise and waits on it for concurrent requests.
+- Verified logout/session reset path:
+  - `frontend/src/hooks/useAuth.ts` clears session via `clearSessionTokens()` and redirects to `/auth/login`.
+- Verified unauthorized/session-expired UX path:
+  - `frontend/src/api/client.ts` dispatches `auth:unauthorized`; `frontend/src/hooks/useAuth.ts` handles it with redirect to `/auth/login?reason=session_expired`; `frontend/src/pages/Auth/LoginPage.tsx` shows clear user message.
+- Build evidence:
+  - Command: `npm --prefix frontend run build`
+  - Output (key lines): `vite v4.5.14 building for production...`, `✓ 140 modules transformed.`, `✓ built in 995ms`.
+
 ## 4. What is still partially risky
 - Most P0 tracks remain `Partial` rather than `Exists`.
 - Release dry-run evidence is still largely pending (migration/smoke/post-deploy checks not fully evidenced).
