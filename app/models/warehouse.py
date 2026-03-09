@@ -330,7 +330,7 @@ class ProductStock(BaseModel):
     # ---------- Properties ----------
     @property
     def available_quantity(self) -> int:
-        return max(0, int(self.quantity) - int(self.reserved_quantity))
+        return int(self.quantity) - int(self.reserved_quantity)
 
     @property
     def is_low_stock(self) -> bool:
@@ -417,6 +417,11 @@ class ProductStock(BaseModel):
         new_qty = prev_qty + delta
         if new_qty < 0:
             raise ValueError("Resulting stock quantity cannot be negative")
+        reserved_qty = int(self.reserved_quantity)
+        if reserved_qty < 0:
+            raise ValueError("Reserved quantity cannot be negative")
+        if reserved_qty > new_qty:
+            raise ValueError("Resulting stock quantity cannot be below reserved quantity")
 
         # Только для прихода
         if movement_type == MovementType.IN.value and delta > 0:
@@ -602,11 +607,12 @@ class ProductStock(BaseModel):
     ):
         before_qty = int(self.quantity)
         self.fulfill_reservation(qty)
+        fulfilled_qty = before_qty - int(self.quantity)
         m = StockMovement(
             stock_id=self.id,
             product_id=self.product_id,
             movement_type=MovementType.FULFILL.value,
-            quantity=-abs(int(qty or 0)),
+            quantity=-abs(int(fulfilled_qty)),
             previous_quantity=before_qty,
             new_quantity=int(self.quantity),
             user_id=user_id,
@@ -852,6 +858,11 @@ class StockMovement(BaseModel):
         new_qty = prev_qty + int(quantity)
         if new_qty < 0:
             raise ValueError("Resulting stock quantity cannot be negative")
+        reserved_qty = int(stock.reserved_quantity)
+        if reserved_qty < 0:
+            raise ValueError("Reserved quantity cannot be negative")
+        if reserved_qty > new_qty:
+            raise ValueError("Resulting stock quantity cannot be below reserved quantity")
         stock.quantity = new_qty
         movement = cls(
             stock_id=stock.id,

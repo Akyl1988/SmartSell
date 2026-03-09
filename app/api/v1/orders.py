@@ -24,7 +24,14 @@ from app.core.security import resolve_tenant_company_id
 from app.models.order import Order, OrderStatus
 from app.models.user import User
 from app.schemas.base import PaginatedResponse
-from app.schemas.order import OrderResponse
+from app.schemas.order import OrderCreate, OrderResponse
+from app.services.orders import (
+    cancel_order,
+    confirm_order,
+    create_order,
+    fulfill_order,
+    ship_order,
+)
 
 router = APIRouter()
 
@@ -187,6 +194,86 @@ async def update_order_internal(
         await db.refresh(order)
 
     return order
+
+
+@admin_router.post("", response_model=OrderResponse, status_code=201)
+async def create_order_endpoint(
+    payload: OrderCreate,
+    current_user: User = Depends(get_current_verified_user),
+    db: AsyncSession = Depends(get_async_db),
+):
+    company_id = resolve_tenant_company_id(current_user, not_found_detail="Company not set")
+    order = await create_order(
+        db,
+        company_id=company_id,
+        created_by_user_id=getattr(current_user, "id", None),
+        payload=payload,
+    )
+    return OrderResponse.model_validate(order)
+
+
+@admin_router.post("/{order_id}/confirm", response_model=OrderResponse)
+async def confirm_order_endpoint(
+    order_id: int = Path(..., ge=1),
+    current_user: User = Depends(get_current_verified_user),
+    db: AsyncSession = Depends(get_async_db),
+):
+    company_id = resolve_tenant_company_id(current_user, not_found_detail="Company not set")
+    order = await confirm_order(
+        db,
+        company_id=company_id,
+        order_id=order_id,
+        user_id=getattr(current_user, "id", None),
+    )
+    return OrderResponse.model_validate(order)
+
+
+@admin_router.post("/{order_id}/cancel", response_model=OrderResponse)
+async def cancel_order_endpoint(
+    order_id: int = Path(..., ge=1),
+    current_user: User = Depends(get_current_verified_user),
+    db: AsyncSession = Depends(get_async_db),
+):
+    company_id = resolve_tenant_company_id(current_user, not_found_detail="Company not set")
+    order = await cancel_order(
+        db,
+        company_id=company_id,
+        order_id=order_id,
+        user_id=getattr(current_user, "id", None),
+    )
+    return OrderResponse.model_validate(order)
+
+
+@admin_router.post("/{order_id}/ship", response_model=OrderResponse)
+async def ship_order_endpoint(
+    order_id: int = Path(..., ge=1),
+    current_user: User = Depends(get_current_verified_user),
+    db: AsyncSession = Depends(get_async_db),
+):
+    company_id = resolve_tenant_company_id(current_user, not_found_detail="Company not set")
+    order = await ship_order(
+        db,
+        company_id=company_id,
+        order_id=order_id,
+        user_id=getattr(current_user, "id", None),
+    )
+    return OrderResponse.model_validate(order)
+
+
+@admin_router.post("/{order_id}/fulfill", response_model=OrderResponse)
+async def fulfill_order_endpoint(
+    order_id: int = Path(..., ge=1),
+    current_user: User = Depends(get_current_verified_user),
+    db: AsyncSession = Depends(get_async_db),
+):
+    company_id = resolve_tenant_company_id(current_user, not_found_detail="Company not set")
+    order = await fulfill_order(
+        db,
+        company_id=company_id,
+        order_id=order_id,
+        user_id=getattr(current_user, "id", None),
+    )
+    return OrderResponse.model_validate(order)
 
 
 router.include_router(read_router)

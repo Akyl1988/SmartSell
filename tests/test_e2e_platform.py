@@ -136,6 +136,14 @@ def test_e2e_models_happy_path(db_session, company, admin_user, product, warehou
     assert warehouse.is_archived is False
 
 
+def test_movement_rejects_below_reserved(db_session, company, admin_user, product, warehouse, stock):
+    stock.receive(db_session, qty=5, user_id=admin_user.id, notes="initial load", commit=True)
+    stock.reserve_and_log(db_session, qty=4, user_id=admin_user.id, notes="reserve for order #1", commit=True)
+
+    with pytest.raises(ValueError):
+        stock.ship(db_session, qty=3, user_id=admin_user.id, notes="invalid ship", commit=True)
+
+
 # ---------- HTTP SMOKE (если есть FastAPI-приложение) ----------
 @pytest.mark.asyncio
 async def test_http_smoke_if_app_exists(async_client):

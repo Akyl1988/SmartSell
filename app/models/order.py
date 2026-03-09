@@ -115,10 +115,10 @@ class OrderSource(str, enum.Enum):
 
 ALLOWED_TRANSITIONS: dict[OrderStatus, set[OrderStatus]] = {
     OrderStatus.PENDING: {OrderStatus.CONFIRMED, OrderStatus.CANCELLED},
-    OrderStatus.CONFIRMED: {OrderStatus.PAID, OrderStatus.CANCELLED},
+    OrderStatus.CONFIRMED: {OrderStatus.PAID, OrderStatus.CANCELLED, OrderStatus.SHIPPED, OrderStatus.COMPLETED},
     OrderStatus.PAID: {OrderStatus.PROCESSING, OrderStatus.REFUNDED, OrderStatus.CANCELLED},
     OrderStatus.PROCESSING: {OrderStatus.SHIPPED, OrderStatus.CANCELLED},
-    OrderStatus.SHIPPED: {OrderStatus.DELIVERED, OrderStatus.CANCELLED},
+    OrderStatus.SHIPPED: {OrderStatus.DELIVERED, OrderStatus.COMPLETED, OrderStatus.CANCELLED},
     OrderStatus.DELIVERED: {OrderStatus.COMPLETED, OrderStatus.REFUNDED},
     OrderStatus.COMPLETED: set(),
     OrderStatus.CANCELLED: set(),
@@ -468,17 +468,24 @@ class Order(Base):
         new_status: OrderStatus,
         user_id: int | None,
         note: str | None,
+        *,
+        session=None,
     ) -> None:
-        self.status_history.append(
-            OrderStatusHistory(
-                order_id=self.id,
-                old_status=old_status,
-                new_status=new_status,
-                changed_by=user_id,
-                changed_at=utc_now(),
-                note=note,
-            )
+        entry = OrderStatusHistory(
+            order_id=self.id,
+            old_status=old_status,
+            new_status=new_status,
+            changed_by=user_id,
+            changed_at=utc_now(),
+            note=note,
         )
+        if session is not None:
+            try:
+                session.add(entry)
+                return
+            except Exception:
+                pass
+        self.status_history.append(entry)
 
     def _enforce_transition(self, new_status: OrderStatus) -> None:
         allowed = ALLOWED_TRANSITIONS.get(self.status, set())
@@ -497,10 +504,13 @@ class Order(Base):
         if new_status != old_status:
             self._enforce_transition(new_status)
             self.status = new_status
-            self._append_status_history(old_status, new_status, user_id, note)
+            self._append_status_history(old_status, new_status, user_id, note, session=session)
+            audit_session = None
+            if session is not None and not hasattr(session, "sync_session"):
+                audit_session = session
             self.add_audit_log(
                 "order_status_change",
-                session=session,
+                session=audit_session,
                 user_id=user_id,
                 description=note,
                 old_values={"status": old_status.value},

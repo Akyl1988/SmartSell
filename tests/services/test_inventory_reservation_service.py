@@ -6,6 +6,7 @@ from sqlalchemy import select
 from app.core.exceptions import NotFoundError, SmartSellValidationError
 from app.models.warehouse import MovementType, ProductStock, StockMovement, Warehouse
 from app.services.inventory_reservations import (
+    _assert_stock_invariants,
     fulfill_reservation,
     release_and_log,
     reserve_and_log,
@@ -236,3 +237,122 @@ async def test_reserve_stock_for_preorder_insufficient(async_db_session, factory
     )
     assert result.ok is False
     assert result.error_code == "INSUFFICIENT_STOCK"
+
+
+async def test_fulfill_reservation_insufficient_reserved(async_db_session, factory):
+    company = await factory["create_company"]()
+    product = await factory["create_product"](company=company, stock_quantity=5)
+    warehouse = await _create_main_warehouse(async_db_session, company)
+    stock = ProductStock(product_id=product.id, warehouse_id=warehouse.id, quantity=5, reserved_quantity=1)
+    async_db_session.add(stock)
+    await async_db_session.commit()
+
+    with pytest.raises(SmartSellValidationError) as exc:
+        await fulfill_reservation(
+            async_db_session,
+            tenant_id=company.id,
+            product_id=product.id,
+            qty=2,
+            reference_type="preorder",
+            reference_id=950,
+        )
+    assert exc.value.code == "INSUFFICIENT_STOCK"
+
+
+async def test_fulfill_reservation_insufficient_quantity(async_db_session, factory):
+    company = await factory["create_company"]()
+    product = await factory["create_product"](company=company, stock_quantity=1)
+    warehouse = await _create_main_warehouse(async_db_session, company)
+    stock = ProductStock(product_id=product.id, warehouse_id=warehouse.id, quantity=1, reserved_quantity=1)
+    async_db_session.add(stock)
+    await async_db_session.commit()
+
+    with pytest.raises(SmartSellValidationError) as exc:
+        await fulfill_reservation(
+            async_db_session,
+            tenant_id=company.id,
+            product_id=product.id,
+            qty=2,
+            reference_type="preorder",
+            reference_id=951,
+        )
+    assert exc.value.code == "INSUFFICIENT_STOCK"
+
+
+async def test_double_fulfill_rejected(async_db_session, factory):
+    company = await factory["create_company"]()
+    product = await factory["create_product"](company=company, stock_quantity=5)
+    warehouse = await _create_main_warehouse(async_db_session, company)
+    stock = ProductStock(product_id=product.id, warehouse_id=warehouse.id, quantity=5, reserved_quantity=3)
+    async_db_session.add(stock)
+    await async_db_session.commit()
+
+    await fulfill_reservation(
+        async_db_session,
+        tenant_id=company.id,
+        product_id=product.id,
+        qty=2,
+        reference_type="preorder",
+        reference_id=960,
+    )
+
+    with pytest.raises(SmartSellValidationError) as exc:
+        await fulfill_reservation(
+            async_db_session,
+            tenant_id=company.id,
+            product_id=product.id,
+            qty=1,
+            reference_type="preorder",
+            reference_id=960,
+        )
+    assert exc.value.code == "RESERVATION_ALREADY_FULFILLED"
+
+
+async def test_release_after_fulfill_rejected(async_db_session, factory):
+    company = await factory["create_company"]()
+    product = await factory["create_product"](company=company, stock_quantity=5)
+    warehouse = await _create_main_warehouse(async_db_session, company)
+    stock = ProductStock(product_id=product.id, warehouse_id=warehouse.id, quantity=5, reserved_quantity=3)
+    async_db_session.add(stock)
+    await async_db_session.commit()
+
+    await fulfill_reservation(
+        async_db_session,
+        tenant_id=company.id,
+        product_id=product.id,
+        qty=2,
+        reference_type="preorder",
+        reference_id=970,
+    )
+
+    with pytest.raises(SmartSellValidationError) as exc:
+        await release_and_log(
+            async_db_session,
+            tenant_id=company.id,
+            product_id=product.id,
+            qty=1,
+            reference_type="preorder",
+            reference_id=970,
+        )
+    assert exc.value.code == "RESERVATION_ALREADY_FULFILLED"
+
+
+async def test_stock_invariant_negative_quantity():
+    stock = ProductStock(product_id=1, warehouse_id=1, quantity=-1, reserved_quantity=0)
+    with pytest.raises(SmartSellValidationError) as exc:
+        _assert_stock_invariants(stock)
+    assert exc.value.code == "NEGATIVE_STOCK"
+
+
+async def test_stock_invariant_negative_reserved():
+    stock = ProductStock(product_id=1, warehouse_id=1, quantity=1, reserved_quantity=-1)
+    with pytest.raises(SmartSellValidationError) as exc:
+        _assert_stock_invariants(stock)
+    assert exc.value.code == "NEGATIVE_RESERVED_STOCK"
+
+
+async def test_stock_invariant_reserved_exceeds_quantity():
+    stock = ProductStock(product_id=1, warehouse_id=1, quantity=1, reserved_quantity=2)
+    with pytest.raises(SmartSellValidationError) as exc:
+        _assert_stock_invariants(stock)
+    assert exc.value.code == "RESERVED_EXCEEDS_STOCK"

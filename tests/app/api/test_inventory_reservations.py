@@ -88,6 +88,100 @@ async def test_inventory_reserve_release_fulfill(
     assert fulfill.json()["reserved"] == 0
 
 
+async def test_inventory_fulfill_twice_rejected(
+    async_client,
+    db_session,
+    async_db_session,
+    company_a_admin_headers,
+):
+    user_a = _get_user_by_phone(db_session, "+70000010001")
+    product, _warehouse = await _create_stock(async_db_session, user_a.company_id, quantity=3)
+
+    reserve = await async_client.post(
+        "/api/v1/inventory/reservations/reserve",
+        json={
+            "product_id": product.id,
+            "qty": 2,
+            "reference_type": "preorder",
+            "reference_id": 11,
+        },
+        headers=company_a_admin_headers,
+    )
+    assert reserve.status_code == 200, reserve.text
+
+    fulfill = await async_client.post(
+        "/api/v1/inventory/reservations/fulfill",
+        json={
+            "product_id": product.id,
+            "qty": 2,
+            "reference_type": "preorder",
+            "reference_id": 11,
+        },
+        headers=company_a_admin_headers,
+    )
+    assert fulfill.status_code == 200, fulfill.text
+
+    fulfill_again = await async_client.post(
+        "/api/v1/inventory/reservations/fulfill",
+        json={
+            "product_id": product.id,
+            "qty": 1,
+            "reference_type": "preorder",
+            "reference_id": 11,
+        },
+        headers=company_a_admin_headers,
+    )
+    assert fulfill_again.status_code == 409, fulfill_again.text
+    assert fulfill_again.json().get("code") == "RESERVATION_ALREADY_FULFILLED"
+
+
+async def test_inventory_release_after_fulfill_rejected(
+    async_client,
+    db_session,
+    async_db_session,
+    company_a_admin_headers,
+):
+    user_a = _get_user_by_phone(db_session, "+70000010001")
+    product, _warehouse = await _create_stock(async_db_session, user_a.company_id, quantity=3)
+
+    reserve = await async_client.post(
+        "/api/v1/inventory/reservations/reserve",
+        json={
+            "product_id": product.id,
+            "qty": 1,
+            "reference_type": "preorder",
+            "reference_id": 12,
+        },
+        headers=company_a_admin_headers,
+    )
+    assert reserve.status_code == 200, reserve.text
+
+    fulfill = await async_client.post(
+        "/api/v1/inventory/reservations/fulfill",
+        json={
+            "product_id": product.id,
+            "qty": 1,
+            "reference_type": "preorder",
+            "reference_id": 12,
+        },
+        headers=company_a_admin_headers,
+    )
+    assert fulfill.status_code == 200, fulfill.text
+
+    release = await async_client.post(
+        "/api/v1/inventory/reservations/release",
+        json={
+            "product_id": product.id,
+            "qty": 1,
+            "reference_type": "preorder",
+            "reference_id": 12,
+        },
+        headers=company_a_admin_headers,
+    )
+    assert release.status_code == 409, release.text
+    assert release.json().get("code") == "RESERVATION_ALREADY_FULFILLED"
+
+
 async def test_inventory_release_invalid(
     async_client,
     db_session,
@@ -132,3 +226,42 @@ async def test_inventory_tenant_isolation(
         headers=company_b_admin_headers,
     )
     assert forbidden.status_code == 404, forbidden.text
+
+
+async def test_inventory_movement_rejects_below_reserved(
+    async_client,
+    db_session,
+    async_db_session,
+    company_a_admin_headers,
+):
+    user_a = _get_user_by_phone(db_session, "+70000010001")
+    product, warehouse = await _create_stock(async_db_session, user_a.company_id, quantity=2)
+
+    stock = (
+        (
+            await async_db_session.execute(
+                select(ProductStock).where(
+                    ProductStock.product_id == product.id,
+                    ProductStock.warehouse_id == warehouse.id,
+                )
+            )
+        )
+        .scalars()
+        .one()
+    )
+    stock.reserved_quantity = 2
+    stock.quantity = 2
+    await async_db_session.commit()
+
+    movement = await async_client.post(
+        "/api/v1/inventory/movements",
+        json={
+            "warehouse_id": warehouse.id,
+            "product_id": product.id,
+            "qty_delta": -1,
+            "reason": "test",
+        },
+        headers=company_a_admin_headers,
+    )
+    assert movement.status_code == 422, movement.text
+    assert movement.json().get("code") == "NEGATIVE_STOCK"

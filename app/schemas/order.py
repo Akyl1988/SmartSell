@@ -71,6 +71,7 @@ class OrderUpdate(BaseUpdateSchema):
 class OrderResponse(BaseResponseSchema):
     """Schema for order response"""
 
+    id: int
     order_number: str
     external_id: str | None
     source: OrderSource

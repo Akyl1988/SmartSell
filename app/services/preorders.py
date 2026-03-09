@@ -336,11 +336,11 @@ async def fulfill_preorder(
             raise NotFoundError("Preorder not found", "PREORDER_NOT_FOUND")
 
         if preorder.status == PreorderStatus.FULFILLED:
-            if preorder.fulfilled_order_id is None and existing_order_id is not None:
-                preorder.fulfilled_order_id = existing_order_id
-                if preorder.fulfilled_at is None:
-                    preorder.fulfilled_at = datetime.utcnow()
-            return preorder
+            raise SmartSellValidationError(
+                "Preorder already fulfilled",
+                "PREORDER_ALREADY_FULFILLED",
+                http_status=409,
+            )
 
         if preorder.status != PreorderStatus.CONFIRMED:
             raise SmartSellValidationError(

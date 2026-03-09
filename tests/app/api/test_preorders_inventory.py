@@ -654,7 +654,7 @@ async def test_preorder_cancel_releases_stock_idempotent(
     assert len(moves) == 1
 
 
-async def test_preorder_cancel_partial_reserve_releases_remaining(
+async def test_preorder_cancel_rejects_release_over_reserved(
     async_client,
     db_session,
     async_db_session,
@@ -706,44 +706,11 @@ async def test_preorder_cancel_partial_reserve_releases_remaining(
         f"/api/v1/preorders/{preorder_id}/cancel",
         headers=company_a_admin_headers,
     )
-    assert cancelled.status_code == 200, cancelled.text
-
-    await async_db_session.rollback()
-
-    stock = (
-        (
-            await async_db_session.execute(
-                select(ProductStock)
-                .where(
-                    ProductStock.product_id == product.id,
-                    ProductStock.warehouse_id == warehouse.id,
-                )
-                .execution_options(populate_existing=True)
-            )
-        )
-        .scalars()
-        .one()
-    )
-    assert stock.reserved_quantity == 0
-
-    moves = (
-        (
-            await async_db_session.execute(
-                select(StockMovement).where(
-                    StockMovement.reference_type == "preorder",
-                    StockMovement.reference_id == preorder_id,
-                    StockMovement.movement_type == "release",
-                    StockMovement.product_id == product.id,
-                )
-            )
-        )
-        .scalars()
-        .all()
-    )
-    assert len(moves) == 1
+    assert cancelled.status_code == 422, cancelled.text
+    assert cancelled.json().get("code") == "INVALID_RELEASE"
 
 
-async def test_preorder_fulfill_decrements_stock_idempotent(
+async def test_preorder_fulfill_rejects_double_fulfill(
     async_client,
     db_session,
     async_db_session,
@@ -801,7 +768,8 @@ async def test_preorder_fulfill_decrements_stock_idempotent(
         f"/api/v1/preorders/{preorder_id}/fulfill",
         headers=company_a_admin_headers,
     )
-    assert fulfilled_again.status_code == 200, fulfilled_again.text
+    assert fulfilled_again.status_code == 409, fulfilled_again.text
+    assert fulfilled_again.json().get("code") == "PREORDER_ALREADY_FULFILLED"
 
     stock = (
         (

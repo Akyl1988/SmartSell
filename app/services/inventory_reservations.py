@@ -135,6 +135,29 @@ def _build_result(stock: ProductStock) -> dict[str, int]:
     }
 
 
+def _assert_stock_invariants(stock: ProductStock) -> None:
+    qty = int(stock.quantity or 0)
+    reserved = int(stock.reserved_quantity or 0)
+    if qty < 0:
+        raise SmartSellValidationError(
+            "Stock quantity cannot be negative",
+            "NEGATIVE_STOCK",
+            http_status=422,
+        )
+    if reserved < 0:
+        raise SmartSellValidationError(
+            "Reserved quantity cannot be negative",
+            "NEGATIVE_RESERVED_STOCK",
+            http_status=422,
+        )
+    if reserved > qty:
+        raise SmartSellValidationError(
+            "Reserved quantity cannot exceed stock quantity",
+            "RESERVED_EXCEEDS_STOCK",
+            http_status=422,
+        )
+
+
 class ReservationResult(BaseModel):
     ok: bool
     error_code: str | None = None
@@ -218,27 +241,17 @@ async def release_stock_for_preorder(
         product_id=product_id,
     )
     if warehouse_id is None:
-        return
-
-    result = await db.execute(
-        select(ProductStock)
-        .where(ProductStock.product_id == product_id)
-        .where(ProductStock.warehouse_id == warehouse_id)
-        .with_for_update()
-    )
-    stock = result.scalar_one_or_none()
-    if stock is None:
-        return
-
-    release_qty = min(int(quantity), int(stock.reserved_quantity or 0))
-    if release_qty <= 0:
-        return
+        raise SmartSellValidationError(
+            "Reservation not found",
+            "RESERVATION_NOT_FOUND",
+            http_status=409,
+        )
 
     await release_and_log(
         db,
         tenant_id=company_id,
         product_id=product_id,
-        qty=release_qty,
+        qty=int(quantity),
         reference_type="preorder",
         reference_id=preorder_id,
         warehouse_id=warehouse_id,
@@ -260,6 +273,12 @@ async def fulfill_preorder_reservation(
         preorder_id=preorder_id,
         product_id=product_id,
     )
+    if warehouse_id is None:
+        raise SmartSellValidationError(
+            "Reservation not found",
+            "RESERVATION_NOT_FOUND",
+            http_status=409,
+        )
     await fulfill_reservation(
         db,
         tenant_id=company_id,
@@ -300,10 +319,12 @@ async def reserve_and_log(
         warehouse = await _get_warehouse(db, tenant_id=tenant_id, warehouse_id=warehouse_id)
 
     stock = await _get_or_create_stock(db, product=product, warehouse=warehouse)
+    _assert_stock_invariants(stock)
     if stock.available_quantity < qty_int:
         raise SmartSellValidationError("Insufficient stock", "INSUFFICIENT_STOCK", http_status=422)
 
     stock.reserved_quantity = int(stock.reserved_quantity) + qty_int
+    _assert_stock_invariants(stock)
 
     movement = StockMovement(
         stock_id=stock.id,
@@ -335,6 +356,21 @@ async def release_and_log(
     warehouse_id: int | None = None,
 ) -> dict[str, int]:
     qty_int = _validate_qty(qty)
+    fulfill = await _find_movement_stock(
+        db,
+        tenant_id=tenant_id,
+        product_id=product_id,
+        movement_type=MovementType.FULFILL.value,
+        reference_type=reference_type,
+        reference_id=reference_id,
+        warehouse_id=warehouse_id,
+    )
+    if fulfill is not None:
+        raise SmartSellValidationError(
+            "Reservation already fulfilled",
+            "RESERVATION_ALREADY_FULFILLED",
+            http_status=409,
+        )
     existing = await _find_movement_stock(
         db,
         tenant_id=tenant_id,
@@ -353,10 +389,12 @@ async def release_and_log(
         warehouse = await _get_warehouse(db, tenant_id=tenant_id, warehouse_id=warehouse_id)
 
     stock = await _get_or_create_stock(db, product=product, warehouse=warehouse)
+    _assert_stock_invariants(stock)
     if int(stock.reserved_quantity) < qty_int:
         raise SmartSellValidationError("Insufficient reserved stock", "INVALID_RELEASE", http_status=422)
 
     stock.reserved_quantity = int(stock.reserved_quantity) - qty_int
+    _assert_stock_invariants(stock)
 
     movement = StockMovement(
         stock_id=stock.id,
@@ -398,7 +436,11 @@ async def fulfill_reservation(
         warehouse_id=warehouse_id,
     )
     if existing is not None:
-        return _build_result(existing)
+        raise SmartSellValidationError(
+            "Reservation already fulfilled",
+            "RESERVATION_ALREADY_FULFILLED",
+            http_status=409,
+        )
     product = await _get_product(db, tenant_id=tenant_id, product_id=product_id)
     if warehouse_id is None:
         warehouse = await _get_default_warehouse(db, tenant_id=tenant_id)
@@ -406,12 +448,14 @@ async def fulfill_reservation(
         warehouse = await _get_warehouse(db, tenant_id=tenant_id, warehouse_id=warehouse_id)
 
     stock = await _get_or_create_stock(db, product=product, warehouse=warehouse)
+    _assert_stock_invariants(stock)
     if int(stock.reserved_quantity) < qty_int or int(stock.quantity) < qty_int:
         raise SmartSellValidationError("Insufficient stock", "INSUFFICIENT_STOCK", http_status=422)
 
     prev_qty = int(stock.quantity)
     stock.reserved_quantity = int(stock.reserved_quantity) - qty_int
     stock.quantity = prev_qty - qty_int
+    _assert_stock_invariants(stock)
 
     movement = StockMovement(
         stock_id=stock.id,

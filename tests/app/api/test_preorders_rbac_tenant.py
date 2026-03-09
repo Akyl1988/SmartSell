@@ -106,8 +106,8 @@ async def test_preorders_store_admin_flow_and_tenant_isolation(
         f"/api/v1/preorders/{preorder_id}/fulfill",
         headers=company_a_admin_headers,
     )
-    assert fulfilled_again.status_code == 200, fulfilled_again.text
-    assert fulfilled_again.json().get("fulfilled_order_id") == first_order_id
+    assert fulfilled_again.status_code == 409, fulfilled_again.text
+    assert fulfilled_again.json().get("code") == "PREORDER_ALREADY_FULFILLED"
     after_count = int((await async_db_session.execute(select(func.count()).select_from(Order))).scalar_one())
     assert after_count == before_count + 1
 
