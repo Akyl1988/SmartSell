@@ -113,3 +113,40 @@ Current evidence status: **Backup + DB restore evidence completed; application-l
 	- `Test-Path tmp/drill/smartsell_main_drill.sql` -> `True`
 	- `Select-String` consistency checks across `docs/UPGRADE_PLAYBOOK.md`, `docs/DEPLOY_MINIMAL_PROD.md`, and this DR drill doc.
 - This cross-check strengthens operational readiness evidence but does not replace a new full DB restore execution with measured RPO/RTO.
+
+## 13 Full restore-oriented cycle with measured timing (2026-03-09)
+
+### 13.1 Timing
+- Start timestamp: `2026-03-09 18:54:13 +05:00`
+- Finish timestamp: `2026-03-09 18:54:35 +05:00`
+- Measured duration: `21.88` seconds
+
+### 13.2 Restore sequence (executed)
+- `psql -U postgres -h 127.0.0.1 -p 5432 -d smartsell_drill_restore -f .\\tmp\\drill\\smartsell_main_drill.sql` -> `RESTORE_EXIT=0`
+- `psql -U postgres -h 127.0.0.1 -p 5432 -d smartsell_drill_restore -c "\\dt"` -> `DT_EXIT=0`
+- Restore output log captured to: `tmp/drill/dr_cycle4_restore.log`
+- Table-list log captured to: `tmp/drill/dr_cycle4_dt.log`
+
+### 13.3 Application-level post-restore verification
+- Health/readiness probes:
+	- `/api/v1/health` -> `200`
+	- `/ready` -> `200`
+- Post-restore compact verification command:
+	- `pytest tests/app/test_auth.py::TestAuth::test_login_with_password tests/app/api/test_admin_tenant_diagnostics.py::test_admin_tenant_diagnostics_summary tests/app/api/test_preorders_rbac_tenant.py::test_preorders_store_admin_flow_and_tenant_isolation tests/test_process_role_gating.py::test_scheduler_starts_for_scheduler_role tests/test_process_role_gating.py::test_kaspi_runner_starts_for_runner_role -q`
+	- Output: `5 passed in 11.10s`
+	- Exit: `POST_RESTORE_TEST_EXIT=0`
+
+### 13.4 Migration + rollback/readiness consistency
+- `pytest tests/test_migration_upgrade.py::test_alembic_upgrade_head_runs tests/test_upgrade_playbook_docs.py::test_upgrade_playbook_docs_contains_key_strings -q`
+	- Output: `2 passed in 6.74s`
+	- Exit: `MIGRATION_ROLLBACK_TEST_EXIT=0`
+- Restore artifact presence:
+	- `Test-Path tmp/drill/smartsell_main_drill.sql` -> `True`
+
+### 13.5 Live integration sanity
+- Attempted command:
+	- `Invoke-WebRequest -UseBasicParsing http://127.0.0.1:8000/api/v1/kaspi/status -TimeoutSec 10`
+- Observed output:
+	- `KASPI_STATUS_ERROR=Response status code does not indicate success: 401 (Unauthorized).`
+- Status:
+	- Live Kaspi sanity **not confirmed** in this cycle.

@@ -219,3 +219,39 @@ Record operational dry-run evidence for `SMARTSELL_RELEASE_CHECKLIST.md` using r
 ### 10.6 Linked evidence
 - Runtime rehearsal details: `SMARTSELL_RUNTIME_REHEARSAL_EVIDENCE.md`
 - DR drill baseline: `SMARTSELL_DR_RESTORE_DRILL.md`
+
+## 11. Full restore-oriented production-like cycle (measured)
+
+### 11.1 Timing
+- Start timestamp: `2026-03-09 18:54:13 +05:00`
+- Finish timestamp: `2026-03-09 18:54:35 +05:00`
+- Measured duration: `21.88` seconds
+
+### 11.2 Commands executed and observed outputs
+- Restore command:
+	- `psql -U postgres -h 127.0.0.1 -p 5432 -d smartsell_drill_restore -f .\\tmp\\drill\\smartsell_main_drill.sql` -> `RESTORE_EXIT=0`
+	- Verbose output archived in `tmp/drill/dr_cycle4_restore.log`
+- Restore verification command:
+	- `psql -U postgres -h 127.0.0.1 -p 5432 -d smartsell_drill_restore -c "\\dt"` -> `DT_EXIT=0`
+	- Output archived in `tmp/drill/dr_cycle4_dt.log`
+- Health/readiness probes:
+	- `/api/v1/health` -> `200`
+	- `/ready` -> `200`
+- Application-level post-restore verification:
+	- `pytest tests/app/test_auth.py::TestAuth::test_login_with_password tests/app/api/test_admin_tenant_diagnostics.py::test_admin_tenant_diagnostics_summary tests/app/api/test_preorders_rbac_tenant.py::test_preorders_store_admin_flow_and_tenant_isolation tests/test_process_role_gating.py::test_scheduler_starts_for_scheduler_role tests/test_process_role_gating.py::test_kaspi_runner_starts_for_runner_role -q`
+	- Output: `5 passed in 11.10s`
+	- Exit: `POST_RESTORE_TEST_EXIT=0`
+- Migration + rollback readiness checks:
+	- `pytest tests/test_migration_upgrade.py::test_alembic_upgrade_head_runs tests/test_upgrade_playbook_docs.py::test_upgrade_playbook_docs_contains_key_strings -q`
+	- Output: `2 passed in 6.74s`
+	- Exit: `MIGRATION_ROLLBACK_TEST_EXIT=0`
+- Restore artifact presence:
+	- `Test-Path tmp/drill/smartsell_main_drill.sql` -> `True`
+
+### 11.3 Live integration sanity
+- Attempted:
+	- `Invoke-WebRequest -UseBasicParsing http://127.0.0.1:8000/api/v1/kaspi/status -TimeoutSec 10`
+- Observed:
+	- `KASPI_STATUS_ERROR=Response status code does not indicate success: 401 (Unauthorized).`
+- Conclusion:
+	- Live integration sanity remains unconfirmed in this rehearsal.

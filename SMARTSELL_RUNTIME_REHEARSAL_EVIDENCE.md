@@ -37,3 +37,27 @@ Observed output:
 ## 5. Notes
 - This rehearsal is production-like operational evidence in local runtime context.
 - It does not replace repeated production deploy records with explicit process startup logs.
+
+## 6. Rehearsal cycle #2 (full restore-oriented context)
+
+### 6.1 Timing
+- Start timestamp: `2026-03-09 18:54:13 +05:00`
+- Finish timestamp: `2026-03-09 18:54:35 +05:00`
+- Measured duration: `21.88` seconds
+
+### 6.2 Runtime role readiness checks
+Command:
+
+`pytest tests/test_process_role_gating.py::test_scheduler_starts_for_scheduler_role tests/test_process_role_gating.py::test_kaspi_runner_starts_for_runner_role -q`
+
+Observed output (as part of post-restore verification bundle):
+- Included in: `5 passed in 11.10s`
+
+### 6.3 Runtime endpoint readiness
+Observed output:
+- `/api/v1/health` -> `200`
+- `/ready` -> `200`
+
+### 6.4 Notes
+- This cycle strengthens runtime operational evidence by combining role readiness and live endpoint checks in a measured restore-oriented rehearsal.
+- Production deploy/startup logs are still required for `Exists` level.
