@@ -18,12 +18,19 @@ from app.api.v1.admin_plans import router as plans_router
 from app.core.config import settings
 from app.core.db import get_async_db
 from app.core.dependencies import require_platform_admin
-from app.core.exceptions import AuthorizationError, ConflictError, NotFoundError, _ensure_request_id
+from app.core.exceptions import (
+    AuthorizationError,
+    ConflictError,
+    NotFoundError,
+    SmartSellValidationError,
+    _ensure_request_id,
+)
 from app.core.logging import audit_logger
 from app.core.redis_client import get_redis
 from app.core.subscriptions.catalog import get_plan_by_code
 from app.core.subscriptions.plan_catalog import get_plan as get_plan_legacy
 from app.core.subscriptions.plan_catalog import get_plan_display_name, normalize_plan_id
+from app.core.support_workflow import build_support_triage_preview
 from app.core.tenant_lifecycle import (
     TENANT_STATE_DELETE_REQUESTED,
     TENANT_STATE_PENDING_EXPORT,
@@ -48,6 +55,7 @@ from app.models.marketplace import KaspiStoreToken
 from app.models.subscription_override import SubscriptionOverride
 from app.models.user import User
 from app.schemas.campaign import AdminCampaignResponse
+from app.schemas.support_triage import SupportTriagePreviewIn, SupportTriagePreviewOut
 from app.schemas.tenant_archive_delete import TenantArchiveDeletePreviewOut
 from app.schemas.tenant_diagnostics import TenantDiagnosticsSummaryOut
 from app.schemas.tenant_export import TenantExportManifestOut
@@ -1290,6 +1298,42 @@ async def admin_tenant_archive_delete_preview(
         warnings=warnings,
         next_state=next_state,
         destructive_delete_supported=False,
+    )
+
+
+@router.post(
+    "/tenants/{company_id}/support-triage-preview",
+    response_model=SupportTriagePreviewOut,
+    summary="Support triage preview (platform admin, no side effects)",
+)
+async def admin_support_triage_preview(
+    company_id: int,
+    payload: SupportTriagePreviewIn,
+    admin: User = Depends(require_platform_admin),
+    db: AsyncSession = Depends(get_async_db),
+) -> SupportTriagePreviewOut:
+    _ = admin
+    company = await db.get(Company, company_id)
+    if not company:
+        raise NotFoundError("company_not_found", code="company_not_found", http_status=404)
+
+    try:
+        preview = build_support_triage_preview(
+            company_id=company_id,
+            severity=payload.severity,
+            area=payload.area,
+            issue_summary=payload.issue_summary,
+            latest_request_id=payload.latest_request_id,
+        )
+    except ValueError as exc:
+        code = str(exc)
+        raise SmartSellValidationError("Invalid support triage payload", code=code, http_status=422) from exc
+
+    return SupportTriagePreviewOut(
+        **preview,
+        diagnostics_endpoint=f"/api/v1/admin/tenants/{company_id}/diagnostics",
+        export_endpoint=f"/api/v1/admin/tenants/{company_id}/export",
+        archive_delete_preview_endpoint=f"/api/v1/admin/tenants/{company_id}/archive-delete-preview?action=archive",
     )
 
 
