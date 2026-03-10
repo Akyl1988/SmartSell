@@ -38,14 +38,15 @@ from uuid import uuid4
 from sqlalchemy import func, select, text, update
 
 try:
-    from apscheduler.events import EVENT_JOB_ERROR, EVENT_JOB_MAX_INSTANCES, EVENT_JOB_MISSED
+    from apscheduler.events import EVENT_JOB_ERROR, EVENT_JOB_EXECUTED, EVENT_JOB_MAX_INSTANCES, EVENT_JOB_MISSED
     from apscheduler.schedulers.background import BackgroundScheduler
     from apscheduler.triggers.date import DateTrigger
     from apscheduler.triggers.interval import IntervalTrigger
 except ModuleNotFoundError:  # pragma: no cover - optional in tests
     EVENT_JOB_ERROR = 1
-    EVENT_JOB_MAX_INSTANCES = 2
-    EVENT_JOB_MISSED = 4
+    EVENT_JOB_EXECUTED = 2
+    EVENT_JOB_MAX_INSTANCES = 4
+    EVENT_JOB_MISSED = 8
 
     class _StubTrigger:
         def __init__(self, *args, **kwargs):  # noqa: D401
@@ -401,9 +402,20 @@ def _on_scheduler_event(event):
         logger.error("APScheduler: достигнут максимум инстансов job_id=%s", getattr(event, "job_id", "?"))
     elif event.code == EVENT_JOB_ERROR:
         logger.exception("APScheduler: ошибка в job_id=%s", getattr(event, "job_id", "?"))
+    elif event.code == EVENT_JOB_EXECUTED:
+        logger.info(
+            "scheduler_job_executed",
+            extra={
+                "job": getattr(event, "job_id", "?"),
+                "status": "success",
+            },
+        )
 
 
-scheduler.add_listener(_on_scheduler_event, EVENT_JOB_MISSED | EVENT_JOB_MAX_INSTANCES | EVENT_JOB_ERROR)
+scheduler.add_listener(
+    _on_scheduler_event,
+    EVENT_JOB_MISSED | EVENT_JOB_MAX_INSTANCES | EVENT_JOB_ERROR | EVENT_JOB_EXECUTED,
+)
 
 
 # -------- Бизнес-логика -------- #

@@ -57,6 +57,41 @@ FEATURE_MATRIX: dict[str, set[str]] = {
     },
 }
 
+QUOTA_MATRIX: dict[str, dict[str, int | None]] = {
+    "basic": {
+        "products": 2000,
+        "campaigns": 20,
+        "repricing_rules": 20,
+        "warehouses": 5,
+        "preorders": 2000,
+        "api_heavy_operations": 5000,
+    },
+    "start": {
+        "products": 1000,
+        "campaigns": 10,
+        "repricing_rules": 10,
+        "warehouses": 3,
+        "preorders": 1000,
+        "api_heavy_operations": 2000,
+    },
+    "business": {
+        "products": 7000,
+        "campaigns": 100,
+        "repricing_rules": 150,
+        "warehouses": 20,
+        "preorders": 15000,
+        "api_heavy_operations": 20000,
+    },
+    "pro": {
+        "products": 10000,
+        "campaigns": 200,
+        "repricing_rules": 200,
+        "warehouses": 50,
+        "preorders": 50000,
+        "api_heavy_operations": 100000,
+    },
+}
+
 
 def normalize_plan_id(raw: str | None, *, default: str | None = "start") -> str | None:
     key = (raw or "").strip().lower()
@@ -115,11 +150,17 @@ def get_plan_features(plan_id: str | None) -> set[str]:
     return FEATURE_MATRIX.get(normalized, set())
 
 
+def get_plan_quotas(plan_id: str | None) -> dict[str, int | None]:
+    normalized = normalize_plan_id(plan_id) or "start"
+    return dict(QUOTA_MATRIX.get(normalized, {}))
+
+
 __all__ = [
     "PlanCatalogEntry",
     "PLAN_CATALOG",
     "PLAN_ALIASES",
     "FEATURE_MATRIX",
+    "QUOTA_MATRIX",
     "normalize_plan_id",
     "is_canonical_plan_id",
     "get_plan",
@@ -127,4 +168,5 @@ __all__ = [
     "iter_plan_ids",
     "list_plans",
     "get_plan_features",
+    "get_plan_quotas",
 ]

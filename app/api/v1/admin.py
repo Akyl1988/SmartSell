@@ -4,7 +4,7 @@ import json
 import os
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
-from typing import Any
+from typing import Any, Literal
 
 import sqlalchemy as sa
 from fastapi import APIRouter, Body, Depends, Query, Request
@@ -18,12 +18,27 @@ from app.api.v1.admin_plans import router as plans_router
 from app.core.config import settings
 from app.core.db import get_async_db
 from app.core.dependencies import require_platform_admin
-from app.core.exceptions import AuthorizationError, ConflictError, NotFoundError, _ensure_request_id
+from app.core.exceptions import (
+    AuthorizationError,
+    ConflictError,
+    NotFoundError,
+    SmartSellValidationError,
+    _ensure_request_id,
+)
 from app.core.logging import audit_logger
 from app.core.redis_client import get_redis
 from app.core.subscriptions.catalog import get_plan_by_code
 from app.core.subscriptions.plan_catalog import get_plan as get_plan_legacy
 from app.core.subscriptions.plan_catalog import get_plan_display_name, normalize_plan_id
+from app.core.support_workflow import build_support_triage_preview
+from app.core.tenant_lifecycle import (
+    TENANT_STATE_DELETE_REQUESTED,
+    TENANT_STATE_PENDING_EXPORT,
+    can_archive_tenant,
+    can_request_delete,
+    infer_current_tenant_state,
+    requires_export_before_delete,
+)
 from app.models.billing import Subscription, WalletBalance, WalletTransaction
 from app.models.campaign import (
     Campaign,
@@ -40,7 +55,10 @@ from app.models.marketplace import KaspiStoreToken
 from app.models.subscription_override import SubscriptionOverride
 from app.models.user import User
 from app.schemas.campaign import AdminCampaignResponse
+from app.schemas.support_triage import SupportTriagePreviewIn, SupportTriagePreviewOut
+from app.schemas.tenant_archive_delete import TenantArchiveDeletePreviewOut
 from app.schemas.tenant_diagnostics import TenantDiagnosticsSummaryOut
+from app.schemas.tenant_export import TenantExportManifestOut
 from app.services.campaign_cleanup import campaign_cleanup_run
 from app.services.campaign_pipeline import campaign_pipeline_tick
 from app.services.campaign_runner import (
@@ -53,6 +71,7 @@ from app.services.campaign_runner import (
 from app.services.repricing import run_reprcing_for_company
 from app.services.subscriptions import activate_plan, renew_if_due
 from app.services.tenant_diagnostics import get_tenant_diagnostics_summary
+from app.services.tenant_export import build_tenant_export_manifest
 from app.utils.tokens import generate_token, hash_token
 from app.worker.campaign_processing import process_campaign_queue_once
 
@@ -1194,6 +1213,128 @@ async def get_tenant_diagnostics_summary_endpoint(
 ) -> TenantDiagnosticsSummaryOut:
     _ = admin
     return await get_tenant_diagnostics_summary(db, company_id=company_id)
+
+
+@router.get(
+    "/tenants/{company_id}/export",
+    response_model=TenantExportManifestOut,
+    summary="Tenant export manifest preview (platform admin)",
+)
+async def admin_tenant_export_manifest(
+    company_id: int,
+    admin: User = Depends(require_platform_admin),
+    db: AsyncSession = Depends(get_async_db),
+) -> TenantExportManifestOut:
+    exported_by = str(getattr(admin, "phone", None) or getattr(admin, "id", "platform_admin"))
+    return await build_tenant_export_manifest(
+        db,
+        company_id=company_id,
+        exported_by=exported_by,
+    )
+
+
+@router.get(
+    "/tenants/{company_id}/archive-delete-preview",
+    response_model=TenantArchiveDeletePreviewOut,
+    summary="Tenant archive/delete preview (platform admin, no side effects)",
+)
+async def admin_tenant_archive_delete_preview(
+    company_id: int,
+    action: Literal["archive", "delete"] = Query(...),
+    admin: User = Depends(require_platform_admin),
+    db: AsyncSession = Depends(get_async_db),
+) -> TenantArchiveDeletePreviewOut:
+    _ = admin
+    company = await db.get(Company, company_id)
+    if not company:
+        raise NotFoundError("company_not_found", code="company_not_found", http_status=404)
+
+    current_state = infer_current_tenant_state(company)
+
+    if action == "archive":
+        allowed = can_archive_tenant(current_state=current_state)
+        next_state = "archived" if allowed else current_state
+        required = ["platform_admin_reason", "evidence_trail"]
+        warnings: list[str] = []
+        if current_state == "archived":
+            warnings.append("tenant_already_archived")
+        return TenantArchiveDeletePreviewOut(
+            company_id=company_id,
+            current_state=current_state,
+            requested_action=action,
+            allowed=allowed,
+            required_before_action=required,
+            warnings=warnings,
+            next_state=next_state,
+            destructive_delete_supported=False,
+        )
+
+    export_required = requires_export_before_delete()
+    has_export_manifest_reference = False
+    allowed = can_request_delete(
+        current_state=current_state,
+        has_export_manifest_reference=has_export_manifest_reference,
+    )
+    warnings = ["delete_is_policy_only_no_destructive_delete"]
+    required = ["platform_admin_reason", "evidence_trail"]
+    if export_required:
+        required.insert(0, "export_manifest_reference")
+        if not has_export_manifest_reference:
+            warnings.append("export_before_delete_required")
+
+    if export_required and not has_export_manifest_reference:
+        next_state = TENANT_STATE_PENDING_EXPORT
+    elif allowed:
+        next_state = TENANT_STATE_DELETE_REQUESTED
+    else:
+        next_state = current_state
+
+    return TenantArchiveDeletePreviewOut(
+        company_id=company_id,
+        current_state=current_state,
+        requested_action=action,
+        allowed=allowed,
+        required_before_action=required,
+        warnings=warnings,
+        next_state=next_state,
+        destructive_delete_supported=False,
+    )
+
+
+@router.post(
+    "/tenants/{company_id}/support-triage-preview",
+    response_model=SupportTriagePreviewOut,
+    summary="Support triage preview (platform admin, no side effects)",
+)
+async def admin_support_triage_preview(
+    company_id: int,
+    payload: SupportTriagePreviewIn,
+    admin: User = Depends(require_platform_admin),
+    db: AsyncSession = Depends(get_async_db),
+) -> SupportTriagePreviewOut:
+    _ = admin
+    company = await db.get(Company, company_id)
+    if not company:
+        raise NotFoundError("company_not_found", code="company_not_found", http_status=404)
+
+    try:
+        preview = build_support_triage_preview(
+            company_id=company_id,
+            severity=payload.severity,
+            area=payload.area,
+            issue_summary=payload.issue_summary,
+            latest_request_id=payload.latest_request_id,
+        )
+    except ValueError as exc:
+        code = str(exc)
+        raise SmartSellValidationError("Invalid support triage payload", code=code, http_status=422) from exc
+
+    return SupportTriagePreviewOut(
+        **preview,
+        diagnostics_endpoint=f"/api/v1/admin/tenants/{company_id}/diagnostics",
+        export_endpoint=f"/api/v1/admin/tenants/{company_id}/export",
+        archive_delete_preview_endpoint=f"/api/v1/admin/tenants/{company_id}/archive-delete-preview?action=archive",
+    )
 
 
 @router.post(

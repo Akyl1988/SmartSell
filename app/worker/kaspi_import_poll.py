@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from datetime import datetime
+from time import perf_counter
 from typing import Any
 
 from sqlalchemy import or_, select, text
@@ -27,6 +28,35 @@ from app.services.kaspi_import_run_utils import (
 )
 
 logger = get_logger(__name__)
+
+try:
+    from prometheus_client import Counter, Histogram
+
+    _IMPORT_POLL_STARTED = Counter(
+        "smartsell_kaspi_import_poll_started_total",
+        "Kaspi import poll worker jobs started",
+        ["job"],
+    )
+    _IMPORT_POLL_SUCCEEDED = Counter(
+        "smartsell_kaspi_import_poll_succeeded_total",
+        "Kaspi import poll worker jobs succeeded",
+        ["job"],
+    )
+    _IMPORT_POLL_FAILED = Counter(
+        "smartsell_kaspi_import_poll_failed_total",
+        "Kaspi import poll worker jobs failed",
+        ["job"],
+    )
+    _IMPORT_POLL_DURATION = Histogram(
+        "smartsell_kaspi_import_poll_duration_seconds",
+        "Kaspi import poll worker job duration seconds",
+        ["job", "status"],
+    )
+except Exception:  # pragma: no cover - optional metrics dependency
+    _IMPORT_POLL_STARTED = None
+    _IMPORT_POLL_SUCCEEDED = None
+    _IMPORT_POLL_FAILED = None
+    _IMPORT_POLL_DURATION = None
 
 _KASPI_IMPORT_POLL_LOCK_KEY = 0x4B49504C  # "KIPL"
 
@@ -165,6 +195,7 @@ async def _poll_run(run_id: str, session_factory: sessionmaker) -> dict[str, Any
 
 
 async def run_kaspi_import_poll_async() -> dict[str, Any]:
+    job_name = "kaspi_import_poll"
     summary: dict[str, Any] = {"polled": 0, "failed": 0, "skipped": 0, "locked": 0}
 
     async_url, _source, _fp = resolve_async_database_url(settings)
@@ -185,11 +216,70 @@ async def run_kaspi_import_poll_async() -> dict[str, Any]:
 
         sem = asyncio.Semaphore(int(settings.KASPI_IMPORT_POLL_MAX_CONCURRENCY))
 
-        async def _wrapped(run_id: str):
+        async def _wrapped(run: KaspiImportRun):
+            attempt = int(run.attempts or 0) + 1
+            started_at = perf_counter()
+            logger.info(
+                "worker_job_start",
+                extra={
+                    "job": job_name,
+                    "company_id": run.company_id,
+                    "attempt": attempt,
+                    "status": "started",
+                },
+            )
+            if _IMPORT_POLL_STARTED is not None:
+                _IMPORT_POLL_STARTED.labels(job=job_name).inc()
             async with sem:
-                return await _poll_run(run_id, AsyncSessionLocal)
+                try:
+                    result = await _poll_run(str(run.id), AsyncSessionLocal)
+                    status = str(result.get("status") or "unknown")
+                    duration_ms = int((perf_counter() - started_at) * 1000)
+                    error_code = result.get("error")
+                    if status == "ok":
+                        if _IMPORT_POLL_SUCCEEDED is not None:
+                            _IMPORT_POLL_SUCCEEDED.labels(job=job_name).inc()
+                    elif status != "skipped":
+                        if _IMPORT_POLL_FAILED is not None:
+                            _IMPORT_POLL_FAILED.labels(job=job_name).inc()
+                    if _IMPORT_POLL_DURATION is not None:
+                        _IMPORT_POLL_DURATION.labels(job=job_name, status=status).observe(
+                            max(0.0, (perf_counter() - started_at))
+                        )
+                    logger.info(
+                        "worker_job_end",
+                        extra={
+                            "job": job_name,
+                            "company_id": run.company_id,
+                            "attempt": attempt,
+                            "status": status,
+                            "duration_ms": duration_ms,
+                            "error_code": error_code,
+                        },
+                    )
+                    return result
+                except Exception as exc:
+                    duration_ms = int((perf_counter() - started_at) * 1000)
+                    if _IMPORT_POLL_FAILED is not None:
+                        _IMPORT_POLL_FAILED.labels(job=job_name).inc()
+                    if _IMPORT_POLL_DURATION is not None:
+                        _IMPORT_POLL_DURATION.labels(job=job_name, status="exception").observe(
+                            max(0.0, (perf_counter() - started_at))
+                        )
+                    logger.error(
+                        "worker_job_failed",
+                        extra={
+                            "job": job_name,
+                            "company_id": run.company_id,
+                            "attempt": attempt,
+                            "status": "failed",
+                            "duration_ms": duration_ms,
+                            "error_code": type(exc).__name__,
+                        },
+                    )
+                    raise
 
-        tasks = [_wrapped(str(run.id)) for run in runs]
+        tasks = [_wrapped(run) for run in runs]
         results = await asyncio.gather(*tasks, return_exceptions=True)
         for result in results:
             if isinstance(result, Exception):

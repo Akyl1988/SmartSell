@@ -10,10 +10,17 @@ Document the first practical disaster recovery restore drill for SmartSell and d
 - Misconfiguration causing service startup failure after release.
 
 ## 3 Backup sources
-- Database backup source: TBD (latest verified snapshot location).
-- Application artifact/image source: TBD.
-- Environment/config backup source (secrets/config templates): TBD.
-- Timestamp of backup selected for drill: Not yet executed.
+- Database backup command used:
+	- `pg_dump -U postgres -h 127.0.0.1 -p 5432 -d smartsell_main -f .\\tmp\\drill\\smartsell_main_drill.sql`
+- Output artifact path:
+	- `tmp/drill/smartsell_main_drill.sql`
+- Artifact size/timestamp:
+	- Generated locally during DR drill.
+	- File exists in `tmp/drill` and contains a full PostgreSQL dump.
+- Application artifact/image source:
+	- Not yet executed as part of this DB-focused drill.
+- Environment/config backup source:
+	- Not yet executed as part of this DB-focused drill.
 
 ## 4 Restore procedure
 1. Declare DR drill start and assign owner.
@@ -25,15 +32,36 @@ Document the first practical disaster recovery restore drill for SmartSell and d
 7. Start API, worker, and required dependencies.
 8. Record timestamps for each step.
 
-## 5 Verification steps
-- [ ] API health endpoint returns success.
-- [ ] Authentication/login works for admin account.
-- [ ] One tenant can read/write a core business flow.
-- [ ] Background worker/scheduler is running.
-- [ ] Critical integration path responds (Kaspi sanity check).
-- [ ] No critical startup/migration errors in logs.
+Execution evidence for this drill:
+- Restore was executed: **Yes**.
+- Restore command used:
+	- `psql -U postgres -h 127.0.0.1 -p 5432 -d smartsell_drill_restore -f .\\tmp\\drill\\smartsell_main_drill.sql`
 
-Status: Not yet executed.
+## 5 Verification steps
+- [x] Database restore command completed.
+- [x] Table listing verification completed.
+- [x] API health/readiness checks passed in restore verification set.
+- [x] Authentication/login flow passed in restore verification set.
+- [x] Tenant diagnostics endpoint check passed in restore verification set.
+- [x] One critical tenant core flow passed in restore verification set.
+- [x] Worker/scheduler readiness checks passed in restore verification set.
+- [ ] Critical integration path responds (Kaspi live sanity check against restored environment). *(Not yet verified in this drill set)*
+
+Verification commands used:
+- `psql -U postgres -h 127.0.0.1 -p 5432 -d smartsell_drill_restore -f .\\tmp\\drill\\smartsell_main_drill.sql`
+- `psql -U postgres -h 127.0.0.1 -p 5432 -d smartsell_drill_restore -c "\\dt"`
+- `D:/LLM_HUB/SmartSell/.venv/Scripts/python.exe -m pytest tests/test_health_and_ready.py::test_health_ok tests/test_health_and_ready.py::test_ready_relaxed_200 tests/app/test_auth.py::TestAuth::test_login_with_password tests/app/api/test_admin_tenant_diagnostics.py::test_admin_tenant_diagnostics_summary tests/app/api/test_preorders_rbac_tenant.py::test_preorders_store_admin_flow_and_tenant_isolation tests/test_process_role_gating.py::test_scheduler_starts_for_scheduler_role tests/test_process_role_gating.py::test_kaspi_runner_starts_for_runner_role -q`
+- `D:/LLM_HUB/SmartSell/.venv/Scripts/python.exe -m pytest tests/test_upgrade_playbook_docs.py::test_upgrade_playbook_docs_contains_key_strings -q`
+- `Select-String -Path "docs/UPGRADE_PLAYBOOK.md" -Pattern "backup_db.ps1|restore_db.ps1|/api/v1/health|/ready"`
+- `Select-String -Path "docs/DEPLOY_MINIMAL_PROD.md" -Pattern "/api/v1/health|/ready|smoke-auth.ps1|smoke-preorders-e2e.ps1"`
+- `Select-String -Path "docs/runbooks/add_new_company.md" -Pattern "smoke-preorders-e2e.ps1|POST /api/v1/repricing/run|/api/v1/auth/me"`
+- `Select-String -Path "SMARTSELL_ONBOARDING_PLAYBOOK.md" -Pattern "diagnostics|login|core flow|Rollback"`
+
+Verification result:
+- Database restored successfully and 71 tables detected.
+- Application-level restore verification set executed on 2026-03-09 18:27:26 +05:00.
+- Result: `7 passed in 13.47s` (health/readiness, auth login, diagnostics, critical tenant flow, worker/scheduler gating).
+- Runbook consistency check result: `1 passed in 6.57s` and required restore/health/smoke references were found in upgrade/deploy/onboarding runbooks.
 
 ## 6 RPO target
 - Target RPO: **15 minutes** (initial operating target).
@@ -51,10 +79,116 @@ Status: Not yet executed.
 - Measured restore duration (start → service healthy).
 - Measured data gap against backup timestamp.
 
-Current evidence status: **Not yet executed / Pending evidence**.
+Current evidence status: **Backup + DB restore evidence completed; application-level restore verification evidence added for health/auth/diagnostics/core flow/worker-scheduler; live integration sanity and repeated restore-cycle evidence remain pending**.
 
-## 9 Follow-up improvements
-1. Automate restore steps into a runnable script/checklist.
-2. Add periodic backup integrity validation.
-3. Re-run drill and compare achieved RPO/RTO vs targets.
-4. Capture known bottlenecks and remove manual steps.
+## 9 Issues found
+- No blocking issues.
+- Restore completed successfully.
+- No destructive cleanup was performed in this drill step.
+
+## 10 Final outcome
+- Backup and restore drill executed successfully at database level.
+- PostgreSQL dump restored into database `smartsell_drill_restore`.
+- Schema integrity verified via table listing (`71` tables).
+- Application-level restore readiness verified via executed checks for:
+	- API health/readiness
+	- auth/login
+	- tenant diagnostics endpoint
+	- critical tenant preorder flow
+	- worker/scheduler role gating readiness
+- This is still not full production-like restore proof; repeated restore cycles and live integration verification are required before `Exists`.
+
+## 11 Follow-up actions
+1. Automate backup process and schedule periodic DR drills.
+2. Store backup artifacts outside the application host for disaster recovery readiness.
+3. Execute Kaspi live sanity check against restored target and attach output.
+4. Collect repeated restore-cycle evidence (at least one additional full cycle with timing data).
+
+## 12 Production-like rehearsal cross-check (2026-03-09)
+- Rehearsal reference:
+	- `SMARTSELL_RELEASE_DRY_RUN_EVIDENCE.md` (Section 10)
+	- `SMARTSELL_RUNTIME_REHEARSAL_EVIDENCE.md`
+- Executed rollback/readiness verification command block included:
+	- `tests/test_upgrade_playbook_docs.py::test_upgrade_playbook_docs_contains_key_strings` -> `1 passed in 6.38s`
+	- `Test-Path tmp/drill/smartsell_main_drill.sql` -> `True`
+	- `Select-String` consistency checks across `docs/UPGRADE_PLAYBOOK.md`, `docs/DEPLOY_MINIMAL_PROD.md`, and this DR drill doc.
+- This cross-check strengthens operational readiness evidence but does not replace a new full DB restore execution with measured RPO/RTO.
+
+## 13 Full restore-oriented cycle with measured timing (2026-03-09)
+
+### 13.1 Timing
+- Start timestamp: `2026-03-09 18:54:13 +05:00`
+- Finish timestamp: `2026-03-09 18:54:35 +05:00`
+- Measured duration: `21.88` seconds
+
+### 13.2 Restore sequence (executed)
+- `psql -U postgres -h 127.0.0.1 -p 5432 -d smartsell_drill_restore -f .\\tmp\\drill\\smartsell_main_drill.sql` -> `RESTORE_EXIT=0`
+- `psql -U postgres -h 127.0.0.1 -p 5432 -d smartsell_drill_restore -c "\\dt"` -> `DT_EXIT=0`
+- Restore output log captured to: `tmp/drill/dr_cycle4_restore.log`
+- Table-list log captured to: `tmp/drill/dr_cycle4_dt.log`
+
+### 13.3 Application-level post-restore verification
+- Health/readiness probes:
+	- `/api/v1/health` -> `200`
+	- `/ready` -> `200`
+- Post-restore compact verification command:
+	- `pytest tests/app/test_auth.py::TestAuth::test_login_with_password tests/app/api/test_admin_tenant_diagnostics.py::test_admin_tenant_diagnostics_summary tests/app/api/test_preorders_rbac_tenant.py::test_preorders_store_admin_flow_and_tenant_isolation tests/test_process_role_gating.py::test_scheduler_starts_for_scheduler_role tests/test_process_role_gating.py::test_kaspi_runner_starts_for_runner_role -q`
+	- Output: `5 passed in 11.10s`
+	- Exit: `POST_RESTORE_TEST_EXIT=0`
+
+### 13.4 Migration + rollback/readiness consistency
+- `pytest tests/test_migration_upgrade.py::test_alembic_upgrade_head_runs tests/test_upgrade_playbook_docs.py::test_upgrade_playbook_docs_contains_key_strings -q`
+	- Output: `2 passed in 6.74s`
+	- Exit: `MIGRATION_ROLLBACK_TEST_EXIT=0`
+- Restore artifact presence:
+	- `Test-Path tmp/drill/smartsell_main_drill.sql` -> `True`
+
+### 13.5 Live integration sanity
+- Attempted command:
+	- `Invoke-WebRequest -UseBasicParsing http://127.0.0.1:8000/api/v1/kaspi/status -TimeoutSec 10`
+- Observed output:
+	- `KASPI_STATUS_ERROR=Response status code does not indicate success: 401 (Unauthorized).`
+- Status:
+	- Live Kaspi sanity **not confirmed** in this cycle.
+
+## 14 Full restore-oriented cycle #5 with measured timing (2026-03-09)
+
+### 14.1 Metadata
+- Branch: `feat/incident-followups`
+- Commit: `e6a2172`
+- Python: `3.11.9`
+
+### 14.2 Timing
+- Start timestamp: `2026-03-09 19:30:37 +05:00`
+- Finish timestamp: `2026-03-09 19:30:51 +05:00`
+- Measured duration: `14.33` seconds
+
+### 14.3 Restore sequence (executed)
+- `psql -U postgres -h 127.0.0.1 -p 5432 -d smartsell_drill_restore -f .\\tmp\\drill\\smartsell_main_drill.sql` -> `RESTORE_EXIT=0`
+- Restore output log: `tmp/drill/dr_cycle5_restore.log`
+- Initial table listing run in cycle block:
+	- `psql -U postgres -h 127.0.0.1 -p 5432 -d smartsell_drill_restore -c "\\dt"` -> `DT_EXIT=1`
+	- Table-list log: `tmp/drill/dr_cycle5_dt.log`
+- Direct re-run of table listing command:
+	- `psql -U postgres -h 127.0.0.1 -p 5432 -d smartsell_drill_restore -c '\\dt'`
+	- Observed output: `List of relations ... (71 rows)`
+
+### 14.4 Post-restore runtime verification
+- `/api/v1/health` -> `200`
+- `/ready` -> `200`
+- `/api/v1/wallet/health` -> `200`
+
+### 14.5 Compact application-level verification
+- Command:
+	- `pytest tests/app/test_auth.py::TestAuth::test_login_with_password tests/app/api/test_admin_tenant_diagnostics.py::test_admin_tenant_diagnostics_summary tests/app/api/test_preorders_rbac_tenant.py::test_preorders_store_admin_flow_and_tenant_isolation tests/test_process_role_gating.py::test_scheduler_starts_for_scheduler_role tests/test_process_role_gating.py::test_kaspi_runner_starts_for_runner_role -q`
+- Observed output:
+	- `5 passed in 11.60s`
+	- `POST_RESTORE_TEST_EXIT=0`
+
+### 14.6 Live integration sanity attempt
+- Command:
+	- `Invoke-WebRequest -UseBasicParsing http://127.0.0.1:8000/api/v1/kaspi/status -TimeoutSec 10`
+- Observed output:
+	- `KASPI_STATUS_ERROR=Response status code does not indicate success: 401 (Unauthorized).`
+- Status:
+	- Live Kaspi sanity is **still unconfirmed** in this cycle.

@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
+import { bootstrapTokenStore, clearSessionTokens, getRefreshToken, hasSessionToken, setSessionTokens } from '../auth/tokenStore'
 import { getHttpErrorInfo } from '../api/client'
 import { login as apiLogin, logout as apiLogout, me, LoginPayload, MeResponse, TokenResponse } from '../api/auth'
 
@@ -20,14 +21,15 @@ type AuthState = {
 }
 
 export function useAuth(): AuthState {
+  bootstrapTokenStore()
+
   const [profile, setProfile] = useState<MeResponse | null>(null)
   const [loading, setLoading] = useState(true)
   const [authenticating, setAuthenticating] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
   const refreshProfile = useCallback(async () => {
-    const token = localStorage.getItem('access_token')
-    if (!token) {
+    if (!hasSessionToken()) {
       setProfile(null)
       setLoading(false)
       return
@@ -51,9 +53,16 @@ export function useAuth(): AuthState {
 
   useEffect(() => {
     const onUnauthorized = () => {
-      localStorage.removeItem('access_token')
-      localStorage.removeItem('refresh_token')
+      clearSessionTokens()
       setProfile(null)
+      setAuthenticating(false)
+      setLoading(false)
+      setError('Session expired. Please sign in again.')
+
+      const currentPath = window.location.pathname
+      if (currentPath !== '/auth/login') {
+        window.location.replace('/auth/login?reason=session_expired')
+      }
     }
     window.addEventListener('auth:unauthorized', onUnauthorized)
     return () => window.removeEventListener('auth:unauthorized', onUnauthorized)
@@ -64,8 +73,7 @@ export function useAuth(): AuthState {
     setError(null)
     try {
       const tokens = await apiLogin(payload)
-      localStorage.setItem('access_token', tokens.access_token)
-      localStorage.setItem('refresh_token', tokens.refresh_token)
+      setSessionTokens(tokens.access_token, tokens.refresh_token)
       try {
         const data = await me()
         setProfile(data)
@@ -83,15 +91,17 @@ export function useAuth(): AuthState {
   }, [])
 
   const logout = useCallback(async () => {
-    const refreshToken = localStorage.getItem('refresh_token')
+    const refreshToken = getRefreshToken()
     try {
       await apiLogout(refreshToken ? { refresh_token: refreshToken } : null)
     } catch {
       // ignore
     } finally {
-      localStorage.removeItem('access_token')
-      localStorage.removeItem('refresh_token')
+      clearSessionTokens()
       setProfile(null)
+      setAuthenticating(false)
+      setLoading(false)
+      window.location.replace('/auth/login')
     }
   }, [])
 

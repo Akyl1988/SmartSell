@@ -148,3 +148,247 @@ Evidence links (logs/request IDs/PRs):
 - Process is used consistently for all Sev 1/Sev 2 incidents.
 - At least two incidents include complete timeline + customer updates + closure notes.
 - At least one postmortem completed with corrective actions tracked.
+
+## 11. Operator incident evidence cycle (2026-03-09, tenant 1)
+
+This section records one real operator incident-style handling path using existing support/diagnostics APIs only (no DB access, no workflow redesign).
+
+### 11.1 Incident intake (input)
+- Trigger: support review of tenant Kaspi integration state.
+- Tenant: `company_id=1`.
+- Endpoint evidence:
+	- `GET /api/v1/admin/tenants/1/diagnostics` -> `HTTP 200`
+	- `POST /api/v1/admin/tenants/1/support-triage-preview` -> `HTTP 200`
+- Submitted triage payload:
+	- `severity=SEV-3`
+	- `area=kaspi`
+	- `issue_summary="Kaspi support incident simulation: export remains pending while no recent failure is exposed; verify sync freshness and feed pipeline state."`
+	- `latest_request_id=ef168bbb-44c1-4395-8b46-337c1b3273ac`
+
+### 11.2 Diagnostics lookup snapshot
+- `kaspi.connected=true`
+- `kaspi.last_successful_sync_at=2026-02-21T04:24:20.557748`
+- `kaspi.last_failed_sync_at=null`
+- `kaspi.last_error_summary=null`
+- `kaspi.last_export_status=pending`
+- `kaspi.last_import_status=null`
+- `support.last_request_id=ef168bbb-44c1-4395-8b46-337c1b3273ac`
+
+### 11.3 Triage classification output (existing workflow)
+- Triage endpoint returned:
+	- `severity=SEV-3`
+	- `area=kaspi`
+	- `status=preview`
+	- `normalized=true`
+	- `automation_supported=false`
+	- `diagnostics_endpoint=/api/v1/admin/tenants/1/diagnostics`
+- Recommended next steps from preview:
+	- `confirm_tenant`
+	- `classify_area`
+	- `fetch_diagnostics`
+	- `determine_impact`
+	- `choose_next_action`
+	- `collect_evidence`
+	- `mark_status`
+
+### 11.4 Operator next action recommendation
+- Treat as **SEV-3 kaspi integration triage** (degraded/needs follow-up, no active failure signal).
+- Execute controlled Kaspi feed/export pipeline verification and sync freshness check.
+- Track by `latest_request_id` and attach follow-up outcome to incident timeline.
+
+### 11.5 Incident note (postmortem-style record)
+```text
+Postmortem ID: PM-INC-SIM-2026-03-09-01
+Incident ID: INC-SIM-2026-03-09-01
+Date: 2026-03-09
+Owner: Founder/Ops
+
+Summary:
+Operator executed full support incident-style path for tenant 1 using diagnostics + support-triage-preview endpoints.
+
+Impact:
+No active outage detected; potential Kaspi feed/sync freshness concern for one tenant support case.
+
+Timeline (UTC):
+- Detection: support review opened from tenant integration visibility check.
+- Triage: diagnostics fetched (HTTP 200), severity/area classified as SEV-3/kaspi via triage preview (HTTP 200).
+- Mitigation: immediate recommendation prepared (verify feed/export pipeline and sync freshness).
+- Resolution: simulation cycle completed with evidence recorded.
+
+Root cause:
+Not a confirmed platform failure; this record validates operator process execution path.
+
+Corrective / preventive follow-up:
+1) Re-run same operator cycle on additional real support cases.
+2) Accumulate complete multi-incident timelines before promoting Incident process to Exists.
+
+Evidence links:
+- /api/v1/admin/tenants/1/diagnostics
+- /api/v1/admin/tenants/1/support-triage-preview
+- SMARTSELL_TENANT_DIAGNOSTICS_SUMMARY.md
+```
+
+## 12. Operator incident evidence cycle #2 (2026-03-09, tenant 1, scenario A: kaspi stale/export pending)
+
+### 12.1 Intake
+- Tenant/company: `company_id=1` (`Dev Company`)
+- Incident input:
+	- `severity=SEV-3`
+	- `area=kaspi`
+	- `issue_summary="Kaspi support review: export status is 'pending' while last sync success is '02/21/2026 04:24:20' and no hard failure is reported."`
+	- `latest_request_id=ef168bbb-44c1-4395-8b46-337c1b3273ac`
+
+### 12.2 Diagnostics snapshot
+- Endpoint call:
+	- `GET /api/v1/admin/tenants/1/diagnostics` -> `CYCLEA_DIAGNOSTICS_HTTP=200`
+- Raw diagnostics highlights:
+	- `kaspi.connected=true`
+	- `kaspi.last_successful_sync_at=2026-02-21T04:24:20.557748`
+	- `kaspi.last_failed_sync_at=null`
+	- `kaspi.last_error_summary=null`
+	- `kaspi.last_export_status=pending`
+	- `support.last_request_id=ef168bbb-44c1-4395-8b46-337c1b3273ac`
+
+### 12.3 Triage classification output
+- Endpoint call:
+	- `POST /api/v1/admin/tenants/1/support-triage-preview` -> `CYCLEA_TRIAGE_HTTP=200`
+- Raw triage output:
+	- `severity=SEV-3`
+	- `area=kaspi`
+	- `status=preview`
+	- `normalized=true`
+	- `diagnostics_endpoint=/api/v1/admin/tenants/1/diagnostics`
+	- `recommended_next_steps=[confirm_tenant, classify_area, fetch_diagnostics, determine_impact, choose_next_action, collect_evidence, mark_status]`
+
+### 12.4 Operator next action
+- Continue as support degradation review (no hard failure signal).
+- Verify export pipeline progression from `pending` and confirm sync freshness window for tenant communication.
+
+### 12.5 Customer update note
+- Current status: Investigating (low-impact support review).
+- What is affected: Kaspi integration requires operator verification due to pending export state.
+- What is not affected: No hard sync failure is currently reported in diagnostics.
+- Next update: after export pipeline follow-up and freshness check.
+
+### 12.6 Closure note
+- Cycle closed as triage-evidence complete: diagnostics and triage contract both returned `200` and produced actionable next steps.
+- No active outage declared for this cycle.
+
+### 12.7 Corrective / preventive follow-up
+1. Track recurring `last_export_status=pending` duration in repeated support checks.
+2. Keep request-id correlation (`support.last_request_id`) in every follow-up note.
+
+## 13. Operator incident evidence cycle #3 (2026-03-09, tenant 1, scenario B: billing/lifecycle clarification)
+
+### 13.1 Intake
+- Tenant/company: `company_id=1` (`Dev Company`)
+- Incident input:
+	- `severity=SEV-3`
+	- `area=billing`
+	- `issue_summary="Billing/lifecycle support review: subscription_state 'active', billing.state 'active', grace_until '', and last_payment_status '' require operator clarification for tenant communication."`
+	- `latest_request_id=ef168bbb-44c1-4395-8b46-337c1b3273ac`
+
+### 13.2 Diagnostics snapshot
+- Endpoint call:
+	- `GET /api/v1/admin/tenants/1/diagnostics` -> `CYCLEB_DIAGNOSTICS_HTTP=200`
+- Raw diagnostics highlights:
+	- `subscription_state=active`
+	- `billing.state=active`
+	- `billing.grace_until=null`
+	- `billing.last_payment_status=null`
+	- `lifecycle_state=ACTIVE`
+	- `support.last_request_id=ef168bbb-44c1-4395-8b46-337c1b3273ac`
+
+### 13.3 Triage classification output
+- Endpoint call:
+	- `POST /api/v1/admin/tenants/1/support-triage-preview` -> `CYCLEB_TRIAGE_HTTP=200`
+- Raw triage output:
+	- `severity=SEV-3`
+	- `area=billing`
+	- `status=preview`
+	- `normalized=true`
+	- `diagnostics_endpoint=/api/v1/admin/tenants/1/diagnostics`
+	- `recommended_next_steps=[confirm_tenant, classify_area, fetch_diagnostics, determine_impact, choose_next_action, collect_evidence, mark_status]`
+
+### 13.4 Operator next action
+- Treat as billing communication-clarification case (not an active payment failure incident).
+- Provide tenant-facing explanation of current active state and what signals would indicate grace/suspension transition.
+
+### 13.5 Customer update note
+- Current status: Clarified.
+- What is affected: no active billing lock indicated at this time.
+- What is not affected: tenant remains in active lifecycle/billing state.
+- Next update: only if billing state changes (grace/suspension trigger) or customer reports impact.
+
+### 13.6 Closure note
+- Cycle closed as informational billing review with complete evidence trail (`diagnostics=200`, `triage=200`) and documented operator decision.
+
+### 13.7 Corrective / preventive follow-up
+1. Reuse the same billing triage template for future state-change communications.
+2. Escalate severity to Sev-2 only when diagnostics indicate real degradation (grace/suspended or hard failure signal).
+
+## 14. Operator incident evidence cycle #4 (2026-03-09, tenant 1, scenario C: diagnostics + support triage runtime verification)
+
+### Incident summary
+- Incident ID: `INC-SIM-2026-03-09-04`
+- Type: operator support incident simulation using existing platform-admin support APIs.
+- Runtime markers:
+	- `INCIDENT_SIMULATION_START auth_http=200 company_id=1`
+	- `INCIDENT_SIMULATION_COMPLETE auth_http=200 diagnostics_http=200 triage_http=200`
+
+### Affected tenant
+- `company_id=1` (`Dev Company`)
+
+### Detection signal
+- Operator-initiated support review for tenant operational health and triage readiness.
+- Supporting marker:
+	- `INCIDENT_SIMULATION_START auth_http=200 company_id=1`
+
+### Operator diagnostics
+- Endpoint:
+	- `GET /api/v1/admin/tenants/1/diagnostics` -> `TENANT_DIAGNOSTICS_HTTP=200`
+- Collected outputs:
+	- `connected=true`
+	- `last_success=02/21/2026 04:24:20`
+	- `export_status=pending`
+	- `request_id=e74c1c44-7a53-4f35-b8a5-6729fdee3880`
+
+### Support triage result
+- Endpoint:
+	- `POST /api/v1/admin/tenants/1/support-triage-preview` -> `SUPPORT_TRIAGE_HTTP=200`
+- Collected outputs:
+	- `severity=SEV-3`
+	- `area=kaspi`
+	- `status=preview`
+	- `normalized=true`
+
+### Customer communication note
+- Current status: Investigating (low-impact support review).
+- What is affected: integration freshness/export state is under operator validation.
+- What is not affected: no hard failure was surfaced by this cycle.
+- Next update: after operator follow-up on export progression and sync freshness.
+
+### Closure note
+- Cycle closed with complete runtime evidence and successful API responses across the required support path.
+- Final markers confirmed:
+	- `TENANT_DIAGNOSTICS_HTTP=200`
+	- `SUPPORT_TRIAGE_HTTP=200`
+	- `INCIDENT_SIMULATION_COMPLETE auth_http=200 diagnostics_http=200 triage_http=200`
+
+## 15. Consolidated Incident process criteria assessment (2026-03-09)
+
+Evidence currently demonstrated by cycles #1-#4:
+- Severity rubric is present and applied in incident records.
+- Owner rule is present and used (`Founder/Ops` in records).
+- Internal/customer templates are present and reflected in incident notes.
+- Multiple operator incident cycles are documented with:
+	- diagnostics usage (`GET /api/v1/admin/tenants/{company_id}/diagnostics`),
+	- triage usage (`POST /api/v1/admin/tenants/{company_id}/support-triage-preview`),
+	- customer communication notes,
+	- closure notes,
+	- corrective/preventive follow-up.
+
+Honest gap before `Exists` (Section 10):
+- current evidence is simulation-style and predominantly Sev-3;
+- still missing two customer-originated real Sev-1/Sev-2 incident records with documented communication cadence;
+- still missing one completed postmortem linked to a real Sev-1/Sev-2 incident and tracked corrective actions.

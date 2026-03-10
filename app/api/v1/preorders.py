@@ -12,8 +12,9 @@ from app.core.dependencies import (
     require_company_access,
     require_store_roles,
 )
+from app.core.entitlements import require_entitlement
+from app.core.features import FEATURE_PREORDERS
 from app.core.security import resolve_tenant_company_id
-from app.core.subscriptions import FEATURE_PREORDERS, require_feature
 from app.models.user import User
 from app.schemas.preorders import (
     PreorderCreateIn,
@@ -48,7 +49,7 @@ store_router = APIRouter(
         Depends(require_company_access),
         Depends(require_store_roles("admin")),
         Depends(_require_company_context),
-        Depends(require_feature(FEATURE_PREORDERS)),
+        Depends(require_entitlement(FEATURE_PREORDERS)),
     ],
 )
 

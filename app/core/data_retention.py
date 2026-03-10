@@ -1,0 +1,33 @@
+from __future__ import annotations
+
+RETENTION_POLICY_VERSION = "2026-03-09"
+
+RETENTION_ORDERS_DAYS = 3650
+RETENTION_CAMPAIGNS_DAYS = 730
+RETENTION_LOGS_DAYS = 180
+RETENTION_EVENTS_DAYS = 365
+RETENTION_REPORTS_DAYS = 180
+RETENTION_DIAGNOSTICS_SNAPSHOTS_DAYS = 90
+
+
+def get_retention_limits() -> dict[str, int]:
+    return {
+        "orders_days": RETENTION_ORDERS_DAYS,
+        "campaigns_days": RETENTION_CAMPAIGNS_DAYS,
+        "logs_days": RETENTION_LOGS_DAYS,
+        "events_days": RETENTION_EVENTS_DAYS,
+        "reports_days": RETENTION_REPORTS_DAYS,
+        "diagnostics_snapshots_days": RETENTION_DIAGNOSTICS_SNAPSHOTS_DAYS,
+    }
+
+
+__all__ = [
+    "RETENTION_POLICY_VERSION",
+    "RETENTION_ORDERS_DAYS",
+    "RETENTION_CAMPAIGNS_DAYS",
+    "RETENTION_LOGS_DAYS",
+    "RETENTION_EVENTS_DAYS",
+    "RETENTION_REPORTS_DAYS",
+    "RETENTION_DIAGNOSTICS_SNAPSHOTS_DAYS",
+    "get_retention_limits",
+]

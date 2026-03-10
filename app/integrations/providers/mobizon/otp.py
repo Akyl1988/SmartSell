@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+from time import perf_counter
 from typing import Any
 
 import httpx
@@ -13,6 +14,43 @@ from app.integrations.ports.otp import OtpProvider
 from app.utils.pii import mask_phone
 
 log = get_logger(__name__)
+
+
+def _mobizon_log_start(operation: str) -> float:
+    started_at = perf_counter()
+    log.info(
+        "integration_call_start",
+        extra={
+            "provider": "mobizon",
+            "operation": operation,
+        },
+    )
+    return started_at
+
+
+def _mobizon_log_end(operation: str, started_at: float, status_code: int | None = None) -> None:
+    log.info(
+        "integration_call_end",
+        extra={
+            "provider": "mobizon",
+            "operation": operation,
+            "status_code": status_code,
+            "duration_ms": int((perf_counter() - started_at) * 1000),
+        },
+    )
+
+
+def _mobizon_log_error(operation: str, started_at: float, exc: Exception, status_code: int | None = None) -> None:
+    log.warning(
+        "integration_call_error",
+        extra={
+            "provider": "mobizon",
+            "operation": operation,
+            "status_code": status_code,
+            "duration_ms": int((perf_counter() - started_at) * 1000),
+            "error_code": type(exc).__name__,
+        },
+    )
 
 
 class MobizonOtpProvider(OtpProvider):
@@ -107,6 +145,7 @@ class MobizonOtpProvider(OtpProvider):
             payload["from"] = self.sender
 
         idem = self._idempotency_from_payload(phone, code, ttl_seconds)
+        started_at = _mobizon_log_start("send_otp")
 
         try:
             resp = await self._request(
@@ -118,6 +157,7 @@ class MobizonOtpProvider(OtpProvider):
             if resp.status_code in {401, 403}:
                 raise ProviderNotConfiguredError("otp_provider_auth_failed")
             if resp.status_code >= 400:
+                _mobizon_log_end("send_otp", started_at, resp.status_code)
                 return self._success_payload(
                     "error",
                     {
@@ -127,6 +167,7 @@ class MobizonOtpProvider(OtpProvider):
                 )
             data = resp.json() if resp.content else {}
             if str(data.get("code", "0")) not in {"0", "200", "OK"} and data.get("error"):
+                _mobizon_log_end("send_otp", started_at, resp.status_code)
                 return self._success_payload(
                     "error",
                     {
@@ -135,6 +176,7 @@ class MobizonOtpProvider(OtpProvider):
                     },
                 )
             message_id = (data.get("data") or {}).get("messageId") or data.get("messageId")
+            _mobizon_log_end("send_otp", started_at, resp.status_code)
             return self._success_payload(
                 "ok",
                 {
@@ -146,6 +188,7 @@ class MobizonOtpProvider(OtpProvider):
         except ProviderNotConfiguredError:
             raise
         except Exception as exc:  # pragma: no cover - defensive runtime
+            _mobizon_log_error("send_otp", started_at, exc)
             log.warning("mobizon_send_failed", extra={"phone": mask_phone(phone), "error": str(exc)})
             raise ProviderNotConfiguredError("otp_provider_unavailable") from exc
 
@@ -158,12 +201,16 @@ class MobizonOtpProvider(OtpProvider):
         return self._success_payload("unsupported", {"verified": False})
 
     async def healthcheck(self) -> dict[str, Any]:
+        started_at = _mobizon_log_start("healthcheck")
         try:
             resp = await self._request("get", "/service/ping")
             if resp.status_code >= 400:
+                _mobizon_log_end("healthcheck", started_at, resp.status_code)
                 return {"status": "error", "provider_status": resp.status_code}
+            _mobizon_log_end("healthcheck", started_at, resp.status_code)
             return {"status": "ok", "provider_status": resp.status_code}
         except Exception as exc:  # pragma: no cover - defensive runtime
+            _mobizon_log_error("healthcheck", started_at, exc)
             log.warning("Mobizon healthcheck failed", exc_info=exc)
             return {"status": "error", "provider_error": "healthcheck_failed"}
 

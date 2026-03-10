@@ -8,6 +8,7 @@ import pytest
 from app.models.audit_log import AuditLog
 from app.models.billing import BillingPayment, Subscription
 from app.models.company import Company
+from app.models.kaspi_mc_session import KaspiMcSession
 from app.models.kaspi_order_sync_state import KaspiOrderSyncState
 from app.models.repricing import RepricingRule, RepricingRun
 
@@ -51,6 +52,14 @@ async def test_admin_tenant_diagnostics_summary(async_client, async_db_session, 
     )
     async_db_session.add(sync_state)
 
+    kaspi_session = KaspiMcSession(
+        company_id=company.id,
+        merchant_uid="merchant-1",
+        cookies_ciphertext=b"encrypted-cookie",
+        is_active=True,
+    )
+    async_db_session.add(kaspi_session)
+
     rule = RepricingRule(company_id=company.id, name="rule", enabled=True, is_active=True)
     async_db_session.add(rule)
     await async_db_session.flush()
@@ -73,10 +82,26 @@ async def test_admin_tenant_diagnostics_summary(async_client, async_db_session, 
     assert payload.get("company_id") == company.id
     assert payload.get("company_name") == company.name
     assert payload.get("subscription_state") == "active"
+    assert payload.get("lifecycle_state") == "ACTIVE"
+    assert payload.get("lifecycle_reason") == "subscription_active"
+    assert payload.get("lifecycle_source")
+    assert payload.get("retention_policy_version")
+    retention_limits = payload.get("retention_limits")
+    assert isinstance(retention_limits, dict)
+    assert retention_limits.get("orders_days")
+    assert retention_limits.get("campaigns_days")
+    assert retention_limits.get("logs_days")
+    assert retention_limits.get("events_days")
+    assert retention_limits.get("reports_days")
+    assert retention_limits.get("diagnostics_snapshots_days")
     assert payload.get("billing", {}).get("state") == "active"
     assert payload.get("billing", {}).get("last_payment_status") == "captured"
     assert payload.get("kaspi", {}).get("connected") is True
     assert payload.get("kaspi", {}).get("last_error_summary") == "kaspi error"
+    assert "token_or_session_health" in payload.get("kaspi", {})
+    assert "last_import_status" in payload.get("kaspi", {})
+    assert "last_export_status" in payload.get("kaspi", {})
+    assert payload.get("kaspi", {}).get("token_or_session_health") == "healthy"
     assert payload.get("repricing", {}).get("enabled") is True
     assert payload.get("repricing", {}).get("last_status") == "completed"
     assert payload.get("inventory", {}).get("reservations_enabled") is True

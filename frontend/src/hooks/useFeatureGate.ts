@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
+import { hasSessionToken } from '../auth/tokenStore'
 import { getCurrentSubscription, SubscriptionOut } from '../api/subscriptions'
 
 export type FeatureGate = {
@@ -21,8 +22,7 @@ export function useFeatureGate(): FeatureGate {
   const [paymentRequired, setPaymentRequired] = useState(false)
 
   useEffect(() => {
-    const token = localStorage.getItem('access_token')
-    if (!token) {
+    if (!hasSessionToken()) {
       setLoading(false)
       return
     }
