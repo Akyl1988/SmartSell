@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from datetime import datetime
+from time import perf_counter
 from typing import Any
 from uuid import UUID
 
@@ -25,6 +26,35 @@ from app.services.kaspi_feed_upload_service import (
 )
 
 logger = get_logger(__name__)
+
+try:
+    from prometheus_client import Counter, Histogram
+
+    _FEED_POLL_STARTED = Counter(
+        "smartsell_kaspi_feed_upload_poll_started_total",
+        "Kaspi feed upload poll worker jobs started",
+        ["job"],
+    )
+    _FEED_POLL_SUCCEEDED = Counter(
+        "smartsell_kaspi_feed_upload_poll_succeeded_total",
+        "Kaspi feed upload poll worker jobs succeeded",
+        ["job"],
+    )
+    _FEED_POLL_FAILED = Counter(
+        "smartsell_kaspi_feed_upload_poll_failed_total",
+        "Kaspi feed upload poll worker jobs failed",
+        ["job"],
+    )
+    _FEED_POLL_DURATION = Histogram(
+        "smartsell_kaspi_feed_upload_poll_duration_seconds",
+        "Kaspi feed upload poll worker job duration seconds",
+        ["job", "status"],
+    )
+except Exception:  # pragma: no cover - optional metrics dependency
+    _FEED_POLL_STARTED = None
+    _FEED_POLL_SUCCEEDED = None
+    _FEED_POLL_FAILED = None
+    _FEED_POLL_DURATION = None
 
 _KASPI_FEED_UPLOAD_POLL_LOCK_KEY = 0x4B465550  # "KFUP"
 
@@ -274,6 +304,7 @@ async def _handle_upload(upload_id: UUID | str, session_factory: sessionmaker) -
 
 
 async def run_kaspi_feed_upload_poll_async() -> dict[str, Any]:
+    job_name = "kaspi_feed_upload_poll"
     summary: dict[str, Any] = {"queued": 0, "processed": 0, "success": 0, "failed": 0, "skipped": 0}
 
     async_url, _source, _fp = resolve_async_database_url(settings)
@@ -295,11 +326,70 @@ async def run_kaspi_feed_upload_poll_async() -> dict[str, Any]:
 
         sem = asyncio.Semaphore(int(getattr(settings, "KASPI_FEED_UPLOAD_MAX_CONCURRENCY", 3) or 3))
 
-        async def _wrapped(upload_id: str):
+        async def _wrapped(upload: KaspiFeedUpload):
+            attempt = int(upload.attempts or 0) + 1
+            started_at = perf_counter()
+            logger.info(
+                "worker_job_start",
+                extra={
+                    "job": job_name,
+                    "company_id": upload.company_id,
+                    "attempt": attempt,
+                    "status": "started",
+                },
+            )
+            if _FEED_POLL_STARTED is not None:
+                _FEED_POLL_STARTED.labels(job=job_name).inc()
             async with sem:
-                return await _handle_upload(upload_id, AsyncSessionLocal)
+                try:
+                    result = await _handle_upload(upload.id, AsyncSessionLocal)
+                    status = str(result.get("status") or "unknown")
+                    duration_ms = int((perf_counter() - started_at) * 1000)
+                    error_code = result.get("error")
+                    if status == "ok":
+                        if _FEED_POLL_SUCCEEDED is not None:
+                            _FEED_POLL_SUCCEEDED.labels(job=job_name).inc()
+                    elif status != "skipped":
+                        if _FEED_POLL_FAILED is not None:
+                            _FEED_POLL_FAILED.labels(job=job_name).inc()
+                    if _FEED_POLL_DURATION is not None:
+                        _FEED_POLL_DURATION.labels(job=job_name, status=status).observe(
+                            max(0.0, (perf_counter() - started_at))
+                        )
+                    logger.info(
+                        "worker_job_end",
+                        extra={
+                            "job": job_name,
+                            "company_id": upload.company_id,
+                            "attempt": attempt,
+                            "status": status,
+                            "duration_ms": duration_ms,
+                            "error_code": error_code,
+                        },
+                    )
+                    return result
+                except Exception as exc:
+                    duration_ms = int((perf_counter() - started_at) * 1000)
+                    if _FEED_POLL_FAILED is not None:
+                        _FEED_POLL_FAILED.labels(job=job_name).inc()
+                    if _FEED_POLL_DURATION is not None:
+                        _FEED_POLL_DURATION.labels(job=job_name, status="exception").observe(
+                            max(0.0, (perf_counter() - started_at))
+                        )
+                    logger.error(
+                        "worker_job_failed",
+                        extra={
+                            "job": job_name,
+                            "company_id": upload.company_id,
+                            "attempt": attempt,
+                            "status": "failed",
+                            "duration_ms": duration_ms,
+                            "error_code": type(exc).__name__,
+                        },
+                    )
+                    raise
 
-        tasks = [_wrapped(upload.id) for upload in uploads]
+        tasks = [_wrapped(upload) for upload in uploads]
         results = await asyncio.gather(*tasks, return_exceptions=True)
         for result in results:
             summary["processed"] += 1

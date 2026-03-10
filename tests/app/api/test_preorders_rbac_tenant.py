@@ -231,10 +231,10 @@ async def test_preorders_blocked_on_basic_plan(async_client, async_db_session, c
         json=_payload(),
         headers=company_a_admin_headers,
     )
-    assert created.status_code == 402, created.text
+    assert created.status_code == 403, created.text
     detail = created.json().get("detail")
     assert isinstance(detail, dict)
-    assert detail.get("code") == "SUBSCRIPTION_REQUIRED"
+    assert detail.get("code") == "FEATURE_NOT_AVAILABLE"
 
 
 async def test_preorders_blocked_after_trial_expiry(async_client, async_db_session, company_a_admin_headers):

@@ -1,5 +1,5 @@
 import { FormEvent, useState } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { useLocation, useNavigate } from 'react-router-dom'
 import { getHttpErrorInfo } from '../../api/client'
 import Button from '../../components/ui/Button'
 import Card from '../../components/ui/Card'
@@ -10,11 +10,15 @@ import pageStyles from '../../styles/page.module.css'
 
 export default function LoginPage() {
   const navigate = useNavigate()
+  const location = useLocation()
   const { login } = useAuth()
   const [identifier, setIdentifier] = useState('')
   const [password, setPassword] = useState('')
   const [error, setError] = useState<string | null>(null)
   const [loading, setLoading] = useState(false)
+
+  const params = new URLSearchParams(location.search)
+  const sessionExpired = params.get('reason') === 'session_expired'
 
   async function onSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
@@ -60,6 +64,7 @@ export default function LoginPage() {
               autoComplete="current-password"
             />
           </div>
+          {sessionExpired && !error && <ErrorState message="Session expired. Please sign in again." />}
           {error && <ErrorState message={error} />}
           <Button type="submit" disabled={loading}>
             {loading ? 'Signing in...' : 'Sign in'}

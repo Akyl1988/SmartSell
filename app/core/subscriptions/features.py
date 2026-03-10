@@ -7,6 +7,15 @@ from fastapi import Depends, HTTPException, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.db import get_async_db
+from app.core.features import (
+    FEATURE_KASPI_AUTOSYNC,
+    FEATURE_KASPI_FEED_UPLOADS,
+    FEATURE_KASPI_GOODS_IMPORTS,
+    FEATURE_KASPI_ORDERS_LIST,
+    FEATURE_KASPI_SYNC_NOW,
+    FEATURE_PREORDERS,
+    FEATURE_REPRICING,
+)
 from app.core.logging import get_logger
 from app.core.rbac import is_platform_admin
 from app.core.security import get_current_user, resolve_tenant_company_id
@@ -20,14 +29,6 @@ from app.core.subscriptions.plan_catalog import normalize_plan_id
 from app.core.subscriptions.state import get_company_subscription, is_subscription_active
 
 logger = get_logger(__name__)
-
-FEATURE_REPRICING = "repricing"
-FEATURE_PREORDERS = "preorders"
-FEATURE_KASPI_ORDERS_LIST = "kaspi.orders_list"
-FEATURE_KASPI_SYNC_NOW = "kaspi.sync_now"
-FEATURE_KASPI_GOODS_IMPORTS = "kaspi.goods_imports"
-FEATURE_KASPI_FEED_UPLOADS = "kaspi.feed_uploads"
-FEATURE_KASPI_AUTOSYNC = "kaspi.autosync"
 
 
 def _has_feature(plan: str, feature: str) -> bool:

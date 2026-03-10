@@ -16,6 +16,9 @@ class TenantDiagnosticsKaspi(BaseSchema):
     last_successful_sync_at: datetime | None = None
     last_failed_sync_at: datetime | None = None
     last_error_summary: str | None = None
+    token_or_session_health: str | None = None
+    last_import_status: str | None = None
+    last_export_status: str | None = None
 
 
 class TenantDiagnosticsRepricing(BaseSchema):
@@ -40,6 +43,11 @@ class TenantDiagnosticsSummaryOut(BaseSchema):
     company_name: str
     plan: str | None = None
     subscription_state: str | None = None
+    lifecycle_state: str | None = None
+    lifecycle_reason: str | None = None
+    lifecycle_source: str | None = None
+    retention_policy_version: str | None = None
+    retention_limits: dict[str, int] | None = None
     billing: TenantDiagnosticsBilling
     kaspi: TenantDiagnosticsKaspi
     repricing: TenantDiagnosticsRepricing

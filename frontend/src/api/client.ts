@@ -1,4 +1,5 @@
-import axios, { AxiosError } from 'axios'
+import axios, { AxiosError, InternalAxiosRequestConfig } from 'axios'
+import { bootstrapTokenStore, clearSessionTokens, getAccessToken, getRefreshToken, setSessionTokens } from '../auth/tokenStore'
 
 const baseURL = import.meta.env.VITE_API_URL || 'http://localhost:8000'
 
@@ -8,20 +9,124 @@ export const apiClient = axios.create({
   headers: { 'Content-Type': 'application/json' },
 })
 
-apiClient.interceptors.request.use((config) => {
-  const token = localStorage.getItem('access_token')
-  if (token) {
-    config.headers.Authorization = `Bearer ${token}`
-  }
-  return config
+const refreshClient = axios.create({
+  baseURL,
+  timeout: 20000,
+  headers: { 'Content-Type': 'application/json' },
 })
+
+type RetryConfig = InternalAxiosRequestConfig & {
+  _smartsellRetry?: boolean
+  skipAuthRefresh?: boolean
+}
+
+let refreshInFlight: Promise<string | null> | null = null
+
+bootstrapTokenStore()
+
+function extractErrorSignal(error: AxiosError): { status?: number; detail?: string; code?: string } {
+  const status = error.response?.status
+  const data = error.response?.data
+  if (data && typeof data === 'object') {
+    const obj = data as Record<string, unknown>
+    const detail = typeof obj.detail === 'string' ? obj.detail : undefined
+    const code = typeof obj.code === 'string' ? obj.code : undefined
+    return { status, detail, code }
+  }
+  return { status }
+}
+
+function shouldAttemptRefresh(error: AxiosError, config: RetryConfig | undefined): boolean {
+  if (!config || config._smartsellRetry || config.skipAuthRefresh) {
+    return false
+  }
+
+  const requestUrl = (config.url || '').toLowerCase()
+  if (requestUrl.includes('/api/v1/auth/login') || requestUrl.includes('/api/v1/auth/refresh') || requestUrl.includes('/api/v1/auth/logout')) {
+    return false
+  }
+
+  const { status, detail, code } = extractErrorSignal(error)
+  if (status !== 401) {
+    return false
+  }
+
+  const signal = (detail || code || '').toLowerCase()
+  if (signal === 'invalid_credentials') {
+    return false
+  }
+
+  return Boolean(getRefreshToken())
+}
+
+async function refreshAccessTokenSingleFlight(): Promise<string | null> {
+  if (!refreshInFlight) {
+    refreshInFlight = (async () => {
+      const refreshToken = getRefreshToken()
+      if (!refreshToken) {
+        return null
+      }
+
+      try {
+        const response = await refreshClient.post('/api/v1/auth/refresh', { refresh_token: refreshToken })
+        const tokens = response.data as { access_token?: string; refresh_token?: string }
+        if (!tokens.access_token || !tokens.refresh_token) {
+          return null
+        }
+        setSessionTokens(tokens.access_token, tokens.refresh_token)
+        return tokens.access_token
+      } catch {
+        return null
+      }
+    })().finally(() => {
+      refreshInFlight = null
+    })
+  }
+
+  return refreshInFlight
+}
+
+apiClient.interceptors.request.use((config) => {
+  return (async () => {
+    if (!config.skipAuthRefresh && refreshInFlight) {
+      await refreshInFlight.catch(() => null)
+    }
+
+    const token = getAccessToken()
+    if (token) {
+      config.headers.Authorization = `Bearer ${token}`
+    }
+    return config
+  })()
+})
+
+function dispatchUnauthorized(reason: string): void {
+  window.dispatchEvent(new CustomEvent('auth:unauthorized', { detail: { reason } }))
+}
 
 apiClient.interceptors.response.use(
   (response) => response,
-  (error: AxiosError) => {
+  async (error: AxiosError) => {
+    const config = error.config as RetryConfig | undefined
+
+    if (shouldAttemptRefresh(error, config)) {
+      const refreshedAccessToken = await refreshAccessTokenSingleFlight()
+      if (refreshedAccessToken && config) {
+        config._smartsellRetry = true
+        config.headers = config.headers || {}
+        config.headers.Authorization = `Bearer ${refreshedAccessToken}`
+        return apiClient.request(config)
+      }
+
+      clearSessionTokens()
+      dispatchUnauthorized('session_expired')
+      return Promise.reject(error)
+    }
+
     const status = error.response?.status
     if (status === 401) {
-      window.dispatchEvent(new CustomEvent('auth:unauthorized'))
+      clearSessionTokens()
+      dispatchUnauthorized('unauthorized')
     }
     if (status === 402) {
       window.dispatchEvent(new CustomEvent('auth:payment_required'))

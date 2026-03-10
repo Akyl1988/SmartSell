@@ -29,6 +29,20 @@ from app.api.routes import mount_v1
 from app.core import config as core_config
 from app.core.config import run_startup_side_effects, settings, should_disable_startup_hooks, validate_prod_secrets
 from app.core.exceptions import register_exception_handlers
+from app.main_helpers import (
+    env_int,
+    env_truthy,
+    has_path_prefix,
+    is_postgres_url,
+    parse_trusted_hosts,
+)
+from app.main_middleware_helpers import apply_security_and_lifecycle_headers
+from app.main_payload_helpers import (
+    build_dbinfo_payload,
+    build_debug_headers_payload,
+    build_env_info_payload,
+    build_info_payload,
+)
 
 try:
     from starlette.middleware.sessions import SessionMiddleware
@@ -40,6 +54,7 @@ except Exception:  # pragma: no cover
 # LOGGER
 # ======================================================================================
 logger = logging.getLogger(__name__)
+request_observability_logger = logging.getLogger("app.request.observability")
 
 _request_id_var: ContextVar[str] = ContextVar("request_id", default="-")
 _hostname = socket.gethostname()
@@ -60,6 +75,10 @@ class _RequestIdFilter(logging.Filter):
 
 
 _BASE_LOGGING_CONFIGURED = False
+
+
+def _env_truthy(value: str | None, default: bool = False) -> bool:
+    return env_truthy(value, default)
 
 
 def _configure_base_logging() -> None:
@@ -99,22 +118,6 @@ _GLOBAL: dict[str, Any] = {
     "scheduler_started": False,
 }
 _START_TS = time.time()
-
-
-# ======================================================================================
-# Small helpers
-# ======================================================================================
-def _env_truthy(value: str | None, default: bool = False) -> bool:
-    if value is None:
-        return default
-    return value.strip().lower() in ("1", "true", "yes", "on", "enable", "enabled")
-
-
-def _env_int(name: str, default: int = 0) -> int:
-    try:
-        return int(os.getenv(name, str(default)) or default)
-    except Exception:
-        return default
 
 
 # ======================================================================================
@@ -234,31 +237,6 @@ def _import_models_once() -> None:
         logger.debug("Models auto-import failed: %s", e)
 
 
-# ======================================================================================
-# Helpers
-# ======================================================================================
-def _is_postgres_url(url: str | None) -> bool:
-    if not url:
-        return False
-    u = (url or "").lower()
-    return u.startswith("postgres://") or u.startswith("postgresql://")
-
-
-def _env_last_deploy_time() -> str:
-    for k in ("LAST_DEPLOY_AT", "LAST_DEPLOY_TIME", "DEPLOYED_AT", "DEPLOY_TIME"):
-        v = os.getenv(k)
-        if v:
-            return v
-    return ""
-
-
-def _parse_trusted_hosts() -> list[str] | None:
-    raw = os.getenv("TRUSTED_HOSTS", "")
-    if not raw:
-        return None
-    return [h.strip() for h in raw.split(",") if h.strip()]
-
-
 def _uptime_seconds() -> int:
     try:
         return int(time.time() - _START_TS)
@@ -273,52 +251,6 @@ def _server_timing_value(ms: int) -> str:
         return "app;dur=0"
 
 
-_SECRET_KEYS = ("SECRET", "PASSWORD", "TOKEN", "KEY", "PASS", "PRIVATE", "CREDENTIAL", "AUTH")
-_REDACT_KEYS_EXACT = {
-    "DATABASE_URL",
-    "DB_URL",
-    "REDIS_URL",
-    "SQLALCHEMY_DATABASE_URI",
-}
-
-
-def _redact(value: Any) -> Any:
-    try:
-        if value is None:
-            return None
-        s = str(value)
-        if not s:
-            return s
-        if len(s) <= 6:
-            return "***"
-        return s[:2] + "…" + s[-2:]
-    except Exception:
-        return "***"
-
-
-def _redact_dict(d: dict[str, Any]) -> dict[str, Any]:
-    out: dict[str, Any] = {}
-    for k, v in d.items():
-        key_upper = str(k).upper()
-        if key_upper in _REDACT_KEYS_EXACT or any(part in key_upper for part in _SECRET_KEYS):
-            out[k] = _redact(v)
-        else:
-            out[k] = v
-    return out
-
-
-def _has_path_prefix(app: FastAPI, prefix: str) -> bool:
-    """Проверяет, что в приложении уже есть хотя бы один маршрут на указанный префикс."""
-    try:
-        for r in app.router.routes:
-            p = getattr(r, "path", None) or getattr(r, "path_format", None)
-            if isinstance(p, str) and p.startswith(prefix):
-                return True
-    except Exception:
-        pass
-    return False
-
-
 # ======================================================================================
 # PostgreSQL deep probe
 # ======================================================================================
@@ -329,7 +261,7 @@ async def _pg_probe(sync_url: str, timeout: float = 3.0) -> tuple[bool, str, dic
     Двухшаговый конструктор engine во избежание ошибок с NullPool.
     """
     info: dict[str, Any] = {}
-    if not _is_postgres_url(sync_url):
+    if not is_postgres_url(sync_url):
         return False, "not_postgres_url", info
 
     t0 = time.perf_counter()
@@ -992,7 +924,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:  # type: ignore[overrid
         logger.info("Startup hooks disabled (tests/CI flag)")
     try:
         startup_require_raw = os.getenv("STARTUP_REQUIRE_PROVIDERS")
-        require_providers = _env_truthy(startup_require_raw, settings.is_production)
+        require_providers = env_truthy(startup_require_raw, settings.is_production)
         should_validate_providers = (
             settings.is_production and require_providers and ((not disable_hooks) or (startup_require_raw is not None))
         )
@@ -1070,10 +1002,10 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:  # type: ignore[overrid
     # автозапуск планировщика (по флагу и роли)
     try:
         role = getattr(settings, "PROCESS_ROLE", os.getenv("PROCESS_ROLE", "web")) or "web"
-        enable_scheduler = _env_truthy(os.getenv("ENABLE_SCHEDULER", "0")) or getattr(
+        enable_scheduler = env_truthy(os.getenv("ENABLE_SCHEDULER", "0")) or getattr(
             settings, "ENABLE_SCHEDULER", False
         )
-        background_tasks_enabled = _env_truthy(os.getenv("SMARTSELL_BACKGROUND_TASKS", "1"), True)
+        background_tasks_enabled = env_truthy(os.getenv("SMARTSELL_BACKGROUND_TASKS", "1"), True)
         allowed_roles = {"web", "worker", "scheduler"}
         if role not in allowed_roles:
             logger.info("Scheduler start skipped for role", extra={"role": role, "enable_scheduler": enable_scheduler})
@@ -1104,7 +1036,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:  # type: ignore[overrid
     kaspi_sync_task = None
     try:
         role = getattr(settings, "PROCESS_ROLE", os.getenv("PROCESS_ROLE", "web")) or "web"
-        enable_kaspi_sync = _env_truthy(os.getenv("ENABLE_KASPI_SYNC_RUNNER", "0"))
+        enable_kaspi_sync = env_truthy(os.getenv("ENABLE_KASPI_SYNC_RUNNER", "0"))
         if role not in ("web", "runner"):
             logger.info(
                 "Kaspi sync runner start skipped for role", extra={"role": role, "enable_kaspi_sync": enable_kaspi_sync}
@@ -1231,7 +1163,7 @@ async def _safe_settings_health_check() -> dict[str, Any]:
 
 
 def _create_app() -> FastAPI:
-    enable_docs = _env_truthy(os.getenv("ENABLE_DOCS", "1"), True)
+    enable_docs = env_truthy(os.getenv("ENABLE_DOCS", "1"), True)
     docs_url: str | None = "/docs" if enable_docs else None
     redoc_url: str | None = "/redoc" if enable_docs else None
     openapi_url: str | None = "/openapi.json" if enable_docs else None
@@ -1254,7 +1186,7 @@ def _create_app() -> FastAPI:
         logger.warning("Failed to register exception handlers", exc_info=exc)
 
     # HTTPS redirect (optional)
-    if _env_truthy(os.getenv("FORCE_HTTPS", "0")) and HTTPSRedirectMiddleware:
+    if env_truthy(os.getenv("FORCE_HTTPS", "0")) and HTTPSRedirectMiddleware:
         app.add_middleware(HTTPSRedirectMiddleware)
 
     app.add_middleware(TimingASGIMiddleware)
@@ -1292,7 +1224,7 @@ def _create_app() -> FastAPI:
         or os.getenv("TESTING", "").lower() in {"1", "true", "yes", "on"}
     )
 
-    _max_body = _env_int("MAX_REQUEST_SIZE_BYTES", 0)
+    _max_body = env_int("MAX_REQUEST_SIZE_BYTES", 0)
 
     if _test_env:
 
@@ -1339,7 +1271,7 @@ def _create_app() -> FastAPI:
                 pass
             return await call_next(request)
 
-    trusted = _parse_trusted_hosts()
+    trusted = parse_trusted_hosts()
     if trusted and TrustedHostMiddleware:
         app.add_middleware(TrustedHostMiddleware, allowed_hosts=trusted)
 
@@ -1353,7 +1285,7 @@ def _create_app() -> FastAPI:
         )
 
     # Security headers (CSP опционально)
-    csp_enabled = _env_truthy(os.getenv("ENABLE_CSP", "0"))
+    csp_enabled = env_truthy(os.getenv("ENABLE_CSP", "0"))
     csp_value = os.getenv(
         "CSP_HEADER_VALUE",
         "default-src 'self'; img-src 'self' data: blob:; media-src 'self' data: blob:; "
@@ -1365,17 +1297,14 @@ def _create_app() -> FastAPI:
         request: Request, call_next: Callable[[Request], Awaitable[Response]]
     ) -> Response:
         response = await call_next(request)
-        response.headers.setdefault("X-Content-Type-Options", "nosniff")
-        response.headers.setdefault("X-Frame-Options", "DENY")
-        response.headers.setdefault("X-XSS-Protection", "0")
-        response.headers.setdefault("Referrer-Policy", "strict-origin-when-cross-origin")
-        # HSTS: только если включен FORCE_HTTPS
-        if _env_truthy(os.getenv("FORCE_HTTPS", "0")):
-            response.headers.setdefault("Strict-Transport-Security", "max-age=31536000; includeSubDomains; preload")
-        if csp_enabled:
-            response.headers.setdefault("Content-Security-Policy", csp_value)
-        # user-friendly Server header
-        response.headers.setdefault("Server", "SmartSell")
+        apply_security_and_lifecycle_headers(
+            response,
+            request_method=request.method,
+            request_path=request.url.path,
+            csp_enabled=csp_enabled,
+            csp_value=csp_value,
+            force_https=env_truthy(os.getenv("FORCE_HTTPS", "0")),
+        )
         return response
 
     if STARLETTE_EXPORTER_AVAILABLE:
@@ -1430,6 +1359,44 @@ def _create_app() -> FastAPI:
         ) -> Response:
             return await _profiled_call(request, call_next)
 
+    if not _test_env:
+
+        @app.middleware("http")
+        async def request_completion_logging_middleware(  # type: ignore[return-value]
+            request: Request, call_next: Callable[[Request], Awaitable[Response]]
+        ) -> Response:
+            started_at = time.perf_counter()
+            status_code = 500
+            try:
+                response = await call_next(request)
+                status_code = int(getattr(response, "status_code", 200) or 200)
+                return response
+            except Exception:
+                raise
+            finally:
+                duration_ms = int((time.perf_counter() - started_at) * 1000)
+                request_id = (
+                    getattr(request.state, "request_id", None)
+                    or request.headers.get("X-Request-ID")
+                    or request.headers.get("X-Correlation-ID")
+                )
+                company_id = (
+                    getattr(request.state, "company_id", None)
+                    or getattr(request.state, "tenant_id", None)
+                    or request.headers.get("X-Company-ID")
+                )
+                request_observability_logger.info(
+                    "request_completed",
+                    extra={
+                        "request_id": request_id,
+                        "company_id": company_id,
+                        "method": request.method,
+                        "path": request.url.path,
+                        "status_code": status_code,
+                        "duration_ms": duration_ms,
+                    },
+                )
+
     if settings.is_development:
         if not _test_env:
 
@@ -1454,15 +1421,7 @@ def _create_app() -> FastAPI:
     # Base info helpers & endpoints
     # ----------------------------------------------------------------------------------
     def _build_info() -> dict[str, Any]:
-        return {
-            "version": settings.VERSION,
-            "git_sha": os.getenv("GIT_SHA", ""),
-            "build_time": os.getenv("BUILD_TIME", ""),
-            "build_number": os.getenv("BUILD_NUMBER", ""),
-            "environment": settings.ENVIRONMENT,
-            "last_deploy_at": _env_last_deploy_time(),
-            "app_name": settings.APP_NAME,
-        }
+        return build_info_payload(settings)
 
     @app.get("/")
     async def root() -> dict[str, Any]:
@@ -1540,13 +1499,13 @@ def _create_app() -> FastAPI:
                 },
             }
 
-        do_integrations = _env_truthy(os.getenv("HEALTH_CHECK_INTEGRATIONS", "0"))
-        do_celery = _env_truthy(os.getenv("HEALTH_CHECK_CELERY", "0"))
+        do_integrations = env_truthy(os.getenv("HEALTH_CHECK_INTEGRATIONS", "0"))
+        do_celery = env_truthy(os.getenv("HEALTH_CHECK_CELERY", "0"))
 
         sync_url = (getattr(settings, "sqlalchemy_urls", {}) or {}).get("sync") or (settings.DATABASE_URL or "")
         sync_url = (sync_url or "").strip()
         pg_ok, pg_msg, pg_info = (
-            await _pg_probe(sync_url, timeout=3.0) if _is_postgres_url(sync_url) else (False, "not_postgres_url", {})
+            await _pg_probe(sync_url, timeout=3.0) if is_postgres_url(sync_url) else (False, "not_postgres_url", {})
         )
 
         settings_report = await _safe_settings_health_check()
@@ -1581,7 +1540,7 @@ def _create_app() -> FastAPI:
                     "ok": pg_ok,
                     "detail": pg_msg,
                     "info": pg_info,
-                    "checked": _is_postgres_url(sync_url),
+                    "checked": is_postgres_url(sync_url),
                 },
                 "redis": {"ok": redis_ok, "detail": redis_msg, "url_set": bool(settings.REDIS_URL)},
                 "smtp": {"ok": smtp_ok, "detail": smtp_msg},
@@ -1609,23 +1568,23 @@ def _create_app() -> FastAPI:
 
     @app.get("/ready", response_model=None)
     async def readiness() -> JSONResponse:
-        strict = _env_truthy(os.getenv("READINESS_STRICT", "1" if settings.is_production else "0"))
+        strict = env_truthy(os.getenv("READINESS_STRICT", "1" if settings.is_production else "0"))
         if (os.getenv("PYTEST_CURRENT_TEST") or os.getenv("TESTING")) and not strict:
             return JSONResponse(status_code=200, content={"ready": True, "checks": {}})
-        require_redis = _env_truthy(os.getenv("READINESS_REQUIRE_REDIS", "0"))
-        require_smtp = _env_truthy(os.getenv("READINESS_REQUIRE_SMTP", "0"))
-        require_celery = _env_truthy(os.getenv("READINESS_REQUIRE_CELERY", "0"))
-        require_integrations = _env_truthy(os.getenv("READINESS_REQUIRE_INTEGRATIONS", "0"))
-        require_providers = _env_truthy(
+        require_redis = env_truthy(os.getenv("READINESS_REQUIRE_REDIS", "0"))
+        require_smtp = env_truthy(os.getenv("READINESS_REQUIRE_SMTP", "0"))
+        require_celery = env_truthy(os.getenv("READINESS_REQUIRE_CELERY", "0"))
+        require_integrations = env_truthy(os.getenv("READINESS_REQUIRE_INTEGRATIONS", "0"))
+        require_providers = env_truthy(
             os.getenv("READINESS_REQUIRE_PROVIDERS", "1" if settings.is_production else "0")
         )
 
-        require_secret = _env_truthy(os.getenv("READINESS_REQUIRE_SECRET", "0"))
+        require_secret = env_truthy(os.getenv("READINESS_REQUIRE_SECRET", "0"))
         secret_present = bool(os.getenv("SESSION_SECRET_KEY") or os.getenv("SECRET_KEY") or os.getenv("APP_SECRET"))
 
         sync_url = (getattr(settings, "sqlalchemy_urls", {}) or {}).get("sync") or (settings.DATABASE_URL or "")
         sync_url = (sync_url or "").strip()
-        pg_checked = _is_postgres_url(sync_url)
+        pg_checked = is_postgres_url(sync_url)
         if pg_checked:
             pg_ok, pg_msg, _ = await _pg_probe(sync_url, timeout=2.5)
         else:
@@ -1760,18 +1719,7 @@ def _create_app() -> FastAPI:
         """
         Безопасная сводка по БД без раскрытия паролей.
         """
-        safe_url = getattr(settings, "DATABASE_URL_SAFE", None) or getattr(settings, "DATABASE_URL", "")  # type: ignore
-
-        try:
-            drv = (getattr(settings, "sqlalchemy_urls", {}) or {}).get("driver") or "postgresql"
-        except Exception:
-            drv = "postgresql"
-
-        return {
-            "driver": drv,
-            "url": safe_url,
-            "status": "ok",
-        }
+        return build_dbinfo_payload(settings)
 
     # ----------------------------------------------------------------------------------
     # 🔧 Диагностика
@@ -1795,30 +1743,16 @@ def _create_app() -> FastAPI:
 
     @app.get("/env")
     async def env_info() -> dict[str, Any]:
-        allow = bool(settings.DEBUG) or _env_truthy(os.getenv("ALLOW_ENV_ENDPOINT", "0"))
+        allow = bool(settings.DEBUG) or env_truthy(os.getenv("ALLOW_ENV_ENDPOINT", "0"))
         if not allow:
             raise HTTPException(status_code=404, detail="not_found")
-        env = _redact_dict(dict(os.environ))
-        safe_settings = _redact_dict(
-            {
-                "APP_NAME": settings.APP_NAME,
-                "ENVIRONMENT": settings.ENVIRONMENT,
-                "VERSION": settings.VERSION,
-                "DEBUG": bool(settings.DEBUG),
-                "DATABASE_URL": getattr(settings, "DATABASE_URL", None),
-                "REDIS_URL": getattr(settings, "REDIS_URL", None),
-                "SMTP_HOST": getattr(settings, "SMTP_HOST", None),
-                "SMTP_PORT": getattr(settings, "SMTP_PORT", None),
-            }
-        )
-        return {"env": env, "settings": safe_settings}
+        return build_env_info_payload(settings)
 
     @app.get("/debug/headers")
     async def debug_headers(request: Request) -> dict[str, Any]:
         if not settings.DEBUG:
             raise HTTPException(status_code=404, detail="not_found")
-        headers = {k: v for k, v in request.headers.items()}
-        return {"method": request.method, "url": str(request.url), "headers": headers}
+        return build_debug_headers_payload(request)
 
     # /metrics
     if STARLETTE_EXPORTER_AVAILABLE:
@@ -1935,7 +1869,7 @@ def _create_app() -> FastAPI:
         logger.warning("Admin legacy router not mounted: %s", e)
 
     # 2) Fallback campaigns — только если после mount_v1 префикса нет
-    if not _has_path_prefix(app, f"{getattr(settings, 'API_V1_STR', '/api/v1').rstrip('/')}/campaigns"):
+    if not has_path_prefix(app, f"{getattr(settings, 'API_V1_STR', '/api/v1').rstrip('/')}/campaigns"):
         campaigns_mounted = False
         try:
             from app.api.v1.campaigns import router as campaigns_router
@@ -2107,7 +2041,7 @@ def _create_app() -> FastAPI:
             app.include_router(fallback)
 
     # 3) Subscriptions: подключаем ваш v1-модуль только если агрегатор его не добавил
-    if not _has_path_prefix(app, f"{getattr(settings,'API_V1_STR','/api/v1').rstrip('/')}/subscriptions"):
+    if not has_path_prefix(app, f"{getattr(settings,'API_V1_STR','/api/v1').rstrip('/')}/subscriptions"):
         try:
             from app.api.v1.subscriptions import router as subscriptions_router
 
@@ -2125,7 +2059,7 @@ def _create_app() -> FastAPI:
             logger.warning("Subscriptions API router not mounted: %s", e)
 
     # 4) Продукты: подключаем ваш v1-модуль только если агрегатор его не добавил
-    if not _has_path_prefix(app, f"{getattr(settings,'API_V1_STR','/api/v1').rstrip('/')}/products"):
+    if not has_path_prefix(app, f"{getattr(settings,'API_V1_STR','/api/v1').rstrip('/')}/products"):
         try:
             from app.api.v1.products import router as products_api_router
 
@@ -2141,7 +2075,7 @@ def _create_app() -> FastAPI:
     # ----------------------------------------------------------------------------------
     # ✅ Легаси-алиас для /api/auth/*  → /api/v1/auth/*
     # ----------------------------------------------------------------------------------
-    if not _has_path_prefix(app, "/api/auth"):
+    if not has_path_prefix(app, "/api/auth"):
         try:
             from app.api.v1.auth import router as auth_v1_router  # type: ignore
 

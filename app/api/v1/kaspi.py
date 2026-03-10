@@ -55,6 +55,52 @@ from sqlalchemy import bindparam, literal_column, select, text
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.api.v1.kaspi_autosync_routes import (
+    KaspiAutoSyncStatusOut,
+    register_kaspi_autosync_routes,
+)
+from app.api.v1.kaspi_catalog_routes import register_kaspi_catalog_routes
+from app.api.v1.kaspi_debug_routes import register_kaspi_debug_routes
+from app.api.v1.kaspi_feed_routes import (
+    register_kaspi_feed_routes_phase_one,
+    register_kaspi_feed_routes_phase_two,
+)
+from app.api.v1.kaspi_goods_routes import register_kaspi_goods_routes
+from app.api.v1.kaspi_public_routes import register_kaspi_public_routes
+from app.api.v1.kaspi_status_routes import register_kaspi_status_routes
+from app.api.v1.kaspi_utils import (
+    build_kaspi_orders_params as _build_kaspi_orders_params,
+)
+from app.api.v1.kaspi_utils import (
+    ci_diag_enabled as _ci_diag_enabled,
+)
+from app.api.v1.kaspi_utils import (
+    classify_httpx_error as _classify_httpx_error,
+)
+from app.api.v1.kaspi_utils import (
+    extract_httpx_root_cause as _extract_httpx_root_cause,
+)
+from app.api.v1.kaspi_utils import (
+    extract_import_code as _extract_import_code,
+)
+from app.api.v1.kaspi_utils import (
+    extract_schema_required_fields as _extract_schema_required_fields,
+)
+from app.api.v1.kaspi_utils import (
+    extract_schema_types as _extract_schema_types,
+)
+from app.api.v1.kaspi_utils import (
+    is_dev_environment as _is_dev_environment,
+)
+from app.api.v1.kaspi_utils import (
+    kaspi_stub_enabled as _kaspi_stub_enabled,
+)
+from app.api.v1.kaspi_utils import (
+    mask_secret as _mask_secret,
+)
+from app.api.v1.kaspi_utils import (
+    probe_response_snippet as _probe_response_snippet,
+)
 from app.core.config import settings
 from app.core.db import get_async_db  # noqa — для совместимости импорт-алиас
 from app.core.dependencies import enforce_rate_limit, require_store_admin_company
@@ -97,6 +143,15 @@ from app.schemas.kaspi import (
     KaspiTokenOut,
     OrdersQuery,
 )
+from app.schemas.kaspi_local_legacy import (
+    AvailabilityBulkIn,
+    AvailabilitySyncIn,
+    KaspiMcSessionIn,
+    KaspiMcSessionListOut,
+    KaspiMcSessionOut,
+    KaspiMcSyncOut,
+    KaspiTokenMaskedOut,
+)
 from app.services.integration_events import record_integration_event
 from app.services.kaspi_feed_upload_service import (
     compute_feed_payload_hash,
@@ -130,6 +185,8 @@ logger = get_logger(__name__)
 router = APIRouter(prefix="/api/v1/kaspi", tags=["kaspi"])
 public_router = APIRouter(tags=["kaspi-public"])
 
+__all__ = ["KaspiAutoSyncStatusOut", "public_router", "router"]
+
 
 # ----------------------------- Константы/утилиты -----------------------------
 
@@ -138,20 +195,6 @@ MASK_CHAR = "..."
 STATUS_LAST_ERROR_MAX_LEN = 500
 FAST_PROBE_TIMEOUT = 5.0
 SYNC_NOW_TIMEOUT_SEC = 25.0
-
-
-def _is_dev_environment() -> bool:
-    env_name = str(getattr(settings, "ENVIRONMENT", "") or "").lower()
-    debug_flag = bool(getattr(settings, "DEBUG", False))
-    if debug_flag:
-        return True
-    if env_name in {"local", "development", "dev", "test", "testing", "pytest"}:
-        return True
-    return bool(os.environ.get("PYTEST_CURRENT_TEST"))
-
-
-def _ci_diag_enabled() -> bool:
-    return os.environ.get("CI_DIAG", "").strip() == "1"
 
 
 try:  # pragma: no cover - py<3.11 compatibility
@@ -193,18 +236,6 @@ def _exception_group_info(exc: BaseException) -> dict[str, Any]:
     return info
 
 
-def normalize_name(name: str) -> str:
-    return name.strip().lower()
-
-
-def _mask_secret(value: str | None, *, head: int = 6, tail: int = 4) -> str | None:
-    if not value:
-        return None
-    if len(value) <= head + tail:
-        return value
-    return f"{value[:head]}...{value[-tail:]}"
-
-
 def _kaspi_user_agent() -> str:
     return (
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) " "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120 Safari/537.36"
@@ -221,69 +252,6 @@ def _build_kaspi_httpx_client() -> httpx.AsyncClient:
         "User-Agent": _kaspi_user_agent(),
     }
     return httpx.AsyncClient(timeout=timeout, limits=limits, headers=headers, http2=False)
-
-
-def _build_kaspi_orders_params(
-    *,
-    ge_ms: int,
-    le_ms: int,
-    state: str | None = None,
-    page_number: int = 0,
-    page_size: int = 1,
-) -> dict[str, int | str]:
-    params: dict[str, int | str] = {
-        "page[number]": int(page_number),
-        "page[size]": int(page_size),
-        "filter[orders][creationDate][$ge]": int(ge_ms),
-        "filter[orders][creationDate][$le]": int(le_ms),
-    }
-    effective_state = (state or "NEW").strip()
-    if effective_state:
-        params["filter[orders][state]"] = effective_state
-    return params
-
-
-def _kaspi_stub_enabled() -> bool:
-    raw = os.environ.get("SMARTSELL_KASPI_STUB", "")
-    if not raw:
-        return False
-    return raw.strip().lower() in {"1", "true", "yes", "on", "enable", "enabled"}
-
-
-def _probe_response_snippet(value: str | None, limit: int = 200) -> str:
-    if not value:
-        return ""
-    text_value = value.strip()
-    if len(text_value) <= limit:
-        return text_value
-    return f"{text_value[:limit]}..."
-
-
-def _extract_httpx_root_cause(exc: Exception) -> tuple[str | None, str | None]:
-    cause = getattr(exc, "__cause__", None) or getattr(exc, "__context__", None)
-    if not cause:
-        return None, None
-    return type(cause).__name__, str(cause)
-
-
-def _classify_httpx_error(exc: Exception, root_cause_type: str | None, root_cause_message: str | None) -> str:
-    if isinstance(exc, httpx.TimeoutException):
-        return "timeout"
-    if isinstance(exc, httpx.ConnectTimeout):
-        return "connect_timeout"
-    if isinstance(exc, httpx.ReadTimeout):
-        return "read_timeout"
-    if isinstance(exc, httpx.WriteTimeout):
-        return "write_timeout"
-    if isinstance(exc, httpx.ConnectError):
-        return "connect_error"
-    cause_type = (root_cause_type or "").lower()
-    cause_msg = (root_cause_message or "").lower()
-    if "ssl" in cause_type or "tls" in cause_type or "ssl" in cause_msg or "tls" in cause_msg:
-        return "tls_error"
-    if "dns" in cause_type or "gaierror" in cause_type or "name or service" in cause_msg:
-        return "dns_error"
-    return "request_error"
 
 
 def _log_kaspi_probe_response(
@@ -550,10 +518,6 @@ async def _upsert_kaspi_offers(
     return {"fetched": len(offers), "inserted": inserted, "updated": updated}
 
 
-def _extract_import_code(payload: dict) -> str | None:
-    return payload.get("importCode") or payload.get("import_code") or payload.get("code") or payload.get("id")
-
-
 async def _create_import_run(
     session: AsyncSession,
     *,
@@ -611,58 +575,6 @@ async def _find_recent_import_run_by_hash(
         .limit(1)
     )
     return result.scalars().first()
-
-
-def _normalize_goods_payload(payload: list[dict[str, Any]] | dict[str, Any]) -> list[dict[str, Any]]:
-    if isinstance(payload, list):
-        return payload
-    if isinstance(payload, dict):
-        data = payload.get("data")
-        if isinstance(data, list):
-            return data
-        return [payload]
-    raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="payload_required")
-
-
-def _extract_schema_required_fields(schema: dict[str, Any]) -> list[str]:
-    required = schema.get("required")
-    if isinstance(required, list):
-        return [str(item) for item in required if item]
-    fields = schema.get("fields")
-    if isinstance(fields, list):
-        required_fields: list[str] = []
-        for entry in fields:
-            if not isinstance(entry, dict):
-                continue
-            if entry.get("required") is True and entry.get("name"):
-                required_fields.append(str(entry["name"]))
-        return required_fields
-    return []
-
-
-def _extract_schema_types(schema: dict[str, Any]) -> dict[str, str]:
-    properties = schema.get("properties")
-    if isinstance(properties, dict):
-        types: dict[str, str] = {}
-        for key, value in properties.items():
-            if not isinstance(value, dict):
-                continue
-            field_type = value.get("type")
-            if field_type:
-                types[str(key)] = str(field_type)
-        return types
-    fields = schema.get("fields")
-    if isinstance(fields, list):
-        types = {}
-        for entry in fields:
-            if not isinstance(entry, dict):
-                continue
-            name = entry.get("name")
-            field_type = entry.get("type")
-            if name and field_type:
-                types[str(name)] = str(field_type)
-        return types
-    return {}
 
 
 def _validate_payload_against_schema(
@@ -1192,54 +1104,6 @@ def _feed_export_to_out(export: KaspiFeedExport) -> KaspiFeedExportOut:
 
 
 # ------------------------------- Локальные схемы (deprecated - use app/schemas/kaspi.py) ------
-
-
-class AvailabilitySyncIn(BaseModel):
-    product_id: int = Field(..., ge=1, description="ID продукта в нашей БД")
-
-
-class AvailabilityBulkIn(BaseModel):
-    limit: int = Field(500, ge=1, le=5000, description="Максимум товаров за одну операцию")
-
-
-class KaspiMcSessionIn(BaseModel):
-    merchant_uid: str = Field(..., min_length=3, max_length=128)
-    cookies: str = Field(..., min_length=3)
-
-
-class KaspiMcSessionOut(BaseModel):
-    merchant_uid: str
-    is_active: bool
-    created_at: datetime
-    updated_at: datetime
-    last_used_at: datetime | None = None
-    last_error: str | None = None
-    cookies_masked: str | None = None
-
-
-class KaspiMcSessionListOut(BaseModel):
-    items: list[KaspiMcSessionOut]
-
-
-class KaspiMcSyncOut(BaseModel):
-    rows_total: int
-    rows_ok: int
-    rows_failed: int
-    errors: list[dict[str, Any]] = []
-
-
-class KaspiTokenMaskedOut(BaseModel):
-    """Ответ для карточки токена без раскрытия секрета."""
-
-    id: str
-    store_name: str
-    token_hex_masked: str
-    created_at: Any
-    updated_at: Any
-    last_selftest_at: datetime | None = None
-    last_selftest_status: str | None = None
-    last_selftest_error_code: str | None = None
-    last_selftest_error_message: str | None = None
 
 
 async def _record_kaspi_event(
@@ -2658,554 +2522,31 @@ async def kaspi_catalog_items(
     )
 
 
-# ================================= DEBUG =====================================
-
-
-@router.get("/_debug/ping", summary="Kaspi debug ping")
-def kaspi_debug_ping():
-    return {"ok": True, "module": "kaspi", "prefix": router.prefix}
-
-
-class KaspiProbeOut(BaseModel):
-    ok: bool
-    status_code: int | None = None
-    error_class: str | None = None
-    message: str | None = None
-    elapsed_ms: int
-
-
-class KaspiSchemaProbeItem(BaseModel):
-    path: str
-    url: str
-    ok: bool
-    status_code: int | None = None
-    error_class: str | None = None
-    message: str | None = None
-    response_snippet: str | None = None
-    elapsed_ms: int
-
-
-class KaspiSchemaProbeOut(BaseModel):
-    ok: bool
-    items: list[KaspiSchemaProbeItem]
-
-
-class KaspiFeedUploadProbeItem(BaseModel):
-    model_config = ConfigDict(populate_by_name=True)
-
-    path: str
-    url: str
-    ok: bool
-    status_code: int | None = None
-    error_class: str | None = None
-    message: str | None = None
-    response_snippet: str | None = Field(None, alias="snippet")
-    location: str | None = None
-    import_code: str | None = None
-    elapsed_ms: int
-
-
-class KaspiFeedUploadProbeOut(BaseModel):
-    ok: bool
-    items: list[KaspiFeedUploadProbeItem]
-
-
-@router.get("/_debug/probe", summary="Kaspi debug probe", response_model=KaspiProbeOut)
-async def kaspi_debug_probe(
-    request: Request,
-    store_name: str = Query(..., min_length=1, alias="store_name"),
-    state: str | None = Query(None),
-    current_user: User = Depends(_auth_user),
-    session: AsyncSession = Depends(get_async_db),
-):
-    require_platform_admin(current_user)
-    token = await KaspiStoreToken.get_token(session, store_name)
-    if not token:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="kaspi_token_not_found")
-
-    now = datetime.utcnow()
-    ge_ms = int((now - timedelta(days=2)).timestamp() * 1000)
-    le_ms = int(now.timestamp() * 1000)
-
-    url = "https://kaspi.kz/shop/api/v2/orders"
-    params = _build_kaspi_orders_params(
-        ge_ms=ge_ms,
-        le_ms=le_ms,
-        state=state or "NEW",
-        page_number=0,
-        page_size=1,
-    )
-    headers = {
-        "X-Auth-Token": token,
-        "Accept": "application/vnd.api+json",
-    }
-
-    request_id = getattr(getattr(request, "state", None), "request_id", None)
-    started = time.perf_counter()
-    try:
-        async with _build_kaspi_httpx_client() as client:
-            resp = await client.get(url, headers=headers, params=params)
-    except httpx.TimeoutException as exc:
-        _log_kaspi_probe_error(
-            request_id=request_id,
-            company_id=None,
-            store_name=store_name,
-            method="GET",
-            url=url,
-            exc=exc,
-        )
-        elapsed_ms = int((time.perf_counter() - started) * 1000)
-        return KaspiProbeOut(
-            ok=False,
-            status_code=None,
-            error_class=type(exc).__name__,
-            message=str(exc),
-            elapsed_ms=elapsed_ms,
-        )
-    except httpx.RequestError as exc:
-        _log_kaspi_probe_error(
-            request_id=request_id,
-            company_id=None,
-            store_name=store_name,
-            method="GET",
-            url=url,
-            exc=exc,
-        )
-        elapsed_ms = int((time.perf_counter() - started) * 1000)
-        return KaspiProbeOut(
-            ok=False,
-            status_code=None,
-            error_class=type(exc).__name__,
-            message=str(exc),
-            elapsed_ms=elapsed_ms,
-        )
-
-    elapsed_ms = int((time.perf_counter() - started) * 1000)
-    _log_kaspi_probe_response(
-        request_id=request_id,
-        company_id=None,
-        store_name=store_name,
-        method="GET",
-        url=url,
-        status_code=resp.status_code,
-        response_text=resp.text,
-        elapsed_ms=elapsed_ms,
-    )
-    ok = 200 <= resp.status_code < 300
-    return KaspiProbeOut(
-        ok=ok,
-        status_code=resp.status_code,
-        error_class=None if ok else "HTTPStatusError",
-        message=None if ok else "upstream_response",
-        elapsed_ms=elapsed_ms,
-    )
-
-
-@router.get("/_debug/schema-probe", summary="Kaspi schema probe", response_model=KaspiSchemaProbeOut)
-async def kaspi_schema_probe(
-    request: Request,
-    store_name: str = Query(..., min_length=1, alias="store_name"),
-    paths: list[str] | None = Query(None),
-    current_user: User = Depends(_auth_user),
-    session: AsyncSession = Depends(get_async_db),
-):
-    if not _is_dev_environment():
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="not_found")
-
-    require_platform_admin(current_user)
-    token = await KaspiStoreToken.get_token(session, store_name)
-    if not token:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="kaspi_token_not_found")
-
-    default_paths = [
-        "/shop/api/products/import/schema",
-        "/shop/api/products/prices/import/schema",
-        "/shop/api/products/price/import/schema",
-        "/shop/api/products/import/prices/schema",
-        "/shop/api/prices/import/schema",
-        "/shop/api/products/availability/import/schema",
-        "/shop/api/products/stocks/import/schema",
-        "/shop/api/products/stock/import/schema",
-        "/shop/api/products/import/stocks/schema",
-        "/shop/api/stocks/import/schema",
-    ]
-    candidate_paths = paths or default_paths
-    headers = {
-        "X-Auth-Token": token,
-        "Accept": "application/json",
-        "User-Agent": _kaspi_user_agent(),
-    }
-
-    items: list[KaspiSchemaProbeItem] = []
-    async with httpx.AsyncClient(timeout=FAST_PROBE_TIMEOUT, follow_redirects=True) as client:
-        for path in candidate_paths:
-            normalized = path if path.startswith("/") else f"/{path}"
-            url = f"https://kaspi.kz{normalized}"
-            started = time.perf_counter()
-            try:
-                resp = await client.get(url, headers=headers)
-                elapsed_ms = int((time.perf_counter() - started) * 1000)
-                items.append(
-                    KaspiSchemaProbeItem(
-                        path=normalized,
-                        url=url,
-                        ok=200 <= resp.status_code < 300,
-                        status_code=resp.status_code,
-                        response_snippet=_probe_response_snippet(resp.text, 200),
-                        elapsed_ms=elapsed_ms,
-                    )
-                )
-            except (httpx.TimeoutException, httpx.RequestError) as exc:
-                elapsed_ms = int((time.perf_counter() - started) * 1000)
-                items.append(
-                    KaspiSchemaProbeItem(
-                        path=normalized,
-                        url=url,
-                        ok=False,
-                        status_code=None,
-                        error_class=type(exc).__name__,
-                        message=str(exc),
-                        response_snippet=None,
-                        elapsed_ms=elapsed_ms,
-                    )
-                )
-
-    ok = bool(items) and all(item.ok for item in items)
-    request_id = getattr(getattr(request, "state", None), "request_id", None)
-    _safe_log_info(
-        "kaspi_schema_probe",
-        request_id=request_id,
-        store_name=store_name,
-        ok=ok,
-        total=len(items),
-    )
-    return KaspiSchemaProbeOut(ok=ok, items=items)
-
-
-@router.post(
-    "/_debug/feed-upload-probe",
-    summary="Kaspi feed upload probe",
-    response_model=KaspiFeedUploadProbeOut,
+register_kaspi_debug_routes(
+    router,
+    auth_dependency=_auth_user,
+    get_async_db_dependency=get_async_db,
+    require_platform_admin_fn=require_platform_admin,
+    require_store_admin_company_scoped_fn=_require_store_admin_company_scoped,
+    kaspi_store_token_model=KaspiStoreToken,
+    build_kaspi_httpx_client_fn=_build_kaspi_httpx_client,
+    build_kaspi_orders_params_fn=_build_kaspi_orders_params,
+    is_dev_environment_fn=lambda: _is_dev_environment(),
+    kaspi_user_agent_fn=_kaspi_user_agent,
+    probe_response_snippet_fn=_probe_response_snippet,
+    log_kaspi_probe_error_fn=_log_kaspi_probe_error,
+    log_kaspi_probe_response_fn=_log_kaspi_probe_response,
+    safe_log_info_fn=_safe_log_info,
+    kaspi_ns=_KASPI_NS,
+    fast_probe_timeout=FAST_PROBE_TIMEOUT,
 )
-async def kaspi_feed_upload_probe(
-    request: Request,
-    store_name: str = Query(..., min_length=1, alias="store_name"),
-    paths: list[str] | None = Query(None),
-    base_url: str | None = Query(None),
-    current_user: User = Depends(_auth_user),
-    session: AsyncSession = Depends(get_async_db),
-):
-    if not _is_dev_environment():
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="not_found")
 
-    await _require_store_admin_company_scoped(current_user)
-    token = await KaspiStoreToken.get_token(session, store_name)
-    if not token:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="kaspi_token_not_found")
-
-    base_url = (base_url or "https://kaspi.kz").strip()
-    default_paths = [
-        "/shop/api/feeds/import",
-        "/shop/api/feeds/import/offers",
-        "/shop/api/feeds/upload",
-    ]
-    candidate_paths = paths or default_paths
-    now = datetime.utcnow()
-    probe_xml = (
-        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>"
-        f"<kaspi_catalog xmlns=\"{_KASPI_NS}\" date=\"{now.strftime('%Y-%m-%dT%H:%M:%S')}\">"
-        "<company>Probe</company>"
-        f"<merchantid>{store_name}</merchantid>"
-        "<offers></offers>"
-        "</kaspi_catalog>"
-    )
-    headers = {
-        "X-Auth-Token": token,
-        "Content-Type": "application/xml",
-        "Accept": "application/json",
-        "User-Agent": _kaspi_user_agent(),
-    }
-    request_id = getattr(getattr(request, "state", None), "request_id", None)
-
-    items: list[KaspiFeedUploadProbeItem] = []
-    async with httpx.AsyncClient(timeout=FAST_PROBE_TIMEOUT, follow_redirects=True) as client:
-        for path in candidate_paths:
-            normalized = path if path.startswith("/") else f"/{path}"
-            url = f"{base_url.rstrip('/')}{normalized}"
-            started = time.perf_counter()
-            try:
-                resp = await client.post(url, headers=headers, content=probe_xml.encode("utf-8"))
-            except httpx.TimeoutException as exc:
-                _log_kaspi_probe_error(
-                    request_id=request_id,
-                    company_id=None,
-                    store_name=store_name,
-                    method="POST",
-                    url=url,
-                    exc=exc,
-                )
-                elapsed_ms = int((time.perf_counter() - started) * 1000)
-                items.append(
-                    KaspiFeedUploadProbeItem(
-                        path=normalized,
-                        url=url,
-                        ok=False,
-                        status_code=None,
-                        error_class=type(exc).__name__,
-                        message=str(exc),
-                        response_snippet=None,
-                        location=None,
-                        elapsed_ms=elapsed_ms,
-                    )
-                )
-                continue
-            except httpx.RequestError as exc:
-                _log_kaspi_probe_error(
-                    request_id=request_id,
-                    company_id=None,
-                    store_name=store_name,
-                    method="POST",
-                    url=url,
-                    exc=exc,
-                )
-                elapsed_ms = int((time.perf_counter() - started) * 1000)
-                items.append(
-                    KaspiFeedUploadProbeItem(
-                        path=normalized,
-                        url=url,
-                        ok=False,
-                        status_code=None,
-                        error_class=type(exc).__name__,
-                        message=str(exc),
-                        response_snippet=None,
-                        location=None,
-                        elapsed_ms=elapsed_ms,
-                    )
-                )
-                continue
-
-            elapsed_ms = int((time.perf_counter() - started) * 1000)
-            _log_kaspi_probe_response(
-                request_id=request_id,
-                company_id=None,
-                store_name=store_name,
-                method="POST",
-                url=url,
-                status_code=resp.status_code,
-                response_text=resp.text,
-                elapsed_ms=elapsed_ms,
-            )
-            ok = 200 <= resp.status_code < 300
-            import_code = None
-            try:
-                payload = resp.json()
-                if isinstance(payload, dict):
-                    import_code = payload.get("importCode") or payload.get("import_code")
-            except Exception:
-                import_code = None
-            items.append(
-                KaspiFeedUploadProbeItem(
-                    path=normalized,
-                    url=url,
-                    ok=ok,
-                    status_code=resp.status_code,
-                    error_class=None if ok else "HTTPStatusError",
-                    message=None if ok else "upstream_response",
-                    response_snippet=_probe_response_snippet(resp.text),
-                    location=resp.headers.get("location"),
-                    import_code=str(import_code) if import_code else None,
-                    elapsed_ms=elapsed_ms,
-                )
-            )
-
-    return KaspiFeedUploadProbeOut(ok=bool(items) and all(item.ok for item in items), items=items)
-
-
-# ============================= AUTO-SYNC ADMIN ===============================
-
-
-class KaspiAutoSyncStatusOut(BaseModel):
-    """Ответ о статусе последнего запуска авто-синхронизации с конфигурацией и видимостью scheduler."""
-
-    # Configuration
-    enabled: bool = Field(..., description="Включена ли автоматическая синхронизация")
-    interval_minutes: int = Field(0, description="Интервал синхронизации в минутах")
-    max_concurrency: int = Field(0, description="Максимум параллельных синхронизаций")
-
-    # Scheduler state (mutual exclusion observability)
-    runner_enabled: bool = Field(False, description="Включен ли main.py runner loop (ENABLE_KASPI_SYNC_RUNNER)")
-    scheduler_job_effective_enabled: bool = Field(
-        False, description="Включена ли APScheduler job после mutual exclusion"
-    )
-    job_registered: bool = Field(False, description="Зарегистрирована ли задача в scheduler")
-    scheduler_running: bool | None = Field(None, description="Запущен ли scheduler (если доступно)")
-
-    # Last run summary
-    last_run_at: str | None = Field(None, description="ISO время последнего запуска")
-    eligible_companies: int = Field(0, description="Сколько компаний подходят для синхронизации")
-    success: int = Field(0, description="Успешно синхронизировано")
-    locked: int = Field(0, description="Заблокировано (уже выполняется)")
-    failed: int = Field(0, description="Неуспешно (ошибка)")
-
-
-@router.get(
-    "/autosync/status",
-    summary="Статус автоматической синхронизации заказов",
-    response_model=KaspiAutoSyncStatusOut,
+register_kaspi_autosync_routes(
+    router,
+    require_store_admin_then_feature_fn=require_store_admin_then_feature,
+    feature_kaspi_autosync=FEATURE_KASPI_AUTOSYNC,
+    logger=logger,
 )
-async def kaspi_autosync_status(
-    request: Request,
-    current_user: User = Depends(require_store_admin_then_feature(FEATURE_KASPI_AUTOSYNC)),
-):
-    """
-    Возвращает статус последнего запуска автоматической синхронизации заказов Kaspi
-    с конфигурацией и видимостью scheduler.
-    Не требует админских прав, но показывает глобальную статистику по всем компаниям.
-    """
-    from app.core.config import settings
-
-    # Получаем configuration
-    enabled = getattr(settings, "KASPI_AUTOSYNC_ENABLED", False)
-    interval_minutes = getattr(settings, "KASPI_AUTOSYNC_INTERVAL_MINUTES", 15)
-    max_concurrency = getattr(settings, "KASPI_AUTOSYNC_MAX_CONCURRENCY", 3)
-
-    # Check mutual exclusion state
-    runner_enabled = False
-    scheduler_job_effective_enabled = False
-    try:
-        from app.worker.scheduler_worker import _env_truthy, should_register_kaspi_autosync
-
-        runner_enabled = _env_truthy(os.getenv("ENABLE_KASPI_SYNC_RUNNER", "0"))
-        scheduler_job_effective_enabled = should_register_kaspi_autosync()
-    except ImportError as e:
-        logger.debug(
-            "scheduler_worker unavailable for autosync status",
-            error=str(e),
-            request_id=getattr(request.state, "request_id", None),
-        )
-    except Exception as e:
-        logger.warning(
-            "Failed to check scheduler_worker mutual exclusion state",
-            error=str(e),
-            request_id=getattr(request.state, "request_id", None),
-        )
-
-    # Проверяем scheduler state
-    job_registered = False
-    scheduler_running = None
-    try:
-        from app.worker.scheduler_worker import scheduler
-
-        scheduler_running = scheduler.running
-        job = scheduler.get_job("kaspi_autosync")
-        job_registered = job is not None
-    except ImportError as e:
-        logger.debug(
-            "APScheduler not available for autosync status",
-            error=str(e),
-            request_id=getattr(request.state, "request_id", None),
-        )
-    except Exception as e:
-        logger.warning(
-            "Failed to get APScheduler job state",
-            error=str(e),
-            request_id=getattr(request.state, "request_id", None),
-        )
-
-    # Получаем last run summary (safe defaults if autosync disabled)
-    last_run_at = None
-    eligible_companies = 0
-    success = 0
-    locked = 0
-    failed = 0
-
-    try:
-        from app.worker.kaspi_autosync import get_last_run_summary
-
-        summary = get_last_run_summary()
-        last_run_at = summary.get("last_run_at")
-        eligible_companies = summary.get("eligible_companies", 0)
-        success = summary.get("success", 0)
-        locked = summary.get("locked", 0)
-        failed = summary.get("failed", 0)
-    except ImportError as e:
-        logger.debug(
-            "kaspi_autosync module unavailable for last_run_summary",
-            error=str(e),
-            request_id=getattr(request.state, "request_id", None),
-        )
-    except Exception as e:
-        logger.warning(
-            "Failed to get kaspi_autosync last_run_summary",
-            error=str(e),
-            request_id=getattr(request.state, "request_id", None),
-        )
-
-    return KaspiAutoSyncStatusOut(
-        enabled=enabled,
-        interval_minutes=interval_minutes,
-        max_concurrency=max_concurrency,
-        runner_enabled=runner_enabled,
-        scheduler_job_effective_enabled=scheduler_job_effective_enabled,
-        job_registered=job_registered,
-        scheduler_running=scheduler_running,
-        last_run_at=last_run_at,
-        eligible_companies=eligible_companies,
-        success=success,
-        locked=locked,
-        failed=failed,
-    )
-
-
-@router.post(
-    "/autosync/trigger",
-    summary="Ручной запуск автоматической синхронизации",
-    response_model=KaspiAutoSyncStatusOut,
-)
-async def kaspi_autosync_trigger(
-    current_user: User = Depends(require_store_admin_then_feature(FEATURE_KASPI_AUTOSYNC)),
-):
-    """
-    Запускает синхронизацию заказов Kaspi для всех активных компаний вручную.
-    Полезно для диагностики или немедленного обновления без ожидания следующего цикла.
-    """
-    from app.core.config import settings
-
-    enabled = getattr(settings, "KASPI_AUTOSYNC_ENABLED", False)
-
-    if not enabled:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail="Kaspi auto-sync is disabled. Set KASPI_AUTOSYNC_ENABLED=true to enable.",
-        )
-
-    # Можно добавить проверку на админские права:
-    # if not current_user.is_admin:
-    #     raise HTTPException(status_code=403, detail="Admin only")
-
-    try:
-        from app.worker.kaspi_autosync import run_kaspi_autosync
-
-        # Запускаем синхронно (блокирующий вызов)
-        run_kaspi_autosync()
-
-        # Возвращаем обновлённую статистику
-        from app.worker.kaspi_autosync import get_last_run_summary
-
-        summary = get_last_run_summary()
-        return KaspiAutoSyncStatusOut(
-            enabled=True,
-            last_run_at=summary.get("last_run_at"),
-            eligible_companies=summary.get("eligible_companies", 0),
-            success=summary.get("success", 0),
-            locked=summary.get("locked", 0),
-            failed=summary.get("failed", 0),
-        )
-    except ImportError:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="Kaspi auto-sync module not available",
-        )
 
 
 # ============================= CATALOG PRODUCTS ==============================
@@ -3498,11 +2839,6 @@ class KaspiOfferListOut(BaseModel):
     offset: int
 
 
-@router.post(
-    "/offers/rebuild",
-    summary="Rebuild Kaspi offers from products",
-    response_model=KaspiOffersRebuildOut,
-)
 async def kaspi_offers_rebuild(
     request: Request,
     merchant_uid: str | None = Query(None, alias="merchantUid"),
@@ -3534,11 +2870,6 @@ async def kaspi_offers_rebuild(
     )
 
 
-@router.post(
-    "/offers/import",
-    summary="Import Kaspi offers from file",
-    response_model=KaspiOffersImportOut,
-)
 async def kaspi_offers_import(
     request: Request,
     file: UploadFile = File(...),
@@ -3604,11 +2935,6 @@ async def kaspi_offers_import(
     )
 
 
-@router.get(
-    "/offers/preview",
-    summary="Preview Kaspi offers payload",
-    response_model=KaspiOffersPreviewOut,
-)
 async def kaspi_offers_preview(
     merchant_uid: str | None = Query(None, alias="merchantUid"),
     limit: int = Query(5, ge=1, le=100),
@@ -3632,11 +2958,6 @@ async def kaspi_offers_preview(
     return KaspiOffersPreviewOut(items=payload[:limit], total=len(payload), payload_hash=payload_hash)
 
 
-@router.post(
-    "/products/sync",
-    summary="Синхронизировать каталог Kaspi в локальную БД",
-    response_model=KaspiCatalogPullUnsupportedOut,
-)
 async def kaspi_products_sync(
     request: Request,
     current_user: User = Depends(_auth_user),
@@ -3664,11 +2985,6 @@ async def kaspi_products_sync(
     return JSONResponse(status_code=status.HTTP_409_CONFLICT, content=payload)
 
 
-@router.post(
-    "/products/import/start",
-    summary="Start Kaspi products import run",
-    response_model=KaspiImportRunOut,
-)
 async def kaspi_products_import_start(
     request: Request,
     merchant_uid: str | None = Query(None, alias="merchantUid"),
@@ -3696,11 +3012,6 @@ async def kaspi_products_import_start(
     )
 
 
-@router.post(
-    "/products/import/upload",
-    summary="Upload offers payload to Kaspi",
-    response_model=KaspiImportRunOut,
-)
 async def kaspi_products_import_upload(
     request: Request,
     import_code: str = Query(..., alias="i"),
@@ -3925,11 +3236,6 @@ async def kaspi_products_import_upload(
     )
 
 
-@router.post(
-    "/products/import/poll",
-    summary="Poll Kaspi import status/result",
-    response_model=KaspiImportRunPollOut,
-)
 async def kaspi_products_import_poll(
     request: Request,
     import_code: str = Query(..., alias="i"),
@@ -4032,11 +3338,6 @@ async def kaspi_products_import_poll(
     )
 
 
-@router.get(
-    "/products/import",
-    summary="Kaspi products import status",
-    response_model=KaspiGoodsStatusOut,
-)
 async def kaspi_products_import_status(
     request: Request,
     import_code: str = Query(..., alias="i"),
@@ -4091,10 +3392,6 @@ async def kaspi_products_import_status(
     return KaspiGoodsStatusOut(import_code=import_code, status=str(status_value), payload=response)
 
 
-@router.get(
-    "/products/import/schema",
-    summary="Kaspi products import schema",
-)
 async def kaspi_products_import_schema(
     current_user: User = Depends(_auth_user),
     session: AsyncSession = Depends(get_async_db),
@@ -4112,11 +3409,6 @@ async def kaspi_products_import_schema(
         raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail="kaspi_upstream_error")
 
 
-@router.get(
-    "/products/import/result",
-    summary="Kaspi products import result",
-    response_model=KaspiGoodsResultOut,
-)
 async def kaspi_products_import_result(
     request: Request,
     import_code: str = Query(..., alias="i"),
@@ -4171,13 +3463,32 @@ async def kaspi_products_import_result(
     return KaspiGoodsResultOut(import_code=import_code, status=str(status_value), payload=response)
 
 
+register_kaspi_catalog_routes(
+    router,
+    kaspi_offers_rebuild=kaspi_offers_rebuild,
+    kaspi_offers_import=kaspi_offers_import,
+    kaspi_offers_preview=kaspi_offers_preview,
+    kaspi_products_sync=kaspi_products_sync,
+    kaspi_products_import_start=kaspi_products_import_start,
+    kaspi_products_import_upload=kaspi_products_import_upload,
+    kaspi_products_import_poll=kaspi_products_import_poll,
+    kaspi_products_import_status=kaspi_products_import_status,
+    kaspi_products_import_schema=kaspi_products_import_schema,
+    kaspi_products_import_result=kaspi_products_import_result,
+    kaspi_offers_rebuild_out_model=KaspiOffersRebuildOut,
+    kaspi_offers_import_out_model=KaspiOffersImportOut,
+    kaspi_offers_preview_out_model=KaspiOffersPreviewOut,
+    kaspi_catalog_pull_unsupported_out_model=KaspiCatalogPullUnsupportedOut,
+    kaspi_import_run_out_model=KaspiImportRunOut,
+    kaspi_import_run_poll_out_model=KaspiImportRunPollOut,
+    kaspi_goods_status_out_model=KaspiGoodsStatusOut,
+    kaspi_goods_result_out_model=KaspiGoodsResultOut,
+)
+
+
 # ============================= GOODS API ==============================
 
 
-@router.get(
-    "/goods/schema",
-    summary="Kaspi goods import schema",
-)
 async def kaspi_goods_schema(
     current_user: User = Depends(_auth_user),
     session: AsyncSession = Depends(get_async_db),
@@ -4191,10 +3502,6 @@ async def kaspi_goods_schema(
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="NOT_AUTHENTICATED") from exc
 
 
-@router.get(
-    "/goods/categories",
-    summary="Kaspi goods categories",
-)
 async def kaspi_goods_categories(
     current_user: User = Depends(_auth_user),
     session: AsyncSession = Depends(get_async_db),
@@ -4208,10 +3515,6 @@ async def kaspi_goods_categories(
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="NOT_AUTHENTICATED") from exc
 
 
-@router.get(
-    "/goods/attributes",
-    summary="Kaspi goods attributes for category",
-)
 async def kaspi_goods_attributes(
     category: str,
     current_user: User = Depends(_auth_user),
@@ -4226,10 +3529,6 @@ async def kaspi_goods_attributes(
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="NOT_AUTHENTICATED") from exc
 
 
-@router.get(
-    "/goods/attribute-values",
-    summary="Kaspi goods attribute values",
-)
 async def kaspi_goods_attribute_values(
     category: str,
     attribute: str,
@@ -4245,11 +3544,6 @@ async def kaspi_goods_attribute_values(
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="NOT_AUTHENTICATED") from exc
 
 
-@router.post(
-    "/goods/import/upload",
-    summary="Kaspi goods import upload (file)",
-    response_model=KaspiGoodsUploadOut,
-)
 async def kaspi_goods_import_upload(
     file: UploadFile = File(...),
     merchant_uid: str | None = Query(None, alias="merchantUid"),
@@ -4299,11 +3593,6 @@ async def kaspi_goods_import_upload(
     return KaspiGoodsUploadOut(import_code=str(import_code), status=str(status_value), payload=response)
 
 
-@router.get(
-    "/goods/import/status",
-    summary="Kaspi goods import status (by importCode)",
-    response_model=KaspiGoodsStatusOut,
-)
 async def kaspi_goods_import_status_by_code(
     import_code: str = Query(..., alias="importCode"),
     current_user: User = Depends(require_feature(FEATURE_KASPI_GOODS_IMPORTS)),
@@ -4339,11 +3628,6 @@ async def kaspi_goods_import_status_by_code(
     return KaspiGoodsStatusOut(import_code=import_code, status=str(status_value), payload=response)
 
 
-@router.post(
-    "/goods/import",
-    summary="Kaspi goods import",
-    response_model=KaspiGoodsImportOut,
-)
 async def kaspi_goods_import(
     body: KaspiGoodsImportIn,
     current_user: User = Depends(require_feature(FEATURE_KASPI_GOODS_IMPORTS)),
@@ -4393,11 +3677,6 @@ async def kaspi_goods_import(
     return KaspiGoodsImportOut(ok=True, import_code=str(import_code), status=str(status_value))
 
 
-@router.get(
-    "/goods/import/{code}",
-    summary="Kaspi goods import status",
-    response_model=KaspiGoodsStatusOut,
-)
 async def kaspi_goods_import_status(
     code: str,
     current_user: User = Depends(require_feature(FEATURE_KASPI_GOODS_IMPORTS)),
@@ -4427,11 +3706,6 @@ async def kaspi_goods_import_status(
     return KaspiGoodsStatusOut(import_code=code, status=str(status_value), payload=response)
 
 
-@router.get(
-    "/goods/import/{code}/result",
-    summary="Kaspi goods import result",
-    response_model=KaspiGoodsResultOut,
-)
 async def kaspi_goods_import_result(
     code: str,
     current_user: User = Depends(require_feature(FEATURE_KASPI_GOODS_IMPORTS)),
@@ -4461,11 +3735,6 @@ async def kaspi_goods_import_result(
     return KaspiGoodsResultOut(import_code=code, status=str(status_value), payload=response)
 
 
-@router.post(
-    "/goods/imports",
-    summary="Kaspi goods import (stored)",
-    response_model=KaspiGoodsImportRecordOut,
-)
 async def kaspi_goods_import_create(
     body: KaspiGoodsImportCreateIn,
     current_user: User = Depends(require_store_admin_then_feature(FEATURE_KASPI_GOODS_IMPORTS)),
@@ -4553,11 +3822,6 @@ async def kaspi_goods_import_create(
     return _goods_import_to_out(record)
 
 
-@router.get(
-    "/goods/imports",
-    summary="List Kaspi goods imports",
-    response_model=list[KaspiGoodsImportRecordOut],
-)
 async def kaspi_goods_import_list(
     limit: int = Query(50, ge=1, le=200),
     offset: int = Query(0, ge=0),
@@ -4577,11 +3841,6 @@ async def kaspi_goods_import_list(
     return [_goods_import_to_out(record) for record in records]
 
 
-@router.get(
-    "/goods/imports/{import_id}",
-    summary="Get Kaspi goods import",
-    response_model=KaspiGoodsImportRecordOut,
-)
 async def kaspi_goods_import_get(
     import_id: str,
     current_user: User = Depends(require_store_admin_then_feature(FEATURE_KASPI_GOODS_IMPORTS)),
@@ -4606,11 +3865,6 @@ async def kaspi_goods_import_get(
     return _goods_import_to_out(record)
 
 
-@router.post(
-    "/goods/imports/{import_id}/refresh",
-    summary="Refresh Kaspi goods import",
-    response_model=KaspiGoodsImportRecordOut,
-)
 async def kaspi_goods_import_refresh(
     import_id: str,
     request: Request,
@@ -4685,11 +3939,6 @@ async def kaspi_goods_import_refresh(
     return _goods_import_to_out(record)
 
 
-@router.post(
-    "/sync/now",
-    summary="Kaspi sync now",
-    response_model=KaspiSyncNowOut,
-)
 async def kaspi_sync_now(
     request: Request,
     body: KaspiSyncNowIn | None = Body(None),
@@ -5658,11 +4907,6 @@ async def kaspi_sync_now(
         )
 
 
-@router.get(
-    "/token/health",
-    summary="Kaspi token health",
-    response_model=KaspiTokenHealthOut,
-)
 async def kaspi_token_health(
     request: Request,
     current_user: User = Depends(_auth_user),
@@ -5792,11 +5036,6 @@ async def kaspi_token_health(
     )
 
 
-@router.get(
-    "/token/selftest",
-    summary="Kaspi token self-test",
-    response_model=KaspiTokenSelftestOut,
-)
 async def kaspi_token_selftest(
     request: Request,
     current_user: User = Depends(_auth_user),
@@ -6016,11 +5255,6 @@ async def kaspi_token_selftest(
     )
 
 
-@router.post(
-    "/catalog/import",
-    summary="Kaspi catalog import (CSV/XLSX/JSON)",
-    response_model=KaspiCatalogImportOut,
-)
 async def kaspi_catalog_import(
     file: UploadFile = File(...),
     merchant_uid: str | None = Query(None, alias="merchantUid"),
@@ -6220,6 +5454,37 @@ async def kaspi_catalog_import(
         top_errors=top_errors,
         dry_run=False,
     )
+
+
+register_kaspi_goods_routes(
+    router,
+    kaspi_goods_schema=kaspi_goods_schema,
+    kaspi_goods_categories=kaspi_goods_categories,
+    kaspi_goods_attributes=kaspi_goods_attributes,
+    kaspi_goods_attribute_values=kaspi_goods_attribute_values,
+    kaspi_goods_import_upload=kaspi_goods_import_upload,
+    kaspi_goods_import_status_by_code=kaspi_goods_import_status_by_code,
+    kaspi_goods_import=kaspi_goods_import,
+    kaspi_goods_import_status=kaspi_goods_import_status,
+    kaspi_goods_import_result=kaspi_goods_import_result,
+    kaspi_goods_import_create=kaspi_goods_import_create,
+    kaspi_goods_import_list=kaspi_goods_import_list,
+    kaspi_goods_import_get=kaspi_goods_import_get,
+    kaspi_goods_import_refresh=kaspi_goods_import_refresh,
+    kaspi_sync_now=kaspi_sync_now,
+    kaspi_token_health=kaspi_token_health,
+    kaspi_token_selftest=kaspi_token_selftest,
+    kaspi_catalog_import=kaspi_catalog_import,
+    kaspi_goods_upload_out_model=KaspiGoodsUploadOut,
+    kaspi_goods_status_out_model=KaspiGoodsStatusOut,
+    kaspi_goods_import_out_model=KaspiGoodsImportOut,
+    kaspi_goods_result_out_model=KaspiGoodsResultOut,
+    kaspi_goods_import_record_out_model=KaspiGoodsImportRecordOut,
+    kaspi_sync_now_out_model=KaspiSyncNowOut,
+    kaspi_token_health_out_model=KaspiTokenHealthOut,
+    kaspi_token_selftest_out_model=KaspiTokenSelftestOut,
+    kaspi_catalog_import_out_model=KaspiCatalogImportOut,
+)
 
 
 # ============================= MC SESSION + SYNC =============================
@@ -7099,11 +6364,6 @@ class KaspiFeedListOut(BaseModel):
 # ============================= FEED EXPORTS (MVP) =============================
 
 
-@router.post(
-    "/feed/exports",
-    summary="Generate Kaspi offers feed export",
-    response_model=KaspiFeedExportOut,
-)
 async def kaspi_feed_export_create(
     merchant_uid: str | None = Query(None, alias="merchantUid"),
     store_id: str | None = Query(None, alias="storeId"),
@@ -7168,11 +6428,6 @@ async def kaspi_feed_export_create(
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="feed_export_failed")
 
 
-@router.get(
-    "/feed/exports",
-    summary="List Kaspi feed exports",
-    response_model=list[KaspiFeedExportOut],
-)
 async def kaspi_feed_exports_list(
     limit: int = 50,
     offset: int = 0,
@@ -7392,11 +6647,6 @@ async def _create_offers_feed_upload(
     return job, False
 
 
-@router.post(
-    "/offers/feed/upload",
-    summary="Upload Kaspi offers feed (XML)",
-    response_model=KaspiOffersFeedUploadOut,
-)
 async def kaspi_offers_feed_upload(
     request: Request,
     body: KaspiOffersFeedUploadIn,
@@ -7445,11 +6695,6 @@ async def kaspi_offers_feed_upload(
     )
 
 
-@router.post(
-    "/feed/uploads",
-    summary="Upload Kaspi offers feed",
-    response_model=KaspiFeedUploadRecordOut,
-)
 async def kaspi_feed_upload_create(
     request: Request,
     body: KaspiFeedUploadIn,
@@ -7708,11 +6953,6 @@ async def kaspi_feed_upload_create(
     return _feed_upload_to_out(job)
 
 
-@router.get(
-    "/feed/uploads",
-    summary="List Kaspi feed uploads",
-    response_model=list[KaspiFeedUploadRecordOut],
-)
 async def kaspi_feed_uploads_list(
     limit: int = 50,
     offset: int = 0,
@@ -7735,11 +6975,6 @@ async def kaspi_feed_uploads_list(
     return [_feed_upload_to_out(record) for record in uploads]
 
 
-@router.get(
-    "/feed/uploads/{upload_id}",
-    summary="Get Kaspi feed upload",
-    response_model=KaspiFeedUploadRecordOut,
-)
 async def kaspi_feed_upload_get(
     upload_id: UUID,
     current_user: User = Depends(require_store_admin_then_feature(FEATURE_KASPI_FEED_UPLOADS)),
@@ -7764,11 +6999,6 @@ async def kaspi_feed_upload_get(
     return _feed_upload_to_out(record)
 
 
-@router.post(
-    "/feed/uploads/{upload_id}/refresh",
-    summary="Refresh Kaspi feed upload status",
-    response_model=KaspiFeedUploadRecordOut,
-)
 async def kaspi_feed_upload_refresh(
     request: Request,
     upload_id: UUID,
@@ -7883,11 +7113,6 @@ async def kaspi_feed_upload_refresh(
     return _feed_upload_to_out(record)
 
 
-@router.post(
-    "/feed/uploads/{upload_id}/refresh-status",
-    summary="Refresh Kaspi feed upload status (deprecated)",
-    response_model=KaspiFeedUploadRecordOut,
-)
 async def kaspi_feed_upload_refresh_compat(
     request: Request,
     upload_id: UUID,
@@ -7902,11 +7127,6 @@ async def kaspi_feed_upload_refresh_compat(
     )
 
 
-@router.post(
-    "/feed/uploads/{upload_id}/publish",
-    summary="Publish Kaspi feed upload",
-    response_model=KaspiFeedUploadRecordOut,
-)
 async def kaspi_feed_upload_publish(
     request: Request,
     upload_id: UUID,
@@ -8042,11 +7262,6 @@ async def kaspi_feed_upload_publish(
     return _feed_upload_to_out(record)
 
 
-@router.get(
-    "/feed/exports/{export_id}",
-    summary="Get Kaspi feed export details",
-    response_model=KaspiFeedExportOut,
-)
 async def kaspi_feed_export_detail(
     export_id: int,
     current_user: User = Depends(get_current_user),
@@ -8072,11 +7287,6 @@ async def kaspi_feed_export_detail(
     return _feed_export_to_out(export)
 
 
-@router.get(
-    "/feed/exports/{export_id}/download",
-    summary="Download Kaspi feed export XML",
-    response_class=Response,
-)
 async def kaspi_feed_export_download(
     export_id: int,
     current_user: User = Depends(get_current_user),
@@ -8116,14 +7326,28 @@ async def kaspi_feed_export_download(
     )
 
 
+register_kaspi_feed_routes_phase_one(
+    router,
+    kaspi_feed_export_create=kaspi_feed_export_create,
+    kaspi_feed_exports_list=kaspi_feed_exports_list,
+    kaspi_offers_feed_upload=kaspi_offers_feed_upload,
+    kaspi_feed_upload_create=kaspi_feed_upload_create,
+    kaspi_feed_uploads_list=kaspi_feed_uploads_list,
+    kaspi_feed_upload_get=kaspi_feed_upload_get,
+    kaspi_feed_upload_refresh=kaspi_feed_upload_refresh,
+    kaspi_feed_upload_refresh_compat=kaspi_feed_upload_refresh_compat,
+    kaspi_feed_upload_publish=kaspi_feed_upload_publish,
+    kaspi_feed_export_detail=kaspi_feed_export_detail,
+    kaspi_feed_export_download=kaspi_feed_export_download,
+    kaspi_feed_export_out_model=KaspiFeedExportOut,
+    kaspi_offers_feed_upload_out_model=KaspiOffersFeedUploadOut,
+    kaspi_feed_upload_record_out_model=KaspiFeedUploadRecordOut,
+)
+
+
 # ============================= PUBLIC FEED TOKENS =============================
 
 
-@router.post(
-    "/feed/public-tokens",
-    summary="Create public feed token",
-    response_model=KaspiFeedPublicTokenOut,
-)
 async def kaspi_feed_public_token_create(
     payload: KaspiFeedPublicTokenIn,
     current_user: User = Depends(get_current_user),
@@ -8178,11 +7402,6 @@ async def kaspi_feed_public_token_create(
     )
 
 
-@router.get(
-    "/feed/public-tokens",
-    summary="List public feed tokens",
-    response_model=KaspiFeedPublicTokenListOut,
-)
 async def kaspi_feed_public_tokens_list(
     current_user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_async_db),
@@ -8212,11 +7431,6 @@ async def kaspi_feed_public_tokens_list(
     )
 
 
-@router.post(
-    "/feed/public-tokens/{token_id}/revoke",
-    summary="Revoke public feed token",
-    response_model=KaspiFeedPublicTokenOut,
-)
 async def kaspi_feed_public_token_revoke(
     token_id: int,
     current_user: User = Depends(get_current_user),
@@ -8255,12 +7469,6 @@ async def kaspi_feed_public_token_revoke(
     )
 
 
-@public_router.get(
-    "/public/kaspi/price-list/{token}.xml",
-    summary="Public Kaspi price list feed",
-    response_class=Response,
-    include_in_schema=False,
-)
 async def kaspi_public_price_list(
     request: Request,
     token: str,
@@ -8308,11 +7516,6 @@ async def kaspi_public_price_list(
     )
 
 
-@router.get(
-    "/feed/public/offers.xml",
-    summary="Public Kaspi offers feed",
-    response_class=Response,
-)
 async def kaspi_public_offers_feed(
     request: Request,
     token: str | None = None,
@@ -8365,6 +7568,19 @@ async def kaspi_public_offers_feed(
     )
 
 
+register_kaspi_public_routes(
+    router,
+    public_router,
+    kaspi_feed_public_token_create=kaspi_feed_public_token_create,
+    kaspi_feed_public_tokens_list=kaspi_feed_public_tokens_list,
+    kaspi_feed_public_token_revoke=kaspi_feed_public_token_revoke,
+    kaspi_public_price_list=kaspi_public_price_list,
+    kaspi_public_offers_feed=kaspi_public_offers_feed,
+    kaspi_feed_public_token_out_model=KaspiFeedPublicTokenOut,
+    kaspi_feed_public_token_list_out_model=KaspiFeedPublicTokenListOut,
+)
+
+
 class KaspiStatusFeedOut(BaseModel):
     """Status summary for the latest products feed."""
 
@@ -8414,11 +7630,6 @@ class KaspiStatusOut(BaseModel):
     health: KaspiHealthStatusOut
 
 
-@router.post(
-    "/feeds/products/generate",
-    summary="Сгенерировать фид продуктов для Kaspi",
-    response_model=KaspiFeedGenerateOut,
-)
 async def kaspi_feed_generate_products(
     current_user: User = Depends(_auth_user),
     session: AsyncSession = Depends(get_async_db),
@@ -8442,11 +7653,6 @@ async def kaspi_feed_generate_products(
         )
 
 
-@router.post(
-    "/feeds/{export_id}/upload",
-    summary="Загрузить фид на Kaspi",
-    response_model=KaspiFeedUploadRecordOut,
-)
 async def kaspi_feed_upload(
     export_id: int,
     request: Request,
@@ -8540,11 +7746,6 @@ async def kaspi_feed_upload(
     )
 
 
-@router.get(
-    "/feeds",
-    summary="Получить список фидов",
-    response_model=KaspiFeedListOut,
-)
 async def kaspi_feeds_list(
     kind: str | None = None,
     limit: int = 50,
@@ -8618,11 +7819,6 @@ async def kaspi_feeds_list(
         )
 
 
-@router.get(
-    "/feeds/{export_id}",
-    summary="Получить метаданные фида",
-    response_model=KaspiFeedExportOut,
-)
 async def kaspi_feed_get(
     export_id: int,
     current_user: User = Depends(_auth_user),
@@ -8677,11 +7873,6 @@ async def kaspi_feed_get(
         )
 
 
-@router.get(
-    "/feeds/{export_id}/payload",
-    summary="Получить XML фида",
-    response_class=Response,
-)
 async def kaspi_feed_get_payload(
     export_id: int,
     current_user: User = Depends(_auth_user),
@@ -8726,14 +7917,23 @@ async def kaspi_feed_get_payload(
         )
 
 
+register_kaspi_feed_routes_phase_two(
+    router,
+    kaspi_feed_generate_products=kaspi_feed_generate_products,
+    kaspi_feed_upload=kaspi_feed_upload,
+    kaspi_feeds_list=kaspi_feeds_list,
+    kaspi_feed_get=kaspi_feed_get,
+    kaspi_feed_get_payload=kaspi_feed_get_payload,
+    kaspi_feed_generate_out_model=KaspiFeedGenerateOut,
+    kaspi_feed_upload_record_out_model=KaspiFeedUploadRecordOut,
+    kaspi_feed_list_out_model=KaspiFeedListOut,
+    kaspi_feed_export_out_model=KaspiFeedExportOut,
+)
+
+
 # ============================= STATUS (операционная панель) =============================
 
 
-@router.get(
-    "/status",
-    summary="Статус интеграции Kaspi по компании",
-    response_model=KaspiStatusOut,
-)
 async def kaspi_status(
     current_user: User = Depends(_auth_user),
     session: AsyncSession = Depends(get_async_db),
@@ -8867,3 +8067,10 @@ async def kaspi_status(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to load Kaspi status",
         )
+
+
+register_kaspi_status_routes(
+    router,
+    kaspi_status=kaspi_status,
+    kaspi_status_out_model=KaspiStatusOut,
+)
