@@ -77,6 +77,10 @@ class _RequestIdFilter(logging.Filter):
 _BASE_LOGGING_CONFIGURED = False
 
 
+def _env_truthy(value: str | None, default: bool = False) -> bool:
+    return env_truthy(value, default)
+
+
 def _configure_base_logging() -> None:
     global _BASE_LOGGING_CONFIGURED
     if _BASE_LOGGING_CONFIGURED:

@@ -2531,7 +2531,7 @@ register_kaspi_debug_routes(
     kaspi_store_token_model=KaspiStoreToken,
     build_kaspi_httpx_client_fn=_build_kaspi_httpx_client,
     build_kaspi_orders_params_fn=_build_kaspi_orders_params,
-    is_dev_environment_fn=_is_dev_environment,
+    is_dev_environment_fn=lambda: _is_dev_environment(),
     kaspi_user_agent_fn=_kaspi_user_agent,
     probe_response_snippet_fn=_probe_response_snippet,
     log_kaspi_probe_error_fn=_log_kaspi_probe_error,
