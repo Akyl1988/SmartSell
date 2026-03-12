@@ -23,6 +23,19 @@ from app.core.money import MoneyNormalizationError, format_money, is_kzt, normal
 from app.core.rbac import is_platform_admin, is_store_admin, is_store_manager
 from app.core.security import resolve_tenant_company_id
 from app.models.user import User
+from app.services.wallet_api_helpers import (
+    adjust_balance_flow,
+    create_account_flow,
+    deposit_flow,
+    get_account_by_user_currency_flow,
+    get_account_flow,
+    get_balance_flow,
+    ledger_flow,
+    list_accounts_flow,
+    stats_read_flow,
+    transfer_flow,
+    withdraw_flow,
+)
 from app.storage.wallet_sql import WalletStorageSQL
 
 # =============================================================================
@@ -352,21 +365,13 @@ async def health(db: AsyncSession = Depends(get_async_db)) -> HealthOut:
 
 @read_router.get("/stats", response_model=StatsOut, summary="Агрегированная статистика")
 async def stats(db: AsyncSession = Depends(get_async_db)) -> StatsOut:
-    storage = await _get_storage(db)
-    caps = _storage_caps(storage)
-    if caps.get("has_stats"):
-        data = await storage.stats()  # type: ignore[attr-defined]
-        if isinstance(data, dict):
-            tb = _to_dec_str(data.get("total_balance", "0"), data.get("currency", "KZT"))
-            return StatsOut(
-                accounts=int(data.get("accounts", 0)),
-                ledger_entries=int(data.get("ledger_entries", 0)),
-                total_balance=tb,
-            )
-    rows = await storage.list_accounts()  # type: ignore[call-arg]
-    items = rows["items"] if isinstance(rows, dict) and "items" in rows else rows
-    acc_count = len(items) if isinstance(items, list) else 0
-    return StatsOut(accounts=acc_count, ledger_entries=0, total_balance="0")
+    data = await stats_read_flow(
+        db=db,
+        get_storage_fn=_get_storage,
+        storage_caps_fn=_storage_caps,
+        to_dec_str_fn=_to_dec_str,
+    )
+    return StatsOut(**data)
 
 
 # =============================================================================
@@ -385,16 +390,16 @@ async def create_account(
     db: AsyncSession = Depends(get_async_db),
 ) -> WalletAccountOut:
     try:
-        if is_platform_admin(current_user):
-            _ensure_platform_admin_self_scope(current_user, req.user_id)
-            if not is_kzt(req.currency):
-                raise AuthorizationError("Insufficient permissions", "FORBIDDEN")
-        await _ensure_user_in_company(req.user_id, current_user, db)
-        ccy = _norm_ccy(req.currency)
-        storage = await _get_storage(db)
-        acc = await storage.create_account(req.user_id, ccy, initial_balance=req.balance)
-        acc["currency"] = _norm_ccy(acc.get("currency", ccy))
-        acc["balance"] = _to_dec_str(acc.get("balance", "0"), acc.get("currency", ccy))
+        acc = await create_account_flow(
+            req=req,
+            current_user=current_user,
+            db=db,
+            ensure_platform_admin_self_scope_fn=_ensure_platform_admin_self_scope,
+            ensure_user_in_company_fn=_ensure_user_in_company,
+            norm_ccy_fn=_norm_ccy,
+            to_dec_str_fn=_to_dec_str,
+            get_storage_fn=_get_storage,
+        )
         await db.commit()
         return WalletAccountOut(**acc)
     except AuthorizationError:
@@ -421,66 +426,23 @@ async def list_accounts(
     db: AsyncSession = Depends(get_async_db),
 ) -> WalletAccountsPage:
     try:
-        if is_platform_admin(current_user):
-            if user_id is None:
-                raise AuthorizationError("Insufficient permissions", "FORBIDDEN")
-            if user_id != int(getattr(current_user, "id", 0) or 0):
-                raise AuthorizationError("Insufficient permissions", "FORBIDDEN")
-        resolved_company_id = resolve_tenant_company_id(current_user, not_found_detail="Company not set")
-        ccy = _norm_ccy(currency) if currency else None
-        if user_id is not None:
-            await _ensure_user_in_company(user_id, current_user, db)
-
-        allowed_ids: list[int] | None = None
-        stmt = select(User.id).where(User.company_id == resolved_company_id)
-        rows = (await db.execute(stmt)).all()
-        allowed_ids = [int(r[0]) for r in rows]
-        if user_id is not None:
-            allowed_ids = [uid for uid in allowed_ids if uid == user_id]
-        if allowed_ids is not None and not allowed_ids:
-            allowed_ids = [-1]
-
-        storage = await _get_storage(db)
-        caps = _storage_caps(storage)
-
-        if caps.get("has_list_ext"):
-            rows = await storage.list_accounts(
-                user_id=user_id,
-                currency=ccy,
-                page=page,
-                size=size,
-                user_ids=allowed_ids,
-                company_id=resolved_company_id,
-            )
-        else:
-            rows = await storage.list_accounts(
-                user_id=user_id,
-                user_ids=allowed_ids,
-                company_id=resolved_company_id,
-            )
-            items = rows["items"] if isinstance(rows, dict) and "items" in rows else rows
-            if not isinstance(items, list):
-                items = []
-            if ccy:
-                items = [r for r in items if _norm_ccy(r.get("currency", "")) == ccy]
-            rows = {"items": items, "meta": {"page": page, "size": size, "total": len(items)}}
-
-        items = rows["items"] if isinstance(rows, dict) and "items" in rows else rows
-        if not isinstance(items, list):
-            items = []
-        filtered = await _filter_accounts_for_user(items, current_user, db)
-        if ccy:
-            filtered = [r for r in filtered if _norm_ccy(r.get("currency", "")) == ccy]
-        total = len(filtered)
-        start = (page - 1) * size
-        end = start + size
-        page_items = filtered[start:end]
-        for r in page_items:
-            r["currency"] = _norm_ccy(r.get("currency", ""))
-            r["balance"] = _to_dec_str(r.get("balance", "0"), r.get("currency", ""))
-
-        meta = {"page": page, "size": size, "total": total}
-        return WalletAccountsPage(items=[WalletAccountOut(**r) for r in page_items], meta=PageMeta(**meta))
+        rows = await list_accounts_flow(
+            user_id=user_id,
+            currency=currency,
+            page=page,
+            size=size,
+            current_user=current_user,
+            db=db,
+            ensure_user_in_company_fn=_ensure_user_in_company,
+            norm_ccy_fn=_norm_ccy,
+            get_storage_fn=_get_storage,
+            storage_caps_fn=_storage_caps,
+            filter_accounts_for_user_fn=_filter_accounts_for_user,
+            to_dec_str_fn=_to_dec_str,
+        )
+        items = rows.get("items", [])
+        meta = rows.get("meta", {"page": page, "size": size, "total": len(items)})
+        return WalletAccountsPage(items=[WalletAccountOut(**r) for r in items], meta=PageMeta(**meta))
     except AuthorizationError:
         raise
     except HTTPException:
@@ -500,33 +462,22 @@ async def get_account_by_user_currency(
     current_user: User = Depends(_auth_user),
     db: AsyncSession = Depends(get_async_db),
 ) -> WalletAccountOut:
-    if user_id != int(getattr(current_user, "id", 0) or 0) and not _is_privileged_wallet_user(current_user):
-        raise AuthorizationError("Insufficient permissions", "FORBIDDEN")
-    await _ensure_user_in_company(user_id, current_user, db)
-    storage = await _get_storage(db)
-    caps = _storage_caps(storage)
-
-    if not caps.get("has_get_uc"):
-        rows = await storage.list_accounts(user_id=user_id)
-        items = rows["items"] if isinstance(rows, dict) and "items" in rows else rows
-        if not isinstance(items, list):
-            items = []
-        ccy = _norm_ccy(currency)
-        for r in items:
-            if _norm_ccy(r.get("currency", "")) == ccy:
-                r["currency"] = _norm_ccy(r.get("currency", ""))
-                r["balance"] = _to_dec_str(r.get("balance", "0"), r.get("currency", ""))
-                await _ensure_user_in_company(int(r.get("user_id", 0)), current_user, db)
-                return WalletAccountOut(**r)
-        raise NotFoundError("wallet_account_not_found", code="WALLET_ACCOUNT_NOT_FOUND", http_status=404)
     try:
-        acc = await storage.get_account_by_user_currency(user_id=user_id, currency=_norm_ccy(currency))
-        if not acc:
-            raise NotFoundError("wallet_account_not_found", code="WALLET_ACCOUNT_NOT_FOUND", http_status=404)
-        await _ensure_user_in_company(int(acc.get("user_id", 0)), current_user, db)
-        acc["currency"] = _norm_ccy(acc.get("currency", ""))
-        acc["balance"] = _to_dec_str(acc.get("balance", "0"), acc.get("currency", ""))
+        acc = await get_account_by_user_currency_flow(
+            user_id=user_id,
+            currency=currency,
+            current_user=current_user,
+            db=db,
+            is_privileged_wallet_user_fn=_is_privileged_wallet_user,
+            ensure_user_in_company_fn=_ensure_user_in_company,
+            get_storage_fn=_get_storage,
+            storage_caps_fn=_storage_caps,
+            norm_ccy_fn=_norm_ccy,
+            to_dec_str_fn=_to_dec_str,
+        )
         return WalletAccountOut(**acc)
+    except AuthorizationError:
+        raise
     except HTTPException:
         raise
     except NotFoundError:
@@ -546,11 +497,14 @@ async def get_account(
     db: AsyncSession = Depends(get_async_db),
 ) -> WalletAccountOut:
     try:
-        if is_platform_admin(current_user):
-            raise AuthorizationError("Insufficient permissions", "FORBIDDEN")
-        acc = await _ensure_account_access(account_id, current_user, db)
-        acc["currency"] = _norm_ccy(acc.get("currency", ""))
-        acc["balance"] = _to_dec_str(acc.get("balance", "0"), acc.get("currency", ""))
+        acc = await get_account_flow(
+            account_id=account_id,
+            current_user=current_user,
+            db=db,
+            ensure_account_access_fn=_ensure_account_access,
+            norm_ccy_fn=_norm_ccy,
+            to_dec_str_fn=_to_dec_str,
+        )
         return WalletAccountOut(**acc)
     except AuthorizationError:
         raise
@@ -571,21 +525,16 @@ async def get_balance(
     db: AsyncSession = Depends(get_async_db),
 ) -> BalanceOut:
     try:
-        if is_platform_admin(current_user):
-            raise AuthorizationError("Insufficient permissions", "FORBIDDEN")
-        resolved_company_id = resolve_tenant_company_id(current_user, not_found_detail="Company not set")
-        await _ensure_account_access(account_id, current_user, db)
-        storage = await _get_storage(db)
-        bal = await storage.get_balance(account_id, company_id=resolved_company_id)
-        if isinstance(bal, dict):
-            return BalanceOut(
-                account_id=int(bal.get("account_id", account_id)),
-                currency=_norm_ccy(bal.get("currency", "")),
-                balance=_to_dec_str(bal.get("balance", "0"), bal.get("currency", "")),
-            )
-        acc = await storage.get_account(account_id)
-        ccy = _norm_ccy(acc["currency"]) if acc and "currency" in acc else ""
-        return BalanceOut(account_id=account_id, currency=ccy, balance=_to_dec_str(bal, ccy))
+        data = await get_balance_flow(
+            account_id=account_id,
+            current_user=current_user,
+            db=db,
+            ensure_account_access_fn=_ensure_account_access,
+            get_storage_fn=_get_storage,
+            norm_ccy_fn=_norm_ccy,
+            to_dec_str_fn=_to_dec_str,
+        )
+        return BalanceOut(**data)
     except AuthorizationError:
         raise
     except HTTPException:
@@ -610,27 +559,20 @@ async def deposit(
     db: AsyncSession = Depends(get_async_db),
 ) -> WalletTransactionOut:
     try:
-        if is_platform_admin(current_user):
-            raise AuthorizationError("Insufficient permissions", "FORBIDDEN")
-        resolved_company_id = resolve_tenant_company_id(current_user, not_found_detail="Company not set")
-        await _ensure_account_access(account_id, current_user, db)
-        storage = await _get_storage(db)
-        acc = await storage.get_account(account_id, company_id=resolved_company_id)
-        if acc:
-            _require_kzt_integer_amount(req.amount, acc.get("currency", ""))
-        out = await storage.deposit(
-            account_id,
-            req.amount,
-            getattr(req, "reference", None),
-            x_request_id,
-            company_id=resolved_company_id,
+        out = await deposit_flow(
+            account_id=account_id,
+            req=req,
+            x_request_id=x_request_id,
+            current_user=current_user,
+            db=db,
+            ensure_account_access_fn=_ensure_account_access,
+            get_storage_fn=_get_storage,
+            require_kzt_integer_amount_fn=_require_kzt_integer_amount,
+            norm_ccy_fn=_norm_ccy,
+            to_dec_str_fn=_to_dec_str,
         )
         await db.commit()
-        return WalletTransactionOut(
-            account_id=int(out.get("account_id", account_id)),
-            currency=_norm_ccy(out.get("currency", "")),
-            balance=_to_dec_str(out.get("balance", "0"), out.get("currency", "")),
-        )
+        return WalletTransactionOut(**out)
     except AuthorizationError:
         raise
     except HTTPException:
@@ -654,27 +596,20 @@ async def withdraw(
     db: AsyncSession = Depends(get_async_db),
 ) -> WalletTransactionOut:
     try:
-        if is_platform_admin(current_user):
-            raise AuthorizationError("Insufficient permissions", "FORBIDDEN")
-        resolved_company_id = resolve_tenant_company_id(current_user, not_found_detail="Company not set")
-        await _ensure_account_access(account_id, current_user, db)
-        storage = await _get_storage(db)
-        acc = await storage.get_account(account_id, company_id=resolved_company_id)
-        if acc:
-            _require_kzt_integer_amount(req.amount, acc.get("currency", ""))
-        out = await storage.withdraw(
-            account_id,
-            req.amount,
-            getattr(req, "reference", None),
-            x_request_id,
-            company_id=resolved_company_id,
+        out = await withdraw_flow(
+            account_id=account_id,
+            req=req,
+            x_request_id=x_request_id,
+            current_user=current_user,
+            db=db,
+            ensure_account_access_fn=_ensure_account_access,
+            get_storage_fn=_get_storage,
+            require_kzt_integer_amount_fn=_require_kzt_integer_amount,
+            norm_ccy_fn=_norm_ccy,
+            to_dec_str_fn=_to_dec_str,
         )
         await db.commit()
-        return WalletTransactionOut(
-            account_id=int(out.get("account_id", account_id)),
-            currency=_norm_ccy(out.get("currency", "")),
-            balance=_to_dec_str(out.get("balance", "0"), out.get("currency", "")),
-        )
+        return WalletTransactionOut(**out)
     except AuthorizationError:
         raise
     except HTTPException:
@@ -696,47 +631,22 @@ async def transfer(
     current_user: User = Depends(get_current_verified_user),
     db: AsyncSession = Depends(get_async_db),
 ) -> WalletTransferOut:
-    if req.source_account_id == req.destination_account_id:
-        raise HTTPException(status_code=400, detail="source and destination must differ")
     try:
-        if is_platform_admin(current_user):
-            raise AuthorizationError("Insufficient permissions", "FORBIDDEN")
-        resolved_company_id = resolve_tenant_company_id(current_user, not_found_detail="Company not set")
-        src_acc = await _ensure_account_access(req.source_account_id, current_user, db)
-        dst_acc = await _ensure_account_access(req.destination_account_id, current_user, db)
-        src_company = getattr(
-            await _ensure_user_in_company(int(src_acc.get("user_id", 0)), current_user, db), "company_id", None
-        )
-        dst_company = getattr(
-            await _ensure_user_in_company(int(dst_acc.get("user_id", 0)), current_user, db), "company_id", None
-        )
-        if src_company != dst_company or src_company != resolved_company_id:
-            raise HTTPException(status_code=404, detail="account not found")
-
-        _require_kzt_integer_amount(req.amount, src_acc.get("currency", ""))
-
-        storage = await _get_storage(db)
-        out = await storage.transfer(
-            req.source_account_id,
-            req.destination_account_id,
-            req.amount,
-            getattr(req, "reference", None),
-            x_request_id,
-            company_id=resolved_company_id,
+        out = await transfer_flow(
+            req=req,
+            x_request_id=x_request_id,
+            current_user=current_user,
+            db=db,
+            ensure_account_access_fn=_ensure_account_access,
+            ensure_user_in_company_fn=_ensure_user_in_company,
+            get_storage_fn=_get_storage,
+            require_kzt_integer_amount_fn=_require_kzt_integer_amount,
+            norm_ccy_fn=_norm_ccy,
+            to_dec_str_fn=_to_dec_str,
         )
         await db.commit()
-        src = out.get("source", {}) if isinstance(out, dict) else {}
-        dst = out.get("destination", {}) if isinstance(out, dict) else {}
-        source = WalletTxBalance(
-            account_id=int(src.get("account_id", req.source_account_id)),
-            currency=_norm_ccy(src.get("currency", "")),
-            balance=_to_dec_str(src.get("balance", "0"), src.get("currency", "")),
-        )
-        destination = WalletTxBalance(
-            account_id=int(dst.get("account_id", req.destination_account_id)),
-            currency=_norm_ccy(dst.get("currency", "")),
-            balance=_to_dec_str(dst.get("balance", "0"), dst.get("currency", "")),
-        )
+        source = WalletTxBalance(**out["source"])
+        destination = WalletTxBalance(**out["destination"])
         return WalletTransferOut(source=source, destination=destination)
     except AuthorizationError:
         raise
@@ -770,37 +680,20 @@ async def ledger(
     db: AsyncSession = Depends(get_async_db),
 ) -> LedgerPage:
     try:
-        if is_platform_admin(current_user):
-            raise AuthorizationError("Insufficient permissions", "FORBIDDEN")
-        resolved_company_id = resolve_tenant_company_id(current_user, not_found_detail="Company not set")
-        await _ensure_account_access(account_id, current_user, db)
-        storage = await _get_storage(db)
-        page_obj = await storage.list_ledger(
-            account_id,
-            page,
-            size,
-            company_id=resolved_company_id,
+        page_obj = await ledger_flow(
+            account_id=account_id,
+            page=page,
+            size=size,
+            current_user=current_user,
+            db=db,
+            ensure_account_access_fn=_ensure_account_access,
+            get_storage_fn=_get_storage,
+            norm_ccy_fn=_norm_ccy,
+            to_dec_str_fn=_to_dec_str,
         )
-        items = page_obj.get("items", []) if isinstance(page_obj, dict) else []
-        meta = (
-            page_obj.get("meta", {"page": page, "size": size, "total": len(items)})
-            if isinstance(page_obj, dict)
-            else {"page": page, "size": size, "total": len(items)}
-        )
-        norm_items: list[LedgerItem] = []
-        for it in items:
-            norm_items.append(
-                LedgerItem(
-                    id=int(it.get("id")),
-                    account_id=int(it.get("account_id", account_id)),
-                    type=str(it.get("type", it.get("entry_type", ""))),
-                    amount=_to_dec_str(it.get("amount", "0"), it.get("currency", "")),
-                    currency=_norm_ccy(it.get("currency", "")),
-                    reference=it.get("reference"),
-                    created_at=str(it.get("created_at", "")),
-                )
-            )
-        return LedgerPage(items=norm_items, meta=PageMeta(**meta))
+        items = [LedgerItem(**it) for it in page_obj.get("items", [])]
+        meta = PageMeta(**page_obj.get("meta", {"page": page, "size": size, "total": len(items)}))
+        return LedgerPage(items=items, meta=meta)
     except AuthorizationError:
         raise
     except HTTPException:
@@ -829,31 +722,21 @@ async def adjust_balance(
     current_user: User = Depends(get_current_verified_user),
     db: AsyncSession = Depends(get_async_db),
 ):
-    storage = await _get_storage(db)
-    caps = _storage_caps(storage)
-    if not caps.get("has_adjust"):
-        raise HTTPException(
-            status_code=status.HTTP_501_NOT_IMPLEMENTED,
-            detail="adjust_balance not supported by storage",
-        )
     try:
-        if is_platform_admin(current_user):
-            raise AuthorizationError("Insufficient permissions", "FORBIDDEN")
-        resolved_company_id = resolve_tenant_company_id(current_user, not_found_detail="Company not set")
-        await _ensure_account_access(account_id, current_user, db)
-        out = await storage.adjust_balance(
-            account_id,
-            payload.new_balance,
-            payload.reference,
-            x_request_id,
-            company_id=resolved_company_id,
+        out = await adjust_balance_flow(
+            account_id=account_id,
+            payload=payload,
+            x_request_id=x_request_id,
+            current_user=current_user,
+            db=db,
+            ensure_account_access_fn=_ensure_account_access,
+            get_storage_fn=_get_storage,
+            storage_caps_fn=_storage_caps,
+            norm_ccy_fn=_norm_ccy,
+            to_dec_str_fn=_to_dec_str,
         )
         await db.commit()
-        return WalletTransactionOut(
-            account_id=int(out.get("account_id", account_id)),
-            currency=_norm_ccy(out.get("currency", "")),
-            balance=_to_dec_str(out.get("balance", "0"), out.get("currency", "")),
-        )
+        return WalletTransactionOut(**out)
     except AuthorizationError:
         raise
     except HTTPException:

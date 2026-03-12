@@ -2,35 +2,58 @@
 from __future__ import annotations
 
 import logging
-from datetime import UTC, datetime, timedelta
+from datetime import datetime
 from decimal import Decimal
 from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Path, Query, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel, ConfigDict, Field, computed_field, condecimal, constr, field_serializer
-from sqlalchemy import func, select
+from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 # --- проектные зависимости (пути проверьте по вашему проекту) ---
 from app.core.db import get_async_db
-from app.core.rbac import has_any_role, is_platform_admin, is_store_admin, is_store_manager
+from app.core.rbac import is_platform_admin
 from app.core.security import (
     decode_and_validate,
     is_token_revoked,
     resolve_tenant_company_id,
 )
 from app.core.subscriptions.plan_catalog import (
-    get_plan,
     get_plan_display_name,
     list_plans,
     normalize_plan_id,
 )
-from app.models.billing import BillingPayment, Subscription
-from app.models.company import Company
 from app.models.subscription_catalog import Plan
 from app.models.user import User
+from app.services.subscription_api_helpers import (
+    apply_archive_subscription,
+    apply_cancel_subscription,
+    apply_end_trial,
+    apply_renew_subscription,
+    apply_restore_subscription,
+    apply_resume_subscription,
+    apply_subscription_update,
+    build_subscription_for_create,
+    ensure_company,
+    ensure_company_access,
+    ensure_sub_access,
+    get_current_subscription_row,
+    get_subscription_scoped,
+    list_subscription_payments_rows,
+    list_subscriptions_rows,
+)
+from app.services.subscription_api_helpers import (
+    forbid_multiple_active as _helper_forbid_multiple_active,
+)
+from app.services.subscription_api_helpers import (
+    next_billing_from as _helper_next_billing_from,
+)
+from app.services.subscription_api_helpers import (
+    utc_now as _helper_utc_now,
+)
 
 # ----------------------------------------------------------------
 
@@ -54,7 +77,6 @@ AllowedStatus = Literal[
     "ended",
 ]
 Cycle = Literal["monthly", "yearly"]
-ACTIVE_STATES = {"active", "trialing", "past_due", "frozen", "trial", "overdue", "paused"}  # «текущие» подписки
 FINAL_STATES = {"canceled", "expired", "ended"}
 
 
@@ -120,106 +142,6 @@ class PlanCatalogOut(BaseModel):
     yearly_price: Decimal
 
 
-# ====== Утилиты доступа/времени ======
-def utc_now() -> datetime:
-    return datetime.now(UTC)
-
-
-def next_billing_from(now: datetime, cycle: str) -> datetime:
-    return now + (timedelta(days=365) if cycle == "yearly" else timedelta(days=31))
-
-
-def _ceil_to_midnight_utc(dt: datetime) -> datetime:
-    midnight = dt.replace(hour=0, minute=0, second=0, microsecond=0)
-    if dt > midnight:
-        midnight = midnight + timedelta(days=1)
-    return midnight
-
-
-async def ensure_company(db: AsyncSession, company_id: int) -> Company:
-    c = await db.get(Company, company_id)
-    if not c:
-        raise HTTPException(status_code=404, detail="Company not found")
-    return c
-
-
-def ensure_company_access(user, company: Company) -> None:
-    """
-    Правила доступа:
-    - роль платформенного супер-админа: полный доступ (если у вас есть такая роль)
-    - владелец/админ компании: доступ
-    - иначе: 403
-    Адаптируйте под ваш user/role/RBAC.
-    """
-    try:
-        user_company_id = getattr(user, "company_id", None)
-    except Exception:
-        user_company_id = None
-
-    if is_platform_admin(user):
-        return
-    if user_company_id == company.id and (
-        is_store_admin(user) or is_store_manager(user) or has_any_role(user, {"owner", "company_admin"})
-    ):
-        return
-    raise HTTPException(status_code=404, detail="Company not found")
-
-
-async def _get_subscription_scoped(
-    db: AsyncSession,
-    user: User,
-    subscription_id: int,
-    *,
-    allow_deleted: bool = False,
-) -> Subscription:
-    resolved_company_id = resolve_tenant_company_id(user, not_found_detail="Company not set")
-
-    stmt = select(Subscription).where(
-        Subscription.id == subscription_id,
-        Subscription.company_id == resolved_company_id,
-    )
-    sub = (await db.execute(stmt)).scalar_one_or_none()
-    if not sub:
-        raise HTTPException(status_code=404, detail="Subscription not found")
-    if sub.deleted_at and not allow_deleted:
-        raise HTTPException(status_code=404, detail="Subscription archived")
-    await ensure_sub_access(user, sub, db, allow_deleted=allow_deleted)
-    return sub
-
-
-async def forbid_multiple_active(db: AsyncSession, company_id: int, exclude_id: int | None = None) -> None:
-    """
-    Запретить более одной «текущей» подписки (active|trial|overdue|paused).
-
-    SQLAlchemy не умеет безопасно приводить expression к bool, поэтому строим
-    список условий и добавляем фильтр по id только если exclude_id передан.
-    """
-    clauses = [
-        Subscription.company_id == company_id,
-        Subscription.status.in_(list(ACTIVE_STATES)),
-        Subscription.deleted_at.is_(None),
-    ]
-    if exclude_id is not None:
-        clauses.append(Subscription.id != exclude_id)
-
-    count = (await db.scalar(select(func.count(Subscription.id)).where(*clauses))) or 0
-    if count:
-        raise HTTPException(
-            status_code=409,
-            detail="Active subscription already exists for this company",
-        )
-
-
-async def ensure_sub_access(user, sub: Subscription, db: AsyncSession, *, allow_deleted: bool = False) -> Company:
-    company = await db.get(Company, sub.company_id)
-    if not company:
-        raise HTTPException(status_code=404, detail="Company not found")
-    if sub.deleted_at and not allow_deleted:
-        raise HTTPException(status_code=404, detail="Subscription archived")
-    ensure_company_access(user, company)
-    return company
-
-
 async def _auth_user(
     credentials: HTTPAuthorizationCredentials | None = Depends(http_bearer),
     db: AsyncSession = Depends(get_async_db),
@@ -247,6 +169,41 @@ async def _auth_user(
     if not user:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Not authenticated")
     return user
+
+
+def utc_now() -> datetime:
+    return _helper_utc_now()
+
+
+def next_billing_from(now: datetime, cycle: str) -> datetime:
+    return _helper_next_billing_from(now, cycle)
+
+
+async def forbid_multiple_active(db: AsyncSession, company_id: int, exclude_id: int | None = None) -> None:
+    await _helper_forbid_multiple_active(db, company_id, exclude_id=exclude_id)
+
+
+def _ceil_to_midnight_utc(dt: datetime) -> datetime:
+    from app.services.subscription_api_helpers import ceil_to_midnight_utc
+
+    return ceil_to_midnight_utc(dt)
+
+
+async def _get_subscription_scoped(
+    db: AsyncSession,
+    user: User,
+    subscription_id: int,
+    *,
+    allow_deleted: bool = False,
+):
+    resolved_company_id = resolve_tenant_company_id(user, not_found_detail="Company not set")
+    return await get_subscription_scoped(
+        db,
+        user,
+        subscription_id,
+        resolved_company_id,
+        allow_deleted=allow_deleted,
+    )
 
 
 @router.get("/plans", response_model=list[PlanCatalogOut])
@@ -290,30 +247,15 @@ async def list_subscriptions(
     ensure_company_access(user, _company)
 
     include_deleted = include_deleted if is_platform_admin(user) else False
-
-    stmt = select(Subscription).where(Subscription.company_id == resolved_company_id)
-    if not include_deleted:
-        stmt = stmt.where(Subscription.deleted_at.is_(None))
-    if status_filter:
-        stmt = stmt.where(Subscription.status == status_filter)
-    if plan:
-        normalized_plan = normalize_plan_id(plan, default=plan)
-        stmt = stmt.where(Subscription.plan == normalized_plan)
-    if from_date:
-        stmt = stmt.where(Subscription.next_billing_date >= from_date)
-    if to_date:
-        stmt = stmt.where(Subscription.next_billing_date <= to_date)
-
-    rows = (
-        (
-            await db.execute(
-                stmt.order_by(Subscription.next_billing_date.is_(None), Subscription.next_billing_date.asc())
-            )
-        )
-        .scalars()
-        .all()
+    return await list_subscriptions_rows(
+        db,
+        company_id=resolved_company_id,
+        include_deleted=include_deleted,
+        status_filter=status_filter,
+        plan=plan,
+        from_date=from_date,
+        to_date=to_date,
     )
-    return rows
 
 
 @router.get("/current", response_model=SubscriptionOut | None)
@@ -324,21 +266,7 @@ async def get_current_subscription(
     resolved_company_id = resolve_tenant_company_id(user, not_found_detail="Company not set")
     _company = await ensure_company(db, resolved_company_id)
     ensure_company_access(user, _company)
-
-    rows = (
-        (
-            await db.execute(
-                select(Subscription)
-                .where(Subscription.company_id == resolved_company_id)
-                .where(Subscription.deleted_at.is_(None))
-                .where(Subscription.status.in_(list(ACTIVE_STATES)))
-                .order_by(Subscription.next_billing_date.is_(None), Subscription.next_billing_date.asc())
-            )
-        )
-        .scalars()
-        .all()
-    )
-    return rows[0] if rows else None
+    return await get_current_subscription_row(db, company_id=resolved_company_id)
 
 
 @router.get("/{subscription_id}", response_model=SubscriptionOut)
@@ -347,7 +275,8 @@ async def get_subscription(
     db: AsyncSession = Depends(get_async_db),
     user: User = Depends(_auth_user),
 ):
-    sub = await _get_subscription_scoped(db, user, subscription_id)
+    resolved_company_id = resolve_tenant_company_id(user, not_found_detail="Company not set")
+    sub = await get_subscription_scoped(db, user, subscription_id, resolved_company_id)
     return sub
 
 
@@ -362,54 +291,12 @@ async def create_subscription(
     ensure_company_access(user, _company)
 
     try:
-        # бизнес-правило: только одна «текущая» подписка
-        await forbid_multiple_active(db, resolved_company_id)
-
-        now = utc_now()
-        normalized_plan = normalize_plan_id(payload.plan, default=payload.plan)
-        plan = get_plan(normalized_plan, default=None)
-
-        is_pro = normalized_plan == "pro"
-        requested_trial_days = int(payload.trial_days or 0)
-
-        if requested_trial_days > 0 and not is_platform_admin(user) and not is_pro:
-            raise HTTPException(
-                status_code=422,
-                detail="trial_days is not allowed here; trial is granted via Kaspi merchant_uid",
-            )
-        if requested_trial_days < 0 or requested_trial_days > 15:
-            raise HTTPException(status_code=400, detail="trial_days_invalid")
-
-        effective_trial_days = requested_trial_days
-        if is_pro:
-            effective_trial_days = 15
-
-        if effective_trial_days:
-            period_end = now + timedelta(days=15)
-            grace_until = _ceil_to_midnight_utc(period_end + timedelta(days=3))
-            status_value = "trial"
-        else:
-            period_end = next_billing_from(now, payload.billing_cycle)
-            grace_until = None
-            status_value = "active"
-
-        sub = Subscription(
+        sub = await build_subscription_for_create(
+            db,
             company_id=resolved_company_id,
-            plan=normalized_plan,
-            status=status_value,
-            billing_cycle=payload.billing_cycle,
-            price=Decimal(plan.price) if plan else Decimal(payload.price),
-            currency=plan.currency if plan else payload.currency,
-            started_at=now,
-            period_start=now,
-            period_end=period_end,
-            expires_at=period_end if effective_trial_days else None,
-            next_billing_date=period_end,
-            billing_anchor_day=now.day,
-            grace_until=grace_until,
-            trial_used=bool(effective_trial_days),
+            payload=payload,
+            user=user,
         )
-        db.add(sub)
         await db.commit()
         await db.refresh(sub)
         return sub
@@ -433,18 +320,11 @@ async def update_subscription(
     db: AsyncSession = Depends(get_async_db),
     user: User = Depends(_auth_user),
 ):
-    sub = await _get_subscription_scoped(db, user, subscription_id)
+    resolved_company_id = resolve_tenant_company_id(user, not_found_detail="Company not set")
+    sub = await get_subscription_scoped(db, user, subscription_id, resolved_company_id)
 
     try:
-        if payload.plan is not None:
-            sub.plan = normalize_plan_id(payload.plan, default=payload.plan)
-        if payload.billing_cycle is not None:
-            sub.billing_cycle = payload.billing_cycle
-            sub.next_billing_date = next_billing_from(utc_now(), sub.billing_cycle)
-        if payload.price is not None:
-            sub.price = Decimal(payload.price)
-        if payload.currency is not None:
-            sub.currency = payload.currency
+        apply_subscription_update(sub, payload)
 
         await db.commit()
         await db.refresh(sub)
@@ -466,13 +346,13 @@ async def cancel_subscription(
     db: AsyncSession = Depends(get_async_db),
     user: User = Depends(_auth_user),
 ):
-    sub = await _get_subscription_scoped(db, user, subscription_id)
+    resolved_company_id = resolve_tenant_company_id(user, not_found_detail="Company not set")
+    sub = await get_subscription_scoped(db, user, subscription_id, resolved_company_id)
 
     if sub.status == "canceled":
         return sub  # идемпотентно
 
-    sub.status = "canceled"
-    sub.canceled_at = utc_now()
+    apply_cancel_subscription(sub)
     await db.commit()
     await db.refresh(sub)
     return sub
@@ -484,20 +364,10 @@ async def resume_subscription(
     db: AsyncSession = Depends(get_async_db),
     user: User = Depends(_auth_user),
 ):
-    sub = await _get_subscription_scoped(db, user, subscription_id)
+    resolved_company_id = resolve_tenant_company_id(user, not_found_detail="Company not set")
+    sub = await get_subscription_scoped(db, user, subscription_id, resolved_company_id)
 
-    # Бизнес-правило: нельзя «возобновлять», если подписка давно отменена и срок истёк (пример)
-    if sub.status == "canceled" and sub.expires_at and sub.expires_at < utc_now():
-        raise HTTPException(status_code=422, detail="Canceled and expired; create a new subscription")
-
-    now = utc_now()
-    sub.status = "active"
-    sub.next_billing_date = next_billing_from(now, sub.billing_cycle or "monthly")
-    if sub.started_at is None:
-        sub.started_at = now
-
-    # Доп. валидация: нет ли другой «текущей» подписки у компании
-    await forbid_multiple_active(db, sub.company_id, exclude_id=sub.id)
+    await apply_resume_subscription(db, sub)
 
     await db.commit()
     await db.refresh(sub)
@@ -513,11 +383,10 @@ async def renew_subscription(
     """
     Простое продление (вызвать после успешной оплаты).
     """
-    sub = await _get_subscription_scoped(db, user, subscription_id)
+    resolved_company_id = resolve_tenant_company_id(user, not_found_detail="Company not set")
+    sub = await get_subscription_scoped(db, user, subscription_id, resolved_company_id)
 
-    now = utc_now()
-    sub.status = "active"
-    sub.next_billing_date = next_billing_from(now, sub.billing_cycle or "monthly")
+    apply_renew_subscription(sub)
     await db.commit()
     await db.refresh(sub)
     return sub
@@ -532,15 +401,10 @@ async def end_trial(
     """
     Принудительно завершить trial и перевести в active (например, после ранней оплаты).
     """
-    sub = await _get_subscription_scoped(db, user, subscription_id)
+    resolved_company_id = resolve_tenant_company_id(user, not_found_detail="Company not set")
+    sub = await get_subscription_scoped(db, user, subscription_id, resolved_company_id)
 
-    if sub.status != "trial":
-        raise HTTPException(status_code=422, detail="Subscription is not in trial")
-
-    now = utc_now()
-    sub.status = "active"
-    sub.expires_at = None
-    sub.next_billing_date = next_billing_from(now, sub.billing_cycle or "monthly")
+    apply_end_trial(sub)
     await db.commit()
     await db.refresh(sub)
     return sub
@@ -555,13 +419,14 @@ async def archive_subscription(
     if not is_platform_admin(user):
         raise HTTPException(status_code=403, detail="Admin only")
 
-    sub = await _get_subscription_scoped(db, user, subscription_id, allow_deleted=True)
+    resolved_company_id = resolve_tenant_company_id(user, not_found_detail="Company not set")
+    sub = await get_subscription_scoped(db, user, subscription_id, resolved_company_id, allow_deleted=True)
 
     if sub.deleted_at:
         return sub
 
     # Soft-delete uses naive UTC timestamp to match existing column type
-    sub.deleted_at = utc_now().replace(tzinfo=None)
+    apply_archive_subscription(sub)
     await db.commit()
     await db.refresh(sub)
     return sub
@@ -576,9 +441,10 @@ async def restore_subscription(
     if not is_platform_admin(user):
         raise HTTPException(status_code=403, detail="Admin only")
 
-    sub = await _get_subscription_scoped(db, user, subscription_id, allow_deleted=True)
+    resolved_company_id = resolve_tenant_company_id(user, not_found_detail="Company not set")
+    sub = await get_subscription_scoped(db, user, subscription_id, resolved_company_id, allow_deleted=True)
 
-    sub.deleted_at = None
+    apply_restore_subscription(sub)
     await db.commit()
     await db.refresh(sub)
     return sub
@@ -594,17 +460,7 @@ async def list_subscription_payments(
     История платежей, связанных с подпиской (упрощённо: по company_id и plan).
     В проде лучше иметь Subscription->Payment связь явно.
     """
-    sub = await _get_subscription_scoped(db, user, subscription_id)
+    resolved_company_id = resolve_tenant_company_id(user, not_found_detail="Company not set")
+    sub = await get_subscription_scoped(db, user, subscription_id, resolved_company_id)
     company = await ensure_sub_access(user, sub, db)
-
-    stmt = (
-        select(BillingPayment)
-        .where(
-            BillingPayment.company_id == company.id,
-            BillingPayment.subscription_id == subscription_id,
-        )
-        .order_by(BillingPayment.created_at.desc())
-        .limit(100)
-    )
-    rows = (await db.execute(stmt)).scalars().all()
-    return rows
+    return await list_subscription_payments_rows(db, company_id=company.id, subscription_id=subscription_id)

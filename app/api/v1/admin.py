@@ -22,7 +22,6 @@ from app.core.exceptions import (
     AuthorizationError,
     ConflictError,
     NotFoundError,
-    SmartSellValidationError,
     _ensure_request_id,
 )
 from app.core.logging import audit_logger
@@ -30,15 +29,7 @@ from app.core.redis_client import get_redis
 from app.core.subscriptions.catalog import get_plan_by_code
 from app.core.subscriptions.plan_catalog import get_plan as get_plan_legacy
 from app.core.subscriptions.plan_catalog import get_plan_display_name, normalize_plan_id
-from app.core.support_workflow import build_support_triage_preview
-from app.core.tenant_lifecycle import (
-    TENANT_STATE_DELETE_REQUESTED,
-    TENANT_STATE_PENDING_EXPORT,
-    can_archive_tenant,
-    can_request_delete,
-    infer_current_tenant_state,
-    requires_export_before_delete,
-)
+from app.core.tenant_lifecycle import infer_current_tenant_state
 from app.models.billing import Subscription, WalletBalance, WalletTransaction
 from app.models.campaign import (
     Campaign,
@@ -59,6 +50,11 @@ from app.schemas.support_triage import SupportTriagePreviewIn, SupportTriagePrev
 from app.schemas.tenant_archive_delete import TenantArchiveDeletePreviewOut
 from app.schemas.tenant_diagnostics import TenantDiagnosticsSummaryOut
 from app.schemas.tenant_export import TenantExportManifestOut
+from app.services.admin_tenant_preview_helpers import (
+    build_archive_delete_preview_payload,
+    build_support_triage_preview_response,
+    load_company_or_404,
+)
 from app.services.campaign_cleanup import campaign_cleanup_run
 from app.services.campaign_pipeline import campaign_pipeline_tick
 from app.services.campaign_runner import (
@@ -286,19 +282,13 @@ def _campaign_queue_payload(campaign: Campaign) -> dict:
     }
 
 
-@router.post(
-    "/tasks/campaigns/run",
-    summary="Run campaign processing task (platform admin)",
-)
-async def run_campaigns_task(
+def _resolve_campaign_run_params(
+    *,
     request: Request,
-    payload: CampaignRunIn | None = Body(default=None),
-    limit: int = Query(100, ge=1),
-    dry_run: bool = Query(False),
-    admin: User = Depends(require_platform_admin),
-    db: AsyncSession = Depends(get_async_db),
-) -> dict:
-    _ = admin
+    payload: CampaignRunIn | None,
+    limit: int,
+    dry_run: bool,
+) -> tuple[int, int | None, bool]:
     resolved_limit = payload.limit if payload and payload.limit is not None else limit
     resolved_company_id = None
     if payload and payload.companyId is not None:
@@ -311,6 +301,23 @@ async def run_campaigns_task(
             except ValueError:
                 resolved_company_id = None
     resolved_dry_run = payload.dry_run if payload else dry_run
+    return resolved_limit, resolved_company_id, resolved_dry_run
+
+
+async def _run_campaigns_task_impl(
+    *,
+    request: Request,
+    db: AsyncSession,
+    payload: CampaignRunIn | None,
+    limit: int,
+    dry_run: bool,
+) -> dict[str, Any]:
+    resolved_limit, resolved_company_id, resolved_dry_run = _resolve_campaign_run_params(
+        request=request,
+        payload=payload,
+        limit=limit,
+        dry_run=dry_run,
+    )
 
     if resolved_company_id is None:
         raise NotFoundError("company_id_required", code="company_id_required", http_status=400)
@@ -333,6 +340,28 @@ async def run_campaigns_task(
         "processed": len(processed),
         "campaign_ids": enqueue_summary.get("campaign_ids", []),
     }
+
+
+@router.post(
+    "/tasks/campaigns/run",
+    summary="Run campaign processing task (platform admin)",
+)
+async def run_campaigns_task(
+    request: Request,
+    payload: CampaignRunIn | None = Body(default=None),
+    limit: int = Query(100, ge=1),
+    dry_run: bool = Query(False),
+    admin: User = Depends(require_platform_admin),
+    db: AsyncSession = Depends(get_async_db),
+) -> dict:
+    _ = admin
+    return await _run_campaigns_task_impl(
+        request=request,
+        db=db,
+        payload=payload,
+        limit=limit,
+        dry_run=dry_run,
+    )
 
 
 @router.post(
@@ -1226,6 +1255,7 @@ async def admin_tenant_export_manifest(
     db: AsyncSession = Depends(get_async_db),
 ) -> TenantExportManifestOut:
     exported_by = str(getattr(admin, "phone", None) or getattr(admin, "id", "platform_admin"))
+    _ = await load_company_or_404(db, company_id)
     return await build_tenant_export_manifest(
         db,
         company_id=company_id,
@@ -1245,59 +1275,12 @@ async def admin_tenant_archive_delete_preview(
     db: AsyncSession = Depends(get_async_db),
 ) -> TenantArchiveDeletePreviewOut:
     _ = admin
-    company = await db.get(Company, company_id)
-    if not company:
-        raise NotFoundError("company_not_found", code="company_not_found", http_status=404)
-
+    company = await load_company_or_404(db, company_id)
     current_state = infer_current_tenant_state(company)
-
-    if action == "archive":
-        allowed = can_archive_tenant(current_state=current_state)
-        next_state = "archived" if allowed else current_state
-        required = ["platform_admin_reason", "evidence_trail"]
-        warnings: list[str] = []
-        if current_state == "archived":
-            warnings.append("tenant_already_archived")
-        return TenantArchiveDeletePreviewOut(
-            company_id=company_id,
-            current_state=current_state,
-            requested_action=action,
-            allowed=allowed,
-            required_before_action=required,
-            warnings=warnings,
-            next_state=next_state,
-            destructive_delete_supported=False,
-        )
-
-    export_required = requires_export_before_delete()
-    has_export_manifest_reference = False
-    allowed = can_request_delete(
-        current_state=current_state,
-        has_export_manifest_reference=has_export_manifest_reference,
-    )
-    warnings = ["delete_is_policy_only_no_destructive_delete"]
-    required = ["platform_admin_reason", "evidence_trail"]
-    if export_required:
-        required.insert(0, "export_manifest_reference")
-        if not has_export_manifest_reference:
-            warnings.append("export_before_delete_required")
-
-    if export_required and not has_export_manifest_reference:
-        next_state = TENANT_STATE_PENDING_EXPORT
-    elif allowed:
-        next_state = TENANT_STATE_DELETE_REQUESTED
-    else:
-        next_state = current_state
-
-    return TenantArchiveDeletePreviewOut(
+    return build_archive_delete_preview_payload(
         company_id=company_id,
+        action=action,
         current_state=current_state,
-        requested_action=action,
-        allowed=allowed,
-        required_before_action=required,
-        warnings=warnings,
-        next_state=next_state,
-        destructive_delete_supported=False,
     )
 
 
@@ -1313,28 +1296,8 @@ async def admin_support_triage_preview(
     db: AsyncSession = Depends(get_async_db),
 ) -> SupportTriagePreviewOut:
     _ = admin
-    company = await db.get(Company, company_id)
-    if not company:
-        raise NotFoundError("company_not_found", code="company_not_found", http_status=404)
-
-    try:
-        preview = build_support_triage_preview(
-            company_id=company_id,
-            severity=payload.severity,
-            area=payload.area,
-            issue_summary=payload.issue_summary,
-            latest_request_id=payload.latest_request_id,
-        )
-    except ValueError as exc:
-        code = str(exc)
-        raise SmartSellValidationError("Invalid support triage payload", code=code, http_status=422) from exc
-
-    return SupportTriagePreviewOut(
-        **preview,
-        diagnostics_endpoint=f"/api/v1/admin/tenants/{company_id}/diagnostics",
-        export_endpoint=f"/api/v1/admin/tenants/{company_id}/export",
-        archive_delete_preview_endpoint=f"/api/v1/admin/tenants/{company_id}/archive-delete-preview?action=archive",
-    )
+    _ = await load_company_or_404(db, company_id)
+    return build_support_triage_preview_response(company_id=company_id, payload=payload)
 
 
 @router.post(
