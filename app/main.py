@@ -1575,9 +1575,7 @@ def _create_app() -> FastAPI:
         require_smtp = env_truthy(os.getenv("READINESS_REQUIRE_SMTP", "0"))
         require_celery = env_truthy(os.getenv("READINESS_REQUIRE_CELERY", "0"))
         require_integrations = env_truthy(os.getenv("READINESS_REQUIRE_INTEGRATIONS", "0"))
-        require_providers = env_truthy(
-            os.getenv("READINESS_REQUIRE_PROVIDERS", "1" if settings.is_production else "0")
-        )
+        require_providers = env_truthy(os.getenv("READINESS_REQUIRE_PROVIDERS", "1" if settings.is_production else "0"))
 
         require_secret = env_truthy(os.getenv("READINESS_REQUIRE_SECRET", "0"))
         secret_present = bool(os.getenv("SESSION_SECRET_KEY") or os.getenv("SECRET_KEY") or os.getenv("APP_SECRET"))

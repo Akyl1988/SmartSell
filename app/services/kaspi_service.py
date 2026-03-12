@@ -1844,4 +1844,3 @@ class KaspiService(KaspiServiceHttpMixin, KaspiServiceFeedMixin):
             return Decimal(str(value or 0))
         except Exception:
             return Decimal("0")
-
