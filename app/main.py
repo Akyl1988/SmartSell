@@ -10,7 +10,6 @@ import smtplib
 import socket
 import sys
 import time
-import uuid
 from collections import deque
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager, contextmanager
@@ -35,8 +34,18 @@ from app.main_helpers import (
     has_path_prefix,
     is_postgres_url,
     parse_trusted_hosts,
+    run_lifespan_shutdown,
+    run_lifespan_startup,
 )
-from app.main_middleware_helpers import apply_security_and_lifecycle_headers
+from app.main_middleware_helpers import (
+    register_content_length_guard,
+    register_external_diag_timing_middleware,
+    register_profiling_middleware,
+    register_request_completion_logging_middleware,
+    register_request_id_middleware,
+    register_response_time_middleware,
+    register_security_headers_middleware,
+)
 from app.main_payload_helpers import (
     build_dbinfo_payload,
     build_debug_headers_payload,
@@ -912,240 +921,26 @@ def get_feature_flag(key: str, default: bool | None = None) -> bool | None:
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:  # type: ignore[override]
     # ---- Startup
-    _configure_base_logging()
-    logger.info("Application startup… env=%s version=%s", settings.ENVIRONMENT, settings.VERSION)
-    try:
-        validate_prod_secrets(settings)
-    except Exception as e:
-        logger.error("startup secret validation failed: %s", e)
-        raise
-    disable_hooks = should_disable_startup_hooks()
-    if disable_hooks:
-        logger.info("Startup hooks disabled (tests/CI flag)")
-    try:
-        startup_require_raw = os.getenv("STARTUP_REQUIRE_PROVIDERS")
-        require_providers = env_truthy(startup_require_raw, settings.is_production)
-        should_validate_providers = (
-            settings.is_production and require_providers and ((not disable_hooks) or (startup_require_raw is not None))
-        )
-        if should_validate_providers:
-            providers = await _check_provider_registry()
-            otp = providers.get("otp") if isinstance(providers, dict) else None
-            if otp and not otp.get("ok", False):
-                raise RuntimeError("otp_provider_not_configured")
-            messaging = providers.get("messaging") if isinstance(providers, dict) else None
-            if messaging and not messaging.get("ok", False):
-                raise RuntimeError("email_provider_not_configured")
-            payments = providers.get("payments") if isinstance(providers, dict) else None
-            if payments and not payments.get("ok", False):
-                raise RuntimeError("payment_provider_not_configured")
-    except Exception as e:
-        logger.error("startup provider validation failed: %s", e)
-        raise
-    try:
-        run_startup_side_effects(settings)
-    except Exception as e:
-        logger.warning("startup side effects failed: %s", e)
-    try:
-        env_val = str(getattr(settings, "ENVIRONMENT", "") or "").lower()
-        if (
-            not core_config._under_pytest()
-            and env_val != "local"
-            and getattr(settings, "DB_URL_SOURCE", "") == "DEFAULT"
-        ):
-            raise RuntimeError("DATABASE_URL is required for non-local environments")
-    except Exception as e:
-        if isinstance(e, RuntimeError):
-            if isinstance(providers, dict):
-                otp = providers.get("otp")
-                messaging = providers.get("messaging")
-                if otp and not otp.get("ok", False):
-                    raise RuntimeError("otp_provider_not_configured")
-                if messaging and not messaging.get("ok", False):
-                    raise RuntimeError("email_provider_not_configured")
-    _import_models_once()
-    try:
-        from app.dev.seed import ensure_dev_seed
-
-        await ensure_dev_seed()
-    except Exception as e:
-        logger.warning("dev seed skipped: %s", e)
-    try:
-        from app.api.routes import get_mount_diagnostics as _get_mount_diagnostics
-
-        diag = _get_mount_diagnostics()
-        logger.info(
-            "router_mount_diagnostics",
-            extra={
-                "event_name": "router_mount_diagnostics",
-                "counts": diag.get("counts", {}),
-                "module_timings_ms": diag.get("module_timings_ms", {}),
-            },
-        )
-    except Exception:
-        pass
-
-    try:
-        settings.init_opentelemetry()
-    except Exception as e:
-        logger.info("settings.init_opentelemetry failed or disabled: %s", e)
-
-    _bootstrap_feature_flags_from_env()
-
-    try:
-        from app.api.v1 import campaigns as _  # noqa: F401
-
-        logger.info("Campaigns module detected and ready")
-    except Exception as e:
-        logger.info("Campaigns module not loaded: %s", e)
-
-    # автозапуск планировщика (по флагу и роли)
-    try:
-        role = getattr(settings, "PROCESS_ROLE", os.getenv("PROCESS_ROLE", "web")) or "web"
-        enable_scheduler = env_truthy(os.getenv("ENABLE_SCHEDULER", "0")) or getattr(
-            settings, "ENABLE_SCHEDULER", False
-        )
-        background_tasks_enabled = env_truthy(os.getenv("SMARTSELL_BACKGROUND_TASKS", "1"), True)
-        allowed_roles = {"web", "worker", "scheduler"}
-        if role not in allowed_roles:
-            logger.info("Scheduler start skipped for role", extra={"role": role, "enable_scheduler": enable_scheduler})
-        elif not background_tasks_enabled:
-            logger.info(
-                "Scheduler start skipped: SMARTSELL_BACKGROUND_TASKS=0",
-                extra={"role": role, "enable_scheduler": enable_scheduler},
-            )
-        elif disable_hooks:
-            logger.info("Scheduler start skipped: startup hooks disabled")
-        elif not enable_scheduler:
-            logger.info("Scheduler start skipped: ENABLE_SCHEDULER=False")
-        elif _GLOBAL.get("scheduler_started"):
-            logger.info("Scheduler already started")
-        else:
-            try:
-                from app.worker import scheduler_worker  # type: ignore
-            except ImportError as e:
-                logger.warning("Scheduler start skipped: APScheduler not installed (%s)", e)
-            else:
-                scheduler_worker.start()
-                _GLOBAL["scheduler_started"] = True
-                logger.info("APScheduler worker started (ENABLE_SCHEDULER=True)")
-    except Exception as e:
-        logger.error("Scheduler start failed: %s", e)
-
-    # Kaspi orders sync runner background task (guarded by role, startup hooks check)
-    kaspi_sync_task = None
-    try:
-        role = getattr(settings, "PROCESS_ROLE", os.getenv("PROCESS_ROLE", "web")) or "web"
-        enable_kaspi_sync = env_truthy(os.getenv("ENABLE_KASPI_SYNC_RUNNER", "0"))
-        if role not in ("web", "runner"):
-            logger.info(
-                "Kaspi sync runner start skipped for role", extra={"role": role, "enable_kaspi_sync": enable_kaspi_sync}
-            )
-        elif disable_hooks:
-            logger.info("Kaspi sync runner start skipped: startup hooks disabled")
-        elif not enable_kaspi_sync:
-            logger.info("Kaspi sync runner start skipped: ENABLE_KASPI_SYNC_RUNNER=False")
-        elif _GLOBAL.get("kaspi_sync_started"):
-            logger.info("Kaspi sync runner already started")
-        else:
-            from app.services.kaspi_orders_sync_runner import run_kaspi_orders_sync_once
-
-            async def _kaspi_sync_loop():
-                """Periodic Kaspi sync loop with configurable interval."""
-                interval_seconds = int(os.getenv("KASPI_SYNC_INTERVAL_SECONDS", "300"))  # default: 5 min
-                logger.info("kaspi_sync_runner: background task started", interval_seconds=interval_seconds)
-                while True:
-                    try:
-                        await run_kaspi_orders_sync_once()
-                    except Exception as exc:
-                        logger.error("kaspi_sync_runner: unexpected error in loop", error=str(exc), exc_info=True)
-                    await asyncio.sleep(interval_seconds)
-
-            kaspi_sync_task = asyncio.create_task(_kaspi_sync_loop())
-            _GLOBAL["kaspi_sync_task"] = kaspi_sync_task
-            _GLOBAL["kaspi_sync_started"] = True
-            logger.info("Kaspi orders sync runner started (ENABLE_KASPI_SYNC_RUNNER=1)")
-    except Exception as e:
-        logger.error("Kaspi sync runner start failed: %s", e)
+    kaspi_sync_task = await run_lifespan_startup(
+        logger=logger,
+        settings=settings,
+        core_config=core_config,
+        validate_prod_secrets_fn=validate_prod_secrets,
+        should_disable_startup_hooks_fn=should_disable_startup_hooks,
+        check_provider_registry_fn=_check_provider_registry,
+        run_startup_side_effects_fn=run_startup_side_effects,
+        import_models_once_fn=_import_models_once,
+        bootstrap_feature_flags_from_env_fn=_bootstrap_feature_flags_from_env,
+        configure_base_logging_fn=_configure_base_logging,
+        global_state=_GLOBAL,
+    )
 
     # передаём управление приложению
     try:
         yield
     finally:
         # ---- Shutdown (graceful)
-        # Cancel Kaspi sync task if running
-        if kaspi_sync_task and not kaspi_sync_task.done():
-            kaspi_sync_task.cancel()
-            try:
-                await kaspi_sync_task
-            except asyncio.CancelledError:
-                pass
-            logger.info("Kaspi sync runner stopped")
-
-        try:
-            client = _GLOBAL.get("httpx")
-            if client is not None:
-                try:
-                    await client.aclose()
-                except Exception:
-                    pass
-                _GLOBAL["httpx"] = None
-        except Exception:
-            pass
-
-        try:
-            redis_client = _GLOBAL.get("redis")
-            if redis_client is not None:
-                try:
-                    # redis>=5 рекомендует aclose(); оставляем fallback для совместимости
-                    if hasattr(redis_client, "aclose"):
-                        await redis_client.aclose()
-                    else:
-                        await redis_client.close()
-                except Exception:
-                    pass
-                _GLOBAL["redis"] = None
-        except Exception:
-            pass
-
-        try:
-            engine = _GLOBAL.get("db_engine")
-            if engine is not None:
-                try:
-                    engine.dispose()
-                except Exception:
-                    pass
-                _GLOBAL["db_engine"] = None
-        except Exception:
-            pass
-
-        try:
-            _GLOBAL["celery"] = None
-        except Exception:
-            pass
-
-        try:
-            from app.core.provider_registry import ProviderRegistry
-
-            await ProviderRegistry.shutdown()
-        except Exception:
-            pass
-
-        # Остановка планировщика
-        try:
-            if _GLOBAL.get("scheduler_started"):
-                try:
-                    from app.worker import scheduler_worker  # type: ignore
-                except ImportError:
-                    logger.warning("Scheduler stop skipped: APScheduler not installed")
-                else:
-                    scheduler_worker.stop()
-                    _GLOBAL["scheduler_started"] = False
-                    logger.info("APScheduler worker stopped")
-        except Exception as e:
-            logger.error("Scheduler stop failed: %s", e)
-
-        logger.info("Application shutdown complete.")
+        await run_lifespan_shutdown(logger=logger, global_state=_GLOBAL, kaspi_sync_task=kaspi_sync_task)
 
 
 # ======================================================================================
@@ -1227,49 +1022,10 @@ def _create_app() -> FastAPI:
     _max_body = env_int("MAX_REQUEST_SIZE_BYTES", 0)
 
     if _test_env:
-
-        @app.middleware("http")
-        async def response_time_middleware(  # type: ignore[return-value]
-            request: Request, call_next: Callable[[Request], Awaitable[Response]]
-        ) -> Response:
-            start = time.perf_counter()
-            response = await call_next(request)
-            try:
-                ms = int((time.perf_counter() - start) * 1000)
-                response.headers.setdefault("X-Response-Time-ms", str(ms))
-            except Exception:
-                pass
-            return response
+        register_response_time_middleware(app)
 
     if not _test_env:
-
-        @app.middleware("http")
-        async def content_length_guard(  # type: ignore[return-value]
-            request: Request, call_next: Callable[[Request], Awaitable[Response]]
-        ) -> Response:
-            try:
-                if _max_body > 0:
-                    cl = request.headers.get("content-length")
-                    if cl and cl.isdigit() and int(cl) > _max_body:
-                        rid = getattr(request.state, "request_id", None) or request.headers.get("X-Request-ID")
-                        if not rid:
-                            rid = str(uuid.uuid4())
-                            try:
-                                request.state.request_id = rid
-                            except Exception:
-                                pass
-                        return JSONResponse(
-                            status_code=413,
-                            content={
-                                "detail": "request_entity_too_large",
-                                "code": "REQUEST_ENTITY_TOO_LARGE",
-                                "request_id": rid,
-                            },
-                            headers={"X-Request-ID": rid},
-                        )
-            except Exception:
-                pass
-            return await call_next(request)
+        register_content_length_guard(app, max_body=_max_body)
 
     trusted = parse_trusted_hosts()
     if trusted and TrustedHostMiddleware:
@@ -1292,20 +1048,12 @@ def _create_app() -> FastAPI:
         "font-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline' 'unsafe-eval';",
     )
 
-    @app.middleware("http")
-    async def security_headers_mw(  # type: ignore[return-value]
-        request: Request, call_next: Callable[[Request], Awaitable[Response]]
-    ) -> Response:
-        response = await call_next(request)
-        apply_security_and_lifecycle_headers(
-            response,
-            request_method=request.method,
-            request_path=request.url.path,
-            csp_enabled=csp_enabled,
-            csp_value=csp_value,
-            force_https=env_truthy(os.getenv("FORCE_HTTPS", "0")),
-        )
-        return response
+    register_security_headers_middleware(
+        app,
+        csp_enabled=csp_enabled,
+        csp_value=csp_value,
+        env_truthy_fn=env_truthy,
+    )
 
     if STARLETTE_EXPORTER_AVAILABLE:
         app.add_middleware(PrometheusMiddleware)
@@ -1327,95 +1075,20 @@ def _create_app() -> FastAPI:
             logger.info("OpenTelemetry instrumentation skipped: %s", e)
 
     if not _test_env:
-
-        @app.middleware("http")
-        async def request_id_middleware(  # type: ignore[return-value]
-            request: Request, call_next: Callable[[Request], Awaitable[Response]]
-        ) -> Response:
-            req_id = request.headers.get("X-Request-ID") or str(uuid.uuid4())
-            try:
-                request.state.request_id = req_id
-            except Exception:
-                pass
-            token = _request_id_var.set(req_id)
-            try:
-                response = await call_next(request)
-                response.headers["X-Request-ID"] = req_id
-                # полезные заголовки на каждом ответе
-                response.headers.setdefault("X-Process-Id", str(os.getpid()))
-                response.headers.setdefault("X-Hostname", _hostname)
-                return response
-            finally:
-                try:
-                    _request_id_var.reset(token)
-                except Exception:
-                    pass
+        register_request_id_middleware(app, request_id_var=_request_id_var, hostname=_hostname)
 
     if not _test_env:
-
-        @app.middleware("http")
-        async def profiling_middleware(  # type: ignore[return-value]
-            request: Request, call_next: Callable[[Request], Awaitable[Response]]
-        ) -> Response:
-            return await _profiled_call(request, call_next)
+        register_profiling_middleware(app, profiled_call=_profiled_call)
 
     if not _test_env:
-
-        @app.middleware("http")
-        async def request_completion_logging_middleware(  # type: ignore[return-value]
-            request: Request, call_next: Callable[[Request], Awaitable[Response]]
-        ) -> Response:
-            started_at = time.perf_counter()
-            status_code = 500
-            try:
-                response = await call_next(request)
-                status_code = int(getattr(response, "status_code", 200) or 200)
-                return response
-            except Exception:
-                raise
-            finally:
-                duration_ms = int((time.perf_counter() - started_at) * 1000)
-                request_id = (
-                    getattr(request.state, "request_id", None)
-                    or request.headers.get("X-Request-ID")
-                    or request.headers.get("X-Correlation-ID")
-                )
-                company_id = (
-                    getattr(request.state, "company_id", None)
-                    or getattr(request.state, "tenant_id", None)
-                    or request.headers.get("X-Company-ID")
-                )
-                request_observability_logger.info(
-                    "request_completed",
-                    extra={
-                        "request_id": request_id,
-                        "company_id": company_id,
-                        "method": request.method,
-                        "path": request.url.path,
-                        "status_code": status_code,
-                        "duration_ms": duration_ms,
-                    },
-                )
+        register_request_completion_logging_middleware(
+            app,
+            request_observability_logger=request_observability_logger,
+        )
 
     if settings.is_development:
         if not _test_env:
-
-            @app.middleware("http")
-            async def external_diag_timing_mw(  # type: ignore[return-value]
-                request: Request, call_next: Callable[[Request], Awaitable[Response]]
-            ) -> Response:
-                if request.url.path != "/api/v1/_debug/external":
-                    return await call_next(request)
-                t0 = time.perf_counter()
-                t_pre_end = time.perf_counter()
-                response = await call_next(request)
-                t_call_end = time.perf_counter()
-                t_post_end = time.perf_counter()
-                response.headers["x-mw-pre-ms"] = str(int((t_pre_end - t0) * 1000))
-                response.headers["x-mw-callnext-ms"] = str(int((t_call_end - t_pre_end) * 1000))
-                response.headers["x-mw-post-ms"] = str(int((t_post_end - t_call_end) * 1000))
-                response.headers["x-total-ms"] = str(int((t_post_end - t0) * 1000))
-                return response
+            register_external_diag_timing_middleware(app)
 
     # ----------------------------------------------------------------------------------
     # Base info helpers & endpoints
