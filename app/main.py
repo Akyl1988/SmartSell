@@ -18,7 +18,7 @@ from typing import Any
 
 from fastapi import APIRouter, Body, FastAPI, HTTPException, Path, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse, PlainTextResponse, RedirectResponse
+from fastapi.responses import JSONResponse, RedirectResponse
 from starlette.middleware.gzip import GZipMiddleware
 from starlette.middleware.httpsredirect import HTTPSRedirectMiddleware
 from starlette.middleware.trustedhost import TrustedHostMiddleware
@@ -51,6 +51,15 @@ from app.main_payload_helpers import (
     build_debug_headers_payload,
     build_env_info_payload,
     build_info_payload,
+)
+from app.main_registration_helpers import (
+    mount_campaigns_router_with_fallback,
+    mount_primary_routers,
+    mount_secondary_routers_and_static,
+    register_base_info_routes,
+    register_feature_flag_routes,
+    register_health_readiness_and_diagnostics_routes,
+    register_metrics_route,
 )
 
 try:
@@ -1096,64 +1105,65 @@ def _create_app() -> FastAPI:
     def _build_info() -> dict[str, Any]:
         return build_info_payload(settings)
 
-    @app.get("/")
     async def root() -> dict[str, Any]:
         return {"message": "SmartSell API is running", **_build_info()}
 
-    @app.get("/ping", response_class=PlainTextResponse, response_model=None)
     async def ping() -> str:
         return "pong"
 
-    @app.head("/ping", response_class=PlainTextResponse, response_model=None)
     async def ping_head() -> str:
         return ""
 
-    @app.get("/version")
     async def version() -> dict[str, Any]:
         return _build_info()
 
-    @app.get("/__version")
     async def version_alias() -> dict[str, Any]:
         return _build_info()
 
-    @app.get("/build")
     async def build() -> dict[str, Any]:
         return _build_info()
 
     # 👇 небольшие удобные алиасы/диагностика (безопасно)
-    @app.get("/uptime")
     async def uptime() -> dict[str, int]:
         return {"uptime_seconds": _uptime_seconds()}
 
-    @app.get("/info")
     async def info() -> dict[str, Any]:
         return {"uptime_seconds": _uptime_seconds(), **_build_info()}
 
-    @app.get("/robots.txt", response_class=PlainTextResponse, response_model=None)
     async def robots() -> str:
         return "User-agent: *\nDisallow:\n"
 
-    @app.get("/favicon.ico", response_class=PlainTextResponse, response_model=None)
     async def favicon() -> str:
         return ""
 
     # удобные алиасы
-    @app.get("/-/health")
     async def dash_health() -> RedirectResponse:
         return RedirectResponse(url="/health", status_code=307)
 
-    @app.get("/-/ready")
     async def dash_ready() -> RedirectResponse:
         return RedirectResponse(url="/ready", status_code=307)
 
-    @app.get("/-/live")
     async def dash_live() -> RedirectResponse:
         return RedirectResponse(url="/live", status_code=307)
 
+    register_base_info_routes(
+        app,
+        root=root,
+        ping=ping,
+        ping_head=ping_head,
+        version=version,
+        version_alias=version_alias,
+        build=build,
+        uptime=uptime,
+        info=info,
+        robots=robots,
+        favicon=favicon,
+        dash_health=dash_health,
+        dash_ready=dash_ready,
+        dash_live=dash_live,
+    )
+
     # основной health
-    @app.get("/api/v1/health")
-    @app.get("/api/health", include_in_schema=False)
-    @app.get("/health")
     async def health() -> dict[str, Any]:
         # In testing we want a deterministic healthy response for sync TestClient
         testing_mode = bool(getattr(settings, "TESTING", False) or os.getenv("PYTEST_CURRENT_TEST"))
@@ -1228,7 +1238,6 @@ def _create_app() -> FastAPI:
         }
 
     # расширенный статус (объединяет сведения, p99, фичи) — удобно для мониторинга
-    @app.get("/status")
     async def status() -> dict[str, Any]:
         h = await health()
         return {
@@ -1239,7 +1248,6 @@ def _create_app() -> FastAPI:
             "health": h,
         }
 
-    @app.get("/ready", response_model=None)
     async def readiness() -> JSONResponse:
         strict = env_truthy(os.getenv("READINESS_STRICT", "1" if settings.is_production else "0"))
         if (os.getenv("PYTEST_CURRENT_TEST") or os.getenv("TESTING")) and not strict:
@@ -1348,30 +1356,20 @@ def _create_app() -> FastAPI:
         status_code = 200 if (ok or not strict) else 503
         return JSONResponse(status_code=status_code, content=payload)
 
-    @app.get("/live", response_class=PlainTextResponse, response_model=None)
     async def liveness() -> str:
         return "OK"
 
-    @app.head("/live", response_class=PlainTextResponse, response_model=None)
     async def liveness_head() -> str:
         return ""
 
     # стандартные алиасы
-    @app.get("/healthz")
     async def healthz_alias() -> RedirectResponse:
         return RedirectResponse(url="/health", status_code=307)
 
-    @app.get("/__health")
     async def underscored_health() -> RedirectResponse:
         return RedirectResponse(url="/health", status_code=307)
 
     # Отдача OpenAPI в YAML для удобной интеграции с CI/CD / Kong / Tyk / etc
-    @app.get(
-        "/openapi.yaml",
-        include_in_schema=False,
-        response_class=PlainTextResponse,
-        response_model=None,
-    )
     async def openapi_yaml() -> str:
         try:
             import yaml  # type: ignore
@@ -1385,7 +1383,6 @@ def _create_app() -> FastAPI:
     # ----------------------------------------------------------------------------------
     # DB info (safe)
     # ----------------------------------------------------------------------------------
-    @app.get("/dbinfo", response_model=None)
     def dbinfo() -> dict[str, Any]:
         """
         Безопасная сводка по БД без раскрытия паролей.
@@ -1395,7 +1392,6 @@ def _create_app() -> FastAPI:
     # ----------------------------------------------------------------------------------
     # 🔧 Диагностика
     # ----------------------------------------------------------------------------------
-    @app.get("/routes", response_model=None)
     async def list_routes() -> Any:
         try:
             routes: list[dict[str, Any]] = []
@@ -1412,22 +1408,37 @@ def _create_app() -> FastAPI:
         except Exception as e:
             return JSONResponse(status_code=500, content={"error": str(e)})
 
-    @app.get("/env")
     async def env_info() -> dict[str, Any]:
         allow = bool(settings.DEBUG) or env_truthy(os.getenv("ALLOW_ENV_ENDPOINT", "0"))
         if not allow:
             raise HTTPException(status_code=404, detail="not_found")
         return build_env_info_payload(settings)
 
-    @app.get("/debug/headers")
     async def debug_headers(request: Request) -> dict[str, Any]:
         if not settings.DEBUG:
             raise HTTPException(status_code=404, detail="not_found")
         return build_debug_headers_payload(request)
 
+    register_health_readiness_and_diagnostics_routes(
+        app,
+        health=health,
+        status=status,
+        readiness=readiness,
+        liveness=liveness,
+        liveness_head=liveness_head,
+        healthz_alias=healthz_alias,
+        underscored_health=underscored_health,
+        openapi_yaml=openapi_yaml,
+        dbinfo=dbinfo,
+        list_routes=list_routes,
+        env_info=env_info,
+        debug_headers=debug_headers,
+    )
+
     # /metrics
+    metrics_handler: Callable[..., Any] | None = None
     if STARLETTE_EXPORTER_AVAILABLE:
-        app.add_route("/metrics", handle_metrics)
+        metrics_handler = None
     else:
         try:
             from prometheus_client import CONTENT_TYPE_LATEST as _CONTENT_TYPE_LATEST  # type: ignore
@@ -1438,7 +1449,6 @@ def _create_app() -> FastAPI:
                 lambda *_args, **_kw: b"# no prometheus\n",
             )
 
-        @app.get("/metrics", response_class=PlainTextResponse, response_model=None)
         async def metrics() -> str:
             if PROM_AVAILABLE:
                 try:
@@ -1449,21 +1459,27 @@ def _create_app() -> FastAPI:
                     return "# metrics error\n"
             return "# no prometheus libs installed\n"
 
+        metrics_handler = metrics
+
+    register_metrics_route(
+        app,
+        starlette_exporter_available=STARLETTE_EXPORTER_AVAILABLE,
+        handle_metrics_fn=handle_metrics if STARLETTE_EXPORTER_AVAILABLE else None,
+        metrics_handler=metrics_handler,
+    )
+
     # ----------------------------------------------------------------------------------
     # ✅ Feature Flags endpoints (ожидаются тестами)
     # ----------------------------------------------------------------------------------
-    @app.get("/feature-flags")
     async def list_feature_flags() -> list[dict[str, Any]]:
         return [{"key": k, "enabled": v} for k, v in sorted(_FEATURE_FLAGS.items())]
 
-    @app.get("/feature-flags/{key}")
     async def get_feature_flag_endpoint(key: str = Path(..., min_length=1)) -> dict[str, Any]:
         val = _FEATURE_FLAGS.get(key)
         if val is None:
             raise HTTPException(status_code=404, detail="flag_not_found")
         return {"key": key, "enabled": bool(val)}
 
-    @app.put("/feature-flags/{key}")
     async def set_feature_flag_endpoint(
         key: str = Path(..., min_length=1),
         payload: dict[str, Any] = Body(
@@ -1481,7 +1497,6 @@ def _create_app() -> FastAPI:
             _FEATURE_FLAGS[key] = enabled
         return {"key": key, "enabled": enabled}
 
-    @app.post("/feature-flags/{key}/toggle")
     async def toggle_feature_flag_endpoint(key: str = Path(..., min_length=1)) -> dict[str, Any]:
         async with _FEATURE_LOCK:
             current = _FEATURE_FLAGS.get(key, False)
@@ -1489,7 +1504,6 @@ def _create_app() -> FastAPI:
             val = _FEATURE_FLAGS[key]
         return {"key": key, "enabled": val}
 
-    @app.delete("/feature-flags/{key}")
     async def delete_feature_flag_endpoint(key: str = Path(..., min_length=1)) -> dict[str, Any]:
         async with _FEATURE_LOCK:
             existed = key in _FEATURE_FLAGS
@@ -1499,271 +1513,195 @@ def _create_app() -> FastAPI:
             raise HTTPException(status_code=404, detail="flag_not_found")
         return {"deleted": True, "key": key}
 
+    register_feature_flag_routes(
+        app,
+        list_feature_flags=list_feature_flags,
+        get_feature_flag_endpoint=get_feature_flag_endpoint,
+        set_feature_flag_endpoint=set_feature_flag_endpoint,
+        toggle_feature_flag_endpoint=toggle_feature_flag_endpoint,
+        delete_feature_flag_endpoint=delete_feature_flag_endpoint,
+    )
+
     # ----------------------------------------------------------------------------------
     # Routers (агрегатор + защита от дублей)
     # ----------------------------------------------------------------------------------
     _import_models_once()
 
-    # 1) ✅ Подключаем единый реестр v1 (auth, users, products, campaigns, wallet, payments)
-    try:
-        # ⚠️ используем базовый префикс из настроек, а не хардкод
-        base_prefix = getattr(settings, "API_V1_STR", "/api/v1") or "/api/v1"
-        if not base_prefix.startswith("/"):
-            base_prefix = "/" + base_prefix
-        base_prefix = base_prefix.rstrip("/")
-        mount_v1(app, base_prefix=base_prefix)
-    except Exception as e:
-        logger.exception("mount_v1 failed: %s", e)
+    mount_primary_routers(
+        app,
+        settings_obj=settings,
+        mount_v1_fn=mount_v1,
+        logger=logger,
+    )
 
-    # 1.1) Backward-compatible alias for tests expecting /api/auth/*
-    try:
-        from app.api.v1 import auth as auth_module
+    def _mount_fallback_campaigns_router() -> None:
+        _CAMPAIGNS_FAKE_STORE: list[dict[str, Any]] = []
+        _id_seq = 0
 
-        auth_router = getattr(auth_module, "router", None)
-        if auth_router:
-            # Mount under /api so router.prefix ("/auth") results in /api/auth/*
-            app.include_router(auth_router, prefix="/api", tags=["auth-compat"], include_in_schema=False)
-    except Exception as e:
-        logger.warning("Auth compat router not mounted: %s", e)
-
-    # Admin integrations legacy alias (compat: /api/admin/integrations/*)
-    try:
-        from app.api.admin.integrations import router as admin_integrations_router
-
-        app.include_router(
-            admin_integrations_router,
-            prefix="/api/admin",
-            tags=["admin-integrations-compat"],
-            include_in_schema=False,
+        fallback = APIRouter(
+            prefix=f"{getattr(settings,'API_V1_STR','/api/v1').rstrip('/')}/campaigns",
+            tags=["campaigns"],
         )
-    except Exception as e:
-        logger.warning("Admin legacy router not mounted: %s", e)
 
-    # 2) Fallback campaigns — только если после mount_v1 префикса нет
-    if not has_path_prefix(app, f"{getattr(settings, 'API_V1_STR', '/api/v1').rstrip('/')}/campaigns"):
-        campaigns_mounted = False
-        try:
-            from app.api.v1.campaigns import router as campaigns_router
+        def _find_campaign(cid: int) -> dict[str, Any] | None:
+            for it in _CAMPAIGNS_FAKE_STORE:
+                if int(it.get("id")) == cid:
+                    return it
+            return None
 
-            router_prefix = getattr(campaigns_router, "prefix", "") or ""
-            if router_prefix.startswith("/api/"):
-                app.include_router(campaigns_router, tags=["campaigns"])
-            else:
-                app.include_router(
-                    campaigns_router,
-                    prefix=f"{getattr(settings,'API_V1_STR','/api/v1').rstrip('/')}/campaigns",
-                    tags=["campaigns"],
-                )
-            campaigns_mounted = True
-        except Exception as e:
-            logger.warning("Campaigns router not mounted: %s", e)
+        @fallback.post("/", status_code=201)
+        async def create_campaign(payload: dict[str, Any]) -> dict[str, Any]:
+            nonlocal _id_seq
+            _id_seq += 1
+            item: dict[str, Any] = {
+                "id": _id_seq,
+                "title": payload.get("title") or f"Campaign #{_id_seq}",
+                "description": payload.get("description"),
+                "messages": payload.get("messages", []),
+                "tags": payload.get("tags", []),
+                "active": bool(payload.get("active", True)),
+                "created_at": int(time.time()),
+                "updated_at": int(time.time()),
+            }
+            if isinstance(item["messages"], list):
+                for i, m in enumerate(item["messages"]):
+                    if "id" not in m:
+                        m["id"] = i + 1
+                    m.setdefault("status", "pending")
+                    m.setdefault("channel", "email")
+            _CAMPAIGNS_FAKE_STORE.append(item)
+            return item
 
-        if not campaigns_mounted:
-            _CAMPAIGNS_FAKE_STORE: list[dict[str, Any]] = []
-            _id_seq = 0
+        @fallback.get("/")
+        async def list_campaigns() -> list[dict[str, Any]]:
+            return list(_CAMPAIGNS_FAKE_STORE)
 
-            fallback = APIRouter(
-                prefix=f"{getattr(settings,'API_V1_STR','/api/v1').rstrip('/')}/campaigns",
-                tags=["campaigns"],
-            )
-
-            def _find_campaign(cid: int) -> dict[str, Any] | None:
-                for it in _CAMPAIGNS_FAKE_STORE:
-                    if int(it.get("id")) == cid:
-                        return it
-                return None
-
-            @fallback.post("/", status_code=201)
-            async def create_campaign(payload: dict[str, Any]) -> dict[str, Any]:
-                nonlocal _id_seq
-                _id_seq += 1
-                item: dict[str, Any] = {
-                    "id": _id_seq,
-                    "title": payload.get("title") or f"Campaign #{_id_seq}",
-                    "description": payload.get("description"),
-                    "messages": payload.get("messages", []),
-                    "tags": payload.get("tags", []),
-                    "active": bool(payload.get("active", True)),
-                    "created_at": int(time.time()),
-                    "updated_at": int(time.time()),
-                }
-                if isinstance(item["messages"], list):
-                    for i, m in enumerate(item["messages"]):
-                        if "id" not in m:
-                            m["id"] = i + 1
-                        m.setdefault("status", "pending")
-                        m.setdefault("channel", "email")
-                _CAMPAIGNS_FAKE_STORE.append(item)
-                return item
-
-            @fallback.get("/")
-            async def list_campaigns() -> list[dict[str, Any]]:
-                return list(_CAMPAIGNS_FAKE_STORE)
-
-            @fallback.get("/{cid}")
-            async def get_campaign(cid: int = Path(..., ge=1)) -> dict[str, Any]:
-                item = _find_campaign(cid)
-                if not item:
-                    raise HTTPException(status_code=404, detail="not_found")
-                return item
-
-            @fallback.put("/{cid}")
-            async def update_campaign(
-                cid: int = Path(..., ge=1), payload: dict[str, Any] = Body(...)
-            ) -> dict[str, Any]:
-                item = _find_campaign(cid)
-                if not item:
-                    raise HTTPException(status_code=404, detail="not_found")
-                allowed = {"title", "description", "messages", "tags", "active"}
-                changed = False
-                for k, v in payload.items():
-                    if k in allowed:
-                        if k == "messages" and isinstance(v, list):
-                            msgs: list[dict[str, Any]] = []
-                            for i, m in enumerate(v, start=1):
-                                mm = dict(m)
-                                mm.setdefault("id", i)
-                                mm.setdefault("status", "pending")
-                                mm.setdefault("channel", "email")
-                                msgs.append(mm)
-                            if item.get("messages") != msgs:
-                                item["messages"] = msgs
-                                changed = True
-                        elif item.get(k) != v:
-                            item[k] = v
-                            changed = True
-                if changed:
-                    item["updated_at"] = int(time.time())
-                return item
-
-            @fallback.post("/{cid}/tags", status_code=201)
-            async def add_tag(cid: int = Path(..., ge=1), payload: dict[str, Any] = Body(...)) -> dict[str, Any]:
-                item = _find_campaign(cid)
-                if not item:
-                    raise HTTPException(status_code=404, detail="not_found")
-                tag = str(payload.get("tag", "")).strip()
-                if not tag:
-                    raise HTTPException(status_code=422, detail="tag_required")
-                tags = item.setdefault("tags", [])
-                if tag not in tags:
-                    tags.append(tag)
-                    item["updated_at"] = int(time.time())
-                return {"id": cid, "tags": tags}
-
-            @fallback.post("/{cid}/messages", status_code=201)
-            async def add_message(cid: int = Path(..., ge=1), payload: dict[str, Any] = Body(...)) -> dict[str, Any]:
-                item = _find_campaign(cid)
-                if not item:
-                    raise HTTPException(status_code=404, detail="not_found")
-                msgs: list[dict[str, Any]] = item.setdefault("messages", [])
-                next_id = (max([m.get("id", 0) for m in msgs]) if msgs else 0) + 1
-                msg = {
-                    "id": next_id,
-                    "recipient": payload.get("recipient"),
-                    "content": payload.get("content"),
-                    "status": (payload.get("status") or "pending").lower(),
-                    "channel": (payload.get("channel") or "email").lower(),
-                    "created_at": int(time.time()),
-                }
-                msgs.append(msg)
-                item["updated_at"] = int(time.time())
-                return msg
-
-            @fallback.get("/{cid}/messages")
-            async def list_messages(cid: int = Path(..., ge=1)) -> list[dict[str, Any]]:
-                item = _find_campaign(cid)
-                if not item:
-                    raise HTTPException(status_code=404, detail="not_found")
-                return item.get("messages", [])
-
-            @fallback.get("/{cid}/stats")
-            async def campaign_stats(cid: int = Path(..., ge=1)) -> dict[str, Any]:
-                item = _find_campaign(cid)
-                if not item:
-                    raise HTTPException(status_code=404, detail="not_found")
-                msgs: list[dict[str, Any]] = item.get("messages", []) or []
-                total = len(msgs)
-
-                def _cnt(st: str) -> int:
-                    return sum(1 for m in msgs if str(m.get("status", "")).lower() == st)
-
-                pending = _cnt("pending")
-                sent = _cnt("sent") + _cnt("delivered")
-                failed = _cnt("failed") + _cnt("error")
-                return {
-                    "id": cid,
-                    "title": item.get("title"),
-                    "total_messages": total,
-                    "pending": pending,
-                    "sent": sent,
-                    "failed": failed,
-                    "tags": item.get("tags", []),
-                    "active": item.get("active", True),
-                }
-
-            @fallback.delete("/{cid}")
-            async def delete_campaign(cid: int = Path(..., ge=1)) -> dict[str, Any]:
-                for i, it in enumerate(_CAMPAIGNS_FAKE_STORE):
-                    if int(it.get("id")) == cid:
-                        _CAMPAIGNS_FAKE_STORE.pop(i)
-                        return {"deleted": True, "id": cid}
+        @fallback.get("/{cid}")
+        async def get_campaign(cid: int = Path(..., ge=1)) -> dict[str, Any]:
+            item = _find_campaign(cid)
+            if not item:
                 raise HTTPException(status_code=404, detail="not_found")
+            return item
 
-            app.include_router(fallback)
+        @fallback.put("/{cid}")
+        async def update_campaign(
+            cid: int = Path(..., ge=1), payload: dict[str, Any] = Body(...)
+        ) -> dict[str, Any]:
+            item = _find_campaign(cid)
+            if not item:
+                raise HTTPException(status_code=404, detail="not_found")
+            allowed = {"title", "description", "messages", "tags", "active"}
+            changed = False
+            for k, v in payload.items():
+                if k in allowed:
+                    if k == "messages" and isinstance(v, list):
+                        msgs: list[dict[str, Any]] = []
+                        for i, m in enumerate(v, start=1):
+                            mm = dict(m)
+                            mm.setdefault("id", i)
+                            mm.setdefault("status", "pending")
+                            mm.setdefault("channel", "email")
+                            msgs.append(mm)
+                        if item.get("messages") != msgs:
+                            item["messages"] = msgs
+                            changed = True
+                    elif item.get(k) != v:
+                        item[k] = v
+                        changed = True
+            if changed:
+                item["updated_at"] = int(time.time())
+            return item
 
-    # 3) Subscriptions: подключаем ваш v1-модуль только если агрегатор его не добавил
-    if not has_path_prefix(app, f"{getattr(settings,'API_V1_STR','/api/v1').rstrip('/')}/subscriptions"):
-        try:
-            from app.api.v1.subscriptions import router as subscriptions_router
+        @fallback.post("/{cid}/tags", status_code=201)
+        async def add_tag(cid: int = Path(..., ge=1), payload: dict[str, Any] = Body(...)) -> dict[str, Any]:
+            item = _find_campaign(cid)
+            if not item:
+                raise HTTPException(status_code=404, detail="not_found")
+            tag = str(payload.get("tag", "")).strip()
+            if not tag:
+                raise HTTPException(status_code=422, detail="tag_required")
+            tags = item.setdefault("tags", [])
+            if tag not in tags:
+                tags.append(tag)
+                item["updated_at"] = int(time.time())
+            return {"id": cid, "tags": tags}
 
-            router_prefix = getattr(subscriptions_router, "prefix", "") or ""
-            if router_prefix.startswith("/api/"):
-                app.include_router(subscriptions_router, tags=["subscriptions"])
-            else:
-                app.include_router(
-                    subscriptions_router,
-                    prefix=f"{getattr(settings,'API_V1_STR','/api/v1').rstrip('/')}/subscriptions",
-                    tags=["subscriptions"],
-                )
-            logger.info("Mounted app.api.v1.subscriptions router")
-        except Exception as e:
-            logger.warning("Subscriptions API router not mounted: %s", e)
+        @fallback.post("/{cid}/messages", status_code=201)
+        async def add_message(cid: int = Path(..., ge=1), payload: dict[str, Any] = Body(...)) -> dict[str, Any]:
+            item = _find_campaign(cid)
+            if not item:
+                raise HTTPException(status_code=404, detail="not_found")
+            msgs: list[dict[str, Any]] = item.setdefault("messages", [])
+            next_id = (max([m.get("id", 0) for m in msgs]) if msgs else 0) + 1
+            msg = {
+                "id": next_id,
+                "recipient": payload.get("recipient"),
+                "content": payload.get("content"),
+                "status": (payload.get("status") or "pending").lower(),
+                "channel": (payload.get("channel") or "email").lower(),
+                "created_at": int(time.time()),
+            }
+            msgs.append(msg)
+            item["updated_at"] = int(time.time())
+            return msg
 
-    # 4) Продукты: подключаем ваш v1-модуль только если агрегатор его не добавил
-    if not has_path_prefix(app, f"{getattr(settings,'API_V1_STR','/api/v1').rstrip('/')}/products"):
-        try:
-            from app.api.v1.products import router as products_api_router
+        @fallback.get("/{cid}/messages")
+        async def list_messages(cid: int = Path(..., ge=1)) -> list[dict[str, Any]]:
+            item = _find_campaign(cid)
+            if not item:
+                raise HTTPException(status_code=404, detail="not_found")
+            return item.get("messages", [])
 
-            app.include_router(
-                products_api_router,
-                prefix=f"{getattr(settings,'API_V1_STR','/api/v1').rstrip('/')}",
-                tags=["Products"],
-            )
-            logger.info("Mounted app.api.v1.products router")
-        except Exception as e:
-            logger.warning("Products API router not mounted: %s", e)
+        @fallback.get("/{cid}/stats")
+        async def campaign_stats(cid: int = Path(..., ge=1)) -> dict[str, Any]:
+            item = _find_campaign(cid)
+            if not item:
+                raise HTTPException(status_code=404, detail="not_found")
+            msgs: list[dict[str, Any]] = item.get("messages", []) or []
+            total = len(msgs)
 
-    # ----------------------------------------------------------------------------------
-    # ✅ Легаси-алиас для /api/auth/*  → /api/v1/auth/*
-    # ----------------------------------------------------------------------------------
-    if not has_path_prefix(app, "/api/auth"):
-        try:
-            from app.api.v1.auth import router as auth_v1_router  # type: ignore
+            def _cnt(st: str) -> int:
+                return sum(1 for m in msgs if str(m.get("status", "")).lower() == st)
 
-            app.include_router(auth_v1_router, prefix="/api", tags=["auth-legacy"])
-            logger.info("Mounted /api/auth via real v1 auth router (prefix '/api' + '/auth').")
-        except Exception as e:
-            logger.exception("Failed to mount /api/auth via v1 auth router: %s", e)
+            pending = _cnt("pending")
+            sent = _cnt("sent") + _cnt("delivered")
+            failed = _cnt("failed") + _cnt("error")
+            return {
+                "id": cid,
+                "title": item.get("title"),
+                "total_messages": total,
+                "pending": pending,
+                "sent": sent,
+                "failed": failed,
+                "tags": item.get("tags", []),
+                "active": item.get("active", True),
+            }
 
-    # Static/media  — избегаем truthy-check на классе (mypy: truthy-function)
-    try:  # pragma: no cover
-        if StaticFiles is not None:
-            if getattr(settings, "STATIC_DIR", None):
-                app.mount("/static", StaticFiles(directory=settings.STATIC_DIR), name="static")
-            if getattr(settings, "MEDIA_DIR", None):
-                app.mount("/media", StaticFiles(directory=settings.MEDIA_DIR), name="media")
-    except Exception as e:  # pragma: no cover
-        logger.warning("Static/media mount failed: %s", e)
+        @fallback.delete("/{cid}")
+        async def delete_campaign(cid: int = Path(..., ge=1)) -> dict[str, Any]:
+            for i, it in enumerate(_CAMPAIGNS_FAKE_STORE):
+                if int(it.get("id")) == cid:
+                    _CAMPAIGNS_FAKE_STORE.pop(i)
+                    return {"deleted": True, "id": cid}
+            raise HTTPException(status_code=404, detail="not_found")
+
+        app.include_router(fallback)
+
+    mount_campaigns_router_with_fallback(
+        app,
+        settings_obj=settings,
+        has_path_prefix_fn=has_path_prefix,
+        logger=logger,
+        mount_fallback_campaigns_fn=_mount_fallback_campaigns_router,
+    )
+
+    mount_secondary_routers_and_static(
+        app,
+        settings_obj=settings,
+        has_path_prefix_fn=has_path_prefix,
+        logger=logger,
+        static_files_cls=StaticFiles,
+    )
 
     return app
 
