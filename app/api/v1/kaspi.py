@@ -48,7 +48,7 @@ import httpx
 import sqlalchemy as sa
 from fastapi import APIRouter, Body, Depends, File, HTTPException, Query, Request, Response, UploadFile, status
 from fastapi.encoders import jsonable_encoder
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import JSONResponse
 from openpyxl import Workbook, load_workbook
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 from sqlalchemy import bindparam, literal_column, select, text
@@ -67,10 +67,12 @@ from app.api.v1.kaspi_feed_routes import (
     register_kaspi_feed_routes_phase_two,
 )
 from app.api.v1.kaspi_goods_routes import register_kaspi_goods_routes
+from app.api.v1.kaspi_mc_routes import register_kaspi_mc_routes
 from app.api.v1.kaspi_orders_routes import register_kaspi_orders_routes
 from app.api.v1.kaspi_public_routes import register_kaspi_public_routes
 from app.api.v1.kaspi_status_routes import register_kaspi_status_routes
 from app.api.v1.kaspi_sync_routes import register_kaspi_sync_routes
+from app.api.v1.kaspi_tooling_routes import register_kaspi_tooling_routes
 from app.api.v1.kaspi_utils import (
     build_kaspi_orders_params as _build_kaspi_orders_params,
 )
@@ -5447,11 +5449,6 @@ register_kaspi_goods_routes(
 # require browser automation (e.g., Playwright) and is out of scope for now.
 
 
-@router.post(
-    "/mc/session",
-    summary="Upsert Kaspi MC session cookies",
-    response_model=KaspiMcSessionOut,
-)
 async def kaspi_mc_session_upsert(
     payload: KaspiMcSessionIn,
     current_user: User = Depends(get_current_user),
@@ -5484,11 +5481,6 @@ async def kaspi_mc_session_upsert(
     )
 
 
-@router.get(
-    "/mc/session",
-    summary="Kaspi MC session status",
-    response_model=KaspiMcSessionListOut,
-)
 async def kaspi_mc_session_status(
     merchant_uid: str | None = Query(None, alias="merchantUid"),
     current_user: User = Depends(get_current_user),
@@ -5530,11 +5522,6 @@ async def kaspi_mc_session_status(
     return KaspiMcSessionListOut(items=items)
 
 
-@router.post(
-    "/catalog/sync/mc",
-    summary="Kaspi MC catalog sync",
-    response_model=KaspiMcSyncOut,
-)
 async def kaspi_catalog_sync_mc(
     merchant_uid: str | None = Query(None, alias="merchantUid"),
     current_user: User = Depends(get_current_user),
@@ -5599,11 +5586,6 @@ async def kaspi_catalog_sync_mc(
     return KaspiMcSyncOut(**summary)
 
 
-@router.get(
-    "/catalog/import/batches",
-    summary="List catalog import batches (newest first)",
-    response_model=list[KaspiCatalogImportBatchOut],
-)
 async def kaspi_catalog_import_batches(
     limit: int = 50,
     offset: int = 0,
@@ -5640,11 +5622,6 @@ async def kaspi_catalog_import_batches(
     ]
 
 
-@router.get(
-    "/catalog/import/batches/{batch_id}",
-    summary="Get catalog import batch detail",
-    response_model=KaspiCatalogImportBatchDetailOut,
-)
 async def kaspi_catalog_import_batch_detail(
     batch_id: str,
     current_user: User = Depends(get_current_user),
@@ -5683,11 +5660,6 @@ async def kaspi_catalog_import_batch_detail(
     )
 
 
-@router.get(
-    "/catalog/import/batches/{batch_id}/errors",
-    summary="List catalog import errors",
-    response_model=list[KaspiCatalogImportErrorOut],
-)
 async def kaspi_catalog_import_batch_errors(
     batch_id: str,
     limit: int = 200,
@@ -5739,11 +5711,6 @@ async def kaspi_catalog_import_batch_errors(
     ]
 
 
-@router.get(
-    "/offers",
-    summary="List Kaspi offers",
-    response_model=KaspiOfferListOut,
-)
 async def kaspi_offers_list(
     merchant_uid: str | None = Query(None, alias="merchantUid"),
     q: str | None = None,
@@ -5787,6 +5754,25 @@ async def kaspi_offers_list(
     ]
 
     return KaspiOfferListOut(items=items, total=int(total or 0), limit=limit, offset=offset)
+
+
+register_kaspi_mc_routes(
+    router,
+    kaspi_mc_session_upsert=kaspi_mc_session_upsert,
+    kaspi_mc_session_status=kaspi_mc_session_status,
+    kaspi_catalog_sync_mc=kaspi_catalog_sync_mc,
+    kaspi_catalog_import_batches=kaspi_catalog_import_batches,
+    kaspi_catalog_import_batch_detail=kaspi_catalog_import_batch_detail,
+    kaspi_catalog_import_batch_errors=kaspi_catalog_import_batch_errors,
+    kaspi_offers_list=kaspi_offers_list,
+    kaspi_mc_session_out_model=KaspiMcSessionOut,
+    kaspi_mc_session_list_out_model=KaspiMcSessionListOut,
+    kaspi_mc_sync_out_model=KaspiMcSyncOut,
+    kaspi_catalog_import_batch_out_model=KaspiCatalogImportBatchOut,
+    kaspi_catalog_import_batch_detail_out_model=KaspiCatalogImportBatchDetailOut,
+    kaspi_catalog_import_error_out_model=KaspiCatalogImportErrorOut,
+    kaspi_offer_list_out_model=KaspiOfferListOut,
+)
 
 
 class KaspiOfferSeedIn(BaseModel):
@@ -5943,11 +5929,6 @@ def _log_public_feed_access(
     )
 
 
-@router.post(
-    "/offers/seed",
-    summary="Dev-only: seed minimal Kaspi offer",
-    response_model=KaspiOfferSeedOut,
-)
 async def kaspi_offers_seed(
     payload: KaspiOfferSeedIn,
     current_user: User = Depends(get_current_user),
@@ -6015,12 +5996,6 @@ LEGACY_CSV_RESPONSES = {
 }
 
 
-@router.get(
-    "/catalog/import/template.csv",
-    summary="Download catalog import CSV template",
-    response_class=FileResponse,
-    responses=LEGACY_CSV_RESPONSES,
-)
 async def kaspi_catalog_import_template_csv(
     current_user: User = Depends(get_current_user),
 ):
@@ -6073,12 +6048,6 @@ def _kaspi_catalog_template_xlsx() -> bytes:
     return buf.getvalue()
 
 
-@router.get(
-    "/catalog/template",
-    summary="Download catalog import template",
-    response_class=FileResponse,
-    responses=TEMPLATE_RESPONSES,
-)
 async def kaspi_catalog_import_template(
     format: Literal["csv", "xlsx"] = Query("xlsx"),
     current_user: User = Depends(get_current_user),
@@ -6098,11 +6067,6 @@ async def kaspi_catalog_import_template(
     )
 
 
-@router.get(
-    "/products",
-    summary="Получить список каталога Kaspi",
-    response_model=KaspiProductListOut,
-)
 async def kaspi_products_list(
     limit: int = 50,
     offset: int = 0,
@@ -6179,6 +6143,19 @@ async def kaspi_products_list(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to retrieve products",
         )
+
+
+register_kaspi_tooling_routes(
+    router,
+    kaspi_offers_seed=kaspi_offers_seed,
+    kaspi_catalog_import_template_csv=kaspi_catalog_import_template_csv,
+    kaspi_catalog_import_template=kaspi_catalog_import_template,
+    kaspi_products_list=kaspi_products_list,
+    kaspi_offer_seed_out_model=KaspiOfferSeedOut,
+    kaspi_product_list_out_model=KaspiProductListOut,
+    legacy_csv_responses=LEGACY_CSV_RESPONSES,
+    template_responses=TEMPLATE_RESPONSES,
+)
 
 
 # ============================= FEED EXPORTS ==============================
