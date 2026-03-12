@@ -60,14 +60,17 @@ from app.api.v1.kaspi_autosync_routes import (
     register_kaspi_autosync_routes,
 )
 from app.api.v1.kaspi_catalog_routes import register_kaspi_catalog_routes
+from app.api.v1.kaspi_core_routes import register_kaspi_core_routes
 from app.api.v1.kaspi_debug_routes import register_kaspi_debug_routes
 from app.api.v1.kaspi_feed_routes import (
     register_kaspi_feed_routes_phase_one,
     register_kaspi_feed_routes_phase_two,
 )
 from app.api.v1.kaspi_goods_routes import register_kaspi_goods_routes
+from app.api.v1.kaspi_orders_routes import register_kaspi_orders_routes
 from app.api.v1.kaspi_public_routes import register_kaspi_public_routes
 from app.api.v1.kaspi_status_routes import register_kaspi_status_routes
+from app.api.v1.kaspi_sync_routes import register_kaspi_sync_routes
 from app.api.v1.kaspi_utils import (
     build_kaspi_orders_params as _build_kaspi_orders_params,
 )
@@ -1136,12 +1139,6 @@ async def _record_kaspi_event(
         logger.warning("Kaspi integration event write failed: kind=%s err=%s", kind, exc)
 
 
-@router.post(
-    "/connect",
-    response_model=KaspiConnectOut,
-    status_code=status.HTTP_200_OK,
-    summary="Kaspi onboarding: connect and configure store (main entry point)",
-)
 async def connect_store(
     request: Request,
     body: KaspiConnectIn,
@@ -1349,12 +1346,6 @@ async def connect_store(
 # ================================= TOKENS ====================================
 
 
-@router.post(
-    "/tokens",
-    response_model=KaspiTokenOut,
-    status_code=status.HTTP_201_CREATED,
-    summary="Создать/обновить токен магазина",
-)
 async def upsert_token(
     payload: KaspiTokenIn,
     session: AsyncSession = Depends(get_async_db),
@@ -1367,11 +1358,6 @@ async def upsert_token(
     return KaspiTokenOut(store_name=payload.store_name)
 
 
-@router.get(
-    "/tokens",
-    response_model=list[KaspiTokenOut],
-    summary="Список подключённых магазинов",
-)
 async def list_tokens(session: AsyncSession = Depends(get_async_db)):
     try:
         stores = await KaspiStoreToken.list_stores(session)
@@ -1381,11 +1367,6 @@ async def list_tokens(session: AsyncSession = Depends(get_async_db)):
     return [KaspiTokenOut(store_name=s) for s in stores]
 
 
-@router.get(
-    "/tokens/{store_name}",
-    response_model=KaspiTokenMaskedOut,
-    summary="Карточка токена (маска + метаданные)",
-)
 async def get_token_by_store_name(
     store_name: str,
     session: AsyncSession = Depends(get_async_db),
@@ -1439,11 +1420,6 @@ async def get_token_by_store_name(
     )
 
 
-@router.delete(
-    "/tokens/{store_name}",
-    status_code=status.HTTP_204_NO_CONTENT,
-    summary="Удалить токен магазина",
-)
 async def delete_token(store_name: str, session: AsyncSession = Depends(get_async_db)):
     try:
         deleted = await KaspiStoreToken.delete_by_store(session, store_name)
@@ -1460,10 +1436,6 @@ async def delete_token(store_name: str, session: AsyncSession = Depends(get_asyn
 # ============================ Операции через адаптер ==========================
 
 
-@router.get(
-    "/health/{store}",
-    summary="Проверка здоровья Kaspi API для магазина",
-)
 async def kaspi_health(store: str):
     try:
         return KaspiAdapter().health(store)
@@ -1472,6 +1444,20 @@ async def kaspi_health(store: str):
     except Exception as e:
         logger.error("Kaspi health unexpected error: store=%s err=%s", store, e)
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e))
+
+
+register_kaspi_core_routes(
+    router,
+    connect_store=connect_store,
+    upsert_token=upsert_token,
+    list_tokens=list_tokens,
+    get_token_by_store_name=get_token_by_store_name,
+    delete_token=delete_token,
+    kaspi_health=kaspi_health,
+    kaspi_connect_out_model=KaspiConnectOut,
+    kaspi_token_out_model=KaspiTokenOut,
+    kaspi_token_masked_out_model=KaspiTokenMaskedOut,
+)
 
 
 class KaspiOrderEntryOut(BaseModel):
@@ -1677,11 +1663,6 @@ def _order_to_detail(order: Order) -> KaspiOrderDetailOut:
     return KaspiOrderDetailOut(**base.model_dump(), items=items)
 
 
-@router.get(
-    "/orders",
-    response_model=KaspiOrdersListOut,
-    summary="Kaspi orders list (local)",
-)
 async def kaspi_orders_list(
     request: Request,
     merchant_uid: str | None = Query(None, min_length=1, alias="merchantUid"),
@@ -1794,11 +1775,6 @@ async def kaspi_orders_list(
     )
 
 
-@router.get(
-    "/orders/{order_id}",
-    response_model=KaspiOrderDetailOut,
-    summary="Kaspi order detail (local)",
-)
 async def kaspi_order_detail(
     order_id: int,
     request: Request,
@@ -1959,11 +1935,6 @@ async def _handle_order_action(
     )
 
 
-@router.post(
-    "/orders/{external_id}/accept",
-    summary="Accept Kaspi order",
-    response_model=KaspiOrderActionOut,
-)
 async def kaspi_order_accept(
     request: Request,
     external_id: str,
@@ -1981,11 +1952,6 @@ async def kaspi_order_accept(
     )
 
 
-@router.post(
-    "/orders/{external_id}/cancel",
-    summary="Cancel Kaspi order",
-    response_model=KaspiOrderActionOut,
-)
 async def kaspi_order_cancel(
     request: Request,
     external_id: str,
@@ -2003,10 +1969,6 @@ async def kaspi_order_cancel(
     )
 
 
-@router.post(
-    "/orders",
-    summary="Получить заказы из Kaspi (проксирование через адаптер)",
-)
 async def kaspi_orders(query: OrdersQuery):
     try:
         return KaspiAdapter().orders(query.store, state=query.state)
@@ -2017,10 +1979,6 @@ async def kaspi_orders(query: OrdersQuery):
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e))
 
 
-@router.post(
-    "/import",
-    summary="Запустить импорт офферов (фид) в Kaspi",
-)
 async def kaspi_import(req: ImportRequest):
     try:
         return KaspiAdapter().publish_feed(req.store, req.offers_json_path)
@@ -2031,10 +1989,6 @@ async def kaspi_import(req: ImportRequest):
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e))
 
 
-@router.post(
-    "/import/status",
-    summary="Проверить статус импорта офферов в Kaspi",
-)
 async def kaspi_import_status(req: ImportStatusQuery):
     try:
         return KaspiAdapter().import_status(req.store, import_id=req.import_id)
@@ -2045,13 +1999,24 @@ async def kaspi_import_status(req: ImportStatusQuery):
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e))
 
 
+register_kaspi_orders_routes(
+    router,
+    kaspi_orders_list=kaspi_orders_list,
+    kaspi_order_detail=kaspi_order_detail,
+    kaspi_order_accept=kaspi_order_accept,
+    kaspi_order_cancel=kaspi_order_cancel,
+    kaspi_orders=kaspi_orders,
+    kaspi_import=kaspi_import,
+    kaspi_import_status=kaspi_import_status,
+    kaspi_orders_list_out_model=KaspiOrdersListOut,
+    kaspi_order_detail_out_model=KaspiOrderDetailOut,
+    kaspi_order_action_out_model=KaspiOrderActionOut,
+)
+
+
 # ================================== Service ==================================
 
 
-@router.post(
-    "/orders/sync",
-    summary="Синхронизировать последние заказы Kaspi в локальную БД",
-)
 async def kaspi_orders_sync(
     request: Request,
     response: Response,
@@ -2247,11 +2212,6 @@ async def kaspi_orders_sync(
         }
 
 
-@router.get(
-    "/feed",
-    summary="Сгенерировать XML-фид активных товаров компании",
-    response_class=Response,
-)
 async def kaspi_generate_feed(
     current_user: User = Depends(_auth_user),
     session: AsyncSession = Depends(get_async_db),
@@ -2271,10 +2231,6 @@ async def kaspi_generate_feed(
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e))
 
 
-@router.post(
-    "/availability/sync",
-    summary="Синхронизировать доступность (stock) одного товара в Kaspi",
-)
 async def kaspi_availability_sync_one(
     payload: AvailabilitySyncIn,
     current_user: User = Depends(_auth_user),
@@ -2299,10 +2255,6 @@ async def kaspi_availability_sync_one(
         raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(e))
 
 
-@router.post(
-    "/availability/bulk",
-    summary="Массовая синхронизация доступности активных товаров компании",
-)
 async def kaspi_availability_bulk(
     payload: AvailabilityBulkIn,
     current_user: User = Depends(_auth_user),
@@ -2354,11 +2306,6 @@ class KaspiCatalogItemsOut(BaseModel):
     offset: int
 
 
-@router.get(
-    "/orders/sync/state",
-    summary="Текущее состояние синхронизации заказов Kaspi",
-    response_model=KaspiSyncStateOut,
-)
 async def kaspi_orders_sync_state(
     current_user: User = Depends(_auth_user),
     session: AsyncSession = Depends(get_async_db),
@@ -2392,11 +2339,6 @@ async def kaspi_orders_sync_state(
     )
 
 
-@router.get(
-    "/orders/sync/ops",
-    summary="Операционный статус синхронизации заказов Kaspi (state + lock)",
-    response_model=KaspiSyncOpsOut,
-)
 async def kaspi_orders_sync_ops(
     current_user: User = Depends(_auth_user),
     session: AsyncSession = Depends(get_async_db),
@@ -2440,11 +2382,6 @@ async def kaspi_orders_sync_ops(
     )
 
 
-@router.get(
-    "/catalog/items",
-    summary="Kaspi catalog items derived from orders",
-    response_model=KaspiCatalogItemsOut,
-)
 async def kaspi_catalog_items(
     request: Request,
     merchant_uid: str | None = Query(None, min_length=1),
@@ -2520,6 +2457,21 @@ async def kaspi_catalog_items(
         limit=limit,
         offset=offset,
     )
+
+
+register_kaspi_sync_routes(
+    router,
+    kaspi_orders_sync=kaspi_orders_sync,
+    kaspi_generate_feed=kaspi_generate_feed,
+    kaspi_availability_sync_one=kaspi_availability_sync_one,
+    kaspi_availability_bulk=kaspi_availability_bulk,
+    kaspi_orders_sync_state=kaspi_orders_sync_state,
+    kaspi_orders_sync_ops=kaspi_orders_sync_ops,
+    kaspi_catalog_items=kaspi_catalog_items,
+    kaspi_sync_state_out_model=KaspiSyncStateOut,
+    kaspi_sync_ops_out_model=KaspiSyncOpsOut,
+    kaspi_catalog_items_out_model=KaspiCatalogItemsOut,
+)
 
 
 register_kaspi_debug_routes(
