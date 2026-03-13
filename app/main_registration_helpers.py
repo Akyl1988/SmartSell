@@ -1,9 +1,10 @@
 from __future__ import annotations
 
+import time
 from collections.abc import Callable
 from typing import Any
 
-from fastapi import FastAPI
+from fastapi import APIRouter, Body, FastAPI, HTTPException, Path
 from fastapi.responses import PlainTextResponse
 
 
@@ -239,3 +240,155 @@ def mount_secondary_routers_and_static(
                 app.mount("/media", static_files_cls(directory=settings_obj.MEDIA_DIR), name="media")
     except Exception as e:  # pragma: no cover
         logger.warning("Static/media mount failed: %s", e)
+
+
+def build_fallback_campaigns_router(*, api_v1_prefix: str) -> APIRouter:
+    campaigns_fake_store: list[dict[str, Any]] = []
+    id_seq = 0
+
+    fallback = APIRouter(
+        prefix=f"{api_v1_prefix.rstrip('/')}/campaigns",
+        tags=["campaigns"],
+    )
+
+    def _find_campaign(cid: int) -> dict[str, Any] | None:
+        for it in campaigns_fake_store:
+            if int(it.get("id")) == cid:
+                return it
+        return None
+
+    @fallback.post("/", status_code=201)
+    async def create_campaign(payload: dict[str, Any]) -> dict[str, Any]:
+        nonlocal id_seq
+        id_seq += 1
+        item: dict[str, Any] = {
+            "id": id_seq,
+            "title": payload.get("title") or f"Campaign #{id_seq}",
+            "description": payload.get("description"),
+            "messages": payload.get("messages", []),
+            "tags": payload.get("tags", []),
+            "active": bool(payload.get("active", True)),
+            "created_at": int(time.time()),
+            "updated_at": int(time.time()),
+        }
+        if isinstance(item["messages"], list):
+            for i, m in enumerate(item["messages"]):
+                if "id" not in m:
+                    m["id"] = i + 1
+                m.setdefault("status", "pending")
+                m.setdefault("channel", "email")
+        campaigns_fake_store.append(item)
+        return item
+
+    @fallback.get("/")
+    async def list_campaigns() -> list[dict[str, Any]]:
+        return list(campaigns_fake_store)
+
+    @fallback.get("/{cid}")
+    async def get_campaign(cid: int = Path(..., ge=1)) -> dict[str, Any]:
+        item = _find_campaign(cid)
+        if not item:
+            raise HTTPException(status_code=404, detail="not_found")
+        return item
+
+    @fallback.put("/{cid}")
+    async def update_campaign(cid: int = Path(..., ge=1), payload: dict[str, Any] = Body(...)) -> dict[str, Any]:  # noqa: B008
+        item = _find_campaign(cid)
+        if not item:
+            raise HTTPException(status_code=404, detail="not_found")
+        allowed = {"title", "description", "messages", "tags", "active"}
+        changed = False
+        for k, v in payload.items():
+            if k in allowed:
+                if k == "messages" and isinstance(v, list):
+                    msgs: list[dict[str, Any]] = []
+                    for i, m in enumerate(v, start=1):
+                        mm = dict(m)
+                        mm.setdefault("id", i)
+                        mm.setdefault("status", "pending")
+                        mm.setdefault("channel", "email")
+                        msgs.append(mm)
+                    if item.get("messages") != msgs:
+                        item["messages"] = msgs
+                        changed = True
+                elif item.get(k) != v:
+                    item[k] = v
+                    changed = True
+        if changed:
+            item["updated_at"] = int(time.time())
+        return item
+
+    @fallback.post("/{cid}/tags", status_code=201)
+    async def add_tag(cid: int = Path(..., ge=1), payload: dict[str, Any] = Body(...)) -> dict[str, Any]:  # noqa: B008
+        item = _find_campaign(cid)
+        if not item:
+            raise HTTPException(status_code=404, detail="not_found")
+        tag = str(payload.get("tag", "")).strip()
+        if not tag:
+            raise HTTPException(status_code=422, detail="tag_required")
+        tags = item.setdefault("tags", [])
+        if tag not in tags:
+            tags.append(tag)
+            item["updated_at"] = int(time.time())
+        return {"id": cid, "tags": tags}
+
+    @fallback.post("/{cid}/messages", status_code=201)
+    async def add_message(cid: int = Path(..., ge=1), payload: dict[str, Any] = Body(...)) -> dict[str, Any]:  # noqa: B008
+        item = _find_campaign(cid)
+        if not item:
+            raise HTTPException(status_code=404, detail="not_found")
+        msgs: list[dict[str, Any]] = item.setdefault("messages", [])
+        next_id = (max([m.get("id", 0) for m in msgs]) if msgs else 0) + 1
+        msg = {
+            "id": next_id,
+            "recipient": payload.get("recipient"),
+            "content": payload.get("content"),
+            "status": (payload.get("status") or "pending").lower(),
+            "channel": (payload.get("channel") or "email").lower(),
+            "created_at": int(time.time()),
+        }
+        msgs.append(msg)
+        item["updated_at"] = int(time.time())
+        return msg
+
+    @fallback.get("/{cid}/messages")
+    async def list_messages(cid: int = Path(..., ge=1)) -> list[dict[str, Any]]:
+        item = _find_campaign(cid)
+        if not item:
+            raise HTTPException(status_code=404, detail="not_found")
+        return item.get("messages", [])
+
+    @fallback.get("/{cid}/stats")
+    async def campaign_stats(cid: int = Path(..., ge=1)) -> dict[str, Any]:
+        item = _find_campaign(cid)
+        if not item:
+            raise HTTPException(status_code=404, detail="not_found")
+        msgs: list[dict[str, Any]] = item.get("messages", []) or []
+        total = len(msgs)
+
+        def _cnt(st: str) -> int:
+            return sum(1 for m in msgs if str(m.get("status", "")).lower() == st)
+
+        pending = _cnt("pending")
+        sent = _cnt("sent") + _cnt("delivered")
+        failed = _cnt("failed") + _cnt("error")
+        return {
+            "id": cid,
+            "title": item.get("title"),
+            "total_messages": total,
+            "pending": pending,
+            "sent": sent,
+            "failed": failed,
+            "tags": item.get("tags", []),
+            "active": item.get("active", True),
+        }
+
+    @fallback.delete("/{cid}")
+    async def delete_campaign(cid: int = Path(..., ge=1)) -> dict[str, Any]:
+        for i, it in enumerate(campaigns_fake_store):
+            if int(it.get("id")) == cid:
+                campaigns_fake_store.pop(i)
+                return {"deleted": True, "id": cid}
+        raise HTTPException(status_code=404, detail="not_found")
+
+    return fallback
