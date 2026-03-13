@@ -1584,9 +1584,7 @@ def _create_app() -> FastAPI:
             return item
 
         @fallback.put("/{cid}")
-        async def update_campaign(
-            cid: int = Path(..., ge=1), payload: dict[str, Any] = Body(...)
-        ) -> dict[str, Any]:
+        async def update_campaign(cid: int = Path(..., ge=1), payload: dict[str, Any] = Body(...)) -> dict[str, Any]:
             item = _find_campaign(cid)
             if not item:
                 raise HTTPException(status_code=404, detail="not_found")

@@ -139,7 +139,11 @@ async def run_lifespan_startup(
         logger.warning("startup side effects failed: %s", e)
     try:
         env_val = str(getattr(settings, "ENVIRONMENT", "") or "").lower()
-        if not core_config._under_pytest() and env_val != "local" and getattr(settings, "DB_URL_SOURCE", "") == "DEFAULT":
+        if (
+            not core_config._under_pytest()
+            and env_val != "local"
+            and getattr(settings, "DB_URL_SOURCE", "") == "DEFAULT"
+        ):
             raise RuntimeError("DATABASE_URL is required for non-local environments")
     except Exception as e:
         if isinstance(e, RuntimeError):
@@ -188,7 +192,9 @@ async def run_lifespan_startup(
 
     try:
         role = getattr(settings, "PROCESS_ROLE", os.getenv("PROCESS_ROLE", "web")) or "web"
-        enable_scheduler = env_truthy(os.getenv("ENABLE_SCHEDULER", "0")) or getattr(settings, "ENABLE_SCHEDULER", False)
+        enable_scheduler = env_truthy(os.getenv("ENABLE_SCHEDULER", "0")) or getattr(
+            settings, "ENABLE_SCHEDULER", False
+        )
         background_tasks_enabled = env_truthy(os.getenv("SMARTSELL_BACKGROUND_TASKS", "1"), True)
         allowed_roles = {"web", "worker", "scheduler"}
         if role not in allowed_roles:
