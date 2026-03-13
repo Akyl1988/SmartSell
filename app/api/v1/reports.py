@@ -1,15 +1,13 @@
 from __future__ import annotations
 
-import csv
-import json
 import os
 import re
-from datetime import UTC, date, datetime, time
+from datetime import date, datetime
 from decimal import Decimal
-from io import BytesIO, StringIO
+from io import BytesIO
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
+from fastapi import APIRouter, Depends, Query, Request, Response
 from fastapi.responses import StreamingResponse
 from reportlab.lib import colors
 from reportlab.lib.pagesizes import A4
@@ -19,6 +17,39 @@ from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer, Table, Tabl
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.api.v1.reports_api_helpers import (
+    _date_bounds as helpers_date_bounds,
+)
+from app.api.v1.reports_api_helpers import (
+    _extract_kaspi_attrs as helpers_extract_kaspi_attrs,
+)
+from app.api.v1.reports_api_helpers import (
+    _log_report_event as helpers_log_report_event,
+)
+from app.api.v1.reports_api_helpers import (
+    _log_report_pdf_event as helpers_log_report_pdf_event,
+)
+from app.api.v1.reports_api_helpers import (
+    _parse_date as helpers_parse_date,
+)
+from app.api.v1.reports_api_helpers import (
+    _parse_dt as helpers_parse_dt,
+)
+from app.api.v1.reports_api_helpers import (
+    _resolve_company_id_param as helpers_resolve_company_id_param,
+)
+from app.api.v1.reports_api_helpers import (
+    _resolve_wallet_report_company_id as helpers_resolve_wallet_report_company_id,
+)
+from app.api.v1.reports_api_helpers import (
+    _safe_reference as helpers_safe_reference,
+)
+from app.api.v1.reports_api_helpers import (
+    _to_optional_str as helpers_to_optional_str,
+)
+from app.api.v1.reports_api_helpers import (
+    build_csv_streaming_response as helpers_build_csv_streaming_response,
+)
 from app.core.db import get_async_db
 from app.core.dependencies import (
     get_current_verified_user,
@@ -26,9 +57,7 @@ from app.core.dependencies import (
     require_company_access,
     require_store_admin_company,
 )
-from app.core.exceptions import AuthorizationError, NotFoundError, _ensure_request_id
-from app.core.logging import audit_logger
-from app.core.rbac import is_platform_admin, is_store_admin, is_store_manager
+from app.core.rbac import is_platform_admin
 from app.core.security import resolve_tenant_company_id
 from app.core.subscriptions import FEATURE_PREORDERS, FEATURE_REPRICING, require_feature
 from app.models.billing import BillingInvoice, WalletBalance, WalletTransaction
@@ -62,110 +91,38 @@ router = APIRouter(
 
 
 def _parse_dt(value: str | None, field: str) -> datetime | None:
-    if not value:
-        return None
-    v = value.strip()
-    if v.endswith("Z"):
-        v = v[:-1] + "+00:00"
-    try:
-        dt = datetime.fromisoformat(v)
-    except Exception as exc:
-        raise HTTPException(status_code=422, detail=f"{field} must be ISO 8601") from exc
-    if dt.tzinfo is not None:
-        dt = dt.astimezone(UTC).replace(tzinfo=None)
-    return dt
+    return helpers_parse_dt(value, field)
 
 
 def _parse_date(value: str | None, field: str) -> date | None:
-    if not value:
-        return None
-    try:
-        return date.fromisoformat(value.strip())
-    except Exception as exc:
-        raise HTTPException(status_code=422, detail=f"{field} must be YYYY-MM-DD") from exc
+    return helpers_parse_date(value, field)
 
 
 def _date_bounds(date_from: date | None, date_to: date | None) -> tuple[datetime | None, datetime | None]:
-    start_dt = datetime.combine(date_from, time.min) if date_from else None
-    end_dt = datetime.combine(date_to, time.max) if date_to else None
-    return start_dt, end_dt
+    return helpers_date_bounds(date_from, date_to)
 
 
 def _resolve_wallet_report_company_id(
     current_user: User,
     company_id: int | None,
 ) -> int:
-    if is_platform_admin(current_user):
-        if company_id is not None:
-            return int(company_id)
-        return resolve_tenant_company_id(current_user, not_found_detail="Company not set")
-    if not (is_store_admin(current_user) or is_store_manager(current_user)):
-        raise AuthorizationError("Admin role required", "ADMIN_REQUIRED")
-    resolved_company_id = resolve_tenant_company_id(current_user, not_found_detail="Company not set")
-    if company_id is not None and int(company_id) != int(resolved_company_id):
-        raise NotFoundError("company_not_found", code="company_not_found", http_status=404)
-    return int(resolved_company_id)
+    return helpers_resolve_wallet_report_company_id(current_user, company_id)
 
 
 def _safe_reference(reference_type: str | None, reference_id: int | None) -> str:
-    ref = (reference_type or "").strip()
-    if not ref:
-        return ""
-    if reference_id is None:
-        return ref
-    return f"{ref}:{reference_id}"
+    return helpers_safe_reference(reference_type, reference_id)
 
 
 def _extract_kaspi_attrs(internal_notes: Any) -> dict[str, Any]:
-    if internal_notes is None:
-        return {}
-    if isinstance(internal_notes, dict):
-        data = internal_notes
-    elif isinstance(internal_notes, str):
-        try:
-            data = json.loads(internal_notes) if internal_notes.strip() else {}
-        except json.JSONDecodeError:
-            return {}
-    else:
-        return {}
-    if not isinstance(data, dict):
-        return {}
-    kaspi = data.get("kaspi")
-    return kaspi if isinstance(kaspi, dict) else {}
+    return helpers_extract_kaspi_attrs(internal_notes)
 
 
 def _to_optional_str(value: Any) -> str:
-    if value is None:
-        return ""
-    if isinstance(value, str):
-        return value
-    return str(value)
+    return helpers_to_optional_str(value)
 
 
 def _resolve_company_id_param(request: Request, company_id: int | None) -> int | None:
-    if company_id is not None:
-        return int(company_id)
-    raw = request.query_params.get("company_id")
-    if raw is None:
-        return None
-    try:
-        return int(raw)
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail="company_id must be integer") from exc
-
-
-def _csv_stream(rows: list[dict[str, str]], headers: list[str]) -> Any:
-    buffer = StringIO()
-    writer = csv.writer(buffer, lineterminator="\n")
-    writer.writerow(headers)
-    yield buffer.getvalue().encode("utf-8")
-    buffer.seek(0)
-    buffer.truncate(0)
-    for row in rows:
-        writer.writerow([row.get(col, "") for col in headers])
-        yield buffer.getvalue().encode("utf-8")
-        buffer.seek(0)
-        buffer.truncate(0)
+    return helpers_resolve_company_id_param(request, company_id)
 
 
 def _log_report_event(
@@ -178,19 +135,14 @@ def _log_report_event(
     limit: int,
     rows_count: int,
 ) -> None:
-    request_id = _ensure_request_id(request)
-    audit_logger.log_system_event(
-        level="info",
+    helpers_log_report_event(
+        request=request,
         event=event,
-        message="CSV report generated",
-        meta={
-            "request_id": request_id,
-            "company_id": resolved_company_id,
-            "date_from": date_from,
-            "date_to": date_to,
-            "limit": limit,
-            "rows_count": rows_count,
-        },
+        resolved_company_id=resolved_company_id,
+        date_from=date_from,
+        date_to=date_to,
+        limit=limit,
+        rows_count=rows_count,
     )
 
 
@@ -205,23 +157,15 @@ def _log_report_pdf_event(
     rows_count: int | None = None,
     extra_meta: dict[str, Any] | None = None,
 ) -> None:
-    request_id = _ensure_request_id(request)
-    meta: dict[str, Any] = {
-        "request_id": request_id,
-        "company_id": resolved_company_id,
-        "date_from": date_from,
-        "date_to": date_to,
-        "limit": limit,
-    }
-    if rows_count is not None:
-        meta["rows_count"] = rows_count
-    if extra_meta:
-        meta.update(extra_meta)
-    audit_logger.log_system_event(
-        level="info",
+    helpers_log_report_pdf_event(
+        request=request,
         event=event,
-        message="PDF report generated",
-        meta=meta,
+        resolved_company_id=resolved_company_id,
+        date_from=date_from,
+        date_to=date_to,
+        limit=limit,
+        rows_count=rows_count,
+        extra_meta=extra_meta,
     )
 
 
@@ -698,10 +642,10 @@ async def report_wallet_transactions_csv(
         "balance_after",
     ]
 
-    return StreamingResponse(
-        _csv_stream(rows, headers),
-        media_type="text/csv; charset=utf-8",
-        headers={"Content-Disposition": "attachment; filename=wallet-transactions.csv"},
+    return helpers_build_csv_streaming_response(
+        rows=rows,
+        headers=headers,
+        filename="wallet-transactions.csv",
     )
 
 
@@ -761,10 +705,10 @@ async def report_orders_csv(
         "kaspi_reservation_date",
     ]
 
-    return StreamingResponse(
-        _csv_stream(rows, headers),
-        media_type="text/csv; charset=utf-8",
-        headers={"Content-Disposition": "attachment; filename=orders.csv"},
+    return helpers_build_csv_streaming_response(
+        rows=rows,
+        headers=headers,
+        filename="orders.csv",
     )
 
 
@@ -826,10 +770,10 @@ async def report_order_items_csv(
         "created_at",
     ]
 
-    return StreamingResponse(
-        _csv_stream(rows, headers),
-        media_type="text/csv; charset=utf-8",
-        headers={"Content-Disposition": "attachment; filename=order-items.csv"},
+    return helpers_build_csv_streaming_response(
+        rows=rows,
+        headers=headers,
+        filename="order-items.csv",
     )
 
 
@@ -892,10 +836,10 @@ async def report_preorders_csv(
         "fulfilled_at",
     ]
 
-    return StreamingResponse(
-        _csv_stream(rows, headers),
-        media_type="text/csv; charset=utf-8",
-        headers={"Content-Disposition": "attachment; filename=preorders.csv"},
+    return helpers_build_csv_streaming_response(
+        rows=rows,
+        headers=headers,
+        filename="preorders.csv",
     )
 
 
@@ -950,10 +894,10 @@ async def report_inventory_csv(
         "updated_at",
     ]
 
-    return StreamingResponse(
-        _csv_stream(rows, headers),
-        media_type="text/csv; charset=utf-8",
-        headers={"Content-Disposition": "attachment; filename=inventory.csv"},
+    return helpers_build_csv_streaming_response(
+        rows=rows,
+        headers=headers,
+        filename="inventory.csv",
     )
 
 
@@ -1018,10 +962,10 @@ async def report_repricing_runs_csv(
         "request_id",
     ]
 
-    return StreamingResponse(
-        _csv_stream(rows, headers),
-        media_type="text/csv; charset=utf-8",
-        headers={"Content-Disposition": "attachment; filename=repricing-runs.csv"},
+    return helpers_build_csv_streaming_response(
+        rows=rows,
+        headers=headers,
+        filename="repricing-runs.csv",
     )
 
 

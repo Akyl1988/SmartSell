@@ -158,58 +158,43 @@ def _router_or_none(mod: Any) -> APIRouter | None:
 
 
 V1_ROUTERS: list[tuple[str, APIRouter, bool]] = []
-if auth_mod and _router_or_none(auth_mod):
-    V1_ROUTERS.append(("auth", auth_mod.router, False))
-if users_mod and _router_or_none(users_mod):
-    V1_ROUTERS.append(("users", users_mod.router, False))
-if products_mod and _router_or_none(products_mod):
-    V1_ROUTERS.append(("products", products_mod.router, False))
-if pricing_mod and _router_or_none(pricing_mod):
-    V1_ROUTERS.append(("pricing", pricing_mod.router, False))
-if repricing_mod and _router_or_none(repricing_mod):
-    V1_ROUTERS.append(("repricing", repricing_mod.router, False))
-if preorders_mod and _router_or_none(preorders_mod):
-    V1_ROUTERS.append(("preorders", preorders_mod.router, False))
-if warehouses_mod and _router_or_none(warehouses_mod):
-    V1_ROUTERS.append(("warehouses", warehouses_mod.router, False))
-if inventory_mod and _router_or_none(inventory_mod):
-    V1_ROUTERS.append(("inventory", inventory_mod.router, False))
-if orders_mod and _router_or_none(orders_mod):
-    V1_ROUTERS.append(("orders", orders_mod.router, False))
-if campaigns_mod and _router_or_none(campaigns_mod):
-    # в этом модуле prefix уже абсолютный '/api/v1/campaigns'
-    V1_ROUTERS.append(("campaigns", campaigns_mod.router, True))
-if analytics_mod and _router_or_none(analytics_mod):
-    V1_ROUTERS.append(("analytics", analytics_mod.router, False))
-if exports_mod and _router_or_none(exports_mod):
-    V1_ROUTERS.append(("exports", exports_mod.router, False))
-if reports_mod and _router_or_none(reports_mod):
-    V1_ROUTERS.append(("reports", reports_mod.router, False))
+
+
+def _append_router_if_present(name: str, mod: Any, is_absolute: bool = False) -> bool:
+    router = _router_or_none(mod) if mod else None
+    if not router:
+        return False
+    V1_ROUTERS.append((name, router, is_absolute))
+    return True
+
+
+_append_router_if_present("auth", auth_mod, False)
+_append_router_if_present("users", users_mod, False)
+_append_router_if_present("products", products_mod, False)
+_append_router_if_present("pricing", pricing_mod, False)
+_append_router_if_present("repricing", repricing_mod, False)
+_append_router_if_present("preorders", preorders_mod, False)
+_append_router_if_present("warehouses", warehouses_mod, False)
+_append_router_if_present("inventory", inventory_mod, False)
+_append_router_if_present("orders", orders_mod, False)
+_append_router_if_present("campaigns", campaigns_mod, True)
+_append_router_if_present("analytics", analytics_mod, False)
+_append_router_if_present("exports", exports_mod, False)
+_append_router_if_present("reports", reports_mod, False)
 
 # Поддержка кошелька и платежей, если модули присутствуют
-if wallet and _router_or_none(wallet):
-    # в wallet.py объявлен prefix '/api/v1/wallet'
-    V1_ROUTERS.append(("wallet", wallet.router, True))
-if payments and _router_or_none(payments):
-    # ожидаемый prefix '/api/v1/payments'
-    V1_ROUTERS.append(("payments", payments.router, True))
-if invoices and _router_or_none(invoices):
-    # ожидаемый prefix '/api/v1/invoices'
-    V1_ROUTERS.append(("invoices", invoices.router, True))
+_append_router_if_present("wallet", wallet, True)
+_append_router_if_present("payments", payments, True)
+_append_router_if_present("invoices", invoices, True)
 
 # ⬇⬇⬇ ДОБАВЛЕНО: регистрация Kaspi
-if kaspi_mod and _router_or_none(kaspi_mod):
-    # в kaspi.py объявлен prefix '/api/v1/kaspi' → абсолютный
-    V1_ROUTERS.append(("kaspi", kaspi_mod.router, True))
+if _append_router_if_present("kaspi", kaspi_mod, True):
     public_router = getattr(kaspi_mod, "public_router", None)
     if isinstance(public_router, APIRouter):
         V1_ROUTERS.append(("kaspi_public", public_router, True))
-if integrations_mod and _router_or_none(integrations_mod):
-    V1_ROUTERS.append(("integrations", integrations_mod.router, True))
-if debug_db_mod and _router_or_none(debug_db_mod):
-    V1_ROUTERS.append(("debug_db", debug_db_mod.router, True))
-if admin_mod and _router_or_none(admin_mod):
-    V1_ROUTERS.append(("admin", admin_mod.router, True))
+_append_router_if_present("integrations", integrations_mod, True)
+_append_router_if_present("debug_db", debug_db_mod, True)
+_append_router_if_present("admin", admin_mod, True)
 
 
 def register_v1_router(name: str, router: APIRouter, is_absolute: bool = False) -> None:
