@@ -14,6 +14,11 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.admin.integrations import router as integrations_router
+from app.api.v1.admin_api_helpers import (
+    build_campaign_processing_payload,
+    build_campaign_queue_item_payload,
+    build_campaign_transition_audit_meta,
+)
 from app.api.v1.admin_plans import router as plans_router
 from app.core.config import settings
 from app.core.db import get_async_db
@@ -265,21 +270,7 @@ class CampaignRunIn(BaseModel):
 
 
 def _campaign_queue_payload(campaign: Campaign) -> dict:
-    return {
-        "id": campaign.id,
-        "company_id": campaign.company_id,
-        "title": campaign.title,
-        "processing_status": campaign.processing_status.value,
-        "queued_at": campaign.queued_at.isoformat() if campaign.queued_at else None,
-        "started_at": campaign.started_at.isoformat() if campaign.started_at else None,
-        "finished_at": campaign.finished_at.isoformat() if campaign.finished_at else None,
-        "failed_at": campaign.failed_at.isoformat() if campaign.failed_at else None,
-        "next_attempt_at": campaign.next_attempt_at.isoformat() if campaign.next_attempt_at else None,
-        "attempts": campaign.attempts,
-        "last_error": campaign.last_error,
-        "request_id": campaign.request_id,
-        "requested_by_user_id": campaign.requested_by_user_id,
-    }
+    return build_campaign_queue_item_payload(campaign)
 
 
 def _resolve_campaign_run_params(
@@ -470,18 +461,7 @@ async def queue_campaign_run(
         CampaignProcessingStatus.QUEUED,
         CampaignProcessingStatus.PROCESSING,
     ) and not should_force_requeue(campaign):
-        return {
-            "campaign_id": campaign.id,
-            "status": campaign.processing_status.value,
-            "queued_at": campaign.queued_at.isoformat() if campaign.queued_at else None,
-            "started_at": campaign.started_at.isoformat() if campaign.started_at else None,
-            "finished_at": campaign.finished_at.isoformat() if campaign.finished_at else None,
-            "failed_at": campaign.failed_at.isoformat() if campaign.failed_at else None,
-            "next_attempt_at": campaign.next_attempt_at.isoformat() if campaign.next_attempt_at else None,
-            "last_error": campaign.last_error,
-            "attempts": campaign.attempts,
-            "request_id": campaign.request_id or request_id,
-        }
+        return build_campaign_processing_payload(campaign, campaign.request_id or request_id)
 
     campaign = await queue_campaign_run_service(
         db,
@@ -491,18 +471,7 @@ async def queue_campaign_run(
         now=datetime.now(UTC),
     )
 
-    return {
-        "campaign_id": campaign.id,
-        "status": campaign.processing_status.value,
-        "queued_at": campaign.queued_at.isoformat() if campaign.queued_at else None,
-        "started_at": campaign.started_at.isoformat() if campaign.started_at else None,
-        "finished_at": campaign.finished_at.isoformat() if campaign.finished_at else None,
-        "failed_at": campaign.failed_at.isoformat() if campaign.failed_at else None,
-        "next_attempt_at": campaign.next_attempt_at.isoformat() if campaign.next_attempt_at else None,
-        "last_error": campaign.last_error,
-        "attempts": campaign.attempts,
-        "request_id": request_id,
-    }
+    return build_campaign_processing_payload(campaign, request_id)
 
 
 @router.get(
@@ -579,18 +548,7 @@ async def requeue_campaign(
         force=force,
     )
 
-    payload = {
-        "campaign_id": campaign.id,
-        "status": campaign.processing_status.value,
-        "queued_at": campaign.queued_at.isoformat() if campaign.queued_at else None,
-        "started_at": campaign.started_at.isoformat() if campaign.started_at else None,
-        "finished_at": campaign.finished_at.isoformat() if campaign.finished_at else None,
-        "failed_at": campaign.failed_at.isoformat() if campaign.failed_at else None,
-        "next_attempt_at": campaign.next_attempt_at.isoformat() if campaign.next_attempt_at else None,
-        "last_error": campaign.last_error,
-        "attempts": campaign.attempts,
-        "request_id": campaign.request_id or request_id,
-    }
+    payload = build_campaign_processing_payload(campaign, campaign.request_id or request_id)
     if force:
         payload["warning"] = "requeued_while_processing"
 
@@ -598,19 +556,16 @@ async def requeue_campaign(
         level="info",
         event="campaign_requeue",
         message="Campaign requeued by admin",
-        meta={
-            "action": "campaign_requeue",
-            "campaign_id": campaign.id,
-            "admin_user_id": getattr(admin, "id", None),
-            "request_id": request_id,
-            "force": bool(force),
-            "prev_processing_status": prev_status,
-            "prev_attempts": prev_attempts,
-            "prev_last_error": prev_last_error,
-            "new_processing_status": campaign.processing_status.value,
-            "new_attempts": campaign.attempts,
-            "new_last_error": campaign.last_error,
-        },
+        meta=build_campaign_transition_audit_meta(
+            action="campaign_requeue",
+            campaign=campaign,
+            admin_user_id=getattr(admin, "id", None),
+            request_id=request_id,
+            force=force,
+            prev_processing_status=prev_status,
+            prev_attempts=prev_attempts,
+            prev_last_error=prev_last_error,
+        ),
     )
     return payload
 
@@ -642,32 +597,18 @@ async def cancel_campaign(
             level="info",
             event="campaign_cancel",
             message="Campaign cancel requested (noop)",
-            meta={
-                "action": "campaign_cancel",
-                "campaign_id": campaign.id,
-                "admin_user_id": getattr(admin, "id", None),
-                "request_id": request_id,
-                "force": False,
-                "prev_processing_status": campaign.processing_status.value,
-                "prev_attempts": campaign.attempts,
-                "prev_last_error": campaign.last_error,
-                "new_processing_status": campaign.processing_status.value,
-                "new_attempts": campaign.attempts,
-                "new_last_error": campaign.last_error,
-            },
+            meta=build_campaign_transition_audit_meta(
+                action="campaign_cancel",
+                campaign=campaign,
+                admin_user_id=getattr(admin, "id", None),
+                request_id=request_id,
+                force=False,
+                prev_processing_status=campaign.processing_status.value,
+                prev_attempts=campaign.attempts,
+                prev_last_error=campaign.last_error,
+            ),
         )
-        return {
-            "campaign_id": campaign.id,
-            "status": campaign.processing_status.value,
-            "queued_at": campaign.queued_at.isoformat() if campaign.queued_at else None,
-            "started_at": campaign.started_at.isoformat() if campaign.started_at else None,
-            "finished_at": campaign.finished_at.isoformat() if campaign.finished_at else None,
-            "failed_at": campaign.failed_at.isoformat() if campaign.failed_at else None,
-            "next_attempt_at": campaign.next_attempt_at.isoformat() if campaign.next_attempt_at else None,
-            "last_error": campaign.last_error,
-            "attempts": campaign.attempts,
-            "request_id": campaign.request_id,
-        }
+        return build_campaign_processing_payload(campaign, campaign.request_id)
 
     prev_status = campaign.processing_status.value
     prev_attempts = campaign.attempts
@@ -685,33 +626,19 @@ async def cancel_campaign(
         level="info",
         event="campaign_cancel",
         message="Campaign cancelled by admin",
-        meta={
-            "action": "campaign_cancel",
-            "campaign_id": campaign.id,
-            "admin_user_id": getattr(admin, "id", None),
-            "request_id": request_id,
-            "force": False,
-            "prev_processing_status": prev_status,
-            "prev_attempts": prev_attempts,
-            "prev_last_error": prev_last_error,
-            "new_processing_status": campaign.processing_status.value,
-            "new_attempts": campaign.attempts,
-            "new_last_error": campaign.last_error,
-        },
+        meta=build_campaign_transition_audit_meta(
+            action="campaign_cancel",
+            campaign=campaign,
+            admin_user_id=getattr(admin, "id", None),
+            request_id=request_id,
+            force=False,
+            prev_processing_status=prev_status,
+            prev_attempts=prev_attempts,
+            prev_last_error=prev_last_error,
+        ),
     )
 
-    return {
-        "campaign_id": campaign.id,
-        "status": campaign.processing_status.value,
-        "queued_at": campaign.queued_at.isoformat() if campaign.queued_at else None,
-        "started_at": campaign.started_at.isoformat() if campaign.started_at else None,
-        "finished_at": campaign.finished_at.isoformat() if campaign.finished_at else None,
-        "failed_at": campaign.failed_at.isoformat() if campaign.failed_at else None,
-        "next_attempt_at": campaign.next_attempt_at.isoformat() if campaign.next_attempt_at else None,
-        "last_error": campaign.last_error,
-        "attempts": campaign.attempts,
-        "request_id": campaign.request_id or request_id,
-    }
+    return build_campaign_processing_payload(campaign, campaign.request_id or request_id)
 
 
 @router.get(

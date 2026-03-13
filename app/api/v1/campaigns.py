@@ -17,6 +17,16 @@ from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
+from app.api.v1.campaigns_api_helpers import (
+    ORM_ACTIVE_STATUSES,
+    build_campaign_queue_response,
+    normalize_campaigns_db_url,
+    orm_campaign_to_payload,
+    orm_message_to_payload,
+    orm_status_is_active,
+    resolve_campaigns_storage_backend,
+    sync_storage_campaign_processing,
+)
 from app.api.v1.campaigns_helpers import _normalize_tags, _now_iso, _parse_dt
 from app.api.v1.campaigns_schemas import (
     AddTagRequest,
@@ -89,38 +99,12 @@ _STORAGE_BACKEND: str | None = None
 _STORAGE_INSTANCE: Any | None = None
 
 
-def _truthy_env(name: str) -> bool:
-    return os.getenv(name, "").strip().lower() in {"1", "true", "yes", "on"}
-
-
 def _resolve_campaigns_storage_backend() -> str:
-    if _truthy_env("FORCE_INMEMORY_BACKENDS"):
-        return "memory"
-
-    raw = (os.getenv("SMARTSELL_CAMPAIGNS_STORAGE") or "").strip().lower()
-    if raw in {"orm", "memory", "legacy_sql"}:
-        return raw
-    if raw == "sql":
-        return "legacy_sql"
-
-    # Backward compatibility
-    if _truthy_env("SMARTSELL_USE_SQL"):
-        return "legacy_sql"
-
-    # Default: ORM (never legacy_sql by default)
-    return "orm"
+    return resolve_campaigns_storage_backend()
 
 
 def _normalize_campaigns_db_url() -> str | None:
-    raw = os.getenv("DATABASE_URL") or os.getenv("DB_URL") or ""
-    url = raw.strip()
-    if not url:
-        return None
-    if url.startswith("postgresql+asyncpg://"):
-        return url.replace("postgresql+asyncpg://", "postgresql+psycopg2://", 1)
-    if url.startswith("postgresql+psycopg://"):
-        return url.replace("postgresql+psycopg://", "postgresql+psycopg2://", 1)
-    return url
+    return normalize_campaigns_db_url()
 
 
 def _init_campaigns_storage() -> Any:
@@ -389,60 +373,19 @@ def _save_campaign(c: Campaign) -> None:
     storage.save_campaign(c.model_dump())
 
 
-_ORM_ACTIVE_STATUSES = [
-    DbCampaignStatus.ACTIVE,
-    DbCampaignStatus.READY,
-    DbCampaignStatus.SCHEDULED,
-    DbCampaignStatus.RUNNING,
-    DbCampaignStatus.SUCCESS,
-]
+_ORM_ACTIVE_STATUSES = ORM_ACTIVE_STATUSES
 
 
 def _orm_status_is_active(status: DbCampaignStatus | None) -> bool:
-    if status is None:
-        return False
-    return status in _ORM_ACTIVE_STATUSES
+    return orm_status_is_active(status)
 
 
 def _orm_message_to_payload(message: DbMessage) -> dict[str, Any]:
-    return {
-        "id": message.id,
-        "recipient": message.recipient,
-        "content": message.content,
-        "status": message.status.value,
-        "channel": message.channel.value,
-        "scheduled_for": None,
-        "error": message.error_message,
-    }
+    return orm_message_to_payload(message)
 
 
 def _orm_campaign_to_payload(campaign: DbCampaign, messages: list[DbMessage]) -> dict[str, Any]:
-    processing_status = campaign.processing_status
-    if processing_status is None:
-        processing_status = DbCampaignProcessingStatus.DONE
-    return {
-        "id": campaign.id,
-        "title": campaign.title,
-        "description": campaign.description,
-        "active": _orm_status_is_active(campaign.status),
-        "archived": campaign.deleted_at is not None,
-        "company_id": campaign.company_id,
-        "tags": [],
-        "messages": [_orm_message_to_payload(message) for message in messages],
-        "created_at": campaign.created_at.isoformat() if campaign.created_at else None,
-        "updated_at": campaign.updated_at.isoformat() if campaign.updated_at else None,
-        "schedule": campaign.scheduled_at.isoformat() if campaign.scheduled_at else None,
-        "owner": None,
-        "processing_status": processing_status.value,
-        "queued_at": campaign.queued_at.isoformat() if campaign.queued_at else None,
-        "started_at": campaign.started_at.isoformat() if campaign.started_at else None,
-        "finished_at": campaign.finished_at.isoformat() if campaign.finished_at else None,
-        "failed_at": campaign.failed_at.isoformat() if campaign.failed_at else None,
-        "next_attempt_at": campaign.next_attempt_at.isoformat() if campaign.next_attempt_at else None,
-        "last_error": campaign.last_error,
-        "attempts": int(campaign.attempts or 0),
-        "request_id": campaign.request_id,
-    }
+    return orm_campaign_to_payload(campaign, messages)
 
 
 def _title_exists(
@@ -839,17 +782,7 @@ async def queue_campaign_run_store(
         DbCampaignProcessingStatus.QUEUED,
         DbCampaignProcessingStatus.PROCESSING,
     ) and not should_force_requeue(campaign):
-        return {
-            "campaign_id": campaign.id,
-            "status": campaign.processing_status.value,
-            "queued_at": campaign.queued_at.isoformat() if campaign.queued_at else None,
-            "started_at": campaign.started_at.isoformat() if campaign.started_at else None,
-            "finished_at": campaign.finished_at.isoformat() if campaign.finished_at else None,
-            "failed_at": campaign.failed_at.isoformat() if campaign.failed_at else None,
-            "last_error": campaign.last_error,
-            "attempts": campaign.attempts,
-            "request_id": campaign.request_id or request_id,
-        }
+        return build_campaign_queue_response(campaign, campaign.request_id or request_id)
 
     campaign = await queue_campaign_run(
         db,
@@ -861,31 +794,14 @@ async def queue_campaign_run_store(
 
     backend = _get_campaigns_storage_backend()
     if backend != "orm":
-        stored = storage.get_campaign(campaign_id)
-        if stored:
-            stored["processing_status"] = campaign.processing_status.value
-            stored["queued_at"] = campaign.queued_at.isoformat() if campaign.queued_at else None
-            stored["started_at"] = campaign.started_at.isoformat() if campaign.started_at else None
-            stored["finished_at"] = campaign.finished_at.isoformat() if campaign.finished_at else None
-            stored["failed_at"] = campaign.failed_at.isoformat() if campaign.failed_at else None
-            stored["next_attempt_at"] = campaign.next_attempt_at.isoformat() if campaign.next_attempt_at else None
-            stored["last_error"] = campaign.last_error
-            stored["attempts"] = int(campaign.attempts or 0)
-            stored["request_id"] = campaign.request_id
-            stored["updated_at"] = _now_iso()
-            storage.save_campaign(stored)
+        sync_storage_campaign_processing(
+            storage=storage,
+            campaign_id=campaign_id,
+            campaign=campaign,
+            now_iso=_now_iso(),
+        )
 
-    return {
-        "campaign_id": campaign.id,
-        "status": campaign.processing_status.value,
-        "queued_at": campaign.queued_at.isoformat() if campaign.queued_at else None,
-        "started_at": campaign.started_at.isoformat() if campaign.started_at else None,
-        "finished_at": campaign.finished_at.isoformat() if campaign.finished_at else None,
-        "failed_at": campaign.failed_at.isoformat() if campaign.failed_at else None,
-        "last_error": campaign.last_error,
-        "attempts": campaign.attempts,
-        "request_id": request_id,
-    }
+    return build_campaign_queue_response(campaign, request_id)
 
 
 # ---- Diagnostics / Search / Export / Import / Drafts (статические пути) ------

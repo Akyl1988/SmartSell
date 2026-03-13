@@ -206,6 +206,23 @@ async def _get_subscription_scoped(
     )
 
 
+async def _load_scoped_subscription(
+    db: AsyncSession,
+    user: User,
+    subscription_id: int,
+    *,
+    allow_deleted: bool = False,
+):
+    resolved_company_id = resolve_tenant_company_id(user, not_found_detail="Company not set")
+    return await get_subscription_scoped(db, user, subscription_id, resolved_company_id, allow_deleted=allow_deleted)
+
+
+async def _commit_refresh_return(db: AsyncSession, subscription):
+    await db.commit()
+    await db.refresh(subscription)
+    return subscription
+
+
 @router.get("/plans", response_model=list[PlanCatalogOut])
 async def list_plan_catalog(
     user: User = Depends(_auth_user),
@@ -275,9 +292,7 @@ async def get_subscription(
     db: AsyncSession = Depends(get_async_db),
     user: User = Depends(_auth_user),
 ):
-    resolved_company_id = resolve_tenant_company_id(user, not_found_detail="Company not set")
-    sub = await get_subscription_scoped(db, user, subscription_id, resolved_company_id)
-    return sub
+    return await _load_scoped_subscription(db, user, subscription_id)
 
 
 @router.post("", response_model=SubscriptionOut, status_code=status.HTTP_201_CREATED)
@@ -320,15 +335,11 @@ async def update_subscription(
     db: AsyncSession = Depends(get_async_db),
     user: User = Depends(_auth_user),
 ):
-    resolved_company_id = resolve_tenant_company_id(user, not_found_detail="Company not set")
-    sub = await get_subscription_scoped(db, user, subscription_id, resolved_company_id)
+    sub = await _load_scoped_subscription(db, user, subscription_id)
 
     try:
         apply_subscription_update(sub, payload)
-
-        await db.commit()
-        await db.refresh(sub)
-        return sub
+        return await _commit_refresh_return(db, sub)
 
     except IntegrityError as e:
         await db.rollback()
@@ -346,16 +357,13 @@ async def cancel_subscription(
     db: AsyncSession = Depends(get_async_db),
     user: User = Depends(_auth_user),
 ):
-    resolved_company_id = resolve_tenant_company_id(user, not_found_detail="Company not set")
-    sub = await get_subscription_scoped(db, user, subscription_id, resolved_company_id)
+    sub = await _load_scoped_subscription(db, user, subscription_id)
 
     if sub.status == "canceled":
         return sub  # идемпотентно
 
     apply_cancel_subscription(sub)
-    await db.commit()
-    await db.refresh(sub)
-    return sub
+    return await _commit_refresh_return(db, sub)
 
 
 @router.post("/{subscription_id}/resume", response_model=SubscriptionOut)
@@ -364,14 +372,10 @@ async def resume_subscription(
     db: AsyncSession = Depends(get_async_db),
     user: User = Depends(_auth_user),
 ):
-    resolved_company_id = resolve_tenant_company_id(user, not_found_detail="Company not set")
-    sub = await get_subscription_scoped(db, user, subscription_id, resolved_company_id)
+    sub = await _load_scoped_subscription(db, user, subscription_id)
 
     await apply_resume_subscription(db, sub)
-
-    await db.commit()
-    await db.refresh(sub)
-    return sub
+    return await _commit_refresh_return(db, sub)
 
 
 @router.post("/{subscription_id}/renew", response_model=SubscriptionOut)
@@ -383,13 +387,10 @@ async def renew_subscription(
     """
     Простое продление (вызвать после успешной оплаты).
     """
-    resolved_company_id = resolve_tenant_company_id(user, not_found_detail="Company not set")
-    sub = await get_subscription_scoped(db, user, subscription_id, resolved_company_id)
+    sub = await _load_scoped_subscription(db, user, subscription_id)
 
     apply_renew_subscription(sub)
-    await db.commit()
-    await db.refresh(sub)
-    return sub
+    return await _commit_refresh_return(db, sub)
 
 
 @router.post("/{subscription_id}/end-trial", response_model=SubscriptionOut)
@@ -401,13 +402,10 @@ async def end_trial(
     """
     Принудительно завершить trial и перевести в active (например, после ранней оплаты).
     """
-    resolved_company_id = resolve_tenant_company_id(user, not_found_detail="Company not set")
-    sub = await get_subscription_scoped(db, user, subscription_id, resolved_company_id)
+    sub = await _load_scoped_subscription(db, user, subscription_id)
 
     apply_end_trial(sub)
-    await db.commit()
-    await db.refresh(sub)
-    return sub
+    return await _commit_refresh_return(db, sub)
 
 
 @router.post("/{subscription_id}/archive", response_model=SubscriptionOut)
@@ -419,17 +417,14 @@ async def archive_subscription(
     if not is_platform_admin(user):
         raise HTTPException(status_code=403, detail="Admin only")
 
-    resolved_company_id = resolve_tenant_company_id(user, not_found_detail="Company not set")
-    sub = await get_subscription_scoped(db, user, subscription_id, resolved_company_id, allow_deleted=True)
+    sub = await _load_scoped_subscription(db, user, subscription_id, allow_deleted=True)
 
     if sub.deleted_at:
         return sub
 
     # Soft-delete uses naive UTC timestamp to match existing column type
     apply_archive_subscription(sub)
-    await db.commit()
-    await db.refresh(sub)
-    return sub
+    return await _commit_refresh_return(db, sub)
 
 
 @router.post("/{subscription_id}/restore", response_model=SubscriptionOut)
@@ -441,13 +436,10 @@ async def restore_subscription(
     if not is_platform_admin(user):
         raise HTTPException(status_code=403, detail="Admin only")
 
-    resolved_company_id = resolve_tenant_company_id(user, not_found_detail="Company not set")
-    sub = await get_subscription_scoped(db, user, subscription_id, resolved_company_id, allow_deleted=True)
+    sub = await _load_scoped_subscription(db, user, subscription_id, allow_deleted=True)
 
     apply_restore_subscription(sub)
-    await db.commit()
-    await db.refresh(sub)
-    return sub
+    return await _commit_refresh_return(db, sub)
 
 
 @router.get("/{subscription_id}/payments", response_model=list[PaymentOut])
@@ -460,7 +452,6 @@ async def list_subscription_payments(
     История платежей, связанных с подпиской (упрощённо: по company_id и plan).
     В проде лучше иметь Subscription->Payment связь явно.
     """
-    resolved_company_id = resolve_tenant_company_id(user, not_found_detail="Company not set")
-    sub = await get_subscription_scoped(db, user, subscription_id, resolved_company_id)
+    sub = await _load_scoped_subscription(db, user, subscription_id)
     company = await ensure_sub_access(user, sub, db)
     return await list_subscription_payments_rows(db, company_id=company.id, subscription_id=subscription_id)

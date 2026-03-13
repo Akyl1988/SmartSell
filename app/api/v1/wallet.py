@@ -103,6 +103,10 @@ def _pick_http_status(exc: Exception) -> int:
     return status.HTTP_400_BAD_REQUEST
 
 
+def _raise_http_from_exception(exc: Exception) -> None:
+    raise HTTPException(status_code=_pick_http_status(exc), detail=str(exc))
+
+
 def _safe_bool(v: Any, default: bool = False) -> bool:
     try:
         return bool(v)
@@ -448,7 +452,7 @@ async def list_accounts(
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(status_code=_pick_http_status(e), detail=str(e))
+        _raise_http_from_exception(e)
 
 
 @read_router.get(
@@ -483,7 +487,7 @@ async def get_account_by_user_currency(
     except NotFoundError:
         raise
     except Exception as e:
-        raise HTTPException(status_code=_pick_http_status(e), detail=str(e))
+        _raise_http_from_exception(e)
 
 
 @read_router.get(
@@ -511,7 +515,7 @@ async def get_account(
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(status_code=_pick_http_status(e), detail=str(e))
+        _raise_http_from_exception(e)
 
 
 @read_router.get(
@@ -540,7 +544,7 @@ async def get_balance(
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(status_code=_pick_http_status(e), detail=str(e))
+        _raise_http_from_exception(e)
 
 
 # =============================================================================
@@ -699,7 +703,7 @@ async def ledger(
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(status_code=_pick_http_status(e), detail=str(e))
+        _raise_http_from_exception(e)
 
 
 # =============================================================================
@@ -743,7 +747,7 @@ async def adjust_balance(
         raise
     except Exception as e:
         await db.rollback()
-        raise HTTPException(status_code=_pick_http_status(e), detail=str(e))
+        _raise_http_from_exception(e)
 
 
 router.include_router(read_router)
