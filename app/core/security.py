@@ -688,6 +688,7 @@ def _get_denylist_backend() -> DenylistBackend:
         _DENYLIST = _build_denylist_backend()
     return _DENYLIST
 
+
 # --- In-memory access token revoke fallback ---
 REVOKED_ACCESS_TOKENS: set[str] = set()
 
