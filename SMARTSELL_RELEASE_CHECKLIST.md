@@ -7,9 +7,9 @@ Define a lightweight but strict production release gate for SmartSell so first-c
 - [ ] **Database migrations**: migration order validated; upgrade runs cleanly on staging/prod-like DB.
 - [ ] **Secrets present**: required env vars configured (DB, JWT, Redis, Kaspi, billing-related keys).
 - [ ] **Redis connectivity**: app can connect and ping Redis from release environment.
-- [ ] **Kaspi integration health**: token/session valid; last sync path callable; no unresolved critical integration error.
+- [x] **Kaspi integration health**: token/session valid; last sync path callable; no unresolved critical integration error. (evidence: `docs/launch/kaspi_day1_evidence_2026-03-14.md`)
 - [ ] **Billing subsystem health**: subscription checks and renewal path are operational; no blocking billing errors in logs.
-- [ ] **Smoke tests passing**: targeted smoke scripts/tests pass for core flows (auth, orders, inventory/reservations, critical admin checks).
+- [x] **Smoke tests passing**: targeted smoke scripts/tests pass for core flows (auth, orders, inventory/reservations, critical admin checks). (evidence: `docs/launch/release_gate_run_2026-03-14.md`)
 
 ## 3. Deployment steps
 1. Announce release window and freeze non-essential changes.
@@ -20,8 +20,8 @@ Define a lightweight but strict production release gate for SmartSell so first-c
 6. Confirm service startup health checks.
 
 ## 4. Post-deploy verification
-- [ ] API health endpoint(s) return success.
-- [ ] Authentication/login works for admin role.
+- [x] API health endpoint(s) return success. (evidence: `docs/launch/release_gate_run_2026-03-14.md`, `docs/launch/kaspi_day1_evidence_2026-03-14.md`)
+- [x] Authentication/login works for admin role. (evidence: `docs/launch/kaspi_day1_evidence_2026-03-14.md`)
 - [ ] One tenant read/write sanity check succeeds (no cross-tenant leakage).
 - [ ] Kaspi sync trigger/list path responds without critical errors.
 - [ ] Billing/subscription read path works for active tenant.
