@@ -1600,7 +1600,6 @@ class Settings(BaseSettings):
     def pg_extra_query_params(self) -> dict[str, str]:
         """
         Дополнительные query-параметры для PostgreSQL DSN.
-        По умолчанию в проде добавим sslmode=require (если не задан).
         """
         q: dict[str, str] = {}
         if self.POSTGRES_STATEMENT_TIMEOUT_MS:
@@ -1610,8 +1609,6 @@ class Settings(BaseSettings):
                 q["options"] = f"-c statement_timeout={int(self.POSTGRES_STATEMENT_TIMEOUT_MS)}"
         if self.POSTGRES_SSLMODE:
             q["sslmode"] = self.POSTGRES_SSLMODE
-        elif self.is_production:
-            q["sslmode"] = "require"
         return q
 
     def _coerce_sqlalchemy_urls(self, url: str | None) -> tuple[str | None, str | None, str | None]:
@@ -1645,6 +1642,9 @@ class Settings(BaseSettings):
             parsed_base = urlparse(base)
             qs = parse_qs(parsed_base.query)
             for k, v in self.pg_extra_query_params().items():
+                # Honor explicit sslmode in DATABASE_URL unless POSTGRES_SSLMODE explicitly forces override.
+                if k == "sslmode" and "sslmode" in qs and not self.POSTGRES_SSLMODE:
+                    continue
                 qs[k] = [v]
             new_query = urlencode(qs, doseq=True)
             base_with_q = urlunparse(
@@ -2226,10 +2226,6 @@ def get_settings() -> Settings:
             object.__setattr__(s, "REDIS_URL", new_url)
         except Exception:
             pass
-
-    # Безопасный дефолт sslmode=require под прод, если не задан явно
-    if s.is_production and not s.POSTGRES_SSLMODE:
-        object.__setattr__(s, "POSTGRES_SSLMODE", "require")
 
     # Страховка: если порт SMTP не задан или 0 — выставим 587
     try:

@@ -679,7 +679,14 @@ def _build_denylist_backend() -> DenylistBackend:
     return InMemoryDenylist()
 
 
-_DENYLIST: DenylistBackend = _build_denylist_backend()
+_DENYLIST: DenylistBackend | None = None
+
+
+def _get_denylist_backend() -> DenylistBackend:
+    global _DENYLIST
+    if _DENYLIST is None:
+        _DENYLIST = _build_denylist_backend()
+    return _DENYLIST
 
 # --- In-memory access token revoke fallback ---
 REVOKED_ACCESS_TOKENS: set[str] = set()
@@ -697,18 +704,19 @@ def is_access_token_revoked(token: str) -> bool:
 
 
 def is_token_revoked(jti: str) -> bool:
+    backend = _get_denylist_backend()
     try:
-        return _DENYLIST.is_revoked(jti)
+        return backend.is_revoked(jti)
     except Exception:
         return False
 
 
 def revoke_token(jti: str, ttl_seconds: int | None = None) -> None:
-    _DENYLIST.revoke(jti, ttl_seconds)
+    _get_denylist_backend().revoke(jti, ttl_seconds)
 
 
 def list_revoked_jtis(limit: int = 100) -> list[str]:
-    return _DENYLIST.list_jtis(limit=limit)
+    return _get_denylist_backend().list_jtis(limit=limit)
 
 
 def denylist_key_for_token(token: str, payload: dict | None = None) -> str | None:
