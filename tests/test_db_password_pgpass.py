@@ -198,8 +198,12 @@ def test_sqlalchemy_sync_url_preserves_explicit_sslmode_disable_in_prod(monkeypa
     monkeypatch.delenv("POSTGRES_SSLMODE", raising=False)
 
     s = SettingsCls()
+    async_url = s.sqlalchemy_async_url
     sync_url = s.sqlalchemy_sync_url
 
+    assert async_url is not None
+    assert "sslmode=disable" in async_url
+    assert "sslmode=require" not in async_url
     assert sync_url is not None
     assert "sslmode=disable" in sync_url
     assert "sslmode=require" not in sync_url
@@ -214,7 +218,28 @@ def test_sqlalchemy_sync_url_uses_postgres_sslmode_override_when_set(monkeypatch
     monkeypatch.setenv("POSTGRES_SSLMODE", "require")
 
     s = SettingsCls()
+    async_url = s.sqlalchemy_async_url
     sync_url = s.sqlalchemy_sync_url
 
+    assert async_url is not None
+    assert "sslmode=require" in async_url
     assert sync_url is not None
     assert "sslmode=require" in sync_url
+
+
+def test_sqlalchemy_urls_do_not_force_sslmode_require_without_override(monkeypatch):
+    from app.core.config import Settings as SettingsCls
+
+    _clear_db_env(monkeypatch)
+    monkeypatch.setenv("ENVIRONMENT", "production")
+    monkeypatch.setenv("DATABASE_URL", "postgresql+asyncpg://postgres:admin123@127.0.0.1:5432/smartsell_main")
+    monkeypatch.delenv("POSTGRES_SSLMODE", raising=False)
+
+    s = SettingsCls()
+    async_url = s.sqlalchemy_async_url
+    sync_url = s.sqlalchemy_sync_url
+
+    assert async_url is not None
+    assert "sslmode=require" not in async_url
+    assert sync_url is not None
+    assert "sslmode=require" not in sync_url
