@@ -1645,6 +1645,9 @@ class Settings(BaseSettings):
             parsed_base = urlparse(base)
             qs = parse_qs(parsed_base.query)
             for k, v in self.pg_extra_query_params().items():
+                # Honor explicit sslmode in DATABASE_URL unless POSTGRES_SSLMODE explicitly forces override.
+                if k == "sslmode" and "sslmode" in qs and not self.POSTGRES_SSLMODE:
+                    continue
                 qs[k] = [v]
             new_query = urlencode(qs, doseq=True)
             base_with_q = urlunparse(
