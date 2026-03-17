@@ -45,6 +45,21 @@ from app.services.preorders import cancel_preorder, confirm_preorder, fulfill_pr
 
 logger = get_logger(__name__)
 
+KASPI_MAX_CREATION_WINDOW_DAYS = 14
+KASPI_MAX_CREATION_WINDOW = timedelta(days=KASPI_MAX_CREATION_WINDOW_DAYS)
+
+
+def _clamp_creation_window(date_from: datetime, date_to: datetime) -> tuple[datetime, bool]:
+    """Clamp outbound Kaspi orders creation window to provider hard limit (14 days)."""
+    if date_from > date_to:
+        return date_to, True
+
+    min_allowed_from = date_to - KASPI_MAX_CREATION_WINDOW
+    if date_from < min_allowed_from:
+        return min_allowed_from, True
+
+    return date_from, False
+
 
 class KaspiSyncAlreadyRunning(RuntimeError):
     pass
@@ -162,6 +177,11 @@ class KaspiServiceSyncMixin:
                         effective_from = base_from - overlap
                         if min_from is not None and effective_from < min_from:
                             effective_from = min_from
+
+                        effective_from, clamped_by_kaspi_limit = _clamp_creation_window(effective_from, effective_to)
+                        if clamped_by_kaspi_limit:
+                            pagination_state["stopped_early"] = True
+                            pagination_state["window_truncated"] = True
 
                         if backfill_active:
                             logger.info(
